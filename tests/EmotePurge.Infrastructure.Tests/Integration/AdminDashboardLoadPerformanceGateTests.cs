@@ -99,17 +99,20 @@ public sealed class AdminDashboardLoadPerformanceGateTests(ITestOutputHelper out
         {
             output.WriteLine(
                 $"run {i + 1}: {runs[i].Milliseconds:F1} ms, allocated {runs[i].AllocatedBytes / 1048576.0:F1} MiB, " +
-                $"payload {runs[i].PayloadBytes} B, rows read {runs[i].RowsRead} (seeded {_seeded})");
+                $"payload {runs[i].PayloadBytes} B, samples bucketed {runs[i].SamplesBucketed} (seeded {_seeded}), " +
+                $"rows read by the Api {runs[i].RowsRead}");
         }
 
         output.WriteLine(
             $"median {median:F1} ms (limit {MaxMedianMilliseconds}), max allocated {maxAllocated / 1048576.0:F1} MiB " +
             $"(limit {MaxAllocatedBytes / 1048576.0:F0}), max payload {maxPayload} B (limit {MaxPayloadBytes})");
 
-        // A run that read fewer rows than were seeded measured a smaller problem: invalid, not fast.
+        // A run that bucketed fewer samples than were seeded measured a smaller problem: invalid, not
+        // fast. The evidence is the response's own sample counts, which hold however the path reads its
+        // rows; the rows the Api read are logged next to them.
         Assert.All(runs, r => Assert.True(
-            r.RowsRead >= _seeded,
-            $"Invalid run: {r.RowsRead} rows read, {_seeded} seeded in the window."));
+            r.SamplesBucketed >= _seeded,
+            $"Invalid run: {r.SamplesBucketed} samples bucketed, {_seeded} seeded in the window."));
         Assert.True(median < MaxMedianMilliseconds, $"Median {median:F1} ms >= {MaxMedianMilliseconds} ms.");
         Assert.True(maxPayload <= MaxPayloadBytes, $"Payload {maxPayload} B > {MaxPayloadBytes} B.");
         Assert.True(
@@ -148,12 +151,13 @@ public sealed class AdminDashboardLoadPerformanceGateTests(ITestOutputHelper out
 
         Assert.False(read.Busy);
         Assert.True(read.Load!.Available);
-        return new Run(timer.Elapsed.TotalMilliseconds, after - before, payload.Length, _rows.RowsRead);
+        var bucketed = read.Load.Api.SampleCount.Sum() + read.Load.Worker.SampleCount.Sum();
+        return new Run(timer.Elapsed.TotalMilliseconds, after - before, payload.Length, bucketed, _rows.RowsRead);
     }
 
     private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
 
-    private sealed record Run(double Milliseconds, long AllocatedBytes, int PayloadBytes, long RowsRead);
+    private sealed record Run(double Milliseconds, long AllocatedBytes, int PayloadBytes, long SamplesBucketed, long RowsRead);
 
     private sealed class RowCountingInterceptor : DbCommandInterceptor
     {

@@ -14,9 +14,9 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 **Betrifft:** `src/EmotePurge.Core/Services/IAdminDashboardQueryService.cs` ·
 `src/EmotePurge.Infrastructure/Services/AdminDashboardQueryService.cs` ·
-`src/EmotePurge.Infrastructure/Services/{AdminDashboardLoadBucketing,SystemLoadRollupMath}.cs` ·
+`src/EmotePurge.Infrastructure/Services/{AdminDashboardLoadBucketing,AdminDashboardLoadSeriesBuilder,AdminDashboardRawLoadQuery,AdminDashboardRawLoadAccumulator,AdminDashboardHourlyLoadAccumulator,SystemLoadRollupMath}.cs` ·
 `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Integration/{AdminDashboardQueryService,AdminDashboardLoadQuery}Tests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/{AdminDashboardQueryService,AdminDashboardLoadQuery,AdminDashboardRawLoadSql,AdminDashboardLoadPerformanceGate}Tests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Unit/AdminDashboard{ActivityRange,QueryServiceStructure,LoadBucketing}Tests.cs` ·
 `src/EmotePurge.Core/Services/IRateLimitTelemetryReader.cs` ·
 `src/EmotePurge.Infrastructure/Redis/RateLimitTelemetryStore.cs` ·
@@ -125,10 +125,13 @@ The raw path pairs samples exactly like the rollup: same source and `ProcessInst
 at most 2.5 x the configured `SystemLoad:IntervalSeconds` (the value the rollup worker passes), monotonic
 counter; the rate of a pair counts in the bucket of its later sample. The helpers for that rule (gap,
 counter delta, rate, host jiffy delta, host memory used, nearest-rank P95 index) are now `internal` in
-`SystemLoadRollupMath` and used by both paths, so there is one implementation of the gap rule. The query
-loads the window's samples of both sources plus one predecessor per `(Source, ProcessInstanceId)` group
-that occurs in the window (backward `LIMIT 1` scan, the rollup's `LATERAL` pattern); an instance that
-starts inside the window has no predecessor and its first point no rate. With the same rule, the raw and
+`SystemLoadRollupMath` and used by both paths, so there is one implementation of the gap rule. The read
+starts one maximum pair gap (`SystemLoadRollupMath.MaximumPairGap`, 2.5 intervals) before the window
+instead of looking up predecessors: only a sample in that stretch can form a valid pair with an
+instance's first window sample, and the last such sample of the instance is exactly its immediate
+predecessor (a predecessor further back fails the gap rule anyway). Samples of that stretch only seed
+the pairing and never count. An instance without a sample there, such as one that starts inside the
+window, has no predecessor and its first point no rate. With the same rule, the raw and
 the hourly path compute every hour that both compute now identically (a test reads one hour as a single
 raw bucket and compares it with `SystemLoadRollupMath.Calculate` at 1, 30, 60 and 3,600 s). Two known
 limits remain, both properties of the rollup on `main`: an hour that was rolled up under an earlier
@@ -167,11 +170,28 @@ share only for samples with a finite `memory.max`. Hourly ranges never compute a
 limit is constant; they show the last stored limit of the bucket. Values are rounded on the server:
 percent to one decimal, cores to four, load average to two, bytes as integers.
 
-The raw rows (chart columns only, `Source` projected to a bool) are streamed with `AsAsyncEnumerable`
-in time order into a pure accumulator (`AdminDashboardLoadBucketing`) that holds only the current
-bucket's values and writes into column arrays pre-sized to the bucket count; no unbucketed list of
-samples is ever built. Whether this in-memory variant carries the 24-hour 1-second case is decided by
-the B performance gate; the response contract would not change if the bucketing moved into SQL.
+The raw path buckets in the Api, not in Postgres, and this was measured. The B response gate
+(`AdminDashboardLoadPerformanceGateTests`, 24 h at 1 s, 171,600 samples, uncached, median of five,
+in-process, Release) failed the first version: EF materialised every row through `SqlQueryRaw` +
+`AsAsyncEnumerable`, which took 427 ms against a limit of < 400 ms and allocated ~93 MiB against a limit
+of 64 MiB. Spec 11 B names SQL-side bucketing as the fallback, so that was built and fully tested. It
+used `LAG` pairing per `(Source, ProcessInstanceId)` with the same gap rule and `percentile_disc(0.95)`.
+Its P95, which `percentile_disc` takes at rank ceil(0.95 n), agreed with the rollup in the parity test,
+and it allocated ~1.3 MiB. But it took 1,370 ms. Neither leaner variants (per-bucket value arrays instead
+of `percentile_disc`, a gap-extended scan instead of a `LATERAL` lookup, no CTE materialisation, `jit` off,
+64 MB `work_mem`) nor any of their combinations went below ~750 ms. The floor was the pairing itself
+(index scan plus `LAG`: ~150 ms; plus the per-row rate expressions: ~275 ms) before any aggregation, and
+every per-bucket aggregate transition then added 0.15-0.2 µs per row. What passed instead is a lean read
+of the chart columns, a single range scan in time order (~90 ms in Postgres), streamed through a typed
+`DbDataReader` loop with one reused row object. The loop feeds `AdminDashboardRawLoadAccumulator`, which
+holds only the current bucket's values and writes into column arrays pre-sized to the bucket count:
+337.7 ms median and 8.0 MiB at 1 s, and 56.6 ms and 1.6 MiB at 30 s, with byte-identical payload sizes.
+The command runs through EF's relational command pipeline (`IRawSqlCommandBuilder`), so command
+interceptors still see it. The gate's validity check now counts the samples the response accounts for
+(the sum of `SampleCount`), not the rows the Api reads. The rollup parity test
+(`Raw_OneHourBucketEqualsTheRollupOfThatHour`) stays the guard that the raw path computes what the rollup
+computes. Swap in the response is the latest sample's: a later sample without swap reads as "now none",
+not as the last value seen.
 
 Load range, route and facade (cut B). `GET /api/admin/dashboard/load?range=` answers with the
 serialized `AdminDashboardLoad` (camelCase, column-oriented lists, `null` stays `null`, timestamps as

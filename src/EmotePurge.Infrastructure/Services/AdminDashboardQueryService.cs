@@ -6,69 +6,6 @@ namespace EmotePurge.Infrastructure.Services;
 
 public class AdminDashboardQueryService(AppDbContext db) : IAdminDashboardQueryService
 {
-    // The chart columns of one sample, never the whole row. The Source text becomes a bool so the
-    // stream does not allocate a string per row.
-    private const string RawLoadColumns = """
-        sample."Id",
-        sample."SampledAtUtc",
-        sample."Source" = 'Worker' AS "IsWorker",
-        sample."ProcessInstanceId",
-        sample."PreviousSampledAtUtc",
-        sample."ProcessCpuTimeTicks",
-        sample."CgroupCpuUsageMicroseconds",
-        sample."CgroupCpuQuotaMicroseconds",
-        sample."CgroupCpuPeriodMicroseconds",
-        sample."CgroupMemoryCurrentBytes",
-        sample."CgroupMemoryMaxBytes",
-        sample."HostCpuBusyJiffies",
-        sample."HostCpuTotalJiffies",
-        sample."HostLoadAverage1",
-        sample."HostMemoryTotalBytes",
-        sample."HostMemoryAvailableBytes",
-        sample."HostSwapTotalBytes",
-        sample."HostSwapFreeBytes",
-        sample."ActiveChannels",
-        sample."LiveChannels",
-        sample."ChatLines",
-        sample."EmoteMatches"
-        """;
-
-    // {0} = fromUtc, {1} = toUtc (both inclusive). The window's samples of both sources plus one
-    // predecessor per (Source, ProcessInstanceId) group that occurs in the window: a backward LIMIT 1
-    // scan of IX_SystemLoadSamples_Source_ProcessInstanceId_SampledAtUtc, the pattern of
-    // SystemLoadRollupService.LoadCandidateSamplesAsync. An instance that starts inside the window has
-    // no predecessor. Ordered by time so the accumulator can finish one bucket after the other.
-    private const string RawLoadSql = """
-        WITH range_groups AS (
-            SELECT sample."Source", sample."ProcessInstanceId", MIN(sample."SampledAtUtc") AS "FirstSampledAtUtc"
-            FROM "SystemLoadSamples" AS sample
-            WHERE sample."Source" IN ('Api', 'Worker')
-              AND sample."SampledAtUtc" >= {0}
-              AND sample."SampledAtUtc" <= {1}
-            GROUP BY sample."Source", sample."ProcessInstanceId"
-        )
-        SELECT
-        """ + "\n" + RawLoadColumns + "\n" + """
-        FROM "SystemLoadSamples" AS sample
-        WHERE sample."Source" IN ('Api', 'Worker')
-          AND sample."SampledAtUtc" >= {0}
-          AND sample."SampledAtUtc" <= {1}
-        UNION ALL
-        SELECT predecessor.*
-        FROM range_groups AS grp
-        JOIN LATERAL (
-            SELECT
-        """ + "\n" + RawLoadColumns + "\n" + """
-            FROM "SystemLoadSamples" AS sample
-            WHERE sample."Source" = grp."Source"
-              AND sample."ProcessInstanceId" = grp."ProcessInstanceId"
-              AND sample."SampledAtUtc" < grp."FirstSampledAtUtc"
-            ORDER BY sample."SampledAtUtc" DESC, sample."Id" DESC
-            LIMIT 1
-        ) AS predecessor ON TRUE
-        ORDER BY "SampledAtUtc", "Id"
-        """;
-
     public async Task<AdminDashboardActivity> GetActivityAsync(
         AdminDashboardActivityRange range,
         DateTime nowUtc,
@@ -121,11 +58,9 @@ public class AdminDashboardQueryService(AppDbContext db) : IAdminDashboardQueryS
             : await GetHourlyLoadAsync(window, wire, nowUtc, samplingIntervalSeconds, cancellationToken);
     }
 
-    // Raw path for any window (internal so a test can read one hour as a single bucket). The window's
-    // samples of both sources plus one predecessor per (Source, ProcessInstanceId) group, found with a
-    // backward LIMIT 1 index scan like SystemLoadRollupService.LoadCandidateSamplesAsync. Only the chart
-    // columns are projected, and the rows are streamed straight into the accumulator in time order, so
-    // no unbucketed list of samples is ever held.
+    // Raw path for any window (internal so a test can read one hour as a single bucket). The samples are
+    // streamed in time order into the accumulator; see AdminDashboardRawLoadQuery for why this read,
+    // and not SQL-side bucketing, carries the 24-hour 1-second case.
     internal async Task<AdminDashboardLoad> GetRawLoadAsync(
         AdminDashboardLoadWindow window,
         string range,
@@ -134,13 +69,7 @@ public class AdminDashboardQueryService(AppDbContext db) : IAdminDashboardQueryS
         CancellationToken cancellationToken)
     {
         var accumulator = new AdminDashboardRawLoadAccumulator(window, samplingIntervalSeconds);
-        var rows = db.Database.SqlQueryRaw<AdminDashboardLoadSampleRow>(RawLoadSql, window.FromUtc, window.ToUtc);
-
-        await foreach (var row in rows.AsAsyncEnumerable().WithCancellation(cancellationToken))
-        {
-            accumulator.Add(row);
-        }
-
+        await AdminDashboardRawLoadQuery.ReadIntoAsync(db, window, samplingIntervalSeconds, accumulator, cancellationToken);
         return accumulator.Complete(range, generatedAtUtc);
     }
 

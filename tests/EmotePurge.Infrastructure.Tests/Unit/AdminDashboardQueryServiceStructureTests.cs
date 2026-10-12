@@ -12,37 +12,39 @@ namespace EmotePurge.Infrastructure.Tests.Unit;
 // (MethodBody.GetILAsByteArray plus token resolution) would also have to walk the compiler-generated
 // async state machines and lambda closures nested in the type and still miss a raw SQL string naming
 // the table; the text scan catches the DbSet, the entity type and a quoted "UsageStats" in SQL alike,
-// for every file listed here, at the cost of also flagging the word in a comment (acceptable: the
-// files have no reason to mention it).
+// for every AdminDashboard*.cs file in Infrastructure/Services, at the cost of also flagging the word
+// in a comment (acceptable: the files have no reason to mention it).
 public class AdminDashboardQueryServiceStructureTests
 {
-    [Theory]
-    [InlineData("src/EmotePurge.Infrastructure/Services/AdminDashboardQueryService.cs")]
-    [InlineData("src/EmotePurge.Infrastructure/Services/AdminDashboardLoadBucketing.cs")]
-    public void AdminDashboardQuery_DoesNotReferenceUsageStats(string relativePath)
+    [Fact]
+    public void AdminDashboardQuery_DoesNotReferenceUsageStats()
     {
-        var source = File.ReadAllText(FindSourceFile(relativePath));
+        // Every file of the dashboard read side, so a new split-out file is covered without a list.
+        var files = Directory.GetFiles(FindServicesDirectory(), "AdminDashboard*.cs");
+        Assert.Contains(files, file => file.EndsWith("AdminDashboardQueryService.cs", StringComparison.Ordinal));
+        Assert.Contains(files, file => file.EndsWith("AdminDashboardRawLoadQuery.cs", StringComparison.Ordinal));
 
-        var matches = Regex.Matches(source, @"\bUsageStats?\b")
-            .Select(m => m.Value)
-            .ToList();
-
-        Assert.True(
-            matches.Count == 0,
-            $"{relativePath} must not read UsageStats (operator decision 2026-10-11, #381).");
+        foreach (var file in files)
+        {
+            var matches = Regex.Matches(File.ReadAllText(file), @"\bUsageStats?\b");
+            Assert.True(
+                matches.Count == 0,
+                $"{Path.GetFileName(file)} must not read UsageStats (operator decision 2026-10-11, #381).");
+        }
     }
 
-    private static string FindSourceFile(string relative)
+    private static string FindServicesDirectory()
     {
+        const string relative = "src/EmotePurge.Infrastructure/Services";
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
         {
             var candidate = Path.Combine(dir.FullName, relative);
-            if (File.Exists(candidate))
+            if (Directory.Exists(candidate))
             {
                 return candidate;
             }
         }
 
-        throw new FileNotFoundException($"Could not locate {relative} above {AppContext.BaseDirectory}.");
+        throw new DirectoryNotFoundException($"Could not locate {relative} above {AppContext.BaseDirectory}.");
     }
 }
