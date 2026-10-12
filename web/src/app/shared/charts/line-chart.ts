@@ -64,6 +64,9 @@ const PLOT_RIGHT = 8;
 const PLOT_TOP = 8;
 const PLOT_HEIGHT = 144;
 const TICK_FONT_SIZE = 12;
+/** Average glyph width of a tick label in em (digits and units, a little generous). */
+const LABEL_CHAR_EM = 0.62;
+const Y_LABEL_GAP = 6;
 
 /** Which number a legend entry shows: the latest value, the total or the maximum of the window. */
 export type LegendStat = 'last' | 'sum' | 'max';
@@ -338,12 +341,23 @@ export class LineChart {
   protected readonly viewHeight = VIEW_HEIGHT;
   protected readonly fontSize = TICK_FONT_SIZE;
   protected readonly width = signal(FALLBACK_WIDTH);
-  protected readonly plot = computed(() => ({
-    x: PLOT_LEFT,
-    y: PLOT_TOP,
-    width: Math.max(40, this.width() - PLOT_LEFT - PLOT_RIGHT),
-    height: PLOT_HEIGHT,
-  }));
+  protected readonly plot = computed(() => {
+    // The left margin grows with the widest y label: unit-carrying labels ("1,60 Kerne",
+    // "953,7 MiB") overflow the fixed 60 units and were clipped at the SVG edge.
+    const labelWidth = Math.max(
+      0,
+      ...this.yDomain().ticks.map(
+        (value) => this.format(value, this.locale()).length * TICK_FONT_SIZE * LABEL_CHAR_EM,
+      ),
+    );
+    const left = Math.max(PLOT_LEFT, Math.ceil(labelWidth) + Y_LABEL_GAP + 4);
+    return {
+      x: left,
+      y: PLOT_TOP,
+      width: Math.max(40, this.width() - left - PLOT_RIGHT),
+      height: PLOT_HEIGHT,
+    };
+  });
   protected readonly descriptionId = `app-line-chart-description-${nextChartId++}`;
 
   private readonly rawCursor = signal<number | null>(null);
@@ -381,12 +395,11 @@ export class LineChart {
   });
 
   protected readonly yTicks = computed(() => {
-    const plot = this.plot();
     const { ticks, min, max } = this.yDomain();
     const locale = this.locale();
     return ticks.map((value) => ({
       value,
-      y: yAt(value, min, max, plot.height),
+      y: yAt(value, min, max, PLOT_HEIGHT),
       label: this.format(value, locale),
     }));
   });

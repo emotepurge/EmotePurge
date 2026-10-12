@@ -106,6 +106,19 @@ describe('LineChart', () => {
     expect(d.match(/M/g)).toHaveLength(2);
   });
 
+  it('widens the left margin so long y labels are not cut off at the edge', () => {
+    const plotX = (root: HTMLElement) =>
+      Number(
+        /translate\((\d+(?:\.\d+)?)/.exec(
+          root.querySelector('svg[role="img"] > g')?.getAttribute('transform') ?? '',
+        )?.[1],
+      );
+    const small = plotX(render([series('a', [1, 5, 3, 2])]));
+    const large = plotX(render([series('a', [1_500_000_000, 5, 3, 2])]));
+
+    expect(large).toBeGreaterThan(small);
+  });
+
   it('starts without a cursor and an empty live line', () => {
     const root = render([series('a', [1, 5, 3, 2])]);
 
