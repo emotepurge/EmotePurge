@@ -4,6 +4,13 @@ import { TranslocoPipe } from '@jsverse/transloco';
 export interface SegmentedControlOption {
   value: string;
   labelKey: string;
+  /**
+   * Optional small trailing figure (a count). Shown muted and hidden from assistive tech; the
+   * accessible name gets `detailLabel` instead (already translated, falling back to `detail`), so
+   * a placeholder like "–" can be read as "unknown" rather than as a dash.
+   */
+  detail?: string;
+  detailLabel?: string;
 }
 
 /**
@@ -44,6 +51,10 @@ export interface SegmentedControlOption {
           (keydown)="onKeydown($event, index)"
         >
           {{ option.labelKey | transloco }}
+          @if (option.detail; as detail) {
+            <span aria-hidden="true" class="ml-1 tabular-nums opacity-75">{{ detail }}</span>
+            <span class="sr-only">{{ option.detailLabel ?? detail }}</span>
+          }
         </button>
       }
     </div>

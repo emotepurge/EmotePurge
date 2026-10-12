@@ -25,7 +25,7 @@ const OPTIONS: SegmentedControlOption[] = [
   imports: [SegmentedControl],
   template: `
     <app-segmented-control
-      [options]="options"
+      [options]="options()"
       [ariaLabel]="ariaLabel"
       [value]="value()"
       (valueChange)="value.set($event)"
@@ -33,7 +33,7 @@ const OPTIONS: SegmentedControlOption[] = [
   `,
 })
 class Host {
-  options: SegmentedControlOption[] = OPTIONS;
+  readonly options = signal<SegmentedControlOption[]>(OPTIONS);
   ariaLabel = 'Zeitraum';
   readonly value = signal('day');
 }
@@ -183,5 +183,20 @@ describe('SegmentedControl', () => {
 
     expect(host.value()).toBe('day');
     expect(event.defaultPrevented).toBe(false);
+  });
+  it('names an option with its detail, preferring the accessible detail label over the glyph', () => {
+    const { fixture, host, radios } = render('day');
+    host.options.set([
+      { value: 'day', labelKey: 'range.day', detail: '12' },
+      { value: 'week', labelKey: 'range.week', detail: '–', detailLabel: 'unbekannt' },
+      { value: 'month', labelKey: 'range.month' },
+    ]);
+    fixture.detectChanges();
+
+    const text = (index: number) => radios()[index].textContent?.replace(/\s+/g, ' ').trim();
+    expect(text(0)).toContain('Tag');
+    expect(text(0)).toContain('12');
+    expect(text(1)).toContain('unbekannt');
+    expect(text(2)).toBe('Monat');
   });
 });
