@@ -240,7 +240,7 @@ public class SevenTvSyncServicePlaceholderTests(PostgresFixture fixture)
         await using (var db = fixture.CreateDbContext())
         {
             var result = await CreateService(db, RestAnswering(channel)).ApplyEmoteSetUpdateAsync(
-                channel.ChannelName, SetId, new SevenTvEmoteSetDelta([], [], ["phpull1"]));
+                channel.ChannelName, SetId, new SevenTvEmoteSetDelta([], [], [new SevenTvPulledEntry("phpull1")]));
             Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         }
 

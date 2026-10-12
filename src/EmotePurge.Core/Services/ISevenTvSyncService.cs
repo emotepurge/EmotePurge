@@ -35,13 +35,17 @@ public interface ISevenTvSyncService
     /// gate the full resync uses, followed by a full match-cache reload. Applies nothing when
     /// <paramref name="emoteSetId"/> is no longer the channel's active set (a still-live
     /// subscription on a set the channel has switched away from) or when the delta would wipe a
-    /// non-empty channel (implausible; see the empty-set guard in SyncChannelAsync).
+    /// non-empty channel (implausible; see the empty-set guard in SyncChannelAsync). With the
+    /// slot reconcile flag on, a dispatch that cannot be attributed to single slots ends as
+    /// <see cref="SevenTvDeltaOutcome.AmbiguousDelta"/> without an inventory write (flag off never
+    /// produces it).
     /// Callers — not this method — run the follow-up full resync those outcomes ask for:
     /// SyncChannelAsync takes the same non-reentrant gate and would deadlock if called from here.
     /// <para>
     /// <see cref="SevenTvDeltaOutcome.Applied"/> is the "something really changed" signal (it is
     /// returned only after a persisted write) — that is what makes the caller publish
-    /// <c>channel.synced</c>; every other outcome wrote nothing.
+    /// <c>channel.synced</c>; every other outcome wrote no inventory. The ones that ask for a
+    /// full resync (not active, implausible, ambiguous) leave that to the caller.
     /// </para>
     /// <para>
     /// As with <see cref="SyncChannelAsync"/>, the follow-up belongs on

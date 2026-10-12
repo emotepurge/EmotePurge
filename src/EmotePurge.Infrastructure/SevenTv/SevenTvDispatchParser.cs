@@ -22,8 +22,8 @@ public static class SevenTvDispatchParser
     public static SevenTvEmoteSetDelta ParseEmoteSetUpdate(JsonElement body, ILogger logger)
     {
         var pushed = new List<SevenTvEmote>();
-        var updated = new List<SevenTvEmote>();
-        var pulledIds = new List<string>();
+        var updated = new List<SevenTvEmoteRename>();
+        var pulled = new List<SevenTvPulledEntry>();
 
         // The wire uses pushed/pulled/updated (ChangeMap). added/removed do not exist in real
         // dispatches — reading them is the bug that sank the 2026-07 implementation.
@@ -31,7 +31,7 @@ public static class SevenTvDispatchParser
         {
             foreach (var change in pushedArray.EnumerateArray())
             {
-                TryMapEmoteChange(change, ValueKey, pushed, logger);
+                TryMapEmotePush(change, pushed, logger);
             }
         }
 
@@ -39,7 +39,7 @@ public static class SevenTvDispatchParser
         {
             foreach (var change in updatedArray.EnumerateArray())
             {
-                TryMapEmoteChange(change, ValueKey, updated, logger);
+                TryMapEmoteRename(change, updated, logger);
             }
         }
 
@@ -47,11 +47,11 @@ public static class SevenTvDispatchParser
         {
             foreach (var change in pulledArray.EnumerateArray())
             {
-                TryGetPulledEmoteId(change, pulledIds, logger);
+                TryMapPulledEntry(change, pulled, logger);
             }
         }
 
-        return new SevenTvEmoteSetDelta(pushed, updated, pulledIds);
+        return new SevenTvEmoteSetDelta(pushed, updated, pulled);
     }
 
     // body of a user.update dispatch. The active-set switch arrives as a nested change on the
@@ -126,34 +126,48 @@ public static class SevenTvDispatchParser
         return found;
     }
 
-    private static void TryMapEmoteChange(JsonElement change, string valueProperty, List<SevenTvEmote> into, ILogger logger)
+    // `index` is not read (7TV points it at the first slot of the id, plan #374 2.3), and neither is the
+    // payload's `timestamp` (the emote's upload date, see SevenTvEmoteJsonDto).
+    private static void TryMapEmotePush(JsonElement change, List<SevenTvEmote> into, ILogger logger)
     {
         try
         {
-            if (!HasKey(change, EmotesKey) ||
-                !change.TryGetProperty(valueProperty, out var value) ||
-                value.ValueKind != JsonValueKind.Object)
+            if (TryReadEmoteValue(change, ValueKey, logger) is { } dto)
             {
-                return;
+                into.Add(SevenTvEmoteJsonMapper.MapDto(dto));
             }
-
-            var dto = value.Deserialize<SevenTvEmoteJsonDto>(SevenTvEmoteJsonMapper.JsonOptions);
-            if (dto is null || dto.Id.Length == 0)
-            {
-                return;
-            }
-
-            into.Add(SevenTvEmoteJsonMapper.MapDto(dto));
         }
         catch (Exception ex)
         {
             // Warning, not Debug: the 2026-07 parser logged unknown shapes at Debug level and its
             // failures were invisible at production log levels.
-            logger.LogWarning(ex, "Unerwartete emote_set.update-Dispatch-Änderung übersprungen: {Change}", Truncate(change));
+            logger.LogWarning(ex, "Skipped an unexpected emote_set.update push change: {Change}", Truncate(change));
         }
     }
 
-    private static void TryGetPulledEmoteId(JsonElement change, List<string> into, ILogger logger)
+    private static void TryMapEmoteRename(JsonElement change, List<SevenTvEmoteRename> into, ILogger logger)
+    {
+        try
+        {
+            if (TryReadEmoteValue(change, ValueKey, logger) is not { } dto)
+            {
+                return;
+            }
+
+            // A missing or empty name is null here, never a throw; a missing old_value gives a null
+            // OldName. The flag-off path takes the new name through NewName ?? string.Empty, which is
+            // the empty name the DTO yielded before the pair existed.
+            var oldName = change.TryGetProperty("old_value", out var oldValue) ? GetNonEmptyString(oldValue, "name") : null;
+            into.Add(new SevenTvEmoteRename(
+                dto.Id, oldName, dto.Name.Length > 0 ? dto.Name : null, SevenTvEmoteJsonMapper.MapDto(dto).ImageUrl));
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Skipped an unexpected emote_set.update rename change: {Change}", Truncate(change));
+        }
+    }
+
+    private static void TryMapPulledEntry(JsonElement change, List<SevenTvPulledEntry> into, ILogger logger)
     {
         try
         {
@@ -163,15 +177,43 @@ public static class SevenTvDispatchParser
             }
 
             var id = GetNonEmptyObjectId(change, "old_value");
-            if (id is not null)
+            if (id is null)
             {
-                into.Add(id);
+                if (change.TryGetProperty("old_value", out var oldValue) && oldValue.ValueKind == JsonValueKind.Object)
+                {
+                    logger.LogWarning("Skipped an emote_set.update pull change without an emote id: {Change}", Truncate(change));
+                }
+
+                return;
             }
+
+            into.Add(new SevenTvPulledEntry(id, GetNonEmptyString(change.GetProperty("old_value"), "name")));
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Unerwartete emote_set.update-Dispatch-Entfernung übersprungen: {Change}", Truncate(change));
+            logger.LogWarning(ex, "Skipped an unexpected emote_set.update pull change: {Change}", Truncate(change));
         }
+    }
+
+    // The emote object under `value` of an emotes change, or null when the change is of another kind or
+    // carries no usable value. An object without an id is skipped with a warning.
+    private static SevenTvEmoteJsonDto? TryReadEmoteValue(JsonElement change, string valueProperty, ILogger logger)
+    {
+        if (!HasKey(change, EmotesKey) ||
+            !change.TryGetProperty(valueProperty, out var value) ||
+            value.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        var dto = value.Deserialize<SevenTvEmoteJsonDto>(SevenTvEmoteJsonMapper.JsonOptions);
+        if (dto is null || dto.Id.Length == 0)
+        {
+            logger.LogWarning("Skipped an emote_set.update change without an emote id: {Change}", Truncate(change));
+            return null;
+        }
+
+        return dto;
     }
 
     private static bool HasKey(JsonElement change, string expectedKey) =>

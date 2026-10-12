@@ -760,7 +760,7 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
     private static Task<SevenTvDeltaResult> StartDelta(
         AppDbContext db, Channel channel, string set, RecordingLogger<SevenTvSyncService> logger) =>
         CreateService(db, ApiReturning(channel, set), slotsEnabled: true, logger: logger)
-            .ApplyEmoteSetUpdateAsync(channel.ChannelName, set, new SevenTvEmoteSetDelta([Live(Newcomer, "Newcomer", null)], [], [Reported]));
+            .ApplyEmoteSetUpdateAsync(channel.ChannelName, set, new SevenTvEmoteSetDelta([Live(Newcomer, "Newcomer", null)], [], [new SevenTvPulledEntry(Reported)]));
 
     private static EmoteService CreateReportService(AppDbContext db, bool slotsEnabled, RecordingLogger<EmoteService> logger) =>
         new(

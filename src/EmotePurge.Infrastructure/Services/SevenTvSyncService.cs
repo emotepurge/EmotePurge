@@ -412,11 +412,13 @@ public class SevenTvSyncService(
         {
             activeAfter.Add(emote.Id);
         }
-        foreach (var emote in delta.Updated)
+        foreach (var rename in delta.Updated)
         {
-            activeAfter.Add(emote.Id);
+            activeAfter.Add(rename.Id);
         }
-        activeAfter.ExceptWith(delta.PulledIds);
+        // The emote-wide view of the pulls: one entry per id, however many slots of it left.
+        var pulledIds = delta.PulledIds;
+        activeAfter.ExceptWith(pulledIds);
 
         if (activeBefore > 0 && activeAfter.Count == 0)
         {
@@ -441,12 +443,13 @@ public class SevenTvSyncService(
             UpsertEmote(channel.Id, existing, emote with { AddedToSetAt = DateTime.UtcNow }, fromDispatch: true);
         }
 
-        foreach (var emote in delta.Updated)
+        foreach (var rename in delta.Updated)
         {
-            UpsertEmote(channel.Id, existing, emote, fromDispatch: true);
+            // Emote-wide: the row takes the dispatch's new name, a missing one as the empty string.
+            UpsertEmote(channel.Id, existing, new SevenTvEmote(rename.Id, rename.NewName ?? string.Empty, rename.ImageUrl), fromDispatch: true);
         }
 
-        foreach (var pulledId in delta.PulledIds)
+        foreach (var pulledId in pulledIds)
         {
             if (existing.TryGetValue(pulledId, out var emote) && !emote.IsArchived)
             {
@@ -474,14 +477,14 @@ public class SevenTvSyncService(
         // already held (see above), so the observation rows come third, as in the sync and the report;
         // a dispatch that met a writer of the other order anyway (Z8 in the switch-over window) is
         // retried by the caller.
-        await using var pullTransaction = lockTransaction is null && delta.PulledIds.Count > 0
+        await using var pullTransaction = lockTransaction is null && pulledIds.Count > 0
             ? await db.Database.BeginTransactionAsync(cancellationToken)
             : null;
         var transaction = lockTransaction ?? pullTransaction;
-        if (delta.PulledIds.Count > 0)
+        if (pulledIds.Count > 0)
         {
             await EmoteSetLeaveObservations.RecordAsync(
-                db, channel.Id, emoteSetId, delta.PulledIds, DateTime.UtcNow, cancellationToken);
+                db, channel.Id, emoteSetId, pulledIds, DateTime.UtcNow, cancellationToken);
         }
 
         if (!db.ChangeTracker.HasChanges())
@@ -496,7 +499,7 @@ public class SevenTvSyncService(
 
         logger.LogInformation(
             "7TV-Dispatch auf {Channel} angewendet: {Pushed} hinzugefügt, {Updated} aktualisiert, {Pulled} entfernt.",
-            normalized, delta.Pushed.Count, delta.Updated.Count, delta.PulledIds.Count);
+            normalized, delta.Pushed.Count, delta.Updated.Count, delta.Pulled.Count);
         return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.Applied, currentName);
     }
 

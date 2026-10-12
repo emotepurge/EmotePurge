@@ -31,9 +31,9 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
     private static SevenTvEmoteSetDelta Delta(
         IReadOnlyList<SevenTvEmote>? pushed = null,
-        IReadOnlyList<SevenTvEmote>? updated = null,
+        IReadOnlyList<SevenTvEmoteRename>? updated = null,
         IReadOnlyList<string>? pulledIds = null) =>
-        new(pushed ?? [], updated ?? [], pulledIds ?? []);
+        new(pushed ?? [], updated ?? [], (pulledIds ?? []).Select(id => new SevenTvPulledEntry(id)).ToList());
 
     private static SevenTvSyncService CreateService(Persistence.AppDbContext db, EmoteMatchCache cache) =>
         new(db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(),
@@ -235,7 +235,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var service = CreateService(db, cache);
 
         var result = await service.ApplyEmoteSetUpdateAsync(
-            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmote("e1", "newname", "https://cdn/e1.webp")]));
+            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", null, "newname", "https://cdn/e1.webp")]));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1");
@@ -338,7 +338,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var service = CreateService(db, cache);
 
         var result = await service.ApplyEmoteSetUpdateAsync(
-            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmote("e1", "pic_renamed", "")]));
+            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", null, "pic_renamed", "")]));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1");
@@ -812,7 +812,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var result = await service.ApplyEmoteSetUpdateAsync(
             channel.ChannelName,
             SetId,
-            Delta(updated: [new SevenTvEmote("e1", "stable", SeededImageUrl("e1"), new DateTime(2026, 2, 3, 17, 0, 0, DateTimeKind.Utc))]));
+            Delta(updated: [new SevenTvEmoteRename("e1", null, "stable", SeededImageUrl("e1"))]));
 
         Assert.Equal(SevenTvDeltaOutcome.NoChange, result.Outcome);
         Assert.Null(await db.Emotes

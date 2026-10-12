@@ -62,6 +62,7 @@ public class SevenTvSyncResultTypesTests
     [InlineData(SevenTvDeltaOutcome.NoChange)]
     [InlineData(SevenTvDeltaOutcome.SetNotActive)]
     [InlineData(SevenTvDeltaOutcome.ImplausibleSkipped)]
+    [InlineData(SevenTvDeltaOutcome.AmbiguousDelta)]
     public void DeltaResult_ForChannel_CarriesTheLogin(SevenTvDeltaOutcome outcome)
     {
         var result = SevenTvDeltaResult.ForChannel(outcome, "handover_new");
@@ -84,6 +85,7 @@ public class SevenTvSyncResultTypesTests
     [InlineData(SevenTvDeltaOutcome.Applied)]
     [InlineData(SevenTvDeltaOutcome.SetNotActive)]
     [InlineData(SevenTvDeltaOutcome.ImplausibleSkipped)]
+    [InlineData(SevenTvDeltaOutcome.AmbiguousDelta)]
     public void DeltaResult_WithoutChannel_RejectsTheOutcomesThatProvablyReadTheRow(SevenTvDeltaOutcome outcome)
     {
         var ex = Assert.Throws<ArgumentOutOfRangeException>(

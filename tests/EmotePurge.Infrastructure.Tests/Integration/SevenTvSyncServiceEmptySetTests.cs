@@ -248,7 +248,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         _clock.Advance(Tick);
         await SyncAsync(db, channel, cache, tracker, OldSetId);
 
-        await ApplyAsync(db, channel, cache, tracker, new SevenTvEmoteSetDelta([], [], ["e2"]));
+        await ApplyAsync(db, channel, cache, tracker, new SevenTvEmoteSetDelta([], [], [new SevenTvPulledEntry("e2")]));
 
         _clock.Advance(Tick);
         var third = await SyncAsync(db, channel, cache, tracker, OldSetId);

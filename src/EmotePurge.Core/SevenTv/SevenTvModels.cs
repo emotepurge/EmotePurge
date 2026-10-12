@@ -95,16 +95,33 @@ public sealed class SevenTvSyncResult
     }
 }
 
+// One updated[key=emotes] change of an emote_set.update dispatch. The names are the dispatch's own
+// old and new alias (old_value.name / value.name); null when the wire omits them or sends an empty
+// one, never a throw. 7TV's quirk (plan #374 2.3): for the second slot of a multi-alias emote the new
+// name is the first slot's, so a name pair alone does not say which slot was renamed. `index` and the
+// payload's `timestamp` (the emote's upload date, not a set-entry date) are deliberately not read.
+public record SevenTvEmoteRename(string Id, string? OldName, string? NewName, string ImageUrl);
+
+// One pulled[key=emotes] change: the emote id and the alias it had in the set (old_value.name),
+// null when the wire omits it. A multi-alias emote leaves as one item per slot, so the same id can
+// appear more than once.
+public record SevenTvPulledEntry(string Id, string? Name = null);
+
 // One emote_set.update dispatch from the EventAPI, reduced to the three change kinds the wire
 // actually carries. Property names deliberately mirror the wire fields (pushed/pulled/updated):
 // the 2026-07 implementation silently produced empty deltas because it read added/removed —
 // field names that do not exist in real dispatches (docs/Untersuchung-7TV-WebSocket-2026-07-30.md).
 public record SevenTvEmoteSetDelta(
     IReadOnlyList<SevenTvEmote> Pushed,
-    IReadOnlyList<SevenTvEmote> Updated,
-    IReadOnlyList<string> PulledIds)
+    IReadOnlyList<SevenTvEmoteRename> Updated,
+    IReadOnlyList<SevenTvPulledEntry> Pulled)
 {
-    public bool IsEmpty => Pushed.Count == 0 && Updated.Count == 0 && PulledIds.Count == 0;
+    public bool IsEmpty => Pushed.Count == 0 && Updated.Count == 0 && Pulled.Count == 0;
+
+    // The pulled emote ids, ordinal distinct and in order of first appearance: the emote-wide view the
+    // flag-off path works on (one archive and one leave observation per id, however many slots left).
+    // Computed on each access; callers that need it more than once keep it in a local.
+    public IReadOnlyList<string> PulledIds => Pulled.Select(p => p.Id).Distinct(StringComparer.Ordinal).ToList();
 }
 
 // A user.update dispatch that switched the active emote set of a Twitch connection. Old id is
@@ -120,7 +137,13 @@ public enum SevenTvDeltaOutcome
     NoChange,
     ChannelUnknown,
     SetNotActive,
-    ImplausibleSkipped
+    ImplausibleSkipped,
+
+    // The dispatch cannot be told apart per slot from what is stored (plan #374), so nothing of the
+    // inventory was written and the caller must run the REST resync, outside the call like for the two
+    // outcomes above. Only the slot-aware path (SevenTv:SlotReconcile:Enabled) produces it; with the
+    // flag off it never occurs. Reachable only after the row was read, so it carries the login.
+    AmbiguousDelta
 }
 
 /// <summary>
@@ -131,8 +154,9 @@ public enum SevenTvDeltaOutcome
 /// <para>
 /// <see cref="ChannelName"/> is non-null if and only if the row was read under the row gate, and the
 /// two factories encode which outcomes that is. <see cref="SevenTvDeltaOutcome.Applied"/>,
-/// <see cref="SevenTvDeltaOutcome.SetNotActive"/> and
-/// <see cref="SevenTvDeltaOutcome.ImplausibleSkipped"/> are only reachable after that read, so they
+/// <see cref="SevenTvDeltaOutcome.SetNotActive"/>,
+/// <see cref="SevenTvDeltaOutcome.ImplausibleSkipped"/> and
+/// <see cref="SevenTvDeltaOutcome.AmbiguousDelta"/> are only reachable after that read, so they
 /// always carry a name; <see cref="SevenTvDeltaOutcome.ChannelUnknown"/> means there is no row to
 /// take a name from and never carries one.
 /// </para>
@@ -183,7 +207,8 @@ public sealed class SevenTvDeltaResult
     public static SevenTvDeltaResult WithoutChannel(SevenTvDeltaOutcome outcome)
     {
         ThrowIfUndefined(outcome);
-        if (outcome is SevenTvDeltaOutcome.Applied or SevenTvDeltaOutcome.SetNotActive or SevenTvDeltaOutcome.ImplausibleSkipped)
+        if (outcome is SevenTvDeltaOutcome.Applied or SevenTvDeltaOutcome.SetNotActive or SevenTvDeltaOutcome.ImplausibleSkipped
+            or SevenTvDeltaOutcome.AmbiguousDelta)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(outcome),

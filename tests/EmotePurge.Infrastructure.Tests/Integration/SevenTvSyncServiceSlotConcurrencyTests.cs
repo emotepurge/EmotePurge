@@ -441,7 +441,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext([hook]);
 
         var result = await CreateService(db, ApiReturning(channel, SetA), slotsEnabled)
-            .ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, new SevenTvEmoteSetDelta([Live("z", "Zebra", null)], [], ["x"]));
+            .ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, new SevenTvEmoteSetDelta([Live("z", "Zebra", null)], [], [new SevenTvPulledEntry("x")]));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         Assert.True((await EmoteAsync(setup, channel, "x")).IsArchived);
@@ -482,7 +482,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         var logger = new RecordingLogger<SevenTvSyncService>();
         await using var db = fixture.CreateDbContext([hook]);
         var service = CreateService(db, ApiReturning(channel, SetA), slotsEnabled, logger: logger);
-        var delta = new SevenTvEmoteSetDelta([Live("z", "Zebra", null)], [], ["x"]);
+        var delta = new SevenTvEmoteSetDelta([Live("z", "Zebra", null)], [], [new SevenTvPulledEntry("x")]);
 
         if (twice)
         {

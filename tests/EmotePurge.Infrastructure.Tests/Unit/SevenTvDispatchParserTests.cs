@@ -1,4 +1,5 @@
 using System.Text.Json;
+using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.SevenTv;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -8,7 +9,9 @@ namespace EmotePurge.Infrastructure.Tests.Unit;
 // Container-free: pure JSON-to-delta mapping. The fixture files under Unit/TestData/ are real
 // EventAPI frames captured live on 2026-07-30 against channel "sensitron" (add/remove/rename of
 // catJAM/Aware/rain and an active-set switch) — see the csproj comment on why hand-written
-// fixtures are banned here.
+// fixtures are banned here. The "two-slots" pulled fixture is derived from the real pulled frame by
+// duplicating its item under a second alias (index and name changed, nothing else), the shape 7TV
+// sends when a multi-alias emote leaves; it is replaced by a captured frame once a live run has one.
 public class SevenTvDispatchParserTests
 {
     private static JsonElement LoadBody(string fixtureName)
@@ -52,6 +55,7 @@ public class SevenTvDispatchParserTests
             LoadBody("dispatch-emote-set-update-pulled.json"), NullLogger.Instance);
 
         Assert.Equal(["01F6MQ33FG000FFJ97ZB8MWV52"], delta.PulledIds);
+        Assert.Equal(new SevenTvPulledEntry("01F6MQ33FG000FFJ97ZB8MWV52", "catJAM"), Assert.Single(delta.Pulled));
         Assert.Empty(delta.Pushed);
         Assert.Empty(delta.Updated);
     }
@@ -62,9 +66,12 @@ public class SevenTvDispatchParserTests
         var delta = SevenTvDispatchParser.ParseEmoteSetUpdate(
             LoadBody("dispatch-emote-set-update-renamed.json"), NullLogger.Instance);
 
-        var emote = Assert.Single(delta.Updated);
-        Assert.Equal("01EZPGBXMR0001DCZS00AD662R", emote.Id);
-        Assert.Equal("rain", emote.Name);
+        var rename = Assert.Single(delta.Updated);
+        Assert.Equal("01EZPGBXMR0001DCZS00AD662R", rename.Id);
+        Assert.Equal("FeelsRainMan", rename.OldName);
+        Assert.Equal("rain", rename.NewName);
+        Assert.Equal(
+            "https://cdn.7tv.app/emote/01EZPGBXMR0001DCZS00AD662R/4x_static.webp", rename.ImageUrl);
     }
 
     [Fact]
@@ -112,8 +119,10 @@ public class SevenTvDispatchParserTests
         var delta = SevenTvDispatchParser.ParseEmoteSetUpdate(body, NullLogger.Instance);
 
         Assert.Equal(2, delta.Pushed.Count);
-        Assert.Equal("renamed", Assert.Single(delta.Updated).Name);
+        var rename = Assert.Single(delta.Updated);
+        Assert.Equal(("01E3", "old", "renamed"), (rename.Id, rename.OldName, rename.NewName));
         Assert.Equal(["01E4"], delta.PulledIds);
+        Assert.Equal(new SevenTvPulledEntry("01E4", "gone"), Assert.Single(delta.Pulled));
     }
 
     [Theory]
@@ -144,6 +153,108 @@ public class SevenTvDispatchParserTests
         var delta = SevenTvDispatchParser.ParseEmoteSetUpdate(body, NullLogger.Instance);
 
         Assert.Equal(string.Empty, Assert.Single(delta.Pushed).ImageUrl);
+    }
+
+    [Fact]
+    public void ParseEmoteSetUpdate_PulledFrameWithTwoItemsOfOneId_KeepsBothEntriesAndOneDistinctId()
+    {
+        var delta = SevenTvDispatchParser.ParseEmoteSetUpdate(
+            LoadBody("dispatch-emote-set-update-pulled-two-slots.json"), NullLogger.Instance);
+
+        Assert.Equal(
+            [
+                new SevenTvPulledEntry("01F6MQ33FG000FFJ97ZB8MWV52", "catJAM"),
+                new SevenTvPulledEntry("01F6MQ33FG000FFJ97ZB8MWV52", "catJAM2"),
+            ],
+            delta.Pulled);
+        Assert.Equal(["01F6MQ33FG000FFJ97ZB8MWV52"], delta.PulledIds);
+    }
+
+    [Fact]
+    public void ParseEmoteSetUpdate_PulledIds_AreOrdinalDistinctInOrderOfFirstAppearance()
+    {
+        var body = ParseBody("""
+            {"id":"01SET0","kind":3,
+             "pulled":[{"key":"emotes","old_value":{"id":"01b","name":"x"}},
+                       {"key":"emotes","old_value":{"id":"01A","name":"y"}},
+                       {"key":"emotes","old_value":{"id":"01b","name":"z"}},
+                       {"key":"emotes","old_value":{"id":"01a","name":"w"}}]}
+            """);
+
+        var delta = SevenTvDispatchParser.ParseEmoteSetUpdate(body, NullLogger.Instance);
+
+        Assert.Equal(["01b", "01A", "01a"], delta.PulledIds);
+        Assert.Equal(4, delta.Pulled.Count);
+    }
+
+    [Fact]
+    public void ParseEmoteSetUpdate_MissingNames_AreNullAndNeverThrow()
+    {
+        var body = ParseBody("""
+            {"id":"01SET0","kind":3,
+             "updated":[{"key":"emotes","old_value":{"id":"01E1"},"value":{"id":"01E1","name":"new"}},
+                        {"key":"emotes","value":{"id":"01E2","name":"new2"}},
+                        {"key":"emotes","old_value":{"id":"01E3","name":"old3"},"value":{"id":"01E3"}},
+                        {"key":"emotes","old_value":{"id":"01E4","name":""},"value":{"id":"01E4","name":""}}],
+             "pulled":[{"key":"emotes","old_value":{"id":"01E5"}},
+                       {"key":"emotes","old_value":{"id":"01E6","name":""}}]}
+            """);
+
+        var delta = SevenTvDispatchParser.ParseEmoteSetUpdate(body, NullLogger.Instance);
+
+        Assert.Equal(
+            [
+                new SevenTvEmoteRename("01E1", null, "new", string.Empty),
+                new SevenTvEmoteRename("01E2", null, "new2", string.Empty),
+                new SevenTvEmoteRename("01E3", "old3", null, string.Empty),
+                new SevenTvEmoteRename("01E4", null, null, string.Empty),
+            ],
+            delta.Updated);
+        Assert.Equal([new SevenTvPulledEntry("01E5"), new SevenTvPulledEntry("01E6")], delta.Pulled);
+    }
+
+    [Fact]
+    public void ParseEmoteSetUpdate_UpdatedWithoutAnId_IsSkippedAndTheRestKept()
+    {
+        var body = ParseBody("""
+            {"id":"01SET0","kind":3,
+             "updated":[{"key":"emotes","old_value":{"id":"01E1","name":"a"},"value":{"name":"b"}},
+                        {"key":"emotes","old_value":{"id":"01E2","name":"a"},"value":{"id":"01E2","name":"b"}}]}
+            """);
+
+        var delta = SevenTvDispatchParser.ParseEmoteSetUpdate(body, NullLogger.Instance);
+
+        Assert.Equal("01E2", Assert.Single(delta.Updated).Id);
+    }
+
+    [Fact]
+    public void ParseEmoteSetUpdate_QuirkRename_ReportsTheNameThatArrivedNotTheSlotThatChanged()
+    {
+        // 7TV answers a rename of the second alias of an emote with the first alias as the new name
+        // (plan #374 2.3); the parser reports what is on the wire and leaves the interpretation to
+        // the consumer.
+        var body = ParseBody("""
+            {"id":"01SET0","kind":3,
+             "updated":[{"key":"emotes","index":0,"old_value":{"id":"01E1","name":"probeB"},"value":{"id":"01E1","name":"probeA"}}]}
+            """);
+
+        var delta = SevenTvDispatchParser.ParseEmoteSetUpdate(body, NullLogger.Instance);
+
+        var rename = Assert.Single(delta.Updated);
+        Assert.Equal(("probeB", "probeA"), (rename.OldName, rename.NewName));
+    }
+
+    [Fact]
+    public void ParseEmoteSetUpdate_DoesNotReadTheValueTimestamp()
+    {
+        var body = ParseBody("""
+            {"id":"01SET0","kind":3,
+             "pushed":[{"key":"emotes","value":{"id":"01E1","name":"x","timestamp":1614589327000}}]}
+            """);
+
+        var delta = SevenTvDispatchParser.ParseEmoteSetUpdate(body, NullLogger.Instance);
+
+        Assert.Null(Assert.Single(delta.Pushed).AddedToSetAt);
     }
 
     [Fact]
