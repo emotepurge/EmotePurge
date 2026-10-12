@@ -5,7 +5,7 @@ export interface SegmentedControlOption {
   value: string;
   labelKey: string;
   /**
-   * Optional small trailing figure (a count). Shown muted and hidden from assistive tech; the
+   * Optional small trailing figure (a count). Shown smaller and hidden from assistive tech; the
    * accessible name gets `detailLabel` instead (already translated, falling back to `detail`), so
    * a placeholder like "–" can be read as "unknown" rather than as a dash.
    */
@@ -52,7 +52,9 @@ export interface SegmentedControlOption {
         >
           {{ option.labelKey | transloco }}
           @if (option.detail; as detail) {
-            <span aria-hidden="true" class="ml-1 tabular-nums opacity-75">{{ detail }}</span>
+            <span aria-hidden="true" class="ml-1 text-xs font-normal tabular-nums">{{
+              detail
+            }}</span>
             <span class="sr-only">{{ option.detailLabel ?? detail }}</span>
           }
         </button>
