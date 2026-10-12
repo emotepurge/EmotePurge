@@ -1,5 +1,6 @@
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
@@ -375,6 +376,175 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal(target, (await verify.UsageStats.AsNoTracking().SingleAsync(u => u.EmoteId == emote.Id)).SlotId);
     }
 
+    // ---------------------------------------------------------------- The settle carries the snapshot along (E10, E11a)
+
+    // Plan #373 §6.3 E11a, in sequence: the enqueue binds the snapshot to a new seed S next to the REST
+    // slot T, block 1 writes on S, the real flag-on settle finds T ("target exists"), merges S's rows
+    // onto T — one cell collides with a live row of T (E10) — and rebinds the snapshot to T with
+    // CreatedSlot false; block 2 writes on T, and the next tick leaves nothing on S.
+    [Fact]
+    public async Task Settle_OntoAnExistingTarget_MergesTheBlocksRows_AndTheNextBlockWritesOnTheTarget()
+    {
+        var (channel, emote, target, seed, claim) = await EnqueueNextToRestSlotAsync("bfsettleseq");
+        var collidingLive = new UsageStat
+        {
+            EmoteId = emote.Id,
+            SlotId = target,
+            EmoteSetId = SetB,
+            Date = claim.WindowFrom,
+            UseCount = 10,
+            BotUseCount = 2,
+            SharedChatUseCount = 1,
+            Source = UsageStatSource.Live
+        };
+        await using (var db = CreateDbContext())
+        {
+            db.UsageStats.Add(collidingLive);
+            await db.SaveChangesAsync();
+        }
+
+        await ReplaceBlockOfAsync(claim, 0, new ChatLogBackfillAggregate(emote.Id, claim.WindowFrom, 3, 1, 0));
+        await using (var db = CreateDbContext())
+        {
+            var imported = await db.UsageStats.AsNoTracking().SingleAsync(u => u.Source == UsageStatSource.ChatLogArchive);
+            Assert.Equal((seed, claim.WindowFrom), (imported.SlotId, imported.Date));
+        }
+
+        var logger = new RecordingLogger<SevenTvSyncService>();
+        await SettleAsync(channel, logger);
+
+        await using (var verify = CreateDbContext())
+        {
+            var entry = await verify.ChatLogBackfillRunEmotes.AsNoTracking().SingleAsync();
+            Assert.Equal(((string?)target, false), (entry.SlotId, entry.CreatedSlot));
+            var settled = await verify.EmoteSlots.AsNoTracking().SingleAsync(s => s.Id == seed);
+            Assert.Equal((false, true, (DateTime?)null), (settled.SeedUnsettled, settled.IsArchived, settled.ArchivedAt));
+            Assert.False(await verify.UsageStats.AnyAsync(u => u.SlotId == seed));
+            var merged = await verify.UsageStats.AsNoTracking().SingleAsync();
+            Assert.Equal(
+                (collidingLive.Id, target, claim.WindowFrom, 13, 3, 1, UsageStatSource.Live),
+                (merged.Id, merged.SlotId, merged.Date, merged.UseCount, merged.BotUseCount, merged.SharedChatUseCount, merged.Source));
+        }
+
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("settle merged 1 usage rows", StringComparison.Ordinal));
+        Assert.Contains(logger.Entries, e => e.Message.Contains("1 backfill snapshot entries", StringComparison.Ordinal));
+
+        var secondDay = claim.WindowFrom.AddDays(8);
+        await ReplaceBlockOfAsync(claim, 1, new ChatLogBackfillAggregate(emote.Id, secondDay, 4, 0, 0));
+        Assert.Equal(target, await SlotOfRowOnAsync(emote.Id, secondDay));
+
+        await SettleAsync(channel, logger: null);
+        await using var final = CreateDbContext();
+        Assert.False(await final.UsageStats.AnyAsync(u => u.SlotId == seed));
+        Assert.Equal(2, await final.UsageStats.CountAsync(u => u.SlotId == target));
+        Assert.Equal(ChatLogBackfillRunStatus.Completed, (await final.ChatLogBackfillRuns.AsNoTracking().SingleAsync()).Status);
+    }
+
+    // E11a, settle first: the real settle holds the emote row from its lock until its commit and has
+    // already rebound the snapshot; block 2 waits at its FOR SHARE, before it reads the snapshot, and
+    // after the settle's commit writes on T.
+    [Fact]
+    public async Task Settle_FirstHoldingTheEmoteRow_TheWaitingBlockReadsTheReboundSnapshotAndWritesOnTheTarget()
+    {
+        var (channel, emote, target, seed, claim) = await EnqueueNextToRestSlotAsync("bfsettlefirst");
+        await ReplaceBlockOfAsync(claim, 0, new ChatLogBackfillAggregate(emote.Id, claim.WindowFrom, 3, 0, 0));
+
+        const string tag = "bfsettlefirst-block";
+        var secondDay = claim.WindowFrom.AddDays(8);
+        Task<ChatLogBackfillBlockResult>? block = null;
+        var hook = new CommandHook(
+            sql => sql.Contains("UPDATE \"ChatLogBackfillRunEmotes\"", StringComparison.Ordinal),
+            async _ =>
+            {
+                var blockDb = fixture.CreateTaggedDbContext(tag, DatabaseName);
+                block = Task.Run(async () =>
+                {
+                    await using (blockDb)
+                    {
+                        return await ReplaceBlockOfAsync(blockDb, claim, 1, new ChatLogBackfillAggregate(emote.Id, secondDay, 4, 0, 0));
+                    }
+                });
+                await fixture.WaitUntilBlockedOnLockAsync(tag, block);
+                Assert.Contains("FOR SHARE", await fixture.WaitingQueryAsync(tag), StringComparison.Ordinal);
+            });
+        await using (var settleDb = fixture.CreateTaggedDbContext("bfsettlefirst-settle", [hook], databaseName: DatabaseName))
+        {
+            Assert.NotNull(await SlotSyncKit.CreateService(settleDb, RestOf(channel), slotsEnabled: true).SyncChannelAsync(channel.ChannelName));
+        }
+
+        Assert.NotNull(block);
+        Assert.IsType<ChatLogBackfillBlockResult.Committed>(await block);
+        await using var verify = CreateDbContext();
+        Assert.Equal(target, await SlotOfRowOnAsync(emote.Id, secondDay));
+        Assert.Equal(target, await SlotOfRowOnAsync(emote.Id, claim.WindowFrom));
+        Assert.False(await verify.UsageStats.AnyAsync(u => u.SlotId == seed));
+        var entry = await verify.ChatLogBackfillRunEmotes.AsNoTracking().SingleAsync();
+        Assert.Equal(((string?)target, false), (entry.SlotId, entry.CreatedSlot));
+    }
+
+    // E11a, block first: block 1 holds the emote row FOR SHARE until its commit, so the real settle
+    // waits at its emote lock — when the seed still has no row at all — and afterwards finds the seed
+    // in the active set's population through the block's fresh rows and moves them, with the snapshot.
+    [Fact]
+    public async Task Block_FirstHoldingTheEmoteRow_TheWaitingSettleMovesTheBlocksFreshRowsAndTheSnapshot()
+    {
+        var (channel, emote, target, seed, claim) = await EnqueueNextToRestSlotAsync("bfblockfirst");
+
+        var atInsert = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var blockDb = CreateDbContext(new PauseBeforeCommand("INSERT INTO \"UsageStats\"", atInsert, proceed));
+        var block = Task.Run(() => ReplaceBlockOfAsync(blockDb, claim, 0, new ChatLogBackfillAggregate(emote.Id, claim.WindowFrom, 3, 0, 0)));
+        await atInsert.Task;
+
+        const string tag = "bfblockfirst-settle";
+        await using var settleDb = fixture.CreateTaggedDbContext(tag, DatabaseName);
+        var settle = Task.Run(() => SlotSyncKit.CreateService(settleDb, RestOf(channel), slotsEnabled: true).SyncChannelAsync(channel.ChannelName));
+        await fixture.WaitUntilBlockedOnLockAsync(tag, settle);
+        Assert.Contains("FOR NO KEY UPDATE OF e", await fixture.WaitingQueryAsync(tag), StringComparison.Ordinal);
+
+        proceed.SetResult();
+        Assert.IsType<ChatLogBackfillBlockResult.Committed>(await block);
+        Assert.NotNull(await settle);
+
+        await using (var verify = CreateDbContext())
+        {
+            Assert.Equal(target, await SlotOfRowOnAsync(emote.Id, claim.WindowFrom));
+            Assert.False(await verify.UsageStats.AnyAsync(u => u.SlotId == seed));
+            var entry = await verify.ChatLogBackfillRunEmotes.AsNoTracking().SingleAsync();
+            Assert.Equal(((string?)target, false), (entry.SlotId, entry.CreatedSlot));
+            var settled = await verify.EmoteSlots.AsNoTracking().SingleAsync(s => s.Id == seed);
+            Assert.Equal((false, true, (DateTime?)null), (settled.SeedUnsettled, settled.IsArchived, settled.ArchivedAt));
+        }
+
+        var secondDay = claim.WindowFrom.AddDays(8);
+        await ReplaceBlockOfAsync(claim, 1, new ChatLogBackfillAggregate(emote.Id, secondDay, 4, 0, 0));
+        Assert.Equal(target, await SlotOfRowOnAsync(emote.Id, secondDay));
+    }
+
+    // E11a: an in-place settle (the seed becomes the slot itself, same id) leaves the snapshot alone —
+    // it still points at the slot the run created.
+    [Fact]
+    public async Task Settle_InPlace_LeavesTheSnapshotUnchanged()
+    {
+        var channel = await SeedChannelAsync("bfsettleinplace", createdAt: NowUtc.AddDays(-20), activeSetId: SetB);
+        await SeedUserAsync();
+        var emote = await SeedEmoteAsync(channel, "x", "A");
+        PreviewReturns(SetB, "Set B", Member("x", "A", null));
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, SetB, months: 1)).Status);
+        var claim = await ClaimAsync();
+        var before = await SingleSnapshotEntryAsync();
+        await ReplaceBlockOfAsync(claim, 0, new ChatLogBackfillAggregate(emote.Id, claim.WindowFrom, 3, 0, 0));
+
+        await SettleAsync(channel, logger: null);
+
+        var after = await SingleSnapshotEntryAsync();
+        Assert.Equal((before.SlotId, true), (after.SlotId, after.CreatedSlot));
+        await using var verify = CreateDbContext();
+        var slot = await verify.EmoteSlots.AsNoTracking().SingleAsync();
+        Assert.Equal((before.SlotId, false, false), ((string?)slot.Id, slot.SeedUnsettled, slot.IsArchived));
+        Assert.Equal(slot.Id, await SlotOfRowOnAsync(emote.Id, claim.WindowFrom));
+    }
+
     // ---------------------------------------------------------------- Helpers
 
     private async Task<string> SeedSlotAsync(string emoteId, string name, DateTime addedAt)
@@ -384,6 +554,69 @@ public partial class ChatLogBackfillServiceTests
         db.EmoteSlots.Add(slot);
         await db.SaveChangesAsync();
         return slot.Id;
+    }
+
+    // The REST slot's date; the live entry of the settle carries it, so the settle binds to that slot.
+    private static readonly DateTime RestSlotAddedAt = new(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    // A channel whose active set is the run's set B, one active emote with a dated REST slot T that
+    // carries no rows of B, and a real enqueue of B with an undated preview entry: the enqueue cannot
+    // bind T (no rows of B, no date to match), so it creates the seed S. Then the run is claimed; its
+    // window of ten days makes two blocks.
+    private async Task<(Channel Channel, Emote Emote, string Target, string Seed, ChatLogBackfillClaim Claim)> EnqueueNextToRestSlotAsync(string name)
+    {
+        var channel = await SeedChannelAsync(name, createdAt: NowUtc.AddDays(-20), activeSetId: SetB);
+        await SeedUserAsync();
+        var emote = await SeedEmoteAsync(channel, "x", "A");
+        var target = await SeedSlotAsync(emote.Id, "A", RestSlotAddedAt);
+        PreviewReturns(SetB, "Set B", Member("x", "A", null));
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, SetB, months: 1)).Status);
+
+        var entry = await SingleSnapshotEntryAsync();
+        Assert.NotEqual(target, entry.SlotId);
+        Assert.True(entry.CreatedSlot);
+        var claim = await ClaimAsync();
+        Assert.Equal(2, claim.WeeksTotal);
+        return (channel, emote, target, entry.SlotId!, claim);
+    }
+
+    private async Task<ChatLogBackfillClaim> ClaimAsync()
+    {
+        await using var db = CreateDbContext();
+        var claim = await CreateService(db).ClaimNextAsync(NowUtc);
+        Assert.NotNull(claim);
+        return claim;
+    }
+
+    private async Task ReplaceBlockOfAsync(ChatLogBackfillClaim claim, int index, ChatLogBackfillAggregate row)
+    {
+        await using var db = CreateDbContext();
+        Assert.IsType<ChatLogBackfillBlockResult.Committed>(await ReplaceBlockOfAsync(db, claim, index, row));
+    }
+
+    // Block <paramref name="index"/> of the claimed run's 7-day plan, with one aggregate.
+    private Task<ChatLogBackfillBlockResult> ReplaceBlockOfAsync(AppDbContext db, ChatLogBackfillClaim claim, int index, ChatLogBackfillAggregate row)
+    {
+        var from = claim.WindowFrom.AddDays(7 * index);
+        var isLast = index == claim.WeeksTotal - 1;
+        var to = isLast ? claim.WindowTo : from.AddDays(7);
+        return CreateService(db).ReplaceBlockAsync(claim.RunId, from, to, [row], 10, 1, isLast);
+    }
+
+    // The real flag-on REST resync of the channel: set B with the one emote, dated like the REST slot.
+    private async Task SettleAsync(Channel channel, RecordingLogger<SevenTvSyncService>? logger)
+    {
+        await using var db = CreateDbContext();
+        Assert.NotNull(await SlotSyncKit.CreateService(db, RestOf(channel), slotsEnabled: true, logger: logger).SyncChannelAsync(channel.ChannelName));
+    }
+
+    private static ISevenTvApiClient RestOf(Channel channel) =>
+        SlotSyncKit.ApiReturning(channel, SetB, Live("x", "A", RestSlotAddedAt));
+
+    private async Task<string> SlotOfRowOnAsync(string emoteId, DateOnly date)
+    {
+        await using var db = CreateDbContext();
+        return (await db.UsageStats.AsNoTracking().SingleAsync(u => u.EmoteId == emoteId && u.Date == date)).SlotId;
     }
 
     private async Task<string> SlotOfRowAsync(string emoteId, string emoteSetId)

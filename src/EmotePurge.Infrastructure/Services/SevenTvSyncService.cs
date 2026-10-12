@@ -703,11 +703,11 @@ public class SevenTvSyncService(
         // with a plain SELECT, so the report never waits on an observation row (spec 5.5 rule 6).
         //
         // Lock order, flag on (plan #372 E4, E23): the channel row first, then the emote rows the
-        // reconcile can write (sorted), then the usage rows of the settle, then the observation rows,
-        // then the save (slots, emotes ⊆ locked ∪ new, the channel row already held). Purge, merge,
-        // join, identity reconcile, tag report and backfill enqueue all take Channels before Emotes as
-        // well, so none of them forms a cycle with the sync; the cycles that remain (2.2a) end in the
-        // deadlock retry of SaveSyncAsync.
+        // reconcile can write (sorted), then the usage rows of the settle and the backfill snapshot rows
+        // it rebinds (plan #373 E10, E11a), then the observation rows, then the save (slots, emotes ⊆
+        // locked ∪ new, the channel row already held). Purge, merge, join, identity reconcile, tag
+        // report and backfill enqueue all take Channels before Emotes as well, so none of them forms a
+        // cycle with the sync; the cycles that remain (2.2a) end in the deadlock retry of SaveSyncAsync.
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         bool inventoryChanged;
         SlotReconcileSummary? slotSummary = null;
@@ -1310,7 +1310,9 @@ public class SevenTvSyncService(
     /// (slots, D13 name and date);</item>
     /// <item>per emote without live entry: its active own slots are archived, then the emote-level
     /// archive, leave detection and measurement log exactly as with the flag off;</item>
-    /// <item>moves the settled seeds' active-set usage rows (bulk update), then upserts the leaves.</item>
+    /// <item>moves the active-set usage rows of every seed settled onto an existing target, as a merge
+    /// (plan #373 E10), and the backfill snapshot rows pointing at it (E11a), then upserts the
+    /// leaves.</item>
     /// </list>
     /// Returns whether the visible inventory changed (E18) and the counts for the per-channel log
     /// lines, which <see cref="ApplyAndSaveAsync"/> writes after the commit.
@@ -1403,13 +1405,14 @@ public class SevenTvSyncService(
         var (absentChanged, leaves) = await ArchiveAbsentEmotesAsync(channelId, activeEmoteSetId, existing, liveIds, now, cancellationToken);
         changed |= absentChanged;
 
-        // Lock order E4: usage rows (settle) before the observation rows. Only the rows of the
-        // active set move; the seed's other sets keep theirs (D12).
+        // Lock order E4: usage rows (settle), then the backfill snapshot rows, before the observation
+        // rows. Only the rows of the active set move; the seed's other sets keep theirs (D12).
         foreach (var rebind in rebinds.OrderBy(r => r.FromSeedId, StringComparer.Ordinal))
         {
-            counts.ReboundRows += await db.UsageStats
-                .Where(u => u.SlotId == rebind.FromSeedId && u.EmoteSetId == activeEmoteSetId)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(u => u.SlotId, rebind.ToSlotId), cancellationToken);
+            var (moved, merged) = await MoveSeedUsageAsync(rebind, activeEmoteSetId, cancellationToken);
+            counts.ReboundRows += moved + merged;
+            counts.MergedRows += merged;
+            counts.SnapshotEntries += await MoveSeedSnapshotEntriesAsync(rebind, cancellationToken);
         }
 
         await EmoteSetLeaveObservations.RecordAsync(db, channelId, activeEmoteSetId, leaves, now, cancellationToken);
@@ -1417,6 +1420,72 @@ public class SevenTvSyncService(
         AssertWritesAreLocked(channelId, locked);
         return (changed, counts.ToSummary());
     }
+
+    /// <summary>
+    /// The usage half of a settle onto an existing target (plan #372 2.4 "target exists", plan #373
+    /// E10): the seed's rows of the active set go to the target as a merge, not a plain re-key. A row
+    /// whose (set, day) cell the target already has is added onto the target's row — all three counters,
+    /// <c>Source</c> live if either row is live (the rule of
+    /// <c>EmoteSlotRollbackSql.CollapseUsageStatsSql</c>) — and deleted; every other row just changes its
+    /// <c>SlotId</c> and keeps its id. A plain re-key would hit the unique slot index
+    /// <c>(SlotId, EmoteSetId, Date)</c> on such a cell, fail the save and with it every following tick
+    /// of the channel. No live path is known to produce the collision (the flag-on map counts no emote
+    /// with an open seed, E7); the merge is the belt, and the snapshot rebind (E11a) relies on it for
+    /// imported rows. Runs behind the settle's locks (channel, then the emote rows), so the backfill
+    /// block and flush phase 2 cannot write these slots meanwhile. Returns the rows re-keyed and the
+    /// rows merged away.
+    /// </summary>
+    private async Task<(int Moved, int Merged)> MoveSeedUsageAsync(
+        SlotUsageRebind rebind, string activeEmoteSetId, CancellationToken cancellationToken)
+    {
+        // One statement: the CTE adds each colliding seed row onto its target row and hands back the
+        // seed row's id, the outer DELETE removes exactly those. The slot index makes the join 1:1.
+        var merged = await db.Database.ExecuteSqlAsync(
+            $"""
+             WITH merged AS (
+                 UPDATE "UsageStats" t
+                 SET "UseCount" = t."UseCount" + s."UseCount",
+                     "BotUseCount" = t."BotUseCount" + s."BotUseCount",
+                     "SharedChatUseCount" = t."SharedChatUseCount" + s."SharedChatUseCount",
+                     "Source" = CASE WHEN t."Source" = {(int)UsageStatSource.Live} OR s."Source" = {(int)UsageStatSource.Live}
+                                     THEN {(int)UsageStatSource.Live} ELSE t."Source" END
+                 FROM "UsageStats" s
+                 WHERE s."SlotId" = {rebind.FromSeedId} AND s."EmoteSetId" = {activeEmoteSetId}
+                   AND t."SlotId" = {rebind.ToSlotId} AND t."EmoteSetId" = {activeEmoteSetId}
+                   AND t."Date" = s."Date"
+                 RETURNING s."Id"
+             )
+             DELETE FROM "UsageStats" d
+             USING merged m
+             WHERE d."Id" = m."Id"
+             """,
+            cancellationToken);
+
+        var moved = await db.UsageStats
+            .Where(u => u.SlotId == rebind.FromSeedId && u.EmoteSetId == activeEmoteSetId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(u => u.SlotId, rebind.ToSlotId), cancellationToken);
+        return (moved, merged);
+    }
+
+    /// <summary>
+    /// The snapshot half of a settle onto an existing target (plan #373 E11a): every backfill snapshot
+    /// row that points at the seed now points at the target, with <c>CreatedSlot</c> false — the run
+    /// created the seed, not the target, and the rollback cleanup must never delete the target. The
+    /// next block of such a run writes on the target, and the seed, empty and archived without a date,
+    /// is referenced by no run any more. The snapshot key <c>(RunId, EmoteId)</c> is untouched: seed
+    /// and target belong to the same emote, so a run never has a second row this could collide with.
+    /// The backfill block takes the emote rows <c>FOR SHARE</c> before it reads a snapshot slot, so it
+    /// either reads the target after this commit or has committed its rows on the seed before, and
+    /// <see cref="MoveSeedUsageAsync"/> has just moved them. Returns the rows rebound.
+    /// </summary>
+    private Task<int> MoveSeedSnapshotEntriesAsync(SlotUsageRebind rebind, CancellationToken cancellationToken) =>
+        db.ChatLogBackfillRunEmotes
+            .Where(e => e.SlotId == rebind.FromSeedId)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(e => e.SlotId, rebind.ToSlotId)
+                    .SetProperty(e => e.CreatedSlot, false),
+                cancellationToken);
 
     /// <summary>
     /// The ids of the channel's unsettled seeds that carry usage rows of the active set (plan 2.2 step
@@ -1606,8 +1675,16 @@ public class SevenTvSyncService(
         if (summary.Created > 0 || summary.Updated > 0)
         {
             logger.LogInformation(
-                "{Channel}: slot reconcile created {Created} and updated {Updated} slots, settled {Settled} seeds and moved {ReboundRows} usage rows.",
-                channelName, summary.Created, summary.Updated, summary.Settled, summary.ReboundRows);
+                "{Channel}: slot reconcile created {Created} and updated {Updated} slots, settled {Settled} seeds and moved {ReboundRows} usage rows and {SnapshotEntries} backfill snapshot entries.",
+                channelName, summary.Created, summary.Updated, summary.Settled, summary.ReboundRows, summary.SnapshotEntries);
+        }
+
+        if (summary.MergedRows > 0)
+        {
+            // Plan #373 E10: no live path is known to collide, so a merge is worth a look.
+            logger.LogWarning(
+                "{Channel}: settle merged {MergedRows} usage rows into existing cells of their target slots.",
+                channelName, summary.MergedRows);
         }
     }
 
@@ -1860,17 +1937,26 @@ public class SevenTvSyncService(
     private readonly record struct ChannelCacheIdentity(string ChannelId, string CacheName);
 
     /// <summary>The per-channel counts of one slot reconcile pass, for the E19 log lines.</summary>
-    private readonly record struct SlotReconcileSummary(int Created, int Updated, int Settled, int ReboundRows, int Deferred);
+    private readonly record struct SlotReconcileSummary(
+        int Created, int Updated, int Settled, int ReboundRows, int MergedRows, int SnapshotEntries, int Deferred);
 
     private sealed class SlotReconcileCounter
     {
         public int Created { get; set; }
         public int Updated { get; set; }
         public int Settled { get; set; }
+
+        // Usage rows that left a settled seed — re-keyed and merged ones alike.
         public int ReboundRows { get; set; }
+
+        // The part of ReboundRows that was added onto an existing cell of the target (E10).
+        public int MergedRows { get; set; }
+
+        // Backfill snapshot rows rebound from a seed to its target (E11a).
+        public int SnapshotEntries { get; set; }
         public int Deferred { get; set; }
 
-        public SlotReconcileSummary ToSummary() => new(Created, Updated, Settled, ReboundRows, Deferred);
+        public SlotReconcileSummary ToSummary() => new(Created, Updated, Settled, ReboundRows, MergedRows, SnapshotEntries, Deferred);
     }
 
     /// <summary>
