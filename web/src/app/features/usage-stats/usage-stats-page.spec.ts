@@ -223,6 +223,10 @@ function emote(id: string, name: string, totalUseCount = 10): EmoteUsageTotalDto
     firstSeenAt: null,
     isArchived: false,
     nameTwinEmoteSetIds: [],
+    slotId: null,
+    firstSeenAtFromRest: false,
+    siblingNames: [],
+    firstSeenAtShared: false,
   };
 }
 

@@ -21,6 +21,10 @@ function usageRow(overrides: Partial<EmoteUsageTotalDto> = {}): EmoteUsageTotalD
     firstSeenAt: '2026-06-01T00:00:00Z',
     isArchived: false,
     nameTwinEmoteSetIds: [],
+    slotId: null,
+    firstSeenAtFromRest: false,
+    siblingNames: [],
+    firstSeenAtShared: false,
     ...overrides,
   };
 }

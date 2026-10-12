@@ -37,6 +37,7 @@ function series(overrides: Partial<EmoteUsageSeries> = {}): EmoteUsageSeries {
     lastUsedDate: null,
     days: [],
     liveDays: [],
+    slotId: null,
     ...overrides,
   };
 }

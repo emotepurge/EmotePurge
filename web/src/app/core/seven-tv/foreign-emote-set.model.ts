@@ -21,6 +21,13 @@ export interface ForeignEmoteRow {
   imageUrl: string;
   topAllTime: number | null;
   trending: number | null;
+  /**
+   * When the entry entered the set, as 7TV reports it (ISO UTC with milliseconds) — the identity a
+   * set view joins a dated slot row by (plan 377, 2.4). Optional because the same shape also comes
+   * from the leaderboard and the foreign-channel preview without a date; absent or `null` = 7TV
+   * named none.
+   */
+  addedAt?: string | null;
 }
 
 /**
