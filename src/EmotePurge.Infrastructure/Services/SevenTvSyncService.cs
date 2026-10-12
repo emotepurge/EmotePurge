@@ -569,7 +569,12 @@ public class SevenTvSyncService(
             throw new DeltaLockCoverageMissException();
         }
 
-        var activeBefore = await db.Emotes.CountAsync(e => e.ChannelId == channel.Id && !e.IsArchived, cancellationToken);
+        var activeIdsBefore = (await db.Emotes
+                .Where(e => e.ChannelId == channel.Id && !e.IsArchived)
+                .Select(e => e.SevenTvEmoteId)
+                .ToListAsync(cancellationToken))
+            .ToHashSet(StringComparer.Ordinal);
+        var activeBefore = activeIdsBefore.Count;
         var emoteIds = emotes.Select(e => e.Id).ToList();
         var seedIds = (await db.SeedsOfSet(channel.Id, emoteSetId)
                 .Where(s => emoteIds.Contains(s.EmoteId))
@@ -590,6 +595,21 @@ public class SevenTvSyncService(
         var provesNonEmpty = delta.Pushed.Count > 0 || delta.Updated.Count > 0;
         if (plan.IsAmbiguous || afterSlotKeyConflict)
         {
+            // The plausibility guard stands ahead of the leaves of an ambiguous dispatch too: the same
+            // emote-wide wipe simulation as with the flag off (every pulled id counts as gone), so a
+            // malformed dispatch writes no leaves — the worker resyncs on ImplausibleSkipped.
+            var simulatedActive = new HashSet<string>(activeIdsBefore, StringComparer.Ordinal);
+            simulatedActive.UnionWith(delta.Pushed.Select(e => e.Id));
+            simulatedActive.UnionWith(delta.Updated.Select(e => e.Id));
+            simulatedActive.ExceptWith(delta.PulledIds);
+            if (activeBefore > 0 && simulatedActive.Count == 0)
+            {
+                logger.LogWarning(
+                    "7TV dispatch would remove all {Count} active emotes of {Channel} — skipped as implausible.",
+                    activeBefore, normalized);
+                return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.ImplausibleSkipped, currentName);
+            }
+
             if (provesNonEmpty)
             {
                 emptySetConfirmations.Reset(channel.ChannelName);
@@ -648,7 +668,7 @@ public class SevenTvSyncService(
             var collidingIds = ex.Entries
                 .Select(entry => entry.Entity)
                 .OfType<EmoteSlot>()
-                .Select(slot => emotes.FirstOrDefault(e => e.Id == slot.EmoteId)?.SevenTvEmoteId)
+                .Select(slot => byId.Values.FirstOrDefault(e => e.Id == slot.EmoteId)?.SevenTvEmoteId)
                 .OfType<string>()
                 .Distinct(StringComparer.Ordinal)
                 .Order(StringComparer.Ordinal);
@@ -821,7 +841,6 @@ public class SevenTvSyncService(
             .ToListAsync(cancellationToken);
         return (await db.LockEmotesByIdsAsync(emoteIds, cancellationToken)).ToHashSet(StringComparer.Ordinal);
     }
-
 
     /// <summary>
     /// Runs <see cref="ApplyAndSaveAsync"/> with the sync's recoveries around it and returns the row the

@@ -220,6 +220,40 @@ public class SevenTvSyncServiceDeltaSlotTests(PostgresFixture fixture)
         AssertAmbiguousLine(logger, SlotDeltaAmbiguity.SeedOfActiveSet, "x");
     }
 
+    // Review 13.10. (P2-2): a malformed dispatch that pulls every active emote is ambiguous because one of
+    // them (c) carries a seed of the active set. The plausibility guard still comes first, as with the
+    // flag off: no leaves for a and b, ImplausibleSkipped.
+    [Fact]
+    public async Task AmbiguousDispatch_ThatPullsEveryActiveEmote_IsSkippedAsImplausible_WithoutLeaves()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "dslot_wipe_amb");
+        foreach (var id in new[] { "a", "b", "c" })
+        {
+            var emote = await SeedEmoteAsync(db, channel, id, id.ToUpperInvariant(), firstSeenAt: T1);
+            if (id == "c")
+            {
+                var seed = await SeedSeedAsync(db, emote);
+                await SeedUsageAsync(db, emote, seed, SetA, 3);
+            }
+            else
+            {
+                await SeedSlotAsync(db, emote, id.ToUpperInvariant(), T1);
+            }
+        }
+
+        var before = await StateAsync(db, channel);
+        var logger = new RecordingLogger<SevenTvSyncService>();
+
+        var result = await ApplyAsync(
+            db, channel, null, Delta(pulled: [Pull("a", "A"), Pull("b", "B"), Pull("c", "C")]), logger);
+
+        Assert.Equal(SevenTvDeltaOutcome.ImplausibleSkipped, result.Outcome);
+        Assert.Equal((0, 0, 0), (await LeaveRowsAsync(db, channel, "a"), await LeaveRowsAsync(db, channel, "b"), await LeaveRowsAsync(db, channel, "c")));
+        Assert.Equal(before, await StateAsync(db, channel));
+        Assert.Single(Lines(logger, "skipped as implausible"));
+    }
+
     // ------------------------------------------------------------------ adversarial review, end to end
 
     // Sol-P1-1 (case A): A(t1), B(t2); 7TV renames the first entry A → C (ambiguous, two slots), a fresh
