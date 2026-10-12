@@ -402,6 +402,270 @@ export async function mockAdminDashboardActivity(
   return log;
 }
 
+export type MockLoadRange = '1h' | '24h' | '7d' | '30d' | '90d' | '13mo';
+
+const LOAD_BUCKET_SECONDS: Record<MockLoadRange, number> = {
+  '1h': 60,
+  '24h': 300,
+  '7d': 3600,
+  '30d': 7200,
+  '90d': 21600,
+  '13mo': 86400,
+};
+
+/** The server's full ladder per range (the running bucket included); see IAdminDashboardQueryService. */
+export const LOAD_FULL_BUCKETS: Record<MockLoadRange, number> = {
+  '1h': 61,
+  '24h': 289,
+  '7d': 169,
+  '30d': 361,
+  '90d': 361,
+  '13mo': 397,
+};
+
+// "Now" of every load mock: the running bucket ends here, so a series is identical across reloads.
+const LOAD_NOW_MS = Date.UTC(2026, 9, 11, 12, 3, 0);
+
+export interface BuildDashboardLoadOptions {
+  /** Buckets actually delivered (leading empty ones are omitted like the server does); 0 = `available: false`. */
+  buckets?: number;
+  /** `true` turns the bucket into an all-`null` gap. */
+  gap?: (index: number, count: number) => boolean;
+  /** Overrides "now" (the end of the running bucket's window). */
+  nowMs?: number;
+}
+
+type Column = (number | null)[];
+
+/**
+ * One `GET /api/admin/dashboard/load` body, column-oriented and camelCase like the real record.
+ * Raw ranges (`1h`, `24h`) carry per-minute workload and quota shares; hourly ranges carry
+ * `perBucket` workload and no quota shares.
+ */
+export function buildDashboardLoad(
+  range: MockLoadRange,
+  options: BuildDashboardLoadOptions = {},
+): Record<string, unknown> {
+  const bucketSeconds = LOAD_BUCKET_SECONDS[range];
+  const raw = range === '1h' || range === '24h';
+  const nowMs = options.nowMs ?? LOAD_NOW_MS;
+  const full = LOAD_FULL_BUCKETS[range];
+  const count = options.buckets ?? full;
+  const lastStartMs = Math.floor(nowMs / (bucketSeconds * 1000)) * bucketSeconds * 1000;
+  const fromMs = lastStartMs - (full - 1) * bucketSeconds * 1000;
+  const base = {
+    range,
+    sourceKind: raw ? 'raw' : 'hourly',
+    bucketSeconds,
+    fromUtc: new Date(fromMs).toISOString(),
+    toUtc: new Date(nowMs).toISOString(),
+    generatedAtUtc: new Date(nowMs).toISOString(),
+    samplingIntervalSeconds: 30,
+  };
+  const emptyColumn: Column = [];
+  const emptyProcess = {
+    processCpuP95: emptyColumn,
+    processCpuMax: emptyColumn,
+    cgroupCpuP95: emptyColumn,
+    cgroupCpuMax: emptyColumn,
+    cgroupCpuQuotaCores: emptyColumn,
+    cgroupCpuQuotaShareP95: emptyColumn,
+    cgroupCpuQuotaShareMax: emptyColumn,
+    cgroupMemoryP95Bytes: emptyColumn,
+    cgroupMemoryMaxBytes: emptyColumn,
+    cgroupMemoryLimitBytes: emptyColumn,
+    cgroupMemoryShareP95: emptyColumn,
+    cgroupMemoryShareMax: emptyColumn,
+    sampleCount: emptyColumn,
+  };
+  if (count <= 0) {
+    return {
+      ...base,
+      available: false,
+      dataThroughUtc: null,
+      bucketStartsUtc: [],
+      host: {
+        cpuBusyP95: emptyColumn,
+        cpuBusyMax: emptyColumn,
+        memoryUsedP95Bytes: emptyColumn,
+        memoryUsedMaxBytes: emptyColumn,
+        memoryTotalBytes: emptyColumn,
+        loadAverage1P95: emptyColumn,
+        loadAverage1Max: emptyColumn,
+        provenance: [],
+        cpuValueSource: [],
+        memoryValueSource: [],
+        loadAverageValueSource: [],
+        apiSampleCount: emptyColumn,
+        workerSampleCount: emptyColumn,
+        apiCpuBusyMean: emptyColumn,
+        workerCpuBusyMean: emptyColumn,
+        apiMemoryUsedMeanBytes: emptyColumn,
+        workerMemoryUsedMeanBytes: emptyColumn,
+        apiLoadAverage1Mean: emptyColumn,
+        workerLoadAverage1Mean: emptyColumn,
+      },
+      api: emptyProcess,
+      worker: emptyProcess,
+      workload: {
+        workloadUnit: raw ? 'perMinute' : 'perBucket',
+        activeChannelsMax: emptyColumn,
+        liveChannelsMax: emptyColumn,
+        chatLines: emptyColumn,
+        emoteMatches: emptyColumn,
+        workloadIntervalSeconds: emptyColumn,
+        workloadHoursWithData: emptyColumn,
+      },
+      swap: null,
+    };
+  }
+  const isGap = (i: number) => options.gap?.(i, count) ?? false;
+  const col = (fn: (i: number) => number): Column =>
+    Array.from({ length: count }, (_, i) => (isGap(i) ? null : fn(i)));
+  const wave = (i: number, period: number, low: number, high: number) =>
+    low + ((high - low) * (1 + Math.sin((i * 2 * Math.PI) / period))) / 2;
+  const nulls = (): Column => new Array<number | null>(count).fill(null);
+  const GIB = 1024 ** 3;
+  const process = (offset: number) => ({
+    processCpuP95: col((i) => Math.round(wave(i + offset, 37, 0.05, 0.6) * 1e4) / 1e4),
+    processCpuMax: col((i) => Math.round(wave(i + offset, 37, 0.1, 0.9) * 1e4) / 1e4),
+    cgroupCpuP95: col((i) => Math.round(wave(i + offset, 41, 0.08, 0.7) * 1e4) / 1e4),
+    cgroupCpuMax: col((i) => Math.round(wave(i + offset, 41, 0.12, 0.95) * 1e4) / 1e4),
+    cgroupCpuQuotaCores: col(() => 1.5),
+    cgroupCpuQuotaShareP95: raw
+      ? col((i) => Math.round(wave(i + offset, 41, 5, 48) * 10) / 10)
+      : nulls(),
+    cgroupCpuQuotaShareMax: raw
+      ? col((i) => Math.round(wave(i + offset, 41, 8, 63) * 10) / 10)
+      : nulls(),
+    cgroupMemoryP95Bytes: col((i) => Math.round(wave(i + offset, 53, 0.3, 0.9) * GIB)),
+    cgroupMemoryMaxBytes: col((i) => Math.round(wave(i + offset, 53, 0.35, 1.0) * GIB)),
+    cgroupMemoryLimitBytes: col(() => 1.5 * GIB),
+    cgroupMemoryShareP95: raw
+      ? col((i) => Math.round(wave(i + offset, 53, 20, 60) * 10) / 10)
+      : nulls(),
+    cgroupMemoryShareMax: raw
+      ? col((i) => Math.round(wave(i + offset, 53, 23, 66) * 10) / 10)
+      : nulls(),
+    sampleCount: col(() => (raw ? Math.round(bucketSeconds / 30) : 120)),
+  });
+  const bucketStartsUtc = Array.from({ length: count }, (_, i) =>
+    new Date(lastStartMs - (count - 1 - i) * bucketSeconds * 1000).toISOString(),
+  );
+  const source = (i: number): 'A' | 'W' | null => (isGap(i) ? null : i % 3 === 0 ? 'A' : 'W');
+  return {
+    ...base,
+    available: true,
+    dataThroughUtc: new Date(nowMs - 20_000).toISOString(),
+    bucketStartsUtc,
+    host: {
+      cpuBusyP95: col((i) => Math.round(wave(i, 43, 8, 72) * 10) / 10),
+      cpuBusyMax: col((i) => Math.round(wave(i, 43, 12, 96) * 10) / 10),
+      memoryUsedP95Bytes: col((i) => Math.round(wave(i, 61, 5.5, 9.5) * GIB)),
+      memoryUsedMaxBytes: col((i) => Math.round(wave(i, 61, 6, 10.5) * GIB)),
+      memoryTotalBytes: col(() => 24 * GIB),
+      loadAverage1P95: col((i) => Math.round(wave(i, 47, 0.2, 3.2) * 100) / 100),
+      loadAverage1Max: col((i) => Math.round(wave(i, 47, 0.4, 5.1) * 100) / 100),
+      provenance: Array.from({ length: count }, (_, i) => (isGap(i) ? null : 'AW')),
+      cpuValueSource: Array.from({ length: count }, (_, i) => source(i)),
+      memoryValueSource: Array.from({ length: count }, (_, i) => source(i + 1)),
+      loadAverageValueSource: Array.from({ length: count }, (_, i) => source(i + 2)),
+      apiSampleCount: col(() => 10),
+      workerSampleCount: col(() => 10),
+      apiCpuBusyMean: col((i) => Math.round(wave(i, 43, 5, 40) * 10) / 10),
+      workerCpuBusyMean: col((i) => Math.round(wave(i, 43, 6, 41) * 10) / 10),
+      apiMemoryUsedMeanBytes: col((i) => Math.round(wave(i, 61, 5, 9) * GIB)),
+      workerMemoryUsedMeanBytes: col((i) => Math.round(wave(i, 61, 5.1, 9.1) * GIB)),
+      apiLoadAverage1Mean: col((i) => Math.round(wave(i, 47, 0.1, 2.5) * 100) / 100),
+      workerLoadAverage1Mean: col((i) => Math.round(wave(i, 47, 0.1, 2.6) * 100) / 100),
+    },
+    api: process(0),
+    worker: process(9),
+    workload: {
+      workloadUnit: raw ? 'perMinute' : 'perBucket',
+      activeChannelsMax: col((i) => 14 + (i % 5 === 0 ? 1 : 0)),
+      liveChannelsMax: col((i) => Math.round(wave(i, 71, 2, 9))),
+      chatLines: col((i) =>
+        raw
+          ? Math.round(wave(i, 29, 120, 900))
+          : Math.round(wave(i, 29, 120, 900) * (bucketSeconds / 60)),
+      ),
+      emoteMatches: col((i) =>
+        raw
+          ? Math.round(wave(i, 31, 40, 410))
+          : Math.round(wave(i, 31, 40, 410) * (bucketSeconds / 60)),
+      ),
+      workloadIntervalSeconds: col(() => (raw ? bucketSeconds : 0)),
+      workloadHoursWithData: col(() => (raw ? 0 : Math.max(1, bucketSeconds / 3600))),
+    },
+    swap: raw
+      ? {
+          lastSwapUsedBytes: Math.round(0.4 * GIB),
+          lastSwapTotalBytes: 2 * GIB,
+          observedAtUtc: new Date(nowMs - 20_000).toISOString(),
+        }
+      : null,
+  };
+}
+
+/** What a load request is answered with: a body, or a bodyless failure (503 carries Retry-After: 5). */
+export type MockLoadReply = { load: Record<string, unknown> } | { status: number };
+
+export interface MockDashboardLoad {
+  /** Buckets delivered per range (0 = `available: false`); others get the full ladder. */
+  buckets?: Partial<Record<MockLoadRange, number>>;
+  gap?: BuildDashboardLoadOptions['gap'];
+  /**
+   * Custom answer, `callNumber` counting the requests of this `range` from 1. Return `undefined`
+   * to fall back to the generated default.
+   */
+  respond?: (range: MockLoadRange, callNumber: number) => MockLoadReply | undefined;
+}
+
+export interface MockLoadCallLog extends MockCallLog {
+  /** Requested `range` per request, in order. */
+  ranges: string[];
+  /** Request counts per range. */
+  byRange: Record<string, number>;
+}
+
+/**
+ * GET /api/admin/dashboard/load?range=… — the "load and work" section. The log records each
+ * requested range in order. Registering the route again replaces the answer.
+ */
+export async function mockAdminDashboardLoad(
+  page: Page,
+  overrides: MockDashboardLoad = {},
+): Promise<MockLoadCallLog> {
+  const log: MockLoadCallLog = { count: 0, ranges: [], byRange: {} };
+  await page.route(
+    (url) => url.pathname === '/api/admin/dashboard/load',
+    (route) => {
+      const range = (new URL(route.request().url()).searchParams.get('range') ??
+        '24h') as MockLoadRange;
+      log.count++;
+      log.ranges.push(range);
+      log.byRange[range] = (log.byRange[range] ?? 0) + 1;
+      const reply =
+        overrides.respond?.(range, log.byRange[range]) ??
+        ({
+          load: buildDashboardLoad(range, {
+            buckets: overrides.buckets?.[range],
+            gap: overrides.gap,
+          }),
+        } satisfies MockLoadReply);
+      if ('status' in reply) {
+        return route.fulfill({
+          status: reply.status,
+          headers: reply.status === 503 ? { 'Retry-After': '5' } : {},
+        });
+      }
+      return fulfillJson(route, 200, reply.load);
+    },
+  );
+  return log;
+}
+
 /** GET/POST /api/auth/twitch/login — the real endpoint is a full OAuth redirect; here it just
  *  proves the browser actually navigated there, without needing a live Twitch app. */
 export async function mockTwitchLoginRedirect(page: Page): Promise<void> {
