@@ -18,12 +18,24 @@ public class UsageFlushWorker(
     // eventually be booked on the wrong calendar day. Five attempts ≈ 2.5 minutes of tolerance.
     private const int MaxConsecutiveFailuresToRequeue = 5;
 
+    // Plan #373, E9a: the final flush gets this many attempts in total (the first plus two retries).
+    // Budget: the host's shutdown timeout is not set in this repo, so the .NET default of 30 s applies
+    // (Docker holds 60 s, see docker-compose.prod.yml). Each attempt is bounded by the phase-2
+    // lock_timeout of 5 s plus a few quick queries, so three attempts and two short pauses stay well
+    // below 30 s and the lock_timeout is deliberately left alone. The token still decides: once it is
+    // cancelled no further attempt starts.
+    private const int FinalFlushMaxAttempts = 3;
+
     // Plan #373, E9: how many flushes in a row handed keys back without throwing (flush phase 2, the
     // pending keys of the flag-off map). Its own streak, so the overall failure streak and the admin
     // health keep meaning "the flush itself fails"; same bound and same reason (the day a count is
     // booked on). Only the flush loop and the final flush touch it, and those never run concurrently
     // (see StopAsync).
     private int _consecutivePartialFlushes;
+
+    // Upper bound of the random pause between two final-flush attempts (the lower bound is a fifth of
+    // it). Settable for tests only.
+    internal TimeSpan FinalFlushMaxPause { get; set; } = TimeSpan.FromMilliseconds(500);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -42,10 +54,53 @@ public class UsageFlushWorker(
         await base.StopAsync(cancellationToken);
 
         // Final flush so the last <30s of buffered counts aren't lost on a normal shutdown.
-        await FlushOnceAsync(cancellationToken);
+        await FinalFlushAsync(cancellationToken);
     }
 
-    private async Task FlushOnceAsync(CancellationToken ct)
+    // Plan #373, E9a: the first attempt always runs; while counts are left in the counter (a thrown
+    // phase 1 or handed-back keys put them back) up to two more follow after a short random pause, as
+    // long as the shutdown token has not fired. What remains afterwards is dropped with an error line.
+    private async Task FinalFlushAsync(CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            await FlushOnceAsync(ct);
+            if (usageCounter.PendingEmoteCount == 0)
+            {
+                return;
+            }
+
+            if (attempt >= FinalFlushMaxAttempts || ct.IsCancellationRequested)
+            {
+                break;
+            }
+
+            try
+            {
+                await Task.Delay(RandomPause(), ct);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+
+        var left = usageCounter.DrainAndReset();
+        if (left.Count > 0)
+        {
+            logger.LogError(
+                "Final usage flush gave up: {Keys} counter keys with {Uses} counted uses dropped.",
+                left.Count, left.Values.Sum(c => (long)c.Human + c.Bot + c.SharedChat));
+        }
+    }
+
+    private TimeSpan RandomPause() =>
+        FinalFlushMaxPause <= TimeSpan.Zero
+            ? TimeSpan.Zero
+            : TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * FinalFlushMaxPause.TotalMilliseconds * 0.8
+                + FinalFlushMaxPause.TotalMilliseconds * 0.2);
+
+    internal async Task FlushOnceAsync(CancellationToken ct)
     {
         // Drained first and unconditionally — before the early return below and outside the try/catch
         // around the flush — because this is the only production signal for messages whose room

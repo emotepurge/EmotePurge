@@ -2,6 +2,7 @@ using EmotePurge.Core.Chat;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
@@ -13,8 +14,9 @@ namespace EmotePurge.Worker.Tests;
 /// The requeue side of the flush's return contract (plan #373, E9): a throw puts the whole batch back
 /// under the overall failure streak; a result with handed-back keys books the rest as written and puts
 /// back only those keys, under a streak of their own with the same bound of five. Container-free: the
-/// flush service is a substitute. One <see cref="UsageFlushWorker.StopAsync"/> on a worker that was
-/// never started runs exactly one flush.
+/// flush service is a substitute. <see cref="UsageFlushWorker.FlushOnceAsync"/> runs exactly one flush
+/// cycle; the final flush of <see cref="UsageFlushWorker.StopAsync"/> (plan #373, E9a: bounded retries)
+/// is driven on a worker that was never started, with the retry pause turned off.
 /// </summary>
 public class UsageFlushWorkerTests
 {
@@ -35,7 +37,7 @@ public class UsageFlushWorkerTests
         var pending = new UsageCounterKey("pending-slot:e2", Set);
         ReturnsInOrder(Partial(pending, new EmoteUsageCounts(1, 1, 0)), Written());
 
-        await worker.StopAsync(CancellationToken.None);
+        await worker.FlushOnceAsync(CancellationToken.None);
 
         Assert.Equal(0, _stats.ConsecutiveFlushFailures);
         Assert.Equal(1, _stats.LastFlushRowCount);
@@ -58,11 +60,11 @@ public class UsageFlushWorkerTests
 
         for (var attempt = 1; attempt <= 5; attempt++)
         {
-            await worker.StopAsync(CancellationToken.None);
+            await worker.FlushOnceAsync(CancellationToken.None);
             Assert.Equal(1, _counter.PendingEmoteCount);
         }
 
-        await worker.StopAsync(CancellationToken.None);
+        await worker.FlushOnceAsync(CancellationToken.None);
 
         Assert.Equal(0, _counter.PendingEmoteCount);
         Assert.Equal(6, _batches.Count);
@@ -73,9 +75,9 @@ public class UsageFlushWorkerTests
         _flush.FlushAsync(Arg.Any<IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts>>(), Arg.Any<CancellationToken>())
             .Returns(Written(), Partial(pending, new EmoteUsageCounts(1, 0, 0)));
         _counter.Increment("slot-1", Set, UsageCategory.Human);
-        await worker.StopAsync(CancellationToken.None);
+        await worker.FlushOnceAsync(CancellationToken.None);
         _counter.Increment(pending.SlotId, Set, UsageCategory.Human);
-        await worker.StopAsync(CancellationToken.None);
+        await worker.FlushOnceAsync(CancellationToken.None);
 
         Assert.Equal(1, _counter.PendingEmoteCount);
     }
@@ -89,22 +91,111 @@ public class UsageFlushWorkerTests
         _flush.FlushAsync(Arg.Any<IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts>>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new InvalidOperationException("phase 1 failed"));
 
-        await worker.StopAsync(CancellationToken.None);
+        await worker.FlushOnceAsync(CancellationToken.None);
 
         Assert.Equal(1, _stats.ConsecutiveFlushFailures);
         Assert.Equal(2, _counter.PendingEmoteCount);
     }
 
-    private UsageFlushWorker CreateWorker()
+    [Fact]
+    public async Task TheFinalFlush_RetriesAThrownPhaseOne_AndSucceedsOnTheSecondAttempt()
+    {
+        var worker = CreateWorker();
+        _counter.Increment("slot-1", Set, UsageCategory.Human);
+        var calls = 0;
+        _flush.FlushAsync(Arg.Any<IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts>>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                Record(call);
+                return ++calls == 1
+                    ? throw new InvalidOperationException("40P01 deadlock detected")
+                    : Written();
+            });
+
+        await worker.StopAsync(CancellationToken.None);
+
+        Assert.Equal(2, _batches.Count);
+        Assert.Equal(_batches[0], _batches[1]);
+        Assert.Equal(0, _counter.PendingEmoteCount);
+        Assert.Equal(0, _stats.ConsecutiveFlushFailures);
+    }
+
+    [Fact]
+    public async Task TheFinalFlush_RetriesAPartialResult_WithOnlyTheRemainingKeys()
+    {
+        var worker = CreateWorker();
+        var pending = new UsageCounterKey("pending-slot:e2", Set);
+        _counter.Increment("slot-1", Set, UsageCategory.Human);
+        _counter.Increment(pending.SlotId, Set, UsageCategory.Human);
+        _counter.Increment(pending.SlotId, Set, UsageCategory.Bot);
+        ReturnsInOrder(Partial(pending, new EmoteUsageCounts(1, 1, 0)), Written());
+
+        await worker.StopAsync(CancellationToken.None);
+
+        Assert.Equal(2, _batches.Count);
+        Assert.Equal(2, _batches[0].Count);
+        var retry = Assert.Single(_batches[1]);
+        Assert.Equal(pending, retry.Key);
+        Assert.Equal(new EmoteUsageCounts(1, 1, 0), retry.Value);
+        Assert.Equal(0, _counter.PendingEmoteCount);
+    }
+
+    [Fact]
+    public async Task TheFinalFlush_GivesUpAfterThreeAttempts_AndDropsWhatIsLeftWithAnErrorLine()
+    {
+        var logger = new CapturingLogger();
+        var worker = CreateWorker(logger);
+        _counter.Increment("slot-1", Set, UsageCategory.Human);
+        _counter.Increment("slot-1", Set, UsageCategory.Human);
+        _flush.FlushAsync(Arg.Any<IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts>>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                Record(call);
+                return Task.FromException<UsageFlushResult>(new InvalidOperationException("lock timeout"));
+            });
+
+        await worker.StopAsync(CancellationToken.None);
+
+        Assert.Equal(3, _batches.Count);
+        Assert.Equal(0, _counter.PendingEmoteCount);
+        Assert.Contains(logger.Errors, m => m.Contains("1 counter keys with 2 counted uses dropped"));
+    }
+
+    [Fact]
+    public async Task TheFinalFlush_StopsRetryingOnceTheShutdownTokenIsCancelled_AndDrops()
+    {
+        var logger = new CapturingLogger();
+        var worker = CreateWorker(logger);
+        _counter.Increment("slot-1", Set, UsageCategory.Human);
+        using var cts = new CancellationTokenSource();
+        _flush.FlushAsync(Arg.Any<IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts>>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                Record(call);
+                cts.Cancel();
+                return Task.FromException<UsageFlushResult>(new OperationCanceledException(cts.Token));
+            });
+
+        await worker.StopAsync(cts.Token);
+
+        Assert.Single(_batches);
+        Assert.Equal(0, _counter.PendingEmoteCount);
+        Assert.Contains(logger.Errors, m => m.Contains("dropped"));
+    }
+
+    private UsageFlushWorker CreateWorker(ILogger<UsageFlushWorker>? logger = null)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => _flush);
         return new UsageFlushWorker(
-            NullLogger<UsageFlushWorker>.Instance,
+            logger ?? NullLogger<UsageFlushWorker>.Instance,
             _counter,
             _stats,
             Substitute.For<IRedisPublisher>(),
-            services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>());
+            services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>())
+        {
+            FinalFlushMaxPause = TimeSpan.Zero,
+        };
     }
 
     private void ReturnsInOrder(params UsageFlushResult[] results)
@@ -125,4 +216,22 @@ public class UsageFlushWorkerTests
 
     private static UsageFlushResult Partial(UsageCounterKey key, EmoteUsageCounts counts) =>
         new(["chan"], new Dictionary<UsageCounterKey, EmoteUsageCounts> { [key] = counts });
+
+    private sealed class CapturingLogger : ILogger<UsageFlushWorker>
+    {
+        public List<string> Errors { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Error)
+            {
+                Errors.Add(formatter(state, exception));
+            }
+        }
+    }
 }

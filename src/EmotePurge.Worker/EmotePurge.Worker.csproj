@@ -17,6 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="EmotePurge.Worker.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\EmotePurge.Infrastructure\EmotePurge.Infrastructure.csproj" />
     <ProjectReference Include="..\EmotePurge.Core\EmotePurge.Core.csproj" />
   </ItemGroup>
