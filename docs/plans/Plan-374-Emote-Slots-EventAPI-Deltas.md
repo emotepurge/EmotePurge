@@ -1,7 +1,8 @@
 # Plan #374 — Emote-Slots, Kind 4: EventAPI-Deltas je `(Id, Name)`
 
 Erstellt am 2026-10-12 im Worktree `EmotePurge-slots374` (Branch `feat/374-eventapi-slot-deltas`, Basis `origin/main` @ `4b754279`).
-**Status: Entwurf (12.10.) — vor dem adversarialen Review; offene Rückfragen R1–R3 (Abschnitt 13).**
+**Status: Revision 1 (12.10.) — nach dem adversarialen Review (Codex Sol: 2 × P1, 4 × P2, alle eingearbeitet); offene Rückfragen
+R1–R5 (Abschnitt 13).**
 Quelle und einzige Vertragsquelle: [die Spec](../superpowers/specs/2026-10-10-emote-slots-spec.md) (§2.3, §7.1, §7.2, §10, §13 AK 18–21,
 §15, §16 Kind 4; D4, D7, D11 b, D12, D13, D14, D17, O5, O6), Issue #374 mit den Übergabekommentaren aus #372 und #373 (bindend),
 [Plan-372](Plan-372-Emote-Slots-Reconcile.md) §2.0, §2.2, §2.2a (Z8), §2.5 (E14), §11; [Plan-373](Plan-373-Emote-Slots-Usage-Key.md)
@@ -13,7 +14,21 @@ Formatvorlage: Plan-373/Plan-376.
 Namen von Typen und Methoden stehen nur als Form. D0–D33 und die Betreiberentscheidungen aus #371–#376 werden nicht wieder aufgemacht.
 
 **Lesehinweis:** **[E]** = Planer-Entscheidung, kein Spec-Text. **[A]** = Abweichung vom Spec-Wortlaut, braucht Betreiberbestätigung
-(Abschnitt 13). **[P]** = Präzisierung, die der Spec-Text offen lässt, ohne ihm zu widersprechen.
+(Abschnitt 13). **[P]** = Präzisierung, die der Spec-Text offen lässt, ohne ihm zu widersprechen. **Sol-P*n*** = Befund des
+adversarialen Reviews (Revision 1).
+
+### Revision 1 (12.10.) — was sich geändert hat
+
+| Änderung | beantwortet |
+|---|---|
+| **E10 neu:** Umbenennung in place nur, wenn das Emote **genau einen** aktiven eigenen Slot hat; bei ≥ 2 löst REST über die Datums-Identität auf. Grund: der 7TV-Quirk (`value.name` = Name des ersten Slots) ist nur erkennbar, solange unsere Geschwisternamen frisch sind; nach einem veralteten REST (Umbenennung kurz zurückgedreht) oder einer Aus-Phase würde eine Quirk-Umbenennung angenommen und Zählung dauerhaft dem falschen Slot gutgeschrieben. Restlücke benannt (14.1) | Sol-P1-1 |
+| **E7 geteilt:** „mehrdeutig" verwirft weiter jede Inventarschreibung des Dispatch, **erhält aber die Leave-Beobachtung** jeder gezogenen Id, deren Ausgang für sich allein eindeutig „kein aktiver Slot mehr" ist. Sonst kann die Abgangsmeldung im 30-min-Fenster ganz verloren gehen (`ArchiveAbsentEmotesAsync` b1/b2, `EmoteTagService` `Holds`) | Sol-P1-2 → R5 |
+| **E12 neu:** Vorprüfung jeder Umbenennung gegen den partiellen Unique-Index (anderer autoritativer eigener Slot mit gleichem `AddedAt` und Zielnamen, aktiv **oder** archiviert) → mehrdeutig; ein trotzdem auftretender Slot-Schlüsselkonflikt wird zu `AmbiguousDelta` statt zum verworfenen Dispatch. Abschnitt 0 Punkt 2 korrigiert; keine Index-Änderung, die Migrationsaussage bleibt | Sol-P2-1 |
+| **E5 vereinfacht:** jeder Push im virtuellen Zustand S3 ist mehrdeutig (die Flag-an-Map zählt keine virtuellen Einträge, ein No-op ließe das Emote ungezählt; die Kandidatenprüfung lag hinter dem No-op) | Sol-P2-2 |
+| **E6 neu gefasst:** alle Änderungen werden gegen die **Ausgangs-Momentaufnahme** aufgelöst; je Id sind nur reine Push-, reine Pull- oder genau eine Umbenennung erlaubt, jede Mischung ist mehrdeutig. Die frühere Behauptung „namensdisjunkt = reihenfolgeunabhängig" ist gestrichen (Gegenbeispiel archiviertes A, Push B + Pull A) | Sol-P2-3 |
+| **Live-Lauf (8) neu geschnitten:** jede abhängige 7TV-Änderung erst nach belegter Vorbedingung (v3-REST zeigt den erwarteten Stand, Worker-Neustart, DB-Prüfung); Delta-Ergebnis und Folge-Resync getrennt protokolliert; Zählung des Push-Slots vor der REST-Autorisierung Pflichtschritt | Sol-P2-4 |
+| **T1 mit Orakel:** vor dem Umbau ein Charakterisierungstest des Aus-Pfads auf dem `main`-Stand (Eingaben → Emote-Zeilen, Leaves, Outcomes), der nach dem Umbau unverändert grün bleiben muss | Sol, „next steps" |
+| Neue Rückfragen R4 (Abweichung von AK 20s Beispiel) und R5 (Leave trotz Mehrdeutigkeit); R1 auf die Momentaufnahme umgestellt; Aufwand 3,75 → 4,75 Tage | Folge |
 
 ## 0. Migrationsbefund (Auftrag A): **keine Migration**
 
@@ -24,8 +39,11 @@ Namen von Typen und Methoden stehen nur als Form. D0–D33 und die Betreiberents
    schreibt `Name`/`LastSyncedAt`; ein Pull schreibt `IsArchived`/`ArchivedAt`/`LastSyncedAt`. Das ist genau die Spaltenmenge aus Spec 4.1.
 2. **Die Zugriffe sind indiziert:** Slots eines Emotes nach Namen über `IX_EmoteSlots_EmoteId_Name` (M1); „unsettled Seed des aktiven
    Sets" über `SetSeeds.SeedsOfSet` und den seit M2 eindeutigen Slot-Index `IX_UsageStats_SlotId_EmoteSetId_Date`. Provisorische Slots
-   berühren den partiellen Unique-Index `IX_EmoteSlots_EmoteId_AddedAt_Name_Authoritative` nicht (Filter `AddedAtFromRest`), ein
-   Slot-Schlüsselkonflikt ist im Delta-Pfad also unmöglich.
+   berühren den partiellen Unique-Index `IX_EmoteSlots_EmoteId_AddedAt_Name_Authoritative` nicht (Filter `AddedAtFromRest`,
+   `AppDbContext.cs:63-65`). **Revision 1 (Sol-P2-1):** eine Umbenennung eines **autoritativen** Slots kann ihn sehr wohl verletzen — der
+   Filter schließt archivierte Slots nicht aus, ein D4-Gleichstand hinterlässt z. B. aktives `A(t)` neben archiviertem `B(t)`. Das löst
+   eine Vorprüfung im Plan (E12), nicht ein anderer Index; alle Slot-Schreiber sperren die Emote-Zeile, also kann zwischen Vorprüfung und
+   Speichern niemand einen kollidierenden Slot anlegen.
 3. **Was sich am Vertrag ändert, ist nicht persistiert:** das Delta-Modell (`SevenTvEmoteSetDelta`), der Parser und der neue
    Ergebniswert `SevenTvDeltaOutcome.AmbiguousDelta` leben nur im Speicher (Worker ↔ Infrastructure); nichts davon steht in einer
    Tabelle oder im Modell-Snapshot.
@@ -69,7 +87,9 @@ ohne Migration sind daher nicht nötig.
 | F1 | Spec §7.2 Tabelle `pulled` | nennt als mehrdeutig nur „Name fehlt bei ≥ 2 aktiven Slots"; der Fall „Name gesetzt, aber kein aktiver eigener Slot dieses Namens, Emote noch aktiv" ist nicht geregelt | **[A]** mehrdeutig, R1 |
 | F2 | Spec §7.2 `pushed` „archivierter Slot gleichen Namens" | lässt offen, ob jeder archivierte Slot zählt oder nur ein D7-Kandidat | **[P]** nur D7-Kandidaten (E3) |
 | F3 | Spec §7.2 | regelt nicht den Zustand „aktives Emote ohne aktiven eigenen Slot" (virtueller Slot, Plan-372 E14), den Flag-aus-Phasen, ein Restore-Bericht ohne Eintrag (Plan-376 4.2a) oder ein Sync-Fehler hinterlassen | **[P]** Regeln in 4.2 (E5) |
-| F4 | Spec §7.2 „`AmbiguousDelta` schreibt nichts" | gilt für den ganzen Dispatch; enthält er Pulls anderer Emotes, entfallen auch deren (sonst immer glaubwürdige) Leave-Beobachtungen | wörtlich übernommen, Folge als Risiko (14.3) |
+| F4 | Spec §7.2 „`AmbiguousDelta` schreibt nichts" | gilt für den ganzen Dispatch; enthält er Pulls anderer Emotes, entfallen auch deren (sonst immer glaubwürdige) Leave-Beobachtungen — und die kann REST im 30-min-Fenster nicht nachholen, wenn das Emote vor Fensterende zurückkehrt (b2 greift nur bei weiterhin fehlendem Emote, `SevenTvSyncService.cs:1252-1261`, `:1730`); `EmoteTagService` (`Holds`, `:555-562`) wertet die fehlende Beobachtung dann dauerhaft als gültige Platzierung (Sol-P1-2) | **[A]** Inventar nichts, eindeutige Last-Slot-Leaves doch (E7), R5 |
+| F8 | Spec AK 20 „Rename `(X, probeB → probeC)` → in place" bei zwei Slots `probeA`/`probeB` | `probeB` ist der zweite Eintrag; 7TV liefert dafür `value.name = probeA` (Quirk, §2.3) — der Fall ist auf dem Draht so nicht herstellbar. Eine Annahme in place bei ≥ 2 Slots stützt sich auf die Frische unserer Geschwisternamen, die ein veralteter REST oder eine Aus-Phase nicht garantiert (Sol-P1-1) | **[A]** in place nur bei genau einem aktiven eigenen Slot (E10), R4 |
+| F9 | Spec §4.1 Index „bei einer Umbenennung ändert sich die Zeile, nicht der Treffer" | eine Umbenennung eines autoritativen Slots kann den Unique-Index gegen einen **archivierten** Gleichstands-Slot verletzen (`AppDbContext.cs:63-65`, Filter nur `AddedAtFromRest`) (Sol-P2-1) | **[P]** Vorprüfung E12 |
 | F5 | Spec §7.2 „Leave nur für IDs, deren letzter aktiver Slot ging oder die schon archiviert waren" | ein Pull einer Id **ohne** Emote-Zeile ist nicht genannt; heute wird er beobachtet | **[P]** weiter beobachtet (E8) |
 | F6 | Spec §15 „`SevenTvEventClient`-Dispatch-Test" | der Client ist eine Transportklasse; Regel 11 verifiziert Transporte live, nicht gegen Fakes | **[E]** Entscheidung als reine Abbildung herausgezogen und container-frei getestet (E11) |
 | F7 | 7TV-Quelle (`7tv-write-semantics`, SevenTV @ `e1733255`) | `value.timestamp` im Dispatch ist das Hochladedatum des Emotes, **kein** `added_at` (vgl. DECISIONS 2026-08-03) | wird nicht gelesen; Push-Datum bleibt `UtcNow` (O6) |
@@ -82,7 +102,7 @@ Die Spec wird nur für bestätigte [A]-Punkte nachgetragen (Abschnitt 10); [P]/[
 |---|---|---|
 | aus | aus oder an | Kein Socket, keine Dispatches; #374 ist inert. Nur der periodische REST-Abgleich (#372) arbeitet. |
 | an | **aus** (Prod bis #379) | **Exakt `main`:** emote-weit (Push legt an/un-archiviert, `updated` überschreibt `Emote.Name`, Pull archiviert, Leave je gezogener Id), heutige Sperr- und Transaktionsform, keine Schreibung auf `EmoteSlots`, nie `AmbiguousDelta`, dieselben Ergebnisse und Publikationen. Gezählt wird wie seit #373: die Aus-Map gibt für ein per Delta (re-)aktiviertes Emote den Paar-Slot oder den Platzhalter aus, den erst der Flush auflöst — **der Delta-Pfad selbst legt keinen Seed an** (Plan-373 §11). |
-| an | **an** | Slot-Pfad nach Abschnitt 3–4: Regeln je `(Id, Name)`, provisorische Push-Slots, Umbenennung in place, Archivierung je Slot, Leave nur beim letzten Slot; Mehrdeutiges → `AmbiguousDelta` → REST-Resync. Ein angewendetes Delta frischt die Map auf, ein Push-Slot zählt damit sofort (Plan-373 E7, §11). |
+| an | **an** | Slot-Pfad nach Abschnitt 3–4: Regeln je `(Id, Name)`, provisorische Push-Slots, Umbenennung in place (nur bei genau einem aktiven Slot, E10), Archivierung je Slot, Leave nur beim letzten Slot; Mehrdeutiges → `AmbiguousDelta` (kein Inventar, eindeutige Last-Slot-Leaves doch, E7) → REST-Resync. Ein angewendetes Delta frischt die Map auf, ein Push-Slot zählt damit sofort (Plan-373 E7, §11). |
 
 - **[E1] Der Parser ist flag-unabhängig, die Anwendung verzweigt einmal am Anfang des Schreibteils.** Der Aus-Zweig bekommt je Änderung
   genau das Tripel `(Id, Name, ImageUrl)`, das er heute bekommt — ein fehlender Name ist dort wie heute die leere Zeichenkette des DTO,
@@ -122,11 +142,13 @@ Unverändert davor: Namens- und Zeilen-Tor, Sperr- und Ausschlussprüfungen, `Se
    Schreiber ohne Kanalsperre — Ballot-Platzhalter — hat sie zwischen Id-Lesen und Sperre angelegt), wird der Versuch verworfen und läuft
    über die Wiederholung (3.4). Vor dem Speichern die bestehende Zusicherung „geänderte Emotes und Eigentümer geschriebener Slots ⊆
    gesperrt ∪ neu" (Programmierfehler, keine Wiederholung).
-4. **Entscheidung:** eine reine Klasse plant den Dispatch aus der Momentaufnahme (Abschnitt 4). Ergebnis ist **entweder** „mehrdeutig"
-   samt Grund und Id **oder** ein Plan: Emote-Aktionen (anlegen, un-archivieren, archivieren, Bild), Slot-Anlagen, Slot-Änderungen,
-   D13-Ableitung je Emote, die Menge der zu beobachtenden Leaves.
-5. **Mehrdeutig:** Transaktion zurückrollen, nichts geschrieben (auch keine Leave), englische Information-Zeile mit Kanal, 7TV-Id und
-   Grundcode, Ergebnis `AmbiguousDelta`.
+4. **Entscheidung:** eine reine Klasse plant den Dispatch aus der Momentaufnahme (Abschnitt 4), **je Emote unabhängig** und gegen den
+   Ausgangsstand (E6). Ergebnis: je Emote **entweder** „mehrdeutig" samt Grund **oder** ein Teilplan (Emote-Aktionen anlegen,
+   un-archivieren, archivieren, Bild; Slot-Anlagen; Slot-Änderungen; D13-Ableitung; Leave ja/nein). Der Dispatch ist mehrdeutig, sobald
+   ein Emote es ist (E7).
+5. **Mehrdeutig:** keine Inventarschreibung (keine Emote-, keine Slot-Änderung); **[A] R5 / E7:** die Leaves der Emotes, deren Teilplan
+   für sich eindeutig ist und mit „kein aktiver Slot mehr" endet, werden trotzdem beobachtet — in derselben Transaktion, die dann nur
+   diese Upserts committet. Englische Information-Zeile mit Kanal, 7TV-Id und Grundcode, Ergebnis `AmbiguousDelta`.
 6. **Plausibilität** (bestehender Wächter) auf dem Plan: aktive Emotes vorher > 0 und danach 0 → `ImplausibleSkipped`. Ein Emote ist danach
    aktiv, wenn es einen aktiven eigenen Slot behält oder im virtuellen Zustand nicht gezogen wurde — gleichbedeutend mit „aktive
    `(Id, Name)` nach Anwendung" aus §7.2.
@@ -152,7 +174,10 @@ Unverändert davor: Namens- und Zeilen-Tor, Sperr- und Ausschlussprüfungen, `Se
   (bestehend, beide Zustände), Deckungslücke (E2) und ein Emote-Schlüsselkonflikt beim Speichern (`IX_Emotes_ChannelId_SevenTvEmoteId`,
   paralleler Anleger derselben Id). Der zweite Fehlschlag propagiert; der Client loggt und verwirft den Dispatch, der nächste REST-Tick
   gleicht ab (Bestand). Bei Flag aus bleibt die Wiederholung wie heute auf Deadlocks beschränkt.
-- Ein Slot-Schlüsselkonflikt ist im Delta-Pfad unmöglich (Abschnitt 0 Punkt 2); er bekommt keinen Zweig.
+- **Slot-Schlüsselkonflikt (Revision 1, Sol-P2-1):** die Vorprüfung E12 schließt ihn aus; tritt er beim Speichern trotzdem auf
+  (`EmoteSlotKeys.IsSlotKeyConflict`), wird er **nicht** wiederholt (dieselbe Umbenennung kollidierte erneut), sondern als
+  `AmbiguousDelta` mit Grund `authoritative-key-collision` beantwortet: Transaktion zurück, die eindeutigen Last-Slot-Leaves (E7) in
+  einer neuen Transaktion unter denselben Sperren, Resync. So endet er nie im verwerfenden `catch` des Clients.
 
 ### 3.5 Worker
 
@@ -186,48 +211,76 @@ Alle Namensvergleiche ordinal und case-sensitiv.
 | | S0 | Emote anlegen, neuer provisorischer Slot `n` |
 | | S2 | aktiver eigener Slot `n` vorhanden → **No-op** (REST war schneller, AK 19); sonst archivierter D7-Kandidat `n` (E3) → **mehrdeutig** (AK 19); sonst neuer provisorischer Slot `n` |
 | | S1 | **[E4]** ein aktiver eigener Slot unter dem archivierten Emote (veralteter Stand) → **mehrdeutig**; sonst D7-Kandidat `n` → **mehrdeutig**; sonst Emote un-archivieren, neuer provisorischer Slot `n` |
-| | S3 | **[E5]** `n == Emote.Name` → **No-op** (das ist der virtuelle Slot); sonst D7-Kandidat `n` → **mehrdeutig**; sonst **mehrdeutig** (ein neuer Slot ließe den virtuellen Namen aus Map und Belegung verschwinden) |
+| | S3 | **[E5, Revision 1]** immer **mehrdeutig**: die Flag-an-Map zählt keine virtuellen Einträge (`SevenTvSyncService.cs:1193-1211`), ein No-op ließe das Emote bis zum nächsten Tick ungezählt; ein neuer Slot ließe den virtuellen Namen aus Map und Belegung verschwinden; ein D7-Kandidat (nach Restore ohne Eintrag) braucht ohnehin REST |
 | `updated (Id, o → n)` | `o` oder `n` fehlt | **mehrdeutig** |
-| | S2 | aktiver eigener Slot `o` fehlt → **mehrdeutig**; `n ≠ o` und `n` ist Name eines **anderen** aktiven eigenen Slots → **mehrdeutig** (7TV-Quirk: beim Umbenennen des zweiten Slots trägt `value.name` den Namen des ersten); sonst `Name := n` in place, `AddedAt` und Datums-Herkunft unverändert (S1-Sonde: umbenennungsfest), Bild; `o == n` → nur Bild |
+| | S2 mit **genau einem** aktiven eigenen Slot | **[E10]** dieser Slot heißt nicht `o` → **mehrdeutig**; **[E12]** `n ≠ o`, der Slot ist autoritativ und ein **anderer** autoritativer eigener Slot (aktiv oder archiviert) trägt dasselbe `AddedAt` und den Namen `n` → **mehrdeutig**; sonst `Name := n` in place, `AddedAt` und Datums-Herkunft unverändert (S1-Sonde: umbenennungsfest), Bild; `o == n` → nur Bild |
+| | S2 mit **≥ 2** aktiven eigenen Slots | **[E10, A] R4:** **mehrdeutig** — REST löst über die Datums-Identität auf (§6.5) |
 | | S0, S1, S3 | **mehrdeutig** (kein aktiver Slot, an dem die Umbenennung hängen kann) |
 | `pulled (Id, n?)` | S0, S1 | nichts schreiben; Leave beobachten (heutiges „schon archiviert", E8) |
 | | S2, `n` fehlt | genau ein aktiver eigener Slot → diesen archivieren; ≥ 2 → **mehrdeutig** (AK 20) |
 | | S2, `n` gesetzt | aktiver eigener Slot `n` → archivieren; **[A] R1:** fehlt er → **mehrdeutig** (Spec: nicht geregelt, F1) |
-| | S3 | **[E5]** `n` fehlt oder `n == Emote.Name` → Emote archivieren, Leave; sonst **mehrdeutig** |
+| | S3 | **[E5]** `n` fehlt oder `n == Emote.Name` → Emote archivieren, Leave (kein Slot existiert, nichts wird falsch gezählt); sonst **mehrdeutig** |
 
 Nach einem Archivieren: war es der letzte aktive eigene Slot, wird das Emote archiviert (3.3) und die Leave beobachtet; sonst bleibt das
-Emote aktiv, keine Leave, D13 leitet neu ab (AK 19).
+Emote aktiv, keine Leave, D13 leitet neu ab (AK 19). Mehrere Pulls einer Id (E6) werden gemeinsam gegen den Ausgangsstand aufgelöst:
+„letzter Slot" heißt, dass nach allen Pulls dieser Id kein aktiver eigener Slot bleibt.
+
+- **[E10] Umbenennung in place nur bei genau einem aktiven eigenen Slot (Sol-P1-1).** Gegenbeispiel zur Fassung vor Revision 1: lokal
+  `A(t1)`, `B(t2)`; 7TV benennt `A → C` (erster Slot, Dispatch korrekt, lokal in place); ein veralteter REST dreht lokal per Datum auf
+  `A`/`B` zurück (§5); 7TV benennt den zweiten Slot `B → D`, der Dispatch trägt `o = B`, `n = C` (Quirk). `C` ist lokal kein
+  Geschwistername, die alte Regel nähme `B → C` an — Chat-„C" zählte am Slot `t2`, und der spätere REST benennt die Slots richtig, verschiebt
+  aber die gezählten Zeilen nicht. Mit genau einem lokalen aktiven Slot kann der Quirk nur auftreten, wenn 7TV einen zweiten Eintrag hat,
+  den wir nicht kennen; dann trägt eine Umbenennung des zweiten Eintrags dessen Namen als `o`, und den haben wir nicht → mehrdeutig. Die
+  verbleibende Lücke (lokal nur der **zweite** Eintrag aktiv, der erste fehlt) steht in 14.1.
+- **[E12] Vorprüfung gegen den Unique-Index (Sol-P2-1).** Gegenbeispiel: D4-Gleichstand, AK 8 hinterlässt aktives `A(t)` und archiviertes
+  `B(t)`, beide autoritativ; eine Umbenennung `A → B` verletzte `IX_EmoteSlots_EmoteId_AddedAt_Name_Authoritative`. Mehrdeutig; REST löst
+  den Gleichstand nach D4 auf (Umbenennung im Gleichstand = Entfernen + Hinzufügen).
 
 - **[E3] D7-Kandidat** = eigener Slot mit `Name == n`, `IsArchived` und `ArchivedAt ≠ null` — genau die Kandidatenmenge, die REST in §6.2
   Schritt 4 wiederaufnehmen kann. Ein archivierter Slot mit `ArchivedAt = null` (nie im aktiven Set: Backfill-Slot, geleerter Seed nach
   Plan-372 E12) ist kein Kandidat; ein Push unter seinem Namen legt einen provisorischen Slot an, den REST per Namensbindung autorisiert.
-- **[E6] Mehrere Änderungen eines Dispatch:** gleiche Einträge innerhalb einer Art werden vorab dedupliziert; dann werden die Arten in der
-  heutigen Reihenfolge Push → Umbenennung → Pull auf einem Arbeitsstand je Emote angewendet (zwei `pulled`-Items derselben Id — 7TVs
-  Entfernen ohne Alias — archivieren beide Slots, das Emote einmal, eine Leave). **Kommt ein Name einer Id in mehr als einer Änderung
-  vor** — als Push-Name, Umbenennungs-Quelle, Umbenennungs-Ziel oder Pull-Name, nach der Dedup —, oder trifft ein namenloser Pull eine Id
-  mit weiteren Änderungen, ist der Dispatch **mehrdeutig**: die Reihenfolge auf dem Draht ist nach dem Parsen verloren, und nur bei
-  namensdisjunkten Änderungen ist das Ergebnis reihenfolgeunabhängig.
-- **[E7] Mehrdeutig ist der ganze Dispatch** (§7.2): eine mehrdeutige Änderung irgendeines Emotes → nichts wird geschrieben, auch nicht für
-  die übrigen Emotes und Leaves desselben Dispatch. Im Shared-Set entscheidet jeder Kanal für sich (Fan-out wie heute je Kanal).
+- **[E6] Mehrere Änderungen eines Dispatch (Revision 1, Sol-P2-3).** Gleiche Einträge innerhalb einer Art werden vorab dedupliziert. Je
+  Id ist dann nur **eine Art** erlaubt: beliebig viele Pushes (verschiedene Namen), beliebig viele Pulls (z. B. 7TVs Entfernen ohne Alias:
+  ein Item je Slot) oder **genau eine** Umbenennung. Jede Mischung (Push + Pull, Umbenennung + Pull, Push + Umbenennung, zwei
+  Umbenennungen) derselben Id ist **mehrdeutig** (`mixed-change-kinds`). Innerhalb der erlaubten Fälle wird jede Änderung gegen die
+  **Ausgangs-Momentaufnahme** aufgelöst, nicht gegen einen Zwischenstand: Pushes prüfen Namensvettern und D7-Kandidaten im Ausgangsstand,
+  Pulls finden ihre Ziele im Ausgangsstand, ein Pull-Name kommt höchstens einmal vor. Damit ist das Ergebnis je Id von der Draht-Reihenfolge
+  unabhängig. Die Fassung vor Revision 1 behauptete das für „namensdisjunkte" Änderungen; Gegenbeispiel: archiviertes Emote mit
+  archiviertem `A`, Dispatch Push `B` + Pull `A` — Push zuerst macht den Pull zum fehlenden Ziel (R1 mehrdeutig), Pull zuerst ergibt Leave
+  plus neuen Slot `B`; ob das Emote dazwischen das Set verlassen hat (Leave ja/nein), ist aus dem Dispatch nicht entscheidbar. Ids
+  untereinander bleiben unabhängig (verschiedene Emote-Zeilen).
+- **[E7] Mehrdeutig ist der ganze Dispatch für das Inventar; Leaves mit eindeutigem Ausgang bleiben (Revision 1, Sol-P1-2, [A] R5).** Eine
+  mehrdeutige Änderung irgendeines Emotes → keine Emote- und keine Slot-Schreibung für den ganzen Dispatch (§7.2). **Beobachtet wird
+  trotzdem** die Leave jeder gezogenen Id, deren eigener Teilplan eindeutig ist und mit „kein aktiver Slot mehr" endet (letzter Slot
+  gezogen, schon archiviert, keine Emote-Zeile, S3-Pull von `Emote.Name`). Grund: `main` beobachtet jede gezogene Id unbedingt; ohne diese
+  Ausnahme kann ein Abgang, der im 30-min-Glaubwürdigkeitsfenster liegt und vor dessen Ende zurückkehrt, dauerhaft unbeobachtet bleiben
+  (F4), und `Holds` hält eine Tag-Platzierung über einen echten Abgang hinweg. Nicht beobachtet: gezogene Ids, deren eigener Teilplan
+  mehrdeutig ist oder deren Emote einen weiteren aktiven Slot behält. Im Shared-Set entscheidet jeder Kanal für sich (Fan-out wie heute je
+  Kanal).
 - **[E8] Leave-Regel:** beobachtet wird jede gezogene Id, deren Emote nach Anwendung keinen aktiven Slot (eigen oder virtuell) mehr hat —
   also: letzter Slot ging, Emote war schon archiviert, oder es gibt keine Emote-Zeile (heute ebenso). Nicht beobachtet: Id, deren Emote
-  aktiv bleibt.
+  aktiv bleibt. Bei mehrdeutigem Dispatch gilt E7.
 
 ### 4.3 Grundcodes der Logzeile (englisch, ohne Aliasnamen)
 
-`seed-of-active-set`, `name-missing`, `archived-namesake`, `stale-slots-under-archived-emote`, `virtual-slot`, `rename-source-missing`,
-`rename-onto-active-sibling`, `nameless-pull-with-siblings`, `pull-target-missing` (nur mit R1), `conflicting-changes`. Information-Level:
+`seed-of-active-set`, `name-missing`, `archived-namesake`, `stale-slots-under-archived-emote`, `virtual-slot` (E5), `rename-source-missing`,
+`rename-with-siblings` (E10), `authoritative-key-collision` (E12), `nameless-pull-with-siblings`, `pull-target-missing` (nur mit R1),
+`mixed-change-kinds` (E6). Information-Level:
 im Einschaltfenster von #379 (Seeds vor dem ersten Tick) sind solche Zeilen erwartbar.
 
 ## 5. Grenzfälle
 
 | Fall | Verhalten | Nachweis |
 |---|---|---|
-| Delta mit Id und Name bei Umbenennung des ersten Slots (`o` korrekt, `n` korrekt) | in place, gleiche SlotId, Datum bleibt | Integration, Live (v) |
-| Umbenennung des zweiten Slots (Quirk: `n` = Name des ersten) | mehrdeutig, REST benennt per Datums-Identität um | Integration, Live (vi) |
-| Push eines zweiten Namens (Alias) eines aktiven Emotes | zweiter provisorischer Slot, `Emote.Name` bleibt beim älteren; zählt nach dem Map-Refresh sofort | Integration, Live (iii) |
+| Umbenennung eines Emotes mit genau einem aktiven Slot | in place, gleiche SlotId, Datum bleibt | Integration, Live (iii) |
+| Umbenennung eines Emotes mit ≥ 2 aktiven Slots (erster oder zweiter Eintrag, Quirk oder nicht) | mehrdeutig (E10), REST benennt per Datums-Identität um | Integration, Live (v) |
+| Sol-P1-1: Umbenennung `A → C`, veralteter REST dreht zurück, Quirk-Umbenennung `B → D` mit `n = C` | mehrdeutig (≥ 2 Slots); kein Zählwert landet an `t2` unter `C` | Integration (mit Flush) |
+| Umbenennung eines autoritativen Slots auf den Namen eines archivierten Gleichstands-Slots (`A(t)` aktiv, `B(t)` archiviert, `A → B`) | mehrdeutig (E12), kein 23505 | Integration (Postgres) |
+| Push eines zweiten Namens (Alias) eines aktiven Emotes | zweiter provisorischer Slot, `Emote.Name` bleibt beim älteren; zählt nach dem Map-Refresh sofort | Integration, Live (iv) |
+| Archiviertes Emote mit archiviertem `A`, ein Dispatch mit Push `B` und Pull `A` (Sol-P2-3) | mehrdeutig (`mixed-change-kinds`); in jeder Reihenfolge der Listen dasselbe Ergebnis | Unit (Permutationen) |
+| Mehrdeutige Änderung an `X` und Last-Slot-Pull von `Y` in einem Dispatch, `Y` jung im Set (Sol-P1-2) | kein Inventar geschrieben; Leave für `Y` beobachtet (E7); REST danach archiviert `Y` ohne zweite Leave; Rückkehr von `Y` im Fenster → `Holds` sieht den Abgang | Integration |
 | Push eines schon aktiven Namens (Duplikat, REST schneller) | No-op, `NoChange` | Integration |
-| Rückkehr nach Archivierung unter altem Namen (D7) | mehrdeutig, nichts geschrieben; REST nimmt denselben Slot mit neuem Datum wieder auf (AK 47) | Integration (REST danach), Live (viii) |
+| Rückkehr nach Archivierung unter altem Namen (D7) | mehrdeutig, nichts geschrieben; REST nimmt denselben Slot mit neuem Datum wieder auf (AK 47) | Integration (REST danach), Live (vii) |
 | Rückkehr unter **neuem** Namen nach Archivierung | Emote un-archiviert, neuer provisorischer Slot bei 0 (D4: neuer Eintrag) | Integration |
 | Delta auf Emote mit unsettled Seed des aktiven Sets | mehrdeutig (AK 20) | Integration |
 | Delta auf Emote mit nur fremden Seeds | Seeds unberührt; Regeln nach S0–S3 | Integration |
@@ -237,15 +290,16 @@ im Einschaltfenster von #379 (Seeds vor dem ersten Tick) sind solche Zeilen erwa
 | Delta während laufendem REST-Resync desselben Kanals | im Worker unmöglich gleichzeitig: beide nehmen das prozesslokale Namens-/Zeilen-Tor; das Delta läuft danach auf dem frischen Stand | Bestand |
 | Delta gleichzeitig mit Api-Schreiber (Bericht, Enqueue, Ballot, Backfill-Block, Flush) | Abschnitt 6 | Konkurrenz-Tests |
 | Doppelter Dispatch (Wiederholung nach Reconnect) | Push: No-op; Umbenennung: Quelle fehlt → mehrdeutig → Resync (harmlos); Pull: Emote archiviert → nur Leave-Upsert (Zeitstempel wie heute) bzw. mit R1 mehrdeutig | Integration |
-| Out-of-order (Pull vor Push desselben Namens) | Pull: S0/S1 → nur Leave, sonst R1 mehrdeutig; danach Push → provisorischer Slot. Falsch aktiv bis zum nächsten REST-Tick (≤ Resync-Intervall) — der periodische Abgleich ist Pflicht, nicht Optimierung | Unit |
+| Out-of-order über zwei Dispatches (Pull vor Push desselben Namens) | Pull: S0/S1 → nur Leave, sonst R1 mehrdeutig; danach Push → provisorischer Slot. Falsch aktiv bis zum nächsten REST-Tick (≤ Resync-Intervall) — der periodische Abgleich ist Pflicht, nicht Optimierung | Unit |
+| Pull unter veralteten lokalen Namen (lokal `A(t1)`, `B(t2)`, auf 7TV inzwischen `B(t1)`, `D(t2)`) | Pull `B` archiviert lokal `t2` statt `t1`; keine Nutzungszeile wird bewegt, der nächste aktuelle REST bindet `t1` per Datum zurück und archiviert `t2` (§6.2 Schritt 3/7). Pulls schreiben keine Zählung, daher hier kein E10-Gegenstück | Unit, Risiko 14.1 |
 | Pull ohne Namen bei genau einem aktiven Slot | dieser Slot, Emote archiviert, Leave | Unit |
-| 7TV-Entfernen ohne Alias (zwei `pulled`-Items einer Id) | beide Slots archiviert, Emote archiviert, eine Leave (AK 18, 19) | Parser, Integration, Live (ix) |
+| 7TV-Entfernen ohne Alias (zwei `pulled`-Items einer Id) | beide Slots archiviert, Emote archiviert, eine Leave (AK 18, 19) | Parser, Integration, Live (viii) |
 | Aktive Slots unter archiviertem Emote (aus einer Flag-aus-Phase) | Push mehrdeutig (E4); Pull nur Leave | Unit |
-| Virtueller Zustand nach Restore-Bericht ohne Eintrag (Plan-376 4.2a) | Push des alten Namens: D7-Kandidat → mehrdeutig; Push von `Emote.Name` ohne Kandidat → No-op; Pull von `Emote.Name` → Emote archiviert | Unit |
+| Virtueller Zustand nach Restore-Bericht ohne Eintrag (Plan-376 4.2a) | jeder Push mehrdeutig (E5) → REST wendet D7 an; Pull von `Emote.Name` → Emote archiviert, Leave | Unit, Integration (Restore ohne Eintrag → Push → Resync → D7) |
 | Shared Set, ein Kanal mehrdeutig, der andere nicht | je Kanal eigenes Ergebnis; nur der mehrdeutige resynct | Integration |
 | `user.update` ohne neues Set / REST mit `emote_set: null` | unverändert (`SetNotActive` bzw. heutiger Resync-Pfad); kein Slot-Code berührt | Bestand |
 | Implausibler Wipe (Pull aller aktiven Slots) | `ImplausibleSkipped`, Resync | Integration |
-| Persistenter REST-Ausfall bei laufender EventAPI | mehrdeutige Dispatches bleiben bis zur Erholung unangewendet (bei Flag aus wären sie angewendet) | — (Risiko 14.4) |
+| Persistenter REST-Ausfall bei laufender EventAPI | mehrdeutige Dispatches bleiben bis zur Erholung unangewendet (bei Flag aus wären sie angewendet) | — (Risiko 14.5) |
 
 ## 6. Nebenläufigkeit
 
@@ -278,23 +332,39 @@ ordinal distinct.
 
 ### 7.2 Entscheidungsklasse (Unit, neu, BCL-rein) — Kern von AK 19/20
 
-Je Zeile aus 4.2 ein Fall, dazu E3 (archiviert ohne `ArchivedAt` ist kein Kandidat), E4, E5, E6 (Dedup; zwei Pulls einer Id; gleicher Name in
-zwei Arten), E7 (ein mehrdeutiges Emote macht den Dispatch mehrdeutig), E8 (Leave-Menge), D13 nach Push/Umbenennung/Pull (inkl.
-`null`-Datum zuletzt), Plausibilitätseingabe, „Applied vs. NoChange"-Signal. Rund 25 Fälle.
+Je Zeile aus 4.2 ein Fall, dazu E3 (archiviert ohne `ArchivedAt` ist kein Kandidat), E4, E5 (jeder S3-Push mehrdeutig, auch mit
+D7-Kandidat), E6 (Dedup; zwei Pulls einer Id gegen den Ausgangsstand; jede Mischung zweier Arten derselben Id mehrdeutig; **Permutationen**:
+dieselben Änderungen in vertauschter Listenreihenfolge ergeben denselben Plan, u. a. archiviertes `A` mit Push `B` + Pull `A`), E7
+(mehrdeutiges `X` plus eindeutiger Last-Slot-Pull `Y` → kein Inventar, Leave `Y`; mehrdeutiger Pull `Y` → keine Leave `Y`; Pull `Y` mit
+verbleibendem Slot → keine Leave), E8, E10 (Umbenennung bei einem bzw. zwei aktiven Slots; Quirk-Fall nach zurückgedrehten Namen), E12
+(aktiv `A(t)` + archiviert `B(t)`, `A → B`; provisorischer Slot unberührt von E12), D13 nach Push/Umbenennung/Pull (inkl. `null`-Datum
+zuletzt), Plausibilitätseingabe, „Applied vs. NoChange"-Signal. Rund 35 Fälle.
 
 ### 7.3 `SevenTvSyncServiceDeltaSlotTests` (Integration, neu, Flag an) — AK 19, 20
 
 Die neun Spec-Fälle: (1) Push `(X, probeB)` auf `probeA` → zweiter provisorischer Slot, `Emote.Name = probeA` · (2) Push eines aktiven Namens →
 `NoChange`, Slots byte-gleich · (3) Push unter archiviertem Namen → `AmbiguousDelta`, DB byte-gleich, danach `SyncChannelAsync` mit
 gefaktem REST `[probeB(t3)]` → dieselbe SlotId, `AddedAt = t3`, Historie bleibt (D7) · (4) Pull `(X, probeA)` → nur `probeA` archiviert,
-keine Leave · (5) Pull `(X, probeB)` danach → Emote archiviert, Leave genau einmal · (6) Umbenennung `probeB → probeC` in place, gleiche
-SlotId, Datum gleich · (7) Umbenennung auf aktiven Geschwisternamen → `AmbiguousDelta` · (8) Pull ohne Namen bei zwei aktiven →
-`AmbiguousDelta` · (9) Delta auf Emote mit Seed des aktiven Sets → `AmbiguousDelta`. Zusätzlich: provisorischer Slot → REST datiert →
-gleiche SlotId autoritativ; zwei Pulls einer Id → eine Leave; Shared Set mit einem mehrdeutigen Kanal; Map nach `Applied` enthält den
-Push-Slot (Plan-373 E7); mehrdeutiger Dispatch mit Pull eines zweiten Emotes schreibt auch dessen Leave nicht (E7).
+keine Leave · (5) Pull `(X, probeB)` danach → Emote archiviert, Leave genau einmal · (6) Umbenennung `probeB → probeC` **bei genau einem
+aktiven Slot** in place, gleiche SlotId, Datum gleich (mit R4; das Spec-Beispiel mit zwei Slots wird zu Fall 7) · (7) Umbenennung bei zwei
+aktiven Slots, sowohl auf den Geschwisternamen (Quirk) als auch auf einen freien Namen → `AmbiguousDelta`, DB byte-gleich · (8) Pull ohne
+Namen bei zwei aktiven → `AmbiguousDelta` · (9) Delta auf Emote mit Seed des aktiven Sets → `AmbiguousDelta`.
+Zusätzlich (Revision 1): **Sol-P1-1 mit Flush** — `A(t1)`, `B(t2)` autoritativ; Umbenennung `A → C`; `SyncChannelAsync` mit gefaktem,
+veraltetem REST `[A(t1), B(t2)]`; Quirk-Dispatch `o = B`, `n = C` → `AmbiguousDelta`; Zähler mit `C` und Flush → keine Zeile am Slot `t2`.
+**Sol-P2-1** — aktiv `A(t)`, archiviert `B(t)`, Umbenennung `A → B` → `AmbiguousDelta`, kein 23505, DB byte-gleich. **Sol-P1-2** —
+Dispatch mit mehrdeutigem `X` und Last-Slot-Pull von `Y` (Y vor 5 min eingetreten) → `AmbiguousDelta`, Leave `Y` vorhanden, Slots/Emotes
+byte-gleich; danach veralteter REST ohne `Y` (archiviert ohne zweite Leave, Fenster), dann REST mit `Y` zurück → die Leave bleibt, eine
+Tag-Platzierung von `Y` aus der Zeit davor hält laut `EmoteTagService` nicht mehr. **Sol-P2-2** — Restore-Bericht ohne Eintrag (Plan-376
+4.2a) → Push des alten Namens → `AmbiguousDelta` → `SyncChannelAsync` mit REST-Datum → D7, dieselbe SlotId, Map enthält sie. Provisorischer
+Slot → REST datiert → gleiche SlotId autoritativ; zwei Pulls einer Id → eine Leave; Shared Set mit einem mehrdeutigen Kanal; Map nach
+`Applied` enthält den Push-Slot und ein Flush schreibt auf ihn (Plan-373 E7).
 
 ### 7.4 Aus-Nachweis und Konkurrenz
 
+- **Orakel `main` (Revision 1):** T1 schreibt **vor** jeder Änderung am Parser einen Charakterisierungstest des Aus-Pfads auf dem Stand
+  `origin/main` — eine Tabelle von Dispatch-Frames (Echt-Fixtures plus synthetische: Quirk-Umbenennung, zwei `pulled`-Items einer Id,
+  fehlende Namen, leere Bild-URL, archivierte/Platzhalter-Zeilen) mit den beobachteten Emote-Zeilen, Leaves und Outcomes — und committet
+  ihn grün. Nach dem Umbau muss er unverändert grün sein; jede Abweichung ist ein Fehler, keine Testanpassung.
 - **Aus, eigen:** Kanal mit Seeds und Mehr-Alias-Emote; Push, Umbenennung (inkl. Quirk-Frame), Pull, zwei Pulls einer Id → `EmoteSlots` vor/nach
   byte-gleich (alle Spalten), Emote-Ergebnis, Leaves und Outcomes wie `main`; nie `AmbiguousDelta`.
 - **Bestand:** `SevenTvSyncServiceTests` (Delta-Fälle), `…PlaceholderTests`, `…EmptySetTests`, `…LeaveObservationTests`,
@@ -332,26 +402,44 @@ Dispatches des Testkanals mitverarbeiten (eigene DB, beabsichtigt).
 1. **Vorbereitung:** `df -h /`, DB-Größe; Kopie anlegen; in der Kopie `IsBotActive = false` außer `olaf_olaf_son`; Ausgangszustand des
    aktiven Sets des Testkanals (Einträge, Aliase, `addedAt`) ins Scratchpad; Prüfsumme über `EmoteSlots` (alle Spalten, sortiert).
    Env-Overrides: Kopie, Redis `:6392`, `SevenTv__EventApi__Enabled=true`, `ChatLogBackfill__Enabled=false`, `Retention__Enforce=false`,
-   `SevenTv__ResyncIntervalSeconds=1800` (damit nur Deltas wirken; REST-Prüfungen erzwingt ein Worker-Neustart, dessen Boot-Sync den Kanal
-   abgleicht). `redis-cli SUBSCRIBE` auf den Live-Event-Kanal mitschneiden (für AK 21).
+   `SevenTv__ResyncIntervalSeconds=1800` (damit der periodische Tick nicht dazwischenfunkt; der **automatische Resync nach
+   `AmbiguousDelta` läuft trotzdem sofort** und kann veraltetes REST lesen — deshalb die Tore unten). `redis-cli SUBSCRIBE` auf den
+   Live-Event-Kanal mit Zeitstempeln mitschneiden (für AK 21).
+   **Tor G (Revision 1, Sol-P2-4)** vor jeder Änderung, die auf einem bestimmten lokalen Stand aufbaut: (a) v3-REST des Sets (lesend, ohne
+   Token) pollen, bis es für X genau die erwarteten Aliase listet; (b) Worker per SIGTERM (PID geprüft) stoppen und neu starten — der
+   Boot-Sync gleicht den Kanal ab; (c) per SQL prüfen, dass die erwarteten Slots von X mit erwartetem Namen, Archivzustand und
+   `AddedAtFromRest` bestehen. Erst dann die nächste 7TV-Änderung zur Freigabe vorlegen. Scheitert (c), wird nicht weitergemacht, sondern
+   der Befund protokolliert.
+   **Nachweis „Delta schrieb nichts"** bei mehrdeutigen Schritten, getrennt vom Folge-Resync: die Logzeile des Delta-Ergebnisses steht vor
+   der Startzeile des Resync; kein Slot und keine Emote-Zeile von X trägt ein `LastSyncedAt` zwischen Dispatch-Empfang und Resync-Beginn;
+   im Mitschnitt kein Live-Event in diesem Intervall. Was der Resync danach schreibt oder veröffentlicht, wird gesondert notiert.
 2. **Phase A, Flag aus:** Push `probeA`, Umbenennung `probeA → probeB`, Entfernen (je nach Freigabe). Prüfen: `EmoteSlots`-Prüfsumme
    unverändert, Emote-Zeile wie `main` (Name folgt `value.name`), Outcomes `Applied`, keine Zeile `ambiguous`. Danach Set wiederherstellen.
 3. **Phase B, Flag an** (Neustart mit `SevenTv__SlotReconcile__Enabled=true`; erster Boot-Sync settelt den Kanal):
-   (i) `addEmote(X, probeA)` → provisorischer Slot `probeA`, `Applied`, ein Live-Event · (ii) v3-REST pollen (lesend, ohne Token), bis
-   `probeA` gelistet ist; Worker neu starten → dieselbe SlotId, `AddedAtFromRest = true`, `AddedAt` = 7TV-`addedAt` · (iii) `addEmote(X, probeB)` →
-   zweiter provisorischer Slot, `Emote.Name = probeA` (AK 19) · (iv) optional: Betreiber tippt `probeA probeB` im Testchat → nach dem Flush
-   zwei Zeilen an den beiden SlotIds (Push-Slot zählt sofort) · (v) `updateEmoteAlias(probeA → probeD)` (erster Slot) → in place, gleiche
-   SlotId und gleiches Datum (AK 20) · (vi) `updateEmoteAlias(probeB → probeC)` (zweiter Slot, Quirk) → `AmbiguousDelta`-Zeile,
-   unmittelbarer Resync im Log, **kein** Live-Event aus dem Delta (AK 21) · (vii) `removeEmote(X, alias probeC)` → nur dieser Slot
-   archiviert, keine Leave (AK 19) · (viii) `addEmote(X, probeC)` → `AmbiguousDelta` (archivierter Namensvetter), DB unverändert; nach
-   REST-Nachlauf und Neustart dieselbe SlotId mit neuem Datum (D7, AK 19/47) · (ix) `removeEmote(X)` **ohne** Alias → zwei `pulled`-Items im
-   Log, beide Slots archiviert, Emote archiviert, genau eine Leave (AK 18/19). Rohe Dispatch-Frames von (vi) und (ix) als Fixture-Kandidaten
-   ins Scratchpad (ohne Actor-Daten).
+   Vorbedingung: Tor G mit „X nicht im Set".
+   (i) `addEmote(X, probeA)` → provisorischer Slot `probeA` (`AddedAtFromRest = false`), `Applied`, ein Live-Event ·
+   (ii) **Pflicht, vor jeder REST-Autorisierung:** Betreiber tippt `probeA` im Testchat → nach dem Flush eine Zeile an genau dieser SlotId
+   (Push-Slot zählt sofort, Übergabe #373) ·
+   (iii) `updateEmoteAlias(probeA → probeD)` (einziger Slot) → in place, gleiche SlotId, Datum unverändert (AK 20) ·
+   Tor G1: REST listet `probeD` → nach dem Neustart dieselbe SlotId autoritativ, die Zeile aus (ii) hängt weiter an ihr ·
+   (iv) `addEmote(X, probeB)` → zweiter provisorischer Slot, `Emote.Name = probeD` (AK 19); Betreiber tippt `probeD probeB` → nach dem Flush je
+   eine Zeile an beiden SlotIds (O1) ·
+   Tor G2: REST listet `probeD`, `probeB` → beide autoritativ, SlotIds unverändert ·
+   (v) `updateEmoteAlias(probeB → probeC)` (zweiter Eintrag, Quirk, zwei Slots) → `AmbiguousDelta` mit `rename-with-siblings`, Nachweis
+   „Delta schrieb nichts", Folge-Resync im Log; aus dem Delta kein Live-Event (AK 21) · Tor G3: REST listet `probeD`, `probeC` → der Slot
+   `t2` heißt `probeC`, gleiche SlotId, Zeilen unverändert ·
+   (vi) `removeEmote(X, alias probeC)` → nur dieser Slot archiviert, Emote aktiv, keine Leave (AK 19) ·
+   (vii) `addEmote(X, probeC)` → `AmbiguousDelta` mit `archived-namesake`, Nachweis „Delta schrieb nichts" · Tor G4: REST listet `probeC`
+   mit **neuem** `addedAt` → dieselbe SlotId wie der alte `probeC`-Slot, `AddedAt` neu, `ArchivedAt = null`, Zeilen aus (iv) daran (D7,
+   AK 19/47; hat schon der Folge-Resync mit frischem REST D7 angewendet, ist das Ergebnis dasselbe) ·
+   (viii) `removeEmote(X)` **ohne** Alias → zwei `pulled`-Items im Log, beide Slots archiviert, Emote archiviert, genau eine Leave (AK 18/19).
+   Rohe Dispatch-Frames von (v) und (viii) als Fixture-Kandidaten ins Scratchpad (ohne Actor-Daten).
 4. **Nicht live herstellbar → nur Test:** Delta auf unsettled Seed (der Boot-Sync settelt vor dem ersten Dispatch), Pull ohne Namen bei
-   zwei Slots (7TV sendet immer `old_value.name`), Deckungslücke, Schlüsselkonflikt.
+   zwei Slots (7TV sendet immer `old_value.name`), Deckungslücke, Schlüsselkonflikte (Emote-Index, E12), gemischte Arten in einem Dispatch
+   (E6), Leave trotz Mehrdeutigkeit (E7, braucht zwei Emotes in einem Dispatch), der Sol-P1-1-Ablauf (braucht einen veralteten REST).
 5. **Abbau:** Set auf den Ausgangszustand (Freigabe), Worker per SIGTERM (PID vorher mit `ps -o args=` prüfen), `docker rm -f
    redis-slots374`, `DROP DATABASE emotepurge_slots374 WITH (FORCE)`, Header-Datei löschen (die Token-Datei des Betreibers bleibt).
-   Protokoll mit SHA, Zeitpunkten, Ergebnissen; keine Hostnamen, Passwörter, Tokens, keine Kanalnamen außer `olaf_olaf_son`.
+   Protokoll mit SHA, Zeitpunkten, Ergebnissen je Tor; keine Hostnamen, Passwörter, Tokens, keine Kanalnamen außer `olaf_olaf_son`.
 
 ## 9. Prod-Übergabe
 
@@ -365,21 +453,24 @@ fehlgeschlagen".
 
 Conventional Commits, englisch, ohne Ticketnummern; Tests im Commit ihres Features:
 (0) `docs(plans): add plan for emote slot EventAPI deltas` (diese Datei; Revisionen als `docs(plans): revise …`);
+(0b) `test(infrastructure): characterize the emote-wide EventAPI delta path` (Orakel, Stand `main`, vor jeder Änderung);
 (1) `feat(infrastructure): read old and new names from EventAPI emote set dispatches`;
 (2) `feat(infrastructure): plan EventAPI deltas per emote id and name`;
-(3) `feat(infrastructure): apply EventAPI deltas per slot behind the slot reconcile flag` **plus DECISIONS und Operations**;
+(3) `feat(infrastructure): apply EventAPI deltas per slot behind the slot reconcile flag` **plus DECISIONS, Operations und Spec-Nachtrag**;
 (4) `feat(worker): answer an ambiguous EventAPI delta with a REST resync`;
 danach `fix:`/`test:`/`docs:` aus Review und Live-Lauf.
 
 - **DECISIONS:** ein datierter Absatz „**Child 4 (EventAPI deltas), 2026-10-1x**" im Entwurfseintrag #365, eingefügt **zwischen** „Child 3"
   und „Child 6" (eigener Hunk; #377 hängt erwartungsgemäß hinter „Child 6" an). Knapp, englisch: Flag-Vertrag (Aus = `main`, E1), die
-  Regeltabelle in Kurzform (Zustände H/S0–S3, E3–E8), Sperre/Deckung/Wiederholung (Z8, E2, E9), Worker-Abbildung (E11), bestätigte [A].
-  Die `Betrifft`-Zeile bekommt `SevenTvDispatchParser.cs`, `SevenTvModels.cs`, `SevenTvEventClient.cs` und die Datei der
-  Entscheidungsklasse — **als eigene Zeile am Ende des `Betrifft`-Blocks**, damit ein Rebase gegen #377 nur additiv auflöst.
+  Regeltabelle in Kurzform (Zustände H/S0–S3, E3–E8, E10, E12), Sperre/Deckung/Wiederholung (Z8, E2, E9), Worker-Abbildung (E11), die
+  bestätigten [A] (R1, R4, R5) als Betreiberentscheidung, R3 als bekannte Grenze, die Restlücke aus 14.1. Die `Betrifft`-Zeile bekommt
+  `SevenTvDispatchParser.cs`, `SevenTvModels.cs`, `SevenTvEventClient.cs` und die Datei der Entscheidungsklasse — **als eigene Zeile am Ende
+  des `Betrifft`-Blocks**, damit ein Rebase gegen #377 nur additiv auflöst.
 - **Operations:** die Flag-Zeile (`docs/Operations.md`, Tabelle bei `SevenTv:SlotReconcile:Enabled`) um je einen Halbsatz ergänzen — Off:
   „EventAPI deltas stay emote-wide and write no slot"; On: „EventAPI deltas add, rename and archive single slots; an ambiguous dispatch
-  writes nothing and triggers a REST resync".
-- **Spec:** nur bei bestätigtem R1 ein datierter Nachtrag in §7.2 im Stil von Kind 6 („Geändert in Kind 4 (#374), Betreiber …"). [P]-Punkte
+  writes no inventory (only certain last-slot leaves) and triggers a REST resync".
+- **Spec:** bei bestätigten R1, R4, R5 ein datierter Nachtrag in §7.2 (Tabelle `updated` und `pulled`, Satz „`AmbiguousDelta` schreibt
+  nichts") und in AK 20 (Umbenennungs-Beispiel mit einem Slot) im Stil von Kind 6 („Geändert in Kind 4 (#374), Betreiber …"). [P]-Punkte
   nicht in die Spec (DECISIONS genügt).
 - **Statuszeilen:** nach dem Merge (Orchestrator, per REST-PATCH, weil `gh issue edit` an Projects-classic scheitert) die Zeile 4 der
   Kindertabelle in Epic #365 („merged (PR #…, sha, Datum); no migration, flag off on prod") und, falls Epic #346 eine #365-Zeile führt,
@@ -389,61 +480,82 @@ danach `fix:`/`test:`/`docs:` aus Review und Live-Lauf.
 
 | # | Aufgabe | Modell | Aufwand | Input | Fertig, wenn |
 |---|---|---|---|---|---|
-| T1 | Parser, Delta-Modell, `AmbiguousDelta`-Wert, Aus-Zweig auf das neue Modell, 11 Test-Konstruktionen, Parser-Tests | sonnet | 0,5 T | 3.1, E1, 7.1; `SevenTvDispatchParser.cs`, `SevenTvModels.cs`, `SevenTvSyncService.ApplyDeltaAttemptAsync` (nur Aus-Lesestellen), Fixtures | Parser-Tests grün (AK 18), alle Delta-Tests unverändert grün, drei Suiten bauen (der neue Wert wird in T1 noch nicht erzeugt), Commit (1) |
-| T2 | Entscheidungsklasse (rein, BCL), Wiederverwendung der D13-Ableitung aus `EmoteSlotReconcilePlanner` | **opus** | 0,75 T | Abschnitt 4 vollständig, 3.3, E3–E8, 7.2; `EmoteSlotReconcilePlanner` (`SlotState`, `Derive`) | 7.2 grün, jede Regel trägt im Code ihren Verweis (§7.2/D17 bzw. Plan-Kürzel), Commit (2) |
-| T3 | Integration bei Flag an: Lesen der Slots hinter der Sperre, Seed-Abfrage, Deckung, Plan anwenden, D13, Leave-Regel, Plausibilität auf dem Plan, Wiederholung (E9), Logzeile; DECISIONS, Operations, ggf. Spec | **opus** | 1,25 T | 3.2–3.4, Abschnitte 5, 6, 7.3, 7.4, 10; Plan-372 2.2 (E24) und Z8; Ergebnis T1/T2 | 7.3 und 7.4 grün, ganze Infrastructure-Suite grün, Commit (3) |
+| T1 | **Zuerst** Orakel des Aus-Pfads auf dem `main`-Stand (7.4), dann Parser, Delta-Modell, `AmbiguousDelta`-Wert, Aus-Zweig auf das neue Modell, 11 Test-Konstruktionen, Parser-Tests | sonnet | 0,75 T | 3.1, E1, 7.1, 7.4 „Orakel"; `SevenTvDispatchParser.cs`, `SevenTvModels.cs`, `SevenTvSyncService.ApplyDeltaAttemptAsync` (nur Aus-Lesestellen), Fixtures | Orakel grün vor dem Umbau (Commit 0b) und unverändert grün danach; Parser-Tests grün (AK 18); alle Delta-Tests unverändert grün; drei Suiten bauen; Commit (1) |
+| T2 | Entscheidungsklasse (rein, BCL), je Emote gegen den Ausgangsstand, Wiederverwendung der D13-Ableitung aus `EmoteSlotReconcilePlanner` | **opus** | 1 T | Abschnitt 4 vollständig (E3–E8, E10, E12), 3.3, 7.2; `EmoteSlotReconcilePlanner` (`SlotState`, `Derive`) | 7.2 grün inkl. Permutationen, jede Regel trägt im Code ihren Verweis (§7.2/D17 bzw. Plan-Kürzel), Commit (2) |
+| T3 | Integration bei Flag an: Lesen der Slots hinter der Sperre, Seed-Abfrage, Deckung, Plan anwenden, D13, Leave-Regel inkl. E7-Ausnahme (Leave-only-Commit), Plausibilität auf dem Plan, Wiederholung (E9), Slot-Schlüsselkonflikt → `AmbiguousDelta`, Logzeile; DECISIONS, Operations, Spec-Nachtrag | **opus** | 1,5 T | 3.2–3.4, Abschnitte 5, 6, 7.3, 7.4, 10; Plan-372 2.2 (E24) und Z8; `EmoteTagService` (`Holds`); Ergebnis T1/T2 | 7.3 und 7.4 grün, ganze Infrastructure-Suite grün, Commit (3) |
 | T4 | Worker: Abbildung E11, `AmbiguousDelta`-Zweig, Test | sonnet | 0,25 T | 3.5, 7.5; `SevenTvEventClient.cs` | Worker.Tests grün, Commit (4) |
-| T5 | Live-Verifikation | sonnet | 0,5 T + Betreiberzeit | Abschnitt 8; jeder 7TV-POST erst nach Freigabe im Chat | Protokoll 8.1–8.5, Set wiederhergestellt, Abbau erledigt, Fixture-Kandidaten abgelegt |
+| T5 | Live-Verifikation mit Toren G–G4 | sonnet | 0,75 T + Betreiberzeit | Abschnitt 8; jeder 7TV-POST erst nach Freigabe im Chat | Protokoll 8.1–8.5 mit Ergebnis je Tor und getrenntem Nachweis „Delta schrieb nichts", Set wiederhergestellt, Abbau erledigt, Fixture-Kandidaten abgelegt |
 | T6 | Review, Gates, PR | **opus** (Review); Codex Sol | 0,5 T | Branch, Abschnitte 0, 1.3, 9, 10, 12 | `dotnet test EmotePurge.slnx` grün, `npm --prefix web test -- --watch=false` grün, kein E2E (kein `web/`), `dotnet format` sauber, Probe-`migrations add` leer, erst committen dann `node scripts/coverage-local.mjs --backend-only` ≥ 80 %, `/codex:review --model gpt-6.1-sol --scope branch --base origin/main` aus dem Worktree, Befund unverändert vorgelegt (Widerspruch zum Opus-Review → Fable nur über die strittigen Findings), PR mit AK-Tabelle (18–21; 44 anteilig), Kommentare an #375, #378, #379 mit Abschnitt 12 |
 
 Reihenfolge T1 → T2 → T3 → T4 → T5 → T6 (T2 ist dateidisjunkt zu T1 und darf parallel implementiert werden, Testläufe nacheinander). Rund
-3,75 Tage statt 2,5 aus Spec §17 (Mehraufwand: virtueller Zustand, Deckung/Wiederholung, Aus-Nachweis, Live-Lauf mit drei REST-Nachläufen).
-Ob T2 oder ein Review von T2/T3 zusätzlich an Fable geht (Identitätsregeln, hochgehebelt), entscheidet der Orchestrator.
+**4,75 Tage** statt 2,5 aus Spec §17 (Mehraufwand: Orakel, virtueller Zustand, Momentaufnahme-Auflösung und Permutationen, Leave-Ausnahme,
+Index-Vorprüfung, Deckung/Wiederholung, Live-Lauf mit vier Toren). Ob T2 oder ein Review von T2/T3 zusätzlich an Fable geht
+(Identitätsregeln, hochgehebelt), entscheidet der Orchestrator.
 
 ## 12. Hinweise an die folgenden Kinder (im PR-Text wiederholen)
 
 - **#375 (Backfill-Mehrslot):** Ein Push legt bei Flag an einen **provisorischen** aktiven Slot an (`AddedAtFromRest = false`, `AddedAt` =
   Push-Zeit). Eine aktive Vorschau muss einen datierten Eintrag ohne Datumstreffer und ohne D7 an diesen Slot **per Namen binden und sein
   Datum autorisieren** (REST §6.2 Schritt 5) — sonst teilen Push-Slot und Vorschau-Slot denselben 7TV-Eintrag, und der Push-Slot wird beim
-  nächsten REST verwaist archiviert.
+  nächsten REST verwaist archiviert. Wer autoritative Slots umbenennt, prüft wie E12 gegen archivierte Gleichstands-Slots.
 - **#378 (Löschung je Slot):** Die Lösch-Dispatches (ein `pulled`-Item mit `old_value.name` je entferntem Slot) archivieren bei Flag an genau
   diesen Slot; Leave erst beim letzten. Ein Bericht, der danach eintrifft, findet den Slot archiviert (No-op bzw. B2 aus Plan-376).
-  Provisorische Push-Slots erreichen den Löschlauf nie (Spec 9.3).
+  Provisorische Push-Slots erreichen den Löschlauf nie (Spec 9.3). Umbenennungen von Mehr-Slot-Emotes aus dem Import-Pfad
+  (`updateEmoteAlias`) kommen als `AmbiguousDelta` zurück und werden per REST nachgezogen (E10) — der Dock darf bis zum nächsten Abgleich
+  den alten Namen zeigen.
 - **#379 (Betrieb):** Im Einschaltfenster sind `AmbiguousDelta`-Zeilen mit Grund `seed-of-active-set` erwartbar, bis der erste Tick je Kanal
-  settelt; danach sollten sie selten sein. Nachkontrolle: Zahl der Zeilen je Grund über den ersten Tag. Der Rückbau der Aus-Zweige umfasst
-  den Delta-Aus-Zweig (E1) und die Einschränkung der Wiederholung auf Deadlocks bei Flag aus.
+  settelt; danach sollten sie selten sein (häufigster Dauergrund: `rename-with-siblings`). Nachkontrolle: Zahl der Zeilen je Grund über den
+  ersten Tag. Der Rückbau der Aus-Zweige umfasst den Delta-Aus-Zweig (E1) und die Einschränkung der Wiederholung auf Deadlocks bei Flag
+  aus.
 
 ## 13. Rückfragen an den Betreiber
 
-- **R1 [A] — Pull eines unbekannten Namens.** Ein `pulled (X, n)` trifft ein aktives Emote mit aktiven Slots, aber keinem namens `n` (verpasste
-  Umbenennung, veralteter Stand nach einer Aus-Phase, doppelte Zustellung). Spec: nicht geregelt, wörtlich gelesen ein No-op — der veraltete
-  Slot bliebe aktiv und zählbar bis zum nächsten REST-Tick. **Empfehlung: `AmbiguousDelta`** (sofortiger Resync, symmetrisch zu
-  „Umbenennung: Slot nicht gefunden"); Preis: ein zusätzlicher REST-Aufruf bei doppelten Pull-Zustellungen.
+- **R1 [A] — Pull eines unbekannten Namens.** Ein `pulled (X, n)` trifft ein aktives Emote, dessen **Ausgangsstand** (E6) aktive Slots, aber
+  keinen namens `n` hat (verpasste Umbenennung, veralteter Stand nach einer Aus-Phase oder einem veralteten REST, doppelte Zustellung).
+  Spec: nicht geregelt, wörtlich gelesen ein No-op — der veraltete Slot bliebe aktiv und zählbar bis zum nächsten REST-Tick. Seit Revision 1
+  wird gegen den Ausgangsstand aufgelöst und gemischte Arten sind ohnehin mehrdeutig, R1 betrifft also nur noch reine Pull-Dispatches.
+  **Empfehlung: `AmbiguousDelta`** (sofortiger Resync, symmetrisch zu „Umbenennung: Slot nicht gefunden"); Preis: ein zusätzlicher
+  REST-Aufruf bei doppelten Pull-Zustellungen.
 - **R2 — Umfang der Live-Prüfung.** Abschnitt 8 braucht rund 12 freigegebene 7TV-Schreibzugriffe auf das Set von `olaf_olaf_son` (Phase A:
-  3, Phase B: 7, Wiederherstellung: 1–2) und optional zwei getippte Testnachrichten (8.3 iv). **Empfehlung:** so freigeben; Schritt (iv)
-  mitnehmen, weil er die Übergabe aus #373 („Push-Slot zählt sofort") als einziger live belegt.
+  3, Phase B: 7, Wiederherstellung: 1–2), dazu vier Worker-Neustarts an den Toren G1–G4 (je bis zu 30 min Warten auf 7TVs REST) und zwei
+  Pflicht-Testnachrichten des Betreibers (8.3 ii und iv). **Empfehlung:** so freigeben; die Testnachrichten belegen als Einzige live, dass ein
+  Push-Slot vor der REST-Autorisierung zählt (Übergabe #373).
 - **R3 — Rückkehr eines entfernten Alias zählt bis zum REST-Nachlauf nicht.** Ein Push unter dem Namen eines archivierten Slots ist nach D17
   mehrdeutig und schreibt nichts; ist 7TVs REST-Cache veraltet (10–30 min, SevenTV#81), bleibt das Emote so lange archiviert und ungezählt —
   heute (Flag aus) zählt es sofort. Ein provisorischer Slot würde die Historie spalten (D7), eine Zählung ohne Slot gibt es bei Flag an nicht
   (Plan-373 E7). **Empfehlung: hinnehmen** (Spec-Folge von D17, selten, nach dem nächsten aktuellen REST-Tick geheilt); im DECISIONS-Absatz
-  als bekannte Grenze.
+  als bekannte Grenze. Dasselbe gilt seit Revision 1 für jeden Push im virtuellen Zustand (E5).
+- **R4 [A] — Umbenennung in place nur bei genau einem aktiven Slot (Sol-P1-1).** Spec AK 20 nennt „Rename `(X, probeB → probeC)` → in place"
+  bei zwei Slots; auf dem Draht ist das der 7TV-Quirk (`value.name` = Name des ersten Slots), und eine Annahme stützt sich auf unsere
+  Geschwisternamen, die ein veralteter REST zurückdreht — dann landet Zählung dauerhaft am falschen Slot. **Empfehlung: ja** —
+  Mehr-Slot-Umbenennungen als `AmbiguousDelta`, REST benennt per Datums-Identität um. Preis: nach einer Umbenennung eines Mehr-Slot-Emotes
+  zählt der neue Name erst ab dem nächsten aktuellen REST (bis zu 30 min), statt sofort. AK 20 wird im Spec-Nachtrag auf ein
+  Ein-Slot-Beispiel umgestellt.
+- **R5 [A] — Leave-Beobachtung trotz mehrdeutigem Dispatch (Sol-P1-2).** Spec §7.2: „`AmbiguousDelta` schreibt nichts". Wörtlich verliert
+  ein Dispatch mit einer mehrdeutigen Änderung auch die Abgangsmeldung eines anderen, eindeutig zuletzt gezogenen Emotes; kehrt dieses
+  innerhalb des 30-min-Fensters zurück, holt REST sie nie nach, und eine Tag-Platzierung gilt über den Abgang hinweg. **Empfehlung: ja** —
+  „nichts" heißt „kein Inventar"; Leaves mit für sich eindeutigem Ausgang „kein aktiver Slot mehr" werden beobachtet (E7), wie `main` es für
+  jede gezogene Id tut. Preis: ein zweiter, schmaler Schreibweg im mehrdeutigen Zweig (eigene Tests).
 
 ## 14. Risiken für das adversariale Review
 
-1. **E5 (virtueller Zustand):** Push eines neuen Namens ist mehrdeutig statt „neuer Slot". Angreifbar, wenn der Zustand häufiger ist als
-   angenommen (nach #376 4.2a: Restore ohne Eintrag). Folge nur ein Resync, nie ein Fehlzustand.
-2. **E3 (nur D7-Kandidaten blockieren einen Push):** korrekt, solange REST §6.2 Schritt 4 nur `ArchivedAt ≠ null` wiederaufnimmt; ändert ein
+1. **E10-Restlücke:** Ist lokal nur der **zweite** 7TV-Eintrag eines Emotes aktiv und der erste fehlt (nur nach einer Aus-Phase oder einem
+   Sync-Fehler denkbar), nimmt E10 eine Quirk-Umbenennung dieses Slots auf den Namen des ersten Eintrags an. Ohne den Ausgangsstand von 7TV
+   ist das aus dem Dispatch nicht erkennbar. Pulls unter veralteten Namen (Grenzfall in 5) können den falschen Slot archivieren, bewegen
+   aber keine Zählung; der nächste aktuelle REST heilt das per Datum.
+2. **E5 (virtueller Zustand):** jeder Push ist mehrdeutig. Folge nur ein Resync und bis zu 30 min fehlende Zählung (R3), nie ein
+   Fehlzustand.
+3. **E3 (nur D7-Kandidaten blockieren einen Push):** korrekt, solange REST §6.2 Schritt 4 nur `ArchivedAt ≠ null` wiederaufnimmt; ändert ein
    späteres Kind die D7-Kandidaten, muss E3 mitziehen (Kommentar an beiden Stellen).
-3. **E7/F4 (ganzer Dispatch mehrdeutig):** die immer glaubwürdigen Leaves anderer gezogener Emotes desselben Dispatch entfallen; der
-   REST-Abgleich beobachtet sie nur außerhalb des 30-min-Fensters (b1/b2). Selten (7TV schickt je Mutation einen Dispatch), aber eine
-   bewusste Lücke gegenüber `main`.
-4. **REST-Abhängigkeit:** jede Mehrdeutigkeit hängt an einem REST-Aufruf, dessen Antwort bis zu 30 min veraltet sein kann; bei
-   anhaltendem REST-Ausfall bleiben mehrdeutige Änderungen liegen. Der periodische Abgleich bleibt das Netz.
-5. **E6 (Reihenfolge Push → Umbenennung → Pull):** nach dem Parsen ist die Draht-Reihenfolge verloren. E6 behauptet, dass namensdisjunkte
-   Änderungen einer Id reihenfolgeunabhängig sind, und erklärt alles andere für mehrdeutig (z. B. Umbenennung `a → b` plus Push `a`). Das
-   Review sollte die Behauptung gegen die Regeltabelle 4.2 prüfen (der namenlose Pull neben weiteren Änderungen derselben Id ist
-   deshalb ausdrücklich mehrdeutig).
-6. **Aus-Identität (E1):** der Parser ändert sich für beide Zustände; ein Fehler dort wirkt sofort auf Prod. Deshalb laufen alle
-   bestehenden Delta-Tests unverändert mit Flag aus, plus der Byte-Vergleich in 7.4.
-7. **Live-Lauf ohne Seed-Fall:** AK 20 „Delta auf unsettled Seed" ist nur integriert getestet; im Einschaltfenster von #379 ist es der
+4. **E7 (Leave trotz Mehrdeutigkeit):** die Ausnahme beobachtet nur Ids, deren eigener Teilplan eindeutig ist. Ein mehrdeutiger Pull (z. B.
+   namenlos bei zwei Slots) bleibt ohne Leave; REST holt sie nur außerhalb des Fensters nach (b1/b2). Restlücke gegenüber `main`, das jede
+   gezogene Id beobachtet — dort allerdings auch Ids, deren Emote einen weiteren Slot behält (falsche Leave).
+5. **REST-Abhängigkeit:** jede Mehrdeutigkeit hängt an einem REST-Aufruf, dessen Antwort bis zu 30 min veraltet sein kann; bei
+   anhaltendem REST-Ausfall bleiben mehrdeutige Änderungen liegen. Mit E10 trifft das jede Umbenennung eines Mehr-Slot-Emotes. Der
+   periodische Abgleich bleibt das Netz.
+6. **E6:** Reihenfolgeunabhängigkeit ist jetzt konstruktiv (eine Art je Id, Auflösung gegen den Ausgangsstand) und durch Permutationstests
+   belegt. Zu prüfen bleibt, ob 7TV je Pushes und Pulls derselben Id in **einem** Dispatch sendet; falls ja, kostet E6 dort einen Resync.
+7. **Aus-Identität (E1):** der Parser ändert sich für beide Zustände; ein Fehler dort wirkt sofort auf Prod. Abgesichert durch das Orakel
+   auf dem `main`-Stand (7.4), die unveränderten Delta-Tests und den Byte-Vergleich.
+8. **Live-Lauf ohne Seed-Fall:** AK 20 „Delta auf unsettled Seed" ist nur integriert getestet; im Einschaltfenster von #379 ist es der
    häufigste Grund.
