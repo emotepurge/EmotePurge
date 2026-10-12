@@ -131,6 +131,13 @@ public class SevenTvSyncServiceDeltaCharacterizationTests(PostgresFixture fixtur
             [Same("keep1", "keep1"), new("multi1", "probeA", WireImage("multi1"), false, false, false, false, false)],
             []),
 
+        ["update whose old value is null renames the row emote-wide"] = new(
+            [new("keep1", "keep1"), new("multi1", "probeB")],
+            () => Body(Frame(updated: [Updated("null", WireEmote("multi1", "probeA"))])),
+            SevenTvDeltaOutcome.Applied, true,
+            [Same("keep1", "keep1"), new("multi1", "probeA", WireImage("multi1"), false, false, false, false, false)],
+            []),
+
         ["update that only swaps the image url is applied"] = new(
             [new("keep1", "keep1")],
             () => Body(Frame(updated: [Updated(WireEmote("keep1", "keep1"), WireEmote("keep1", "keep1"))])),

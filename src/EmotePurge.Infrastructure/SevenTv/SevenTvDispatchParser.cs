@@ -223,6 +223,7 @@ public static class SevenTvDispatchParser
         key.GetString() == expectedKey;
 
     private static string? GetNonEmptyString(JsonElement element, string property) =>
+        element.ValueKind == JsonValueKind.Object &&
         element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String &&
         value.GetString() is { Length: > 0 } text
             ? text
