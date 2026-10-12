@@ -33,7 +33,10 @@ namespace EmotePurge.Infrastructure.Services;
 /// pending key) is written first, and rule (a) then finds it instead of creating a second slot. A
 /// failure of phase 2 is caught: phase 1 is already committed, so throwing would make the caller
 /// requeue and double-count it. The pending keys come back as <see cref="UsageFlushResult.Requeued"/>
-/// instead, and a contended key never holds up another channel's counts. Its known lock cycles (Z9
+/// instead. A contended pending key never holds up phase 1, so no slot key of any channel waits for
+/// it; phase 2 itself is shared — one transaction over the pending keys of all channels, with one
+/// partial streak in the worker — so a contended key hands back the other channels' pending keys of
+/// the same flush along with its own. Phase 2's known lock cycles (Z9
 /// against the flag-off sync, Z10 against the flag-off delta, both emote → channel) cost exactly this
 /// requeue.
 /// </para>
@@ -189,7 +192,9 @@ public class UsageStatFlushService(AppDbContext db, ILogger<UsageStatFlushServic
             await UpsertAsync(rows, today, cancellationToken);
         }
 
-        await transaction.CommitAsync(cancellationToken);
+        // Not cancellable: a cancelled commit the server already applied would be handed back as
+        // failed and counted a second time on the requeue.
+        await transaction.CommitAsync(CancellationToken.None);
         return rows.Select(r => r.EmoteId).ToHashSet(StringComparer.Ordinal);
     }
 
