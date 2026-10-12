@@ -184,6 +184,7 @@ describe('SegmentedControl', () => {
     expect(host.value()).toBe('day');
     expect(event.defaultPrevented).toBe(false);
   });
+
   it('names an option with its detail, preferring the accessible detail label over the glyph', () => {
     const { fixture, host, radios } = render('day');
     host.options.set([
@@ -193,10 +194,16 @@ describe('SegmentedControl', () => {
     ]);
     fixture.detectChanges();
 
-    const text = (index: number) => radios()[index].textContent?.replace(/\s+/g, ' ').trim();
-    expect(text(0)).toContain('Tag');
-    expect(text(0)).toContain('12');
-    expect(text(1)).toContain('unbekannt');
-    expect(text(2)).toBe('Monat');
+    const parts = (index: number) => {
+      const radioEl = radios()[index];
+      return {
+        hidden: radioEl.querySelector('[aria-hidden="true"]')?.textContent?.trim(),
+        label: radioEl.querySelector('.sr-only')?.textContent?.trim(),
+      };
+    };
+    // The visible glyph is hidden from assistive tech; the sr-only text carries the name.
+    expect(parts(0)).toEqual({ hidden: '12', label: '12' });
+    expect(parts(1)).toEqual({ hidden: '–', label: 'unbekannt' });
+    expect(radios()[2].querySelector('[aria-hidden="true"]')).toBeNull();
   });
 });
