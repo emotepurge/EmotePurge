@@ -210,11 +210,18 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
     }
 
     // (6) Z2, the switch-over window — four real deadlocks. Window A: sync on, report off; window B:
-    // sync off, report on. The side that upserts its leave rows first (the off side) is held right after
-    // that upsert; the other side runs until it waits for the same leave row; then the held side goes on
-    // and asks for the emote row the other side has locked — a real 40P01. In each window once the sync
-    // and once the report is the victim: it retries once and succeeds, the other side succeeds directly,
-    // and the end state is the serial one with every audit entry and leave row exactly once.
+    // sync off, report on. The off side takes the leave row before the emote row, the on side the emote
+    // row before the leave row. The side meant to lose is held inside its own flow (the off side right
+    // after its leave upsert, the on side right after its emote lock); the other side runs until it
+    // waits on what the held side holds; then the held side goes on and asks for what the other side
+    // holds — a real 40P01. In each window once the sync and once the report is the victim: it retries
+    // once and succeeds, the other side succeeds directly, and the end state is the serial one with
+    // every audit entry and leave row exactly once.
+    //
+    // The victim is always the second waiter, with a short deadlock_timeout, and the first waiter's is
+    // far away: Postgres runs the check once per wait when that backend's timeout fires, and the cycle
+    // exists the moment the second waiter starts waiting. A first waiter as the victim would need its
+    // timeout to outlast the time the held side takes to reach its wait, which a loaded box can exceed.
     [Theory]
     [InlineData(true, true)]
     [InlineData(true, false)]
@@ -228,16 +235,8 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(setup, $"inset_{tag}", set);
         await SeedActiveEmoteAsync(setup, channel, Reported);
 
-        // The held side's partner waits first (on the leave row), the held side second (on the emote
-        // row). The first waiter is the victim when its timeout fires once the cycle exists (2 s is
-        // ample for the held side to reach its save); the second waiter is the victim when its short
-        // timeout fires while the first waiter's is still far away.
-        var reportIsFirstWaiter = !syncOn;
-        var victimIsFirstWaiter = syncIsVictim != reportIsFirstWaiter;
-        var victimTimeout = victimIsFirstWaiter ? 2000 : 200;
-        var syncTimeout = syncIsVictim ? victimTimeout : 60000;
-        var reportTimeout = syncIsVictim ? 60000 : victimTimeout;
-
+        var syncTimeout = syncIsVictim ? 200 : 60000;
+        var reportTimeout = syncIsVictim ? 60000 : 200;
         var reportTag = $"inset_{tag}_report";
         var syncTag = $"inset_{tag}_sync";
         var reportLogger = new RecordingLogger<EmoteService>();
@@ -245,14 +244,19 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
         Task<SyncDeletedInSetResultDto>? report = null;
         Task<SevenTvSyncResult?>? sync = null;
 
+        // The held side is the victim. Held off, it holds a leave row and the on side waits at its leave
+        // upsert; held on, it holds the emote row and the off side waits in its save.
+        var heldIsOn = syncIsVictim == syncOn;
+        var heldMarker = !heldIsOn ? LeaveUpsert : syncIsVictim ? SyncEmoteLock : ReportEmoteLock;
+        var otherWaitsAt = heldIsOn ? "UPDATE \"" : LeaveUpsert;
+
         AppDbContext reportDb;
         AppDbContext syncDb;
-        if (syncOn)
+        if (syncIsVictim)
         {
-            // Window A: the report (off) upserts its leave row first and is held there.
-            syncDb = fixture.CreateTaggedDbContext(syncTag, [], options: $"-c deadlock_timeout={syncTimeout}");
+            reportDb = fixture.CreateTaggedDbContext(reportTag, [], options: $"-c deadlock_timeout={reportTimeout}");
             var hook = new CommandHook(
-                text => text.Contains(LeaveUpsert, StringComparison.Ordinal),
+                text => text.Contains(heldMarker, StringComparison.Ordinal),
                 async occurrence =>
                 {
                     if (occurrence != 1)
@@ -260,19 +264,18 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
                         return;
                     }
 
-                    sync = StartSync(syncDb, channel, set, slotsEnabled: true, syncLogger);
-                    await fixture.WaitUntilBlockedOnLockAsync(syncTag, sync);
-                    Assert.Contains(LeaveUpsert, await fixture.WaitingQueryAsync(syncTag), StringComparison.Ordinal);
+                    report = StartReport(reportDb, set, slotsEnabled: !syncOn, reportLogger);
+                    await fixture.WaitUntilBlockedOnLockAsync(reportTag, report);
+                    Assert.Contains(otherWaitsAt, await fixture.WaitingQueryAsync(reportTag), StringComparison.Ordinal);
                 });
-            reportDb = fixture.CreateTaggedDbContext(reportTag, [hook], options: $"-c deadlock_timeout={reportTimeout}");
-            report = StartReport(reportDb, set, slotsEnabled: false, reportLogger);
+            syncDb = fixture.CreateTaggedDbContext(syncTag, [hook], options: $"-c deadlock_timeout={syncTimeout}");
+            sync = StartSync(syncDb, channel, set, slotsEnabled: syncOn, syncLogger);
         }
         else
         {
-            // Window B: the sync (off) upserts its leave row first and is held there.
-            reportDb = fixture.CreateTaggedDbContext(reportTag, [], options: $"-c deadlock_timeout={reportTimeout}");
+            syncDb = fixture.CreateTaggedDbContext(syncTag, [], options: $"-c deadlock_timeout={syncTimeout}");
             var hook = new CommandHook(
-                text => text.Contains(LeaveUpsert, StringComparison.Ordinal),
+                text => text.Contains(heldMarker, StringComparison.Ordinal),
                 async occurrence =>
                 {
                     if (occurrence != 1)
@@ -280,18 +283,18 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
                         return;
                     }
 
-                    report = StartReport(reportDb, set, slotsEnabled: true, reportLogger);
-                    await fixture.WaitUntilBlockedOnLockAsync(reportTag, report);
-                    Assert.Contains(LeaveUpsert, await fixture.WaitingQueryAsync(reportTag), StringComparison.Ordinal);
+                    sync = StartSync(syncDb, channel, set, slotsEnabled: syncOn, syncLogger);
+                    await fixture.WaitUntilBlockedOnLockAsync(syncTag, sync);
+                    Assert.Contains(otherWaitsAt, await fixture.WaitingQueryAsync(syncTag), StringComparison.Ordinal);
                 });
-            syncDb = fixture.CreateTaggedDbContext(syncTag, [hook], options: $"-c deadlock_timeout={syncTimeout}");
-            sync = StartSync(syncDb, channel, set, slotsEnabled: false, syncLogger);
+            reportDb = fixture.CreateTaggedDbContext(reportTag, [hook], options: $"-c deadlock_timeout={reportTimeout}");
+            report = StartReport(reportDb, set, slotsEnabled: !syncOn, reportLogger);
         }
 
         await using (reportDb)
         await using (syncDb)
         {
-            await SettleAsync(() => syncOn ? report : sync, () => syncOn ? sync : report);
+            await SettleAsync(() => syncIsVictim ? sync : report, () => syncIsVictim ? report : sync);
             var reported = await report!.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.NotNull(await sync!.WaitAsync(TimeSpan.FromSeconds(30)));
             Assert.Equal(1, Assert.Single(reported.Channels).Count);

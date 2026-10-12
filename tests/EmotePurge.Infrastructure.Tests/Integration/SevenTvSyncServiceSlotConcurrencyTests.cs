@@ -179,7 +179,9 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
     }
 
     // (4a) Z3, purge first: the real PurgeAsync's cascading DELETE holds the channel row; the sync
-    // waits at its channel lock and ends in "row vanished" once the purge commits.
+    // waits at its channel lock and ends in "row vanished" once the purge commits. Which lock it waits
+    // at is asserted: without the channel lock the sync would wait at its emote lock behind the
+    // purge's cascade and end as "row vanished" all the same.
     [Fact]
     public async Task PurgeFirst_SyncWaitsAtTheChannelLock_ThenEndsAsRowVanished()
     {
@@ -198,9 +200,11 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
             .SyncChannelAsync(channel.ChannelName);
 
         await fixture.WaitUntilBlockedOnLockAsync(tag, sync);
+        var waitedAt = await fixture.WaitingQueryAsync(tag);
         await purgeTx.CommitAsync();
 
         Assert.Null(await sync.WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.Contains(ChannelLock, waitedAt, StringComparison.Ordinal);
         Assert.DoesNotContain(channel.ChannelName, cache.GetCachedChannelNames());
         Assert.False(await setup.Channels.AnyAsync(c => c.Id == channel.Id));
     }
@@ -243,7 +247,12 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
     // (7) Z4: the settle's usage UPDATE meets a transaction that holds a seed row and then asks for the
     // emote lock — a real 40P01. (a) The sync is the victim and retries; (b) the other side is the
     // victim, the sync goes through without a retry, and the error is transient (what lets the
-    // backfill worker pause and resume at the block).
+    // backfill worker pause and resume at the block). The victim is always the second waiter, with a
+    // short deadlock_timeout against the first waiter's 60 s: Postgres checks once per wait, when that
+    // backend's timeout fires, and the cycle exists the moment the second waiter starts waiting. So in
+    // (a) the counter asks for the emote lock first (from inside the sync's flow, right after the sync
+    // took it) and the sync waits second at the usage row; in (b) the sync waits first at the usage
+    // row and the counter second at the emote lock.
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -264,22 +273,35 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
             .SqlQuery<long>($"""SELECT "Id" AS "Value" FROM "UsageStats" WHERE "SlotId" = {seed.Id} FOR UPDATE""")
             .ToListAsync();
 
+        Task<IReadOnlyList<string>>? counterLock = null;
+        var hook = new CommandHook(
+            text => text.Contains(EmoteLockMarker, StringComparison.Ordinal),
+            async occurrence =>
+            {
+                if (!syncIsVictim || occurrence != 1)
+                {
+                    return;
+                }
+
+                counterLock = counter.LockEmotesByIdsAsync([x.Id], CancellationToken.None);
+                await fixture.WaitUntilBlockedOnLockAsync(counterTag, counterLock);
+            });
         var logger = new RecordingLogger<SevenTvSyncService>();
-        await using var syncDb = fixture.CreateTaggedDbContext(syncTag, [], options: $"-c deadlock_timeout={(syncIsVictim ? 2000 : 60000)}");
+        await using var syncDb = fixture.CreateTaggedDbContext(syncTag, [hook], options: $"-c deadlock_timeout={(syncIsVictim ? 200 : 60000)}");
         var sync = CreateService(syncDb, ApiReturning(channel, SetA, Live("x", "A", T1)), slotsEnabled: true, logger: logger)
             .SyncChannelAsync(channel.ChannelName);
         await fixture.WaitUntilBlockedOnLockAsync(syncTag, sync);
 
-        var counterLock = counter.LockEmotesByIdsAsync([x.Id], CancellationToken.None);
         if (syncIsVictim)
         {
             // Granted the moment Postgres aborts the sync's transaction — before the sync's own code
             // has caught the error, so its warning is checked only once the sync has finished.
-            await counterLock.WaitAsync(TimeSpan.FromSeconds(30));
+            await counterLock!.WaitAsync(TimeSpan.FromSeconds(30));
             await counterTx.CommitAsync();
         }
         else
         {
+            counterLock = counter.LockEmotesByIdsAsync([x.Id], CancellationToken.None);
             var thrown = await Assert.ThrowsAnyAsync<Exception>(() => counterLock.WaitAsync(TimeSpan.FromSeconds(30)));
             var postgres = FindPostgresException(thrown);
             Assert.Equal(PostgresErrorCodes.DeadlockDetected, postgres.SqlState);
