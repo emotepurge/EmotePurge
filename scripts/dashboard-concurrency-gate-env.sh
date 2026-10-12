@@ -21,7 +21,9 @@
 #   DP_KEYRING_DIR         (required) Data Protection key ring the cookie was minted with
 #   ADMIN_TWITCH_USER_ID   (required) the NameIdentifier claim of the cookie
 #   ADMIN_TWITCH_LOGIN     default gate-admin
-#   PROBE_OFFSET_MS        default 50 for CADENCE <= 5, else 20 (a warm 30-s 24h rebuild lasts 11-54 ms)
+#   PROBE_OFFSET_MS        default 50 for CADENCE <= 5, else 8 (a warm 30-s 24h rebuild lasts 10-55 ms
+#                          and starts as the requests arrive)
+#   MAIN_TICKS             default from the gate script (384), but 480 for CADENCE > 5
 #   PREFIX                 default dashboard-gate (container, network and image names)
 #   API_HOST_PORT          default 18080; PG_HOST_PORT default 15499 (both bound to 127.0.0.1)
 #   KEEP_IMAGE=1           keep the built Api image
@@ -42,10 +44,16 @@ ADMIN_TWITCH_LOGIN="${ADMIN_TWITCH_LOGIN:-gate-admin}"
 PREFIX="${PREFIX:-dashboard-gate}"
 API_HOST_PORT="${API_HOST_PORT:-18080}"
 PG_HOST_PORT="${PG_HOST_PORT:-15499}"
+# A coarse cadence makes the 24h rebuild short (10-55 ms, starting right as the requests arrive), so
+# the probe has to follow the requests closely, and more main ticks are needed to collect 40 probes
+# inside rebuilds (measured 2026-10-12: offset 20 ms and 384 ticks gave only 27).
 if [[ -z "${PROBE_OFFSET_MS:-}" ]]; then
-  if ((CADENCE <= 5)); then PROBE_OFFSET_MS=50; else PROBE_OFFSET_MS=20; fi
+  if ((CADENCE <= 5)); then PROBE_OFFSET_MS=50; else PROBE_OFFSET_MS=8; fi
 fi
-export PROBE_OFFSET_MS
+if [[ -z "${MAIN_TICKS:-}" ]] && ((CADENCE > 5)); then
+  MAIN_TICKS=480
+fi
+export PROBE_OFFSET_MS ${MAIN_TICKS:+MAIN_TICKS}
 export OUT="${OUT:-${TMPDIR:-/tmp}/dashboard-gate-${CADENCE}s-$(date -u +%Y%m%dT%H%M%SZ).csv}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -14,8 +14,8 @@
 #   * at tick + PROBE_OFFSET_MS, one GET /api/health. The offset lets the probe land inside the
 #     rebuild the load requests just started (the rebuild begins only after request parsing and the
 #     cookie session check, ~12 ms after sending), so the probe measures health latency during a
-#     running rebuild. Use 50 ms for the 1-s seed and 20 ms for the 30-s seed, whose warm 24h rebuild
-#     lasts only 11-54 ms;
+#     running rebuild. Use 50 ms for the 1-s seed and 8 ms for the 30-s seed, whose warm 24h rebuild
+#     lasts only 10-55 ms (20 ms caught only 27 of the 40 required probes in 384 ticks);
 #   * at tick + SNAPSHOT_OFFSET_MS, one docker exec into the Api: read VmHWM/VmRSS of PID 1, reset
 #     the high-water mark (echo 5 > /proc/1/clear_refs) and read the cgroup's memory.current; plus
 #     one pg_stat_statements read of the two load queries (raw and hourly path).
@@ -53,7 +53,7 @@
 #   COOLDOWN_TICKS         default 26 (65 s, longer than the 60-s TTL)
 #   DUAL_CYCLES            default 3
 #   CLIENTS                default 3
-#   PROBE_OFFSET_MS        default 50 (1-s seed); 20 for the 30-s seed
+#   PROBE_OFFSET_MS        default 50 (1-s seed); 8 for the 30-s seed (with MAIN_TICKS=480)
 #   SNAPSHOT_OFFSET_MS     default 2000
 #   OUT                    default ${TMPDIR:-/tmp}/dashboard-gate-<UTC timestamp>.csv
 #
