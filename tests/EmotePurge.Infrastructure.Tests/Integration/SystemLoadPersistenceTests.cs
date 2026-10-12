@@ -196,6 +196,15 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         const int hourCount = 60;
         var samples = CpuSamples(
             SystemLoadSource.Worker, identity, firstHourUtc, firstHourUtc.AddHours(hourCount), TimeSpan.FromSeconds(60));
+        // The counter jumps by 30 CPU seconds across the batch boundary, so the pair crossing into the first hour
+        // of batch 2 has rate (30 + 60 * 0.5) / 60 = 1.0 while every other pair has 0.5: only that pair makes the
+        // hour's maximum differ.
+        var firstOfSecondBatch = firstHourUtc.AddHours(24);
+        foreach (var sample in samples.Where(sample => sample.SampledAtUtc >= firstOfSecondBatch))
+        {
+            sample.ProcessCpuTimeTicks += 30 * TimeSpan.TicksPerSecond;
+        }
+
         await using var db = CreateDbContext();
         db.SystemLoadSamples.AddRange(samples);
         await db.SaveChangesAsync();
@@ -206,8 +215,8 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         Assert.Equal(hourCount, written);
         var rows = await ReadHourliesAsync(db);
         Assert.Equal(hourCount, rows.Count);
-        var firstOfSecondBatch = firstHourUtc.AddHours(24);
         Assert.NotNull(rows[firstOfSecondBatch].ProcessCpuRateMean);
+        Assert.Equal(1.0, rows[firstOfSecondBatch].ProcessCpuRateMax!.Value, 9);
         Assert.NotNull(rows[firstOfSecondBatch].HostCpuBusyMean);
         for (var offset = 0; offset < hourCount; offset++)
         {
@@ -227,7 +236,16 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
     // fails_when: a pair is missed or added, a boundary sample opens its hour, or an existing row is recomputed.
     // no_claim: the cost of the candidate query; synthetic samples far outside the dirty window.
     [Fact]
-    public async Task Rollup_BackfillsExactlyTheHoursWithSamplesAndNoRow()
+    public Task Rollup_BackfillsExactlyTheHoursWithSamplesAndNoRow() => BackfillScenarioAsync(null);
+
+    // protects: the hour bucketing of the rollup does not depend on the session time zone, including a zone
+    //   with a non-whole-hour offset (+05:30), so the same rows appear as under UTC.
+    // fails_when: a time-zone-dependent date_trunc or cast shifts an hour key or sample into another hour.
+    // no_claim: other zones; the setting is applied on the opened connection of the rollup's own context.
+    [Fact]
+    public Task Rollup_BackfillIsIndependentOfTheSessionTimeZone() => BackfillScenarioAsync("Asia/Kolkata");
+
+    private async Task BackfillScenarioAsync(string? sessionTimeZone)
     {
         var dayUtc = new DateTime(2026, 10, 5, 0, 0, 0, DateTimeKind.Utc);
         var closeEndUtc = new DateTime(2026, 10, 10, 23, 0, 0, DateTimeKind.Utc);
@@ -235,6 +253,14 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         var instanceB = Guid.NewGuid();
         var worker = Guid.NewGuid();
         await using var db = CreateDbContext();
+        if (sessionTimeZone is not null)
+        {
+            await db.Database.OpenConnectionAsync();
+            await db.Database.ExecuteSqlRawAsync($"SET TIME ZONE '{sessionTimeZone}'");
+            var active = await db.Database.SqlQueryRaw<string>("SELECT current_setting('TimeZone') AS \"Value\"").ToListAsync();
+            Assert.Equal([sessionTimeZone], active);
+        }
+
         db.SystemLoadSamples.AddRange(
             Sample(dayUtc.AddHours(1).AddMinutes(5), instanceA, 0),
             Sample(dayUtc.AddHours(1).AddMinutes(35), instanceA, 10),
