@@ -79,6 +79,7 @@ public class VoteSessionService(
         // membership from 7TV, then check all-or-nothing on the 7TV identity. Done ahead of the
         // transaction below — an HTTP round trip has no business holding a database transaction open.
         IReadOnlyDictionary<string, ForeignEmoteRow>? liveMembers = null;
+        Dictionary<string, string[]>? aliasesById = null;
         if (isSetSession)
         {
             if (channel.TwitchChannelId is null)
@@ -120,13 +121,18 @@ public class VoteSessionService(
 
             // Not ToDictionary: 7TV's own sets routinely list the same emote id twice under two
             // aliases (measured on real sets — every one examined so far had at least one such pair),
-            // and ToDictionary throws on the second occurrence. First-wins is deterministic and, for
-            // this ballot, harmless either way — Name/ImageUrl only ever seed a never-active row or
-            // freeze VoteSessionEmote.NameAtCreation, neither of which cares which alias won.
+            // and ToDictionary throws on the second occurrence. Per id the entries are taken in the D2
+            // order (spec D26, regardless of SevenTv:SlotReconcile:Enabled, plan #376 R5): the oldest
+            // alias is the representative that seeds a never-active Emotes row and the frozen
+            // NameAtCreation/ImageUrlAtCreation, and all aliases are frozen in NamesAtCreation.
             var liveMembersById = new Dictionary<string, ForeignEmoteRow>(StringComparer.Ordinal);
-            foreach (var emote in lookup.EmoteSet!.Emotes)
+            aliasesById = new Dictionary<string, string[]>(StringComparer.Ordinal);
+            foreach (var group in BaseSlotRule.OldestAliasFirst(lookup.EmoteSet!.Emotes)
+                .GroupBy(e => e.SevenTvEmoteId, StringComparer.Ordinal))
             {
-                liveMembersById.TryAdd(emote.SevenTvEmoteId, emote);
+                var ordered = group.ToList();
+                liveMembersById[group.Key] = ordered[0];
+                aliasesById[group.Key] = ordered.Select(e => e.Name).Distinct(StringComparer.Ordinal).ToArray();
             }
 
             liveMembers = liveMembersById;
@@ -173,6 +179,7 @@ public class VoteSessionService(
                 VoteSessionId = session.Id,
                 EmoteId = localIdsBySevenTvId[sevenTvId],
                 NameAtCreation = liveMembers![sevenTvId].Name,
+                NamesAtCreation = aliasesById![sevenTvId],
                 ImageUrlAtCreation = liveMembers[sevenTvId].ImageUrl
             }));
             ballotCount = sevenTvEmoteIds!.Count;

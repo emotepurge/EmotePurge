@@ -796,9 +796,11 @@ public class EmoteTagService(
             return (EmoteTagAddEntriesStatus.SourceSetIncomplete, null);
         }
 
-        // Name is the alias in that set; the same emote id twice in one set (should not happen) keeps the first.
+        // Name is the alias in that set. The same emote id under several aliases (7TV allows it, spec D29)
+        // keeps the oldest entry (D2 order), whatever SevenTv:SlotReconcile:Enabled says (plan #376 R5);
+        // TryAdd over the ordered list makes the first, i.e. the oldest, win.
         var snapshot = new Dictionary<string, (string Name, string ImageUrl)>(StringComparer.Ordinal);
-        foreach (var row in read.EmoteSet.Emotes)
+        foreach (var row in BaseSlotRule.OldestAliasFirst(read.EmoteSet.Emotes))
         {
             snapshot.TryAdd(row.SevenTvEmoteId, (row.Name, row.ImageUrl));
         }

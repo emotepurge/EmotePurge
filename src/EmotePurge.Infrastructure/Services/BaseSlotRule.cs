@@ -1,3 +1,4 @@
+using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -70,6 +71,15 @@ internal static class BaseSlotRule
     /// UTF-8 byte order; lone surrogates, which Postgres cannot store, fall back to ordinal.
     /// </summary>
     public static readonly IComparer<string> Utf8Order = Comparer<string>.Create(CompareUtf8);
+
+    /// <summary>
+    /// The entries of a live 7TV set list (one emote id may appear under several aliases) in the D2 order
+    /// that decides "the oldest alias" for ballots and tag snapshots (spec D26/D29): <c>AddedAt</c>
+    /// ascending with null last, then <c>Name</c> in <see cref="Utf8Order"/>. Live entries carry no slot
+    /// id, so entries that tie on both stay in list order (stable sort).
+    /// </summary>
+    internal static IReadOnlyList<ForeignEmoteRow> OldestAliasFirst(IEnumerable<ForeignEmoteRow> entries) =>
+        entries.OrderBy(e => new BaseSlotCandidate(string.Empty, e.Name, e.AddedAt), D2Order).ToList();
 
     // (a): every slot of E that carries at least one row of X. EXISTS probes the slot index
     // (SlotId, EmoteSetId, Date) once per candidate; the candidates come from the slots' EmoteId index.

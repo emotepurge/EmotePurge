@@ -686,6 +686,61 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         Assert.Single(secondPage.Items);
     }
 
+    // --- emoteNames (plan #376 2.7, spec D26) ----------------------------------------------------
+
+    [Fact]
+    public async Task GetResultsAsync_SetSession_ListsTheFrozenAliases_AndAnOldRowFallsBackToItsName()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "voteset-names1");
+        var multi = await SeedEmoteAsync(db, channel.Id, "Live");
+        var old = await SeedEmoteAsync(db, channel.Id, "OldRow");
+        var legacy = await SeedEmoteAsync(db, channel.Id, "Legacy");
+        var session = await SeedActiveSetSessionAsync(db, channel.Id, "halloween-9");
+        db.VoteSessionEmotes.AddRange(
+            new VoteSessionEmote { VoteSessionId = session.Id, EmoteId = multi.Id, NameAtCreation = "ome44", ImageUrlAtCreation = multi.ImageUrl, NamesAtCreation = ["ome44", "hob44"] },
+            new VoteSessionEmote { VoteSessionId = session.Id, EmoteId = old.Id, NameAtCreation = "Frozen", ImageUrlAtCreation = old.ImageUrl },
+            new VoteSessionEmote { VoteSessionId = session.Id, EmoteId = legacy.Id });
+        await db.SaveChangesAsync();
+
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var results = await service.GetResultsAsync(channel.ChannelName, session.Id);
+
+        var byId = results!.Emotes.ToDictionary(r => r.EmoteId);
+        Assert.Equal("ome44", byId[multi.Id].EmoteName);
+        Assert.Equal(["ome44", "hob44"], byId[multi.Id].EmoteNames);
+        Assert.Equal(["Frozen"], byId[old.Id].EmoteNames);
+        Assert.Equal(["Legacy"], byId[legacy.Id].EmoteNames);
+    }
+
+    [Theory]
+    [InlineData(true, new[] { "Live", "ome44", "hob44" })]
+    [InlineData(false, new[] { "Live" })]
+    public async Task GetResultsAsync_NullSession_ListsSlotAliasesOnlyWithTheFlagOn(bool flag, string[] expected)
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, flag ? "votenames-on" : "votenames-off");
+        var emote = await SeedEmoteAsync(db, channel.Id, "Live");
+        var plain = await SeedEmoteAsync(db, channel.Id, "Plain");
+        var t = new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc);
+        db.EmoteSlots.AddRange(
+            new EmoteSlot { EmoteId = emote.Id, Name = "hob44", AddedAt = t.AddMonths(2), AddedAtFromRest = true },
+            new EmoteSlot { EmoteId = emote.Id, Name = "ome44", AddedAt = t, AddedAtFromRest = true },
+            new EmoteSlot { EmoteId = emote.Id, Name = "Live", AddedAt = t.AddMonths(3), AddedAtFromRest = true },
+            new EmoteSlot { EmoteId = emote.Id, Name = "archived", AddedAt = t, AddedAtFromRest = true, IsArchived = true },
+            new EmoteSlot { EmoteId = emote.Id, Name = "seed", SeedUnsettled = true });
+        await db.SaveChangesAsync();
+        var session = await SeedActiveSessionAsync(db, channel.Id);
+
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db), new SlotReconcileOptions { Enabled = flag });
+        var results = await service.GetResultsAsync(channel.ChannelName, session.Id);
+
+        var row = results!.Emotes.Single(r => r.EmoteId == emote.Id);
+        Assert.Equal("Live", row.EmoteName);
+        Assert.Equal(expected, row.EmoteNames);
+        Assert.Equal(["Plain"], results.Emotes.Single(r => r.EmoteId == plain.Id).EmoteNames);
+    }
+
     private static async Task<Channel> SeedChannelAsync(AppDbContext db, string channelName, string activeEmoteSetId = "")
     {
         var channel = new Channel { ChannelName = channelName, IsBotActive = true, ActiveEmoteSetId = activeEmoteSetId };

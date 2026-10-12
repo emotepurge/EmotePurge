@@ -2644,6 +2644,27 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         Assert.Equal("FirstAlias", (await verify.EmoteTagEntries.SingleAsync(e => e.TagId == tag.Id)).Alias);
     }
 
+    [Fact]
+    public async Task AddFromANonActiveSet_AnEmoteUnderTwoAliases_StoresTheAliasOfTheOldestEntry()
+    {
+        // Spec D29, plan #376 R5: the live list may carry the same emote id twice; the snapshot takes the
+        // oldest entry (D2 order), not the one 7TV happens to list first.
+        var channel = await SeedChannelAsync("tagforeignoldest");
+        var tag = await SeedTagAsync(channel.Id, "Game");
+        var source = new ForeignSource(OtherSetId,
+        [
+            new ForeignEmoteRow("EM1", "hob44", "hob44", "https://img/newer", null, null, new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc)),
+            new ForeignEmoteRow("EM1", "ome44", "ome44", "https://img/older", null, null, new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc))
+        ]);
+
+        var result = await source.AddAsync(fixture.CreateDbContext, "tagforeignoldest", tag.Id, ["EM1"]);
+
+        Assert.Equal((EmoteTagAddEntriesStatus.Ok, 1), (result.Status, result.AddedCount));
+        await using var verify = fixture.CreateDbContext();
+        var entry = await verify.EmoteTagEntries.SingleAsync(e => e.TagId == tag.Id);
+        Assert.Equal("ome44", entry.Alias);
+    }
+
     [Theory]
     [InlineData(TrackedEmoteSetMembership.NotMember, EmoteTagAddEntriesStatus.EmoteSetNotFound)]
     [InlineData(TrackedEmoteSetMembership.SevenTvUnavailable, EmoteTagAddEntriesStatus.SevenTvUnavailable)]
