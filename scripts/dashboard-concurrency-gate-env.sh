@@ -61,7 +61,8 @@ DP_KEYRING_DIR="$(cd "$DP_KEYRING_DIR" && pwd)"
 
 teardown() {
   local status=$?
-  if ((status != 0)) && docker container inspect "$API" > /dev/null 2>&1; then
+  # The Api log helps only when setup or measurement broke, not when the evaluation said no.
+  if ((status != 0 && EVALUATED == 0)) && docker container inspect "$API" > /dev/null 2>&1; then
     echo "--- last Api log lines ---" >&2
     docker logs --tail 40 "$API" >&2 2>&1 || true
   fi
@@ -74,6 +75,7 @@ teardown() {
   echo "Throwaway gate environment removed." >&2
   exit "$status"
 }
+EVALUATED=0
 trap teardown EXIT
 
 wait_for() {
@@ -153,5 +155,6 @@ set +e
 node "$SCRIPT_DIR/dashboard-concurrency-gate-eval.mjs" "$OUT"
 evaluation=$?
 set -e
+EVALUATED=1
 echo "Measurement kept in $OUT" >&2
 exit "$evaluation"

@@ -123,6 +123,10 @@ for (const row of [...probes, ...loads, ...rebuilds, ...queries]) {
     invalid.push(`broken ${row.kind} row at tick ${row.tick ?? '-'}: non-numeric time or value`);
   }
 }
+// A 200 without a size would slip past the 256-KiB check.
+for (const load of loads.filter((l) => l.status === '200' && !(Number.isFinite(l.size) && l.size > 0))) {
+  invalid.push(`broken load row at tick ${load.tick}: ${load.range} answered 200 with size '${load.raw.size_bytes}'`);
+}
 
 // Which load requests did a rebuild serve?
 const endMeasured = meta?.timing === 'curl_end';
