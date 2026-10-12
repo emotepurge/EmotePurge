@@ -343,12 +343,12 @@ internal sealed class AdminDashboardRawLoadAccumulator(AdminDashboardLoadWindow 
             {
                 if (value.IsWorker)
                 {
-                    workerHolds |= value.Value == p95;
+                    workerHolds |= value.Value.CompareTo(p95) == 0;
                     workerMax = Math.Max(workerMax, value.Value);
                 }
                 else
                 {
-                    apiHolds |= value.Value == p95;
+                    apiHolds |= value.Value.CompareTo(p95) == 0;
                     apiMax = Math.Max(apiMax, value.Value);
                 }
             }

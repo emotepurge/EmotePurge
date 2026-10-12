@@ -286,9 +286,7 @@ internal sealed class AdminDashboardHourlyLoadAccumulator(AdminDashboardLoadWind
             }
 
             var rowMax = max ?? double.NegativeInfinity;
-            var wins = P95 is null
-                || p95.Value > P95.Value
-                || (p95.Value == P95.Value && (rowMax > _winnerMax || (rowMax == _winnerMax && isWorker && !_winnerIsWorker)));
+            var wins = P95 is null || Beats(p95.Value, rowMax, isWorker);
             if (wins)
             {
                 P95 = p95;
@@ -299,5 +297,19 @@ internal sealed class AdminDashboardHourlyLoadAccumulator(AdminDashboardLoadWind
         }
 
         public void Offer(long? p95, long? max, bool isWorker) => Offer((double?)p95, (double?)max, isWorker);
+
+        // Higher P95 wins; equal P95 -> higher max wins; fully equal -> the Worker wins over the Api.
+        // CompareTo instead of ==/> so no floating-point equality test is involved.
+        private bool Beats(double p95, double rowMax, bool isWorker)
+        {
+            var byP95 = p95.CompareTo(P95!.Value);
+            if (byP95 != 0)
+            {
+                return byP95 > 0;
+            }
+
+            var byMax = rowMax.CompareTo(_winnerMax);
+            return byMax > 0 || (byMax == 0 && isWorker && !_winnerIsWorker);
+        }
     }
 }
