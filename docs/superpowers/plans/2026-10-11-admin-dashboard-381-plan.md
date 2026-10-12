@@ -981,3 +981,130 @@ Api und Worker mit `SystemLoad__IntervalSeconds=1` laufen lassen (≥ 15 min), d
 
 **Keine.** Alle Annahmen in Abschnitt 9 sind mit Begründung gesetzt und können beim Plan-Review
 umgestoßen werden; Punkt 1 in Abschnitt 10 ist additiv und ändert keinen bestehenden Vertrag.
+
+## B6-Protokoll (Parallelitäts-Gate unter Prod-Grenzen, 2026-10-12)
+
+**Ergebnis: bestanden, für beide Seeds (1 s und 30 s), alle Kriterien (a)–(e).** Branch
+`feat/381-admin-dashboard-b`, Api-Image aus `b4fbc721` (Skripte in `a2c2bfc5`).
+
+### Aufbau
+
+- **Wegwerf-Umgebung statt Dev-Stack** (Controller-Ruling R-2): eigenes Docker-Netz, `postgres:16-alpine`
+  mit `shared_preload_libraries=pg_stat_statements`, `redis:7.2-alpine`; kein `docker compose up/down`,
+  der Dev-Stack (`emotepurge-dev-*`) lief unberührt weiter. Migrationen per
+  `dotnet ef database update --connection …` gegen die Wegwerf-DB, Image per
+  `docker build -f src/EmotePurge.Api/Dockerfile` unter eigenem Tag.
+- **Api-Container** mit `--cpus=1 --memory=512m` (im Container geprüft: `cpu.max = 100000 100000`,
+  `memory.max = 536870912`), `127.0.0.1:18080`, Produktions-Logging unverändert (EF-Kommandos auf
+  Information wie in Prod) plus `Logging__LogLevel__EmotePurge.Infrastructure.Services.AdminDashboardReader=Debug`
+  und Simple-Console-Formatter einzeilig mit UTC-Zeitstempel `yyyy-MM-ddTHH:mm:ss.fffZ` (der Parser des
+  Messskripts braucht genau das). Der Sampler lief wie in Prod mit, und zwar in der Kadenz des Seeds
+  (`SystemLoad__IntervalSeconds` = 1 bzw. 30); das Image bringt seinen eigenen `HEALTHCHECK` (30 s,
+  aus dem Container, eigene Rate-Limit-Partition) mit.
+- **Seed** `scripts/seed-system-load-samples.sql` (`-v confirm_truncate=yes -v cadence=1|30`): je
+  Source 24 h + 6 Tage Vorlauf, zwei Instanzwechsel im Fenster, eine gemeinsame 10-min-Lücke,
+  Intervallzähler; dazu 400 Tage `SystemLoadHourly`, damit `13mo` über ein volles Jahr Stundenwerte
+  baut. 1 s: 1.208.400 Rohzeilen, davon 171.600 im 24-h-Fenster (wie der B5-Fixture-Seed), 19.200
+  Stundenzeilen, ~14 s. 30 s: 40.280 Rohzeilen, 5.720 im Fenster.
+- **Worker-Health**: kein echter Worker; das Messskript hält `worker:health:twitch` per `redis-cli SET …
+  EX 60` alle 10 s frisch (`isConnected: true`, `twitchLastFrameUtc = jetzt`, Form wie
+  `WorkerHealthSnapshot`, `JsonSerializerOptions.Web`).
+- **Admin-Cookie ohne Twitch-Login und ohne Produktänderung**: Cookie-Auth ist ein selbsttragendes,
+  per Data Protection geschütztes Ticket (Anwendungsname `EmotePurge`, Purpose der Cookie-Middleware,
+  Schema `Cookies`). Ein Wegwerf-Werkzeug außerhalb des Repos hat einen Schlüsselring erzeugt und damit
+  ein Ticket mit `NameIdentifier`, `twitch:login` und `twitch:session_issued_at` gemintet; derselbe
+  Schlüsselring war als `/keys` in den Container gemountet (`DataProtection__KeyPath=/keys`). Dazu eine
+  `Users`-Zeile für die Sitzungsprüfung in `OnValidatePrincipal` und `Auth__AdminTwitchUserIds` auf
+  dieselbe ID. Der Cookie-Wert lag nur in einer Umgebungsvariable (`GATE_ADMIN_COOKIE`).
+- **Lauf** `scripts/dashboard-concurrency-gate.sh`, Standardwerte: 384 Haupttakte à 2,5 s (16 min,
+  Range-Wechsel `24h`/`13mo` je Takt, je Takt drei parallele `curl`), danach dreimal 26 Takte nur Probe
+  (65 s, beide Keys werden kalt) und ein Doppeltakt mit 3 × `24h` + 3 × `13mo` im selben Augenblick;
+  465 Health-Proben, 19,3 min. Die Probe geht `PROBE_OFFSET_MS` nach den Load-Requests raus (1 s: 50 ms,
+  30 s: 20 ms — der Aufbau beginnt erst ~12 ms nach dem Senden, nach Request-Parsing und Sitzungsprüfung;
+  bei Offset 0 läge die Sendezeit vor jedem Aufbauintervall und keine Probe zählte). Speicher und
+  `pg_stat_statements` je Takt bei +2,0 s. Auswertung `scripts/dashboard-concurrency-gate-eval.mjs`.
+- **Speicher über `clear_refs`, kein Fallback nötig**: `docker exec -u root … echo 5 > /proc/1/clear_refs`
+  funktionierte im Image (PID 1 = `dotnet EmotePurge.Api.dll`). Zuwachs je Takt = `VmHWM` seit dem
+  letzten Reset − `VmRSS` beim Reset. Zusatzspalte: cgroup `memory.current` (die Zahl hinter
+  `docker stats`), nicht gewertet.
+
+### Zahlen
+
+| Kriterium | 1-s-Seed (171.600 Zeilen) | 30-s-Seed (5.720 Zeilen) |
+|---|---|---|
+| Gültigkeit: kalte Zyklen je Key (Hauptphase) | `24h` 28, `13mo` 15 | `24h` 27, `13mo` 15 |
+| Gültigkeit: Proben im Aufbauintervall (≥ 40) | 45 (31 in `24h`-, 14 in `13mo`-Aufbauten) | 43 (29 / 14) |
+| (a) Aufbauten je Zyklus / Log ↔ `pg_stat_statements` | je Zyklus genau 1; 49 Aufbauten = 49 Load-Queries, 0 Abweichungen in 465 Fenstern | je Zyklus genau 1; 49 = 49, 0 Abweichungen |
+| (b) `VmHWM`-Zuwachs, Maximum über alle 465 Takte | **6,1 MiB** (Median in Aufbautakten 0,0 MiB; erster Aufbau nach Start 4,3 MiB) | **9,5 MiB** (Median 0,0; erster 0,8 MiB) |
+| (b) Zusatz: `VmHWM` absolut / cgroup `memory.current` max. | 216,4 MiB / 128,1 MiB | 222,4 MiB / 134,9 MiB |
+| (c) Health-Proben `200` | 465 / 465 | 465 / 465 |
+| (c) p95 der Proben im Aufbau | **3,8 ms** (max. 23,8 ms) | **3,2 ms** (max. 4,5 ms) |
+| (d) Doppeltakt: Reihenfolge, Gate-Wartezeit des zweiten Keys | seriell (`24h` zuerst); `13mo` wartete 337 / 339 / 278 ms, Antworten 200 in 431–524 ms, 0 × 503 | seriell; Wartezeit 32 / 28 / 31 ms, Antworten 200 in 184–210 ms, 0 × 503 |
+| (e) `24h` uncached Ende-zu-Ende (`time_total`, n = Requests) | **Median 300,7 ms**, p95 888,7 ms, max. 1.352,7 ms (n = 84) | Median 19,9 ms, p95 44,6 ms, max. 76,1 ms (n = 80) |
+| (e) Antwortgröße max. | `24h` 97.739 B, `13mo` 140.003 B (≤ 262.144) | `24h` 95.960 B, `13mo` 138.495 B |
+| Zusatz: Aufbauzeit laut Log (Median / erster) | `24h` 298 / 1.323 ms; `13mo` 169 / 237 ms | `24h` 16 / 54 ms; `13mo` 170 / 328 ms |
+
+Lesart:
+
+- **(d) misst die Wartezeit auf das Aufbau-Gate**, nicht die gesamte Antwortzeit (B2-Review): die
+  `5 s` der Spec sind das `WaitAsync(5 s)` der Fassade. Gemessen als Aufbaubeginn des zweiten Keys minus
+  Sendezeit seiner Requests. Die Antwortzeit des zweiten Keys ist Wartezeit plus eigener Aufbau; sie lag
+  in allen sechs Doppeltakten unter 0,6 s, also auch unter der strengeren Lesart.
+- **(a) Single-Flight**: in 42 der 43 Hauptzyklen (1 s) bediente der eine Aufbau alle drei Requests. In
+  Takt 77 lief die `13mo`-TTL genau zwischen den Ankünften ab: zwei Requests bekamen noch den alten
+  Cache-Wert (14 / 23 ms), der dritte startete den Aufbau — weiterhin eine Query für den Takt, kein
+  Doppelaufbau. Im 30-s-Lauf dasselbe einmal mit zwei zu eins.
+- **(e) Median, nicht Maximum**: B5 wertet den Median; das Skript wertet ebenso. Die Ausreißer sind die
+  ersten beiden `24h`-Aufbauten nach Containerstart (1.323 und 882 ms, Tiered-JIT-Aufwärmphase unter
+  einer CPU); danach lagen alle `24h`-Aufbauten bei 266–441 ms. Ein Admin, der direkt nach einem Deploy
+  die Seite öffnet, sieht die erste `24h`-Antwort also nach gut einer Sekunde, nicht nach 0,3 s. Mit drei
+  Clients serialisiert jeder Request die Antwort selbst; das ist in den 300,7 ms enthalten.
+- **(b) Speicher**: die Rohzeilen werden gestreamt, der Zuwachs bleibt auch beim allerersten Aufbau im
+  einstelligen MiB-Bereich — weit unter 64 MiB, die Budgetannahme der Spec (EF-Materialisierung, ~16 MiB
+  Nutzdaten × 4) wird vom Typed-Reader-Pfad nicht annähernd erreicht.
+- **30 s ist erwartungsgemäß Formsache**; die Gültigkeitsgrenzen ließen sich dort nur mit 20 ms
+  Proben-Offset erreichen, weil ein warmer `24h`-Aufbau 11–54 ms dauert.
+
+### Negativnachweis
+
+`node scripts/dashboard-concurrency-gate-eval.mjs scripts/fixtures/dashboard-gate/<datei>.csv` (je 50
+Haupttakte mit Aufbau, ein Doppeltakt):
+
+| Fixture | Exit | Benannter Grund |
+|---|---|---|
+| `clean.csv` | 0 | `GATE PASSED` |
+| `memory-65mib.csv` | 1 | `(b) memory increment 65.0 MiB at tick 20 exceeds 64 MiB` |
+| `health-p95-120ms.csv` | 1 | `(c) health probe p95 inside rebuilds 120.0 ms is not below 100 ms` |
+| `health-non-200.csv` | 1 | `(c) health probe at tick 37 answered 429` |
+
+Exit 2 bedeutet „Lauf ungültig" (zu wenige Zyklen oder Proben im Aufbau), 64 Eingabefehler.
+
+### Reproduzieren
+
+```
+docker network create gate-net
+docker run -d --name gate-pg --network gate-net -p 127.0.0.1:15499:5432 -e POSTGRES_DB=emotepurge \
+  -e POSTGRES_USER=emotepurge -e POSTGRES_PASSWORD=<pw> postgres:16-alpine \
+  -c shared_preload_libraries=pg_stat_statements
+docker exec gate-pg psql -U emotepurge -d emotepurge -c 'CREATE EXTENSION pg_stat_statements'
+docker run -d --name gate-redis --network gate-net redis:7.2-alpine redis-server --requirepass <redis-pw>
+dotnet ef database update --project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api \
+  --connection 'Host=localhost;Port=15499;Database=emotepurge;Username=emotepurge;Password=<pw>'
+docker exec -i gate-pg psql -U emotepurge -d emotepurge -v ON_ERROR_STOP=1 -v confirm_truncate=yes \
+  -v cadence=1 -f - < scripts/seed-system-load-samples.sql
+docker build -f src/EmotePurge.Api/Dockerfile -t gate-api .
+docker run -d --name gate-api --network gate-net --cpus=1 --memory=512m -p 127.0.0.1:18080:8080 \
+  -v <keyring-dir>:/keys -e DataProtection__KeyPath=/keys -e Auth__AdminTwitchUserIds=<id> \
+  -e SystemLoad__IntervalSeconds=1 -e ConnectionStrings__DefaultConnection=… -e Redis__ConnectionString=… \
+  -e Logging__LogLevel__EmotePurge.Infrastructure.Services.AdminDashboardReader=Debug \
+  -e Logging__Console__FormatterName=simple -e Logging__Console__FormatterOptions__SingleLine=true \
+  -e 'Logging__Console__FormatterOptions__TimestampFormat=yyyy-MM-ddTHH:mm:ss.fffZ ' \
+  -e Logging__Console__FormatterOptions__UseUtcTimestamp=true gate-api
+API_CONTAINER=gate-api PG_CONTAINER=gate-pg REDIS_CONTAINER=gate-redis REDIS_PASSWORD=<redis-pw> \
+  GATE_ADMIN_COOKIE=<cookie> PROBE_OFFSET_MS=50 OUT=gate-1s.csv scripts/dashboard-concurrency-gate.sh
+node scripts/dashboard-concurrency-gate-eval.mjs gate-1s.csv
+```
+
+Den Cookie liefert entweder ein Browser-Login gegen diesen Container (dann `<keyring-dir>` beschreibbar
+lassen) oder ein mit demselben Schlüsselring gemintetes Ticket wie oben; plus `Users`-Zeile für die ID.
+Danach alle `gate-*`-Container, das Netz und die anonymen Volumes entfernen.
