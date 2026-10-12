@@ -4,9 +4,10 @@ namespace EmotePurge.Infrastructure.Services;
 
 /// <summary>Builds one hourly value from raw observations using the #380 pair rules.</summary>
 /// <remarks>
-/// The pair, rate and P95 helpers are internal so the admin dashboard's raw read path
-/// (<see cref="AdminDashboardLoadBucketing"/>) applies exactly the same gap rule and nearest-rank P95
-/// instead of a second implementation (#381).
+/// The pair, rate and P95 helpers are internal so the admin dashboard's raw read path (#381,
+/// <see cref="AdminDashboardRawLoadAccumulator"/>) applies exactly the same gap rule and nearest-rank P95
+/// instead of a second implementation; <see cref="MaximumPairGap"/> also bounds how far before its window
+/// that path reads.
 /// </remarks>
 public static class SystemLoadRollupMath
 {
@@ -80,7 +81,10 @@ public static class SystemLoadRollupMath
 
     /// <summary>The #380 gap rule: a pair counts only with a positive gap of at most 2.5 configured intervals.</summary>
     internal static bool IsPairWithinGap(TimeSpan elapsed, int samplingIntervalSeconds) =>
-        elapsed > TimeSpan.Zero && elapsed <= TimeSpan.FromSeconds(samplingIntervalSeconds * 2.5d);
+        elapsed > TimeSpan.Zero && elapsed <= MaximumPairGap(samplingIntervalSeconds);
+
+    /// <summary>The longest gap a pair may span: 2.5 configured intervals.</summary>
+    internal static TimeSpan MaximumPairGap(int samplingIntervalSeconds) => TimeSpan.FromSeconds(samplingIntervalSeconds * 2.5d);
 
     /// <summary>Difference of a cumulative counter; null when either end is unknown or the counter fell.</summary>
     internal static long? Delta(long? current, long? previous) =>
