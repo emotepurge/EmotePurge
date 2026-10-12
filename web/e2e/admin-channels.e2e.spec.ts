@@ -360,6 +360,81 @@ test.describe('global admin on /admin/channels', () => {
     await expect(page.getByText('7TV: kein aktives Emote-Set.').first()).toBeVisible();
     await expect(page.getByText('Letzter Sync-Versuch')).toBeVisible();
   });
+
+  test('filters by live state and name, keeps both in the URL, and offers a link to the channel', async ({
+    page,
+  }) => {
+    await mockAdminChannelList(page, [
+      { channelName: 'alpha', liveState: 'live' },
+      { channelName: 'handofblood', liveState: 'live' },
+      { channelName: 'hansolo', liveState: 'offline' },
+      { channelName: 'beta', liveState: 'unknown' },
+      { channelName: 'sensitron', isBotActive: false },
+    ]);
+
+    await page.goto('/admin/channels');
+
+    const stateGroup = page.getByRole('radiogroup', { name: 'Nach Status filtern' });
+    await expect(stateGroup.getByRole('radio', { name: /^Alle 5/ })).toBeVisible();
+    await expect(stateGroup.getByRole('radio', { name: /^Live 2/ })).toBeVisible();
+    await expect(stateGroup.getByRole('radio', { name: /^Inaktiv 1/ })).toBeVisible();
+
+    await stateGroup.getByRole('radio', { name: /^Live/ }).click();
+    await expect(page).toHaveURL(/[?&]state=live/);
+    await expect(page.getByRole('link', { name: '#alpha' })).toBeVisible();
+    await expect(page.getByRole('link', { name: '#handofblood' })).toBeVisible();
+    await expect(page.getByRole('link', { name: '#hansolo' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: '#sensitron' })).toHaveCount(0);
+
+    // The counts describe the whole fleet, not the current search.
+    await page.getByRole('searchbox', { name: 'Channels nach Name durchsuchen' }).fill('  HAND ');
+    await expect(page).toHaveURL(/q=HAND|q=%20%20HAND/);
+    await expect(page.getByRole('link', { name: '#alpha' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: '#handofblood' })).toBeVisible();
+    await expect(stateGroup.getByRole('radio', { name: /^Live 2/ })).toBeVisible();
+
+    // Both survive a reload, read back from the URL.
+    await page.reload();
+    await expect(stateGroup.getByRole('radio', { name: /^Live/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    await expect(
+      page.getByRole('searchbox', { name: 'Channels nach Name durchsuchen' }),
+    ).toHaveValue('  HAND ');
+    await expect(page.getByRole('link', { name: '#handofblood' })).toBeVisible();
+    await expect(page.getByRole('link', { name: '#alpha' })).toHaveCount(0);
+
+    // The shortcut sits next to the other row actions and names its channel.
+    await expect(page.getByRole('link', { name: /Zum Channel.*handofblood/ })).toHaveAttribute(
+      'href',
+      '/channels/handofblood/usage-stats',
+    );
+
+    // A combination that rules everything out says so and can be undone in one click.
+    await page.getByRole('searchbox', { name: 'Channels nach Name durchsuchen' }).fill('zzz');
+    await expect(page.getByText('Kein Channel passt zu Suche und Filter.')).toBeVisible();
+    await page.getByRole('button', { name: 'Zurücksetzen' }).last().click();
+    await expect(page).toHaveURL('/admin/channels');
+    await expect(page.getByRole('link', { name: '#sensitron' })).toBeVisible();
+  });
+
+  test('shows the live and offline counts as unknown while no live status exists', async ({
+    page,
+  }) => {
+    await mockAdminChannelList(page, [{ channelName: 'alpha' }, { channelName: 'beta' }]);
+
+    await page.goto('/admin/channels?state=bogus');
+
+    const stateGroup = page.getByRole('radiogroup', { name: 'Nach Status filtern' });
+    await expect(stateGroup.getByRole('radio', { name: /^Live unbekannt/ })).toBeVisible();
+    await expect(stateGroup.getByRole('radio', { name: /^Offline unbekannt/ })).toBeVisible();
+    // An unknown ?state= is treated as "all".
+    await expect(stateGroup.getByRole('radio', { name: /^Alle/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+  });
 });
 
 test.describe('non-admin', () => {

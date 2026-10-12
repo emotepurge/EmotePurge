@@ -1,6 +1,14 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  ElementRef,
+  computed,
+  inject,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
@@ -17,10 +25,12 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { ADMIN_LIVE_URL, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { liveEvents } from '../../core/live/live-reload';
+import { listQueryState } from '../../core/routing/list-query-state';
 import { joinWithBroadcasterLockPrompt } from '../../shared/channels/join-with-lock-prompt';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
+import { SegmentedControl, SegmentedControlOption } from '../../shared/ui/segmented-control';
 import { SkeletonRows } from '../../shared/ui/skeleton-rows';
 import { StateDot } from '../../shared/ui/state-dot';
 import { StatusBadge } from '../../shared/ui/status-badge';
@@ -28,6 +38,16 @@ import {
   TypedConfirmDialogData,
   openTypedConfirmDialog,
 } from '../../shared/ui/typed-confirm-dialog';
+import {
+  CHANNEL_STATES,
+  ChannelStateFilter,
+  countChannelStates,
+  filterChannels,
+  toChannelStateFilter,
+} from './admin-channel-filter';
+
+/** Typing settles this long before it reaches the URL — same as the audit log's text filters. */
+const SEARCH_DEBOUNCE_MS = 300;
 
 const NO_CHANNELS: AdminChannel[] = [];
 
@@ -35,6 +55,9 @@ const EMPTY_RESULT: AdminChannelsResult = { channels: NO_CHANNELS, livePolledAtU
 
 /** Shown for a channel that has never been synced — distinct from a date, on purpose. */
 const NO_VALUE = '—';
+
+/** Count placeholder when the live state is not known; the accessible name says so in words. */
+const NO_VALUE_COUNT = '–';
 
 /** How long the "resync queued" hint stays on the row. Longer than the copy-link feedback (2 s)
  *  because it confirms a request that left the browser, not a local clipboard write. */
@@ -73,6 +96,7 @@ const LIVE_AGE_TICK_MS = 30_000;
     NoticeBanner,
     ReactiveFormsModule,
     RouterLink,
+    SegmentedControl,
     SkeletonRows,
     StateDot,
     StatusBadge,
@@ -122,6 +146,30 @@ const LIVE_AGE_TICK_MS = 30_000;
         </p>
       }
 
+      <div class="flex flex-wrap items-center gap-2">
+        <app-segmented-control
+          [options]="stateOptions()"
+          [value]="stateFilter()"
+          (valueChange)="onStateChange($event)"
+          [ariaLabel]="'admin.channels.filter.stateLabel' | transloco"
+        />
+        <input
+          #searchInput
+          type="search"
+          class="app-input-sm w-48"
+          [value]="search()"
+          (input)="onSearchInput($event)"
+          [placeholder]="'admin.channels.filter.searchPlaceholder' | transloco"
+          [attr.aria-label]="'admin.channels.filter.searchLabel' | transloco"
+          [title]="'admin.channels.filter.searchLabel' | transloco"
+        />
+        @if (hasActiveFilters()) {
+          <button type="button" appButton="outline" (click)="resetFilters()">
+            {{ 'admin.channels.filter.reset' | transloco }}
+          </button>
+        }
+      </div>
+
       @if (errorMessage(); as error) {
         <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
       }
@@ -133,13 +181,29 @@ const LIVE_AGE_TICK_MS = 30_000;
           [title]="'admin.channels.empty' | transloco"
           [description]="'admin.channels.emptyHint' | transloco"
         />
+      } @else if (visibleChannels().length === 0) {
+        <!-- Channels exist, the filter just rules them all out — a different state from the one
+             above, with a different way out. -->
+        <app-empty-state
+          [title]="'admin.channels.filter.noMatches' | transloco"
+          [description]="
+            (liveStatusUnknownForFilter()
+              ? 'admin.channels.filter.noMatchesLiveUnknown'
+              : 'admin.channels.filter.noMatchesHint'
+            ) | transloco
+          "
+        >
+          <button type="button" appButton="outline" (click)="resetFilters()">
+            {{ 'admin.channels.filter.reset' | transloco }}
+          </button>
+        </app-empty-state>
       } @else {
         <!-- Hairline-divided rows, same recipe as the overview and the vote-session list: every row
              is the same kind of thing, and this is the page an admin scans to find the one that is
              not. Twenty bordered rectangles gave the healthy rows exactly as much presence as the
              broken one. -->
         <ul class="-mx-3 divide-y divide-border border-y border-border">
-          @for (channel of channels(); track channel.channelName) {
+          @for (channel of visibleChannels(); track channel.channelName) {
             <li
               class="relative flex flex-col gap-2 px-3 py-3 transition-colors hover:bg-surface-inset"
             >
@@ -208,6 +272,17 @@ const LIVE_AGE_TICK_MS = 30_000;
                     </span>
                   }
                   <div class="relative z-10 flex flex-wrap items-center gap-2">
+                    <!-- Straight to the channel's own workspace; the row itself stays the admin
+                         drilldown. Same weight as the sibling buttons: the button directive has no
+                         quieter non-destructive variant, and a bare text link would miss the
+                         touch-target floor. -->
+                    <a
+                      appButton="neutral"
+                      [routerLink]="['/channels', channel.channelName, 'usage-stats']"
+                    >
+                      {{ 'admin.channels.actions.openChannel' | transloco }}
+                      <span class="sr-only">{{ channel.channelName }}</span>
+                    </a>
                     @if (!channel.isBotActive) {
                       <button
                         type="button"
@@ -342,6 +417,69 @@ export class AdminChannelsPage {
     return Math.max(0, Math.round((this.nowMs() - new Date(polledAt).getTime()) / 60_000));
   });
 
+  // Filter and search live in the URL (?state=live&q=hand): reload, deep link and the back button
+  // from a drilldown all return to the same slice. SSE reloads only replace the resource value, so
+  // they keep whatever is selected.
+  private readonly searchInput = viewChild<ElementRef<HTMLInputElement>>('searchInput');
+
+  private readonly query = listQueryState({ state: 'all', q: '' });
+
+  protected readonly stateFilter = computed<ChannelStateFilter>(() =>
+    toChannelStateFilter(this.query.params().state),
+  );
+  protected readonly search = this.query.textFilter('q', SEARCH_DEBOUNCE_MS);
+
+  // Counts cover the whole fleet and ignore the search, so the segments stay stable while typing.
+  private readonly counts = computed(() => countChannelStates(this.channels()));
+
+  /** True once a real list is on screen. The resource has a default value, so hasValue() alone is
+   *  already true on the first frame (see showSkeleton); and after a failed load there is no list
+   *  to count. Counts then stay off entirely instead of claiming "0". A reload keeps the previous
+   *  value and therefore keeps the counts. */
+  private readonly hasListData = computed(
+    () => this.channelsResource.hasValue() && this.channelsResource.status() !== 'loading',
+  );
+
+  /** The Live/Offline filter is selected but the data cannot say yet who is live — the empty result
+   *  is then not "nobody matches" but "not known". */
+  protected readonly liveStatusUnknownForFilter = computed(() => {
+    const state = this.stateFilter();
+    return (state === 'live' || state === 'offline') && this.counts()[state] === null;
+  });
+
+  protected readonly stateOptions = computed<SegmentedControlOption[]>(() => {
+    const counts = this.counts();
+    const withCounts = this.hasListData();
+    this.languageService.lang();
+    return CHANNEL_STATES.map((state) => {
+      const count = counts[state];
+      if (!withCounts) {
+        return { value: state, labelKey: `admin.channels.filter.state.${state}` };
+      }
+      return count === null
+        ? {
+            value: state,
+            labelKey: `admin.channels.filter.state.${state}`,
+            detail: NO_VALUE_COUNT,
+            detailLabel: this.translocoService.translate('admin.channels.filter.countUnknown'),
+          }
+        : {
+            value: state,
+            labelKey: `admin.channels.filter.state.${state}`,
+            detail: this.formatNumber(count),
+          };
+    });
+  });
+
+  /** Alphabetical order comes from the server and is kept; filtering never reorders. */
+  protected readonly visibleChannels = computed(() =>
+    filterChannels(this.channels(), this.stateFilter(), this.search()),
+  );
+
+  protected readonly hasActiveFilters = computed(
+    () => this.stateFilter() !== 'all' || this.search().trim() !== '',
+  );
+
   /** Drives the refresh button's disabled state only — never a content swap. */
   protected readonly isLoading = computed(() => this.channelsResource.isLoading());
 
@@ -406,6 +544,21 @@ export class AdminChannelsPage {
 
     const tick = setInterval(() => this.nowMs.set(Date.now()), LIVE_AGE_TICK_MS);
     inject(DestroyRef).onDestroy(() => clearInterval(tick));
+  }
+
+  protected onStateChange(state: string): void {
+    this.query.setParams({ state: toChannelStateFilter(state) });
+  }
+
+  protected onSearchInput(event: Event): void {
+    this.search.set((event.target as HTMLInputElement).value);
+  }
+
+  protected resetFilters(): void {
+    this.query.setParams({ state: 'all', q: '' });
+    // Both reset buttons remove themselves once the filter is cleared, which would drop focus to
+    // <body>; the search field is always mounted and is where the reader continues.
+    this.searchInput()?.nativeElement.focus();
   }
 
   protected reload(): void {

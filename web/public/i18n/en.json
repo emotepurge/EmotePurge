@@ -481,6 +481,22 @@
       "liveBadge": "LIVE",
       "offlineBadge": "Offline",
       "liveAsOf": "As of {{minutes}} min ago",
+      "filter": {
+        "stateLabel": "Filter by status",
+        "searchLabel": "Search channels by name",
+        "searchPlaceholder": "Search channels",
+        "reset": "Reset",
+        "noMatches": "No channel matches the search and filter.",
+        "noMatchesHint": "Loosen the search or the status filter to see channels again.",
+        "noMatchesLiveUnknown": "The live status is not known yet, so there is no telling who is live or offline.",
+        "countUnknown": "unknown, no live status yet",
+        "state": {
+          "all": "All",
+          "live": "Live",
+          "offline": "Offline",
+          "inactive": "Inactive"
+        }
+      },
       "stats": {
         "emotes": "{{count}} emotes ({{archived}} archived)",
         "voteSessions": "{{count}} votings ({{active}} active)",
@@ -488,6 +504,7 @@
         "lastSync": "Last sync: {{date}}"
       },
       "actions": {
+        "openChannel": "Open channel",
         "join": "Join",
         "leave": "Leave",
         "resync": "Resync",
