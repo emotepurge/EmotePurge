@@ -211,6 +211,32 @@ public partial class EmoteServiceTests
         Assert.Equal((2, 7), (await UsageBySlotAsync(verify, row.Id, set))[s1.Id]);
     }
 
+    // The provisional date survives a JS Date round trip: whole milliseconds, so a following report that
+    // echoes the date back at millisecond precision still hits the generation.
+    [Fact]
+    public async Task Entries_Restore_StampsTheProvisionalDateInWholeMilliseconds_AndAMillisecondReportHitsIt()
+    {
+        var set = NewSet();
+        var x = NewSevenTvId();
+        var channel = await SeedOnAsync("slotrpt_msdate", set);
+        var s1 = await SeedSingleSlotEmoteAsync(channel, x, "aaa", T1, archived: true, usage: [1]);
+        await RestoreAsync(set, [x], [Entry(x, "aaa", s1.Id, T1)]);
+        DateTime provisional;
+        await using (var check = fixture.CreateDbContext())
+        {
+            provisional = (await SlotAsync(check, s1.Id)).AddedAt!.Value;
+        }
+
+        Assert.Equal(0, provisional.Ticks % TimeSpan.TicksPerMillisecond);
+
+        var asJsClientSendsIt = DateTimeOffset.FromUnixTimeMilliseconds(new DateTimeOffset(provisional, TimeSpan.Zero).ToUnixTimeMilliseconds()).UtcDateTime;
+        var deleted = await DeleteAsync(set, [x], [Entry(x, "aaa", s1.Id, asJsClientSendsIt)]);
+
+        Assert.Equal(1, Assert.Single(deleted.Channels).NewlyChangedCount);
+        await using var verify = fixture.CreateDbContext();
+        Assert.True((await SlotAsync(verify, s1.Id)).IsArchived);
+    }
+
     // AK 46: delete and undo with entries, then REST: the same slot id becomes authoritative on the new
     // date, and /totals shows one row with the old and the new usage.
     [Fact]

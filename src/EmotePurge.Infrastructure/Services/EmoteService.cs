@@ -812,7 +812,9 @@ public class EmoteService(
     // Steps 3 and 4 of plan 376 4.2, restore. An archived target is reactivated with a provisional date
     // (the next REST reconcile authorizes the new added_at on the same slot id, plan 372 2.3 step 5);
     // its usage rows stay with it. An active target is a no-op — no date reset on a retry or after a
-    // D7 resumption. The emote row is un-archived when a slot came back.
+    // D7 resumption. The emote row is un-archived when a slot came back. The provisional date is cut to
+    // whole milliseconds: a client echoing it back through a JS Date loses the sub-millisecond part, and a
+    // later report on this slot would miss the generation check and be a silent no-op.
     private static EmoteApplication RestoreSlots(Emote emote, List<EmoteSlot> targets, int resolvedEntries, DateTime now)
     {
         var slotChanged = false;
@@ -820,7 +822,7 @@ public class EmoteService(
         {
             slot.IsArchived = false;
             slot.ArchivedAt = null;
-            slot.AddedAt = now;
+            slot.AddedAt = new DateTime(now.Ticks - now.Ticks % TimeSpan.TicksPerMillisecond, DateTimeKind.Utc);
             slot.AddedAtFromRest = false;
             slot.LastSyncedAt = now;
             slotChanged = true;
