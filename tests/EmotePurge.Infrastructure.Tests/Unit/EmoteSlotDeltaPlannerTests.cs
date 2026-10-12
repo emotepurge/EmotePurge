@@ -1,5 +1,8 @@
+using System.Text.Json;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Services;
+using EmotePurge.Infrastructure.SevenTv;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Unit;
@@ -341,6 +344,23 @@ public class EmoteSlotDeltaPlannerTests
         var plan = Plan(Delta(updated: [Rename(X, oldName, newName)]), [snapshot]);
 
         Assert.Equal(SlotDeltaAmbiguity.RenameWithSiblings, Single(plan).AmbiguityReason);
+    }
+
+    [Fact]
+    public void Rename_OfTheRealQuirkFrame_AgainstTwoActiveSlots_IsAmbiguous()
+    {
+        // The frame captured live (probeB -> probeC reported as o = probeB, n = probeD), parsed for real.
+        var body = JsonDocument.Parse(File.ReadAllText(
+            Path.Combine("Unit", "TestData", "dispatch-emote-set-update-renamed-with-siblings.json")));
+        var delta = SevenTvDispatchParser.ParseEmoteSetUpdate(
+            body.RootElement.GetProperty("d").GetProperty("body"), NullLogger.Instance);
+        const string id = "01KAMA120V9DC2P1YW9QWFHA16";
+        var snapshot = Emote(id, "probeD", [Active("s1", "probeD", Day(1)), Active("s2", "probeB", Day(2))]);
+
+        var plan = Plan(delta, [snapshot]);
+
+        Assert.Equal(SlotDeltaAmbiguity.RenameWithSiblings, Single(plan).AmbiguityReason);
+        Assert.False(plan.HasInventoryChanges);
     }
 
     [Fact]

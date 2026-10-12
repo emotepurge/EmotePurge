@@ -75,6 +75,34 @@ public class SevenTvDispatchParserTests
     }
 
     [Fact]
+    public void ParseEmoteSetUpdate_RealRenameFrameWithSiblings_CarriesTheQuirkOfValueNameAheadOfTheRename()
+    {
+        // Captured live: the second of two aliases was renamed probeB -> probeC, yet the frame's
+        // value.name reads probeD (old_value.name is probeB). The parser reports what the frame says.
+        var delta = SevenTvDispatchParser.ParseEmoteSetUpdate(
+            LoadBody("dispatch-emote-set-update-renamed-with-siblings.json"), NullLogger.Instance);
+
+        var rename = Assert.Single(delta.Updated);
+        Assert.Equal(("01KAMA120V9DC2P1YW9QWFHA16", "probeB", "probeD"), (rename.Id, rename.OldName, rename.NewName));
+    }
+
+    [Fact]
+    public void ParseEmoteSetUpdate_RealPulledFrameWithoutAlias_YieldsOnePullPerSlotWithItsName()
+    {
+        var delta = SevenTvDispatchParser.ParseEmoteSetUpdate(
+            LoadBody("dispatch-emote-set-update-pulled-without-alias.json"), NullLogger.Instance);
+
+        Assert.Equal(
+            [
+                new SevenTvPulledEntry("01KAMA120V9DC2P1YW9QWFHA16", "probeD"),
+                new SevenTvPulledEntry("01KAMA120V9DC2P1YW9QWFHA16", "probeC"),
+            ],
+            delta.Pulled);
+        Assert.Empty(delta.Pushed);
+        Assert.Empty(delta.Updated);
+    }
+
+    [Fact]
     public void ParseEmoteSetUpdate_AddedRemovedFieldNames_YieldEmptyDelta()
     {
         // Regression guard for the bug that sank the 2026-07 implementation: its parser read
