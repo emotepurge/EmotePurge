@@ -63,7 +63,8 @@ public static class UsageStatsEndpoints
         // emote, range), which is what actually keeps these off the wire.
         group.MapGet("/daily", async (
             string channelName,
-            string emoteId,
+            string? emoteId,
+            string? slotId,
             string from,
             string to,
             string? emoteSetId,
@@ -71,7 +72,10 @@ public static class UsageStatsEndpoints
             IUsageStatQueryService usageStatQueryService,
             CancellationToken ct) =>
         {
-            if (string.IsNullOrWhiteSpace(emoteId))
+            // slotId wins when both are given (plan 376 2.5); neither (or only whitespace) is the old
+            // empty-emote-id answer, now also for a missing parameter (A9: it used to be the framework's 400).
+            var bySlot = !string.IsNullOrWhiteSpace(slotId);
+            if (!bySlot && string.IsNullOrWhiteSpace(emoteId))
             {
                 return Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdEmpty });
             }
@@ -90,8 +94,10 @@ public static class UsageStatsEndpoints
 
             // Null covers both "unknown id" and "someone else's emote" — a bare 404 either way, so
             // the response does not confirm that a guessed id exists elsewhere.
-            var series = await usageStatQueryService.GetDailySeriesAsync(
-                channelName, emoteId, fromDate, toDate, scope, ct);
+            // The slot is resolved against the route's channel inside the service, like the emote id.
+            var series = bySlot
+                ? await usageStatQueryService.GetDailySlotSeriesAsync(channelName, slotId!, fromDate, toDate, scope, ct)
+                : await usageStatQueryService.GetDailySeriesAsync(channelName, emoteId!, fromDate, toDate, scope, ct);
             return series is null ? Results.NotFound() : Results.Ok(series);
         })
         .AddEndpointFilter<EmoteSetIdValidationFilter>();

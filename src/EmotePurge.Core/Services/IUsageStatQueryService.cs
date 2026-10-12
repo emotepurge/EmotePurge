@@ -121,6 +121,10 @@ public record EmoteDailyUsageDto(DateOnly Date, int UseCount);
 /// since the worker's live poll shipped: an absent day before that means "unknown", not
 /// "offline", and the consumer must render it unmarked rather than as a statement.
 /// </param>
+/// <param name="SlotId">
+/// The slot the series shows when it was asked for by slot (<c>/daily?slotId=</c>), <c>null</c> on the
+/// emote path (the sum over the emote's slots). Plan 376 2.5.
+/// </param>
 public record EmoteUsageSeriesDto(
     string EmoteId,
     string EmoteName,
@@ -130,7 +134,8 @@ public record EmoteUsageSeriesDto(
     DateOnly? FirstUsedDate,
     DateOnly? LastUsedDate,
     IReadOnlyList<EmoteDailyUsageDto> Days,
-    IReadOnlyList<DateOnly> LiveDays);
+    IReadOnlyList<DateOnly> LiveDays,
+    string? SlotId = null);
 
 /// <summary>
 /// One usage-grid row's day rows inside <see cref="ChannelUsageSeriesDto"/> — the same rows, in the same
@@ -278,6 +283,16 @@ public interface IUsageStatQueryService
     /// </param>
     Task<EmoteUsageSeriesDto?> GetDailySeriesAsync(
         string channelName, string emoteId, DateOnly from, DateOnly to, EmoteSetScope setScope = default, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The daily usage series of one emote slot (plan 376 2.5): the same shape and scope rules as
+    /// <see cref="GetDailySeriesAsync"/>, over the rows of that slot alone. <c>null</c> when the slot id is
+    /// unknown or its emote belongs to another channel (the caller answers 404). Archived slots and unsettled
+    /// seeds are allowed; a seed reports the emote's name, a settled slot its own. A slot without usage in the
+    /// scope answers an empty series. The numbers equal the slot's row in <see cref="GetUsageContextAsync"/>.
+    /// </summary>
+    Task<EmoteUsageSeriesDto?> GetDailySlotSeriesAsync(
+        string channelName, string slotId, DateOnly from, DateOnly to, EmoteSetScope setScope = default, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Every unarchived emote's daily usage for the channel and range at once. An unknown channel

@@ -188,10 +188,80 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
             return null;
         }
 
+        return await BuildDailySeriesAsync(
+            db.UsageStats.Where(u => u.EmoteId == emote.Id),
+            emote.Id,
+            emote.Name,
+            slotId: null,
+            emote.ChannelId,
+            emote.ActiveEmoteSetId,
+            from,
+            to,
+            setScope,
+            cancellationToken);
+    }
+
+    public async Task<EmoteUsageSeriesDto?> GetDailySlotSeriesAsync(
+        string channelName, string slotId, DateOnly from, DateOnly to, EmoteSetScope setScope = default, CancellationToken cancellationToken = default)
+    {
+        if (from > to)
+        {
+            throw new ArgumentException(FromMustPrecedeToMessage, nameof(from));
+        }
+
+        var normalized = ChannelName.Normalize(channelName);
+
+        // Plan 376 2.5: slot -> emote -> channel, resolved against the channel of the route exactly like the
+        // emote lookup above, so a slot id of another channel is as unknown as a made-up one. Archived slots and
+        // unsettled seeds are allowed (ballot and history cases). A seed shows the emote's name (R2: its own name
+        // can be stale); a settled slot shows its own.
+        var slot = await db.EmoteSlots
+            .Where(s => s.Id == slotId && s.Emote.Channel.ChannelName == normalized)
+            .Select(s => new
+            {
+                s.Id,
+                s.EmoteId,
+                SlotName = s.Name,
+                s.SeedUnsettled,
+                EmoteName = s.Emote.Name,
+                s.Emote.ChannelId,
+                s.Emote.Channel.ActiveEmoteSetId
+            })
+            .FirstOrDefaultAsync(cancellationToken);
+        if (slot is null)
+        {
+            return null;
+        }
+
+        return await BuildDailySeriesAsync(
+            db.UsageStats.Where(u => u.SlotId == slot.Id),
+            slot.EmoteId,
+            slot.SeedUnsettled ? slot.EmoteName : slot.SlotName,
+            slot.Id,
+            slot.ChannelId,
+            slot.ActiveEmoteSetId,
+            from,
+            to,
+            setScope,
+            cancellationToken);
+    }
+
+    private async Task<EmoteUsageSeriesDto> BuildDailySeriesAsync(
+        IQueryable<UsageStat> rows,
+        string emoteId,
+        string name,
+        string? slotId,
+        string channelId,
+        string? activeEmoteSetId,
+        DateOnly from,
+        DateOnly to,
+        EmoteSetScope setScope,
+        CancellationToken cancellationToken)
+    {
         // AllSets drops the set predicate from both queries below: a null-session's row is
         // set-agnostic, so the drilldown opened from it has to be too.
         var allSets = setScope.IsAllSets;
-        var setId = setScope.SetId ?? emote.ActiveEmoteSetId;
+        var setId = setScope.SetId ?? activeEmoteSetId;
 
         // Sparse on purpose (only days with usage). Value and predicate both run over UseCount
         // alone, same reasoning as GetUsageContextAsync — a bot-only and a shared-only day are
@@ -201,8 +271,8 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
         // Grouped by day: the same day can carry one row per set and, since M2 (slot plan #373), one
         // per slot of the emote, and the DTO promises one entry per day. Single-table GroupBy, so
         // rule 10 is untouched.
-        var days = await db.UsageStats
-            .Where(u => u.EmoteId == emote.Id && (allSets || u.EmoteSetId == setId) && u.Date >= from && u.Date <= to && u.UseCount > 0)
+        var days = await rows
+            .Where(u => (allSets || u.EmoteSetId == setId) && u.Date >= from && u.Date <= to && u.UseCount > 0)
             .GroupBy(u => u.Date)
             .Select(g => new { Date = g.Key, UseCount = g.Sum(u => u.UseCount) })
             .OrderBy(d => d.Date)
@@ -214,8 +284,8 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
         // usage. Bounded by the set, though, and deliberately so: "first used" next to a set's
         // numbers must mean first used under that set (under AllSets: first used in the channel). Single-table GroupBy, so rule 10 is not
         // even touched.
-        var bounds = await db.UsageStats
-            .Where(u => u.EmoteId == emote.Id && (allSets || u.EmoteSetId == setId) && u.UseCount > 0)
+        var bounds = await rows
+            .Where(u => (allSets || u.EmoteSetId == setId) && u.UseCount > 0)
             .GroupBy(u => u.EmoteId)
             .Select(g => new
             {
@@ -231,19 +301,20 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
         // own days above, none under AllSets): the live-day rule, shared with the channel series.
         // The denominator stays set-wide — it is NOT the emote's own days, or every emote would
         // read "used on all live days".
-        var countedDates = await LoadSetCountedDatesAsync(emote.ChannelId, allSets ? null : setId, from, to, cancellationToken);
-        var liveDays = await LoadQualifyingLiveDaysAsync(emote.ChannelId, countedDates, from, to, cancellationToken);
+        var countedDates = await LoadSetCountedDatesAsync(channelId, allSets ? null : setId, from, to, cancellationToken);
+        var liveDays = await LoadQualifyingLiveDaysAsync(channelId, countedDates, from, to, cancellationToken);
 
         return new EmoteUsageSeriesDto(
-            emote.Id,
-            emote.Name,
+            emoteId,
+            name,
             from,
             to,
             dailyUsage.Sum(d => d.UseCount),
             bounds?.First,
             bounds?.Last,
             dailyUsage,
-            liveDays);
+            liveDays,
+            slotId);
     }
 
     public async Task<ChannelUsageSeriesDto> GetChannelSeriesAsync(
