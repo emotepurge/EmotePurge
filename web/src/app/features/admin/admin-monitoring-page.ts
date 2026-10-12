@@ -268,6 +268,12 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
           @if (trendErrorMessage(); as error) {
             <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
           }
+          @if (trendUnavailable() && rateLimits()?.telemetryAvailable !== false) {
+            <app-notice-banner variant="warning" data-testid="admin-trend-unavailable">
+              {{ 'admin.dashboard.rateLimits.trendUnavailable' | transloco }}
+            </app-notice-banner>
+          }
+          <!-- The newest bucket is the running minute by construction (RateLimitTelemetryStore). -->
           @if (trend(); as trendData) {
             @if (trendSeries().length) {
               <div class="flex flex-col gap-2">
@@ -277,6 +283,7 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
                   [bucketSeconds]="60"
                   legendStat="sum"
                   unit="count"
+                  [partialLastBucket]="true"
                   [title]="'admin.dashboard.rateLimits.trend.title' | transloco"
                 />
                 @if (trendSeries().length === 1) {
@@ -608,8 +615,15 @@ export class AdminMonitoringPage {
     RateLimitTelemetryTrend | undefined
   >({
     source: () => (this.trendResource.hasValue() ? this.trendResource.value() : undefined),
-    computation: (next, previous) => next ?? previous?.value,
+    // An unavailable response carries no series: it never replaces the last good one.
+    computation: (next, previous) =>
+      next?.telemetryAvailable === false ? previous?.value : (next ?? previous?.value),
   });
+
+  /** The latest trend response said the counter store could not be read (HTTP 200, no series). */
+  protected readonly trendUnavailable = computed(
+    () => this.trendResource.hasValue() && this.trendResource.value().telemetryAvailable === false,
+  );
 
   protected readonly trendErrorMessage = computed(() => {
     const error = this.trendResource.error();

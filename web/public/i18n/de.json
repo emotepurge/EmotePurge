@@ -356,7 +356,7 @@
       }
     },
     "rateLimits": {
-      "degraded": "Der Zähler-Store ist gerade nicht erreichbar. Es wird nur die aktive Konfiguration angezeigt, keine Zahlen.",
+      "degraded": "Der Zähler-Store ist gerade nicht erreichbar. Die Policy-Liste zeigt nur die aktive Konfiguration, keine Zahlen.",
       "policies": {
         "title": "Lokale Policies",
         "capacity": "Kapazität",
@@ -672,6 +672,7 @@
           "local": "Lokale Ablehnungen",
           "provider": "{{provider}} · {{source}}"
         },
+        "trendUnavailable": "Trend gerade nicht verfügbar — der Zähler-Store konnte nicht gelesen werden.",
         "trend": {
           "title": "Ablehnungen pro Minute, letzte 24 Stunden",
           "noProviderRejections": "Kein Provider hat in den letzten 24 Stunden mit HTTP 429 geantwortet."

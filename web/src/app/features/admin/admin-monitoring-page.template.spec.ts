@@ -458,6 +458,68 @@ describe('AdminMonitoringPage — real template', () => {
       ).toHaveLength(1);
     });
 
+    describe('when the counter store cannot be read', () => {
+      const TREND_HINT = 'admin.dashboard.rateLimits.trendUnavailable';
+      const unavailableTrend = () =>
+        trend({ telemetryAvailable: false, minuteStartsUtc: [], localRejections: [] });
+      const unavailableSnapshot = () => rateLimits({ telemetryAvailable: false });
+      const bannerCount = (root: HTMLElement) =>
+        region(root, 'admin-rate-limits')?.querySelectorAll('app-notice-banner').length;
+
+      it('marks the newest trend minute as still running in the chart text alternative', () => {
+        const root = render();
+        const alternative = region(root, 'admin-rate-limits')?.querySelector(
+          '[data-testid="chart-alternative"]',
+        );
+
+        expect(alternative?.textContent).toContain('admin.dashboard.chart.incomplete');
+      });
+
+      it('flags an unavailable trend on its own and still lists the policy rows', () => {
+        const root = render({
+          rateLimits: of(rateLimits({ policies: [policy({ rejectedLast24Hours: 3 })] })),
+          trend: of(unavailableTrend()),
+        });
+        const section = region(root, 'admin-rate-limits') as HTMLElement;
+
+        expect(section.textContent).toContain(TREND_HINT);
+        expect(rowsNamed(root, POLICIES_TITLE)).toHaveLength(1);
+        expect(section.querySelector('app-line-chart')).toBeNull();
+      });
+
+      it('keeps the last good series and adds the hint when a later trend is unavailable', async () => {
+        const root = render();
+        expect(region(root, 'admin-rate-limits')?.textContent).not.toContain(TREND_HINT);
+        vi.mocked(service.getRateLimitTrend).mockReturnValue(of(unavailableTrend()));
+
+        refreshButton(root).click();
+        await fixture.whenStable();
+        fixture.detectChanges();
+
+        const section = region(root, 'admin-rate-limits') as HTMLElement;
+        expect(section.textContent).toContain(TREND_HINT);
+        expect(section.querySelector('app-line-chart')).not.toBeNull();
+      });
+
+      it('shows exactly one telemetry banner when snapshot and trend are both unavailable', () => {
+        const root = render({
+          rateLimits: of(unavailableSnapshot()),
+          trend: of(unavailableTrend()),
+        });
+
+        expect(bannerCount(root)).toBe(1);
+        expect(region(root, 'admin-rate-limits')?.textContent).not.toContain(TREND_HINT);
+      });
+
+      it('keeps the trend chart beside the snapshot banner when only the snapshot is unavailable', () => {
+        const root = render({ rateLimits: of(unavailableSnapshot()) });
+        const section = region(root, 'admin-rate-limits') as HTMLElement;
+
+        expect(bannerCount(root)).toBe(1);
+        expect(section.querySelector('app-line-chart')).not.toBeNull();
+      });
+    });
+
     it('hands the current snapshot to the details dialog', () => {
       const snapshot = rateLimits({ policies: [policy()] });
       const root = render({ rateLimits: of(snapshot) });

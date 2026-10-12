@@ -356,7 +356,7 @@
       }
     },
     "rateLimits": {
-      "degraded": "The counter store is currently unreachable. Only the active configuration is shown, no numbers.",
+      "degraded": "The counter store is currently unreachable. The policy list shows only the active configuration, no numbers.",
       "policies": {
         "title": "Local policies",
         "capacity": "Capacity",
@@ -672,6 +672,7 @@
           "local": "Local rejections",
           "provider": "{{provider}} · {{source}}"
         },
+        "trendUnavailable": "Trend currently unavailable — the counter store could not be read.",
         "trend": {
           "title": "Rejections per minute, last 24 hours",
           "noProviderRejections": "No provider answered with HTTP 429 in the last 24 hours."
