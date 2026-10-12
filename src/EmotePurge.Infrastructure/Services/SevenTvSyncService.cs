@@ -421,8 +421,9 @@ public class SevenTvSyncService(
 
     /// <summary>
     /// Runs <see cref="ApplyAndSaveAsync"/> with the sync's recoveries around it and returns the row the
-    /// save finally wrote (a retry re-reads it) and whether the visible inventory changed, or null when
-    /// the row is gone — in which case nothing is left behind and the caller must return null as well.
+    /// save finally wrote (a retry re-reads it), whether the visible inventory changed and the slot
+    /// summary (flag on), or null when the row is gone — in which case nothing is left behind and the
+    /// caller must return null as well. Every error that propagates leaves a cleared change tracker.
     /// <list type="bullet">
     /// <item><b>One retry of the whole save</b> (plan #372 E17), shared by three causes: a concurrent
     /// emote-row insert (spec E10), a concurrent authoritative slot with the same key (flag on only),
@@ -516,6 +517,17 @@ public class SevenTvSyncService(
             // attempt's transaction has already rolled back on dispose.
             await AbandonVanishedRowAsync(cacheIdentity, cancellationToken);
             return null;
+        }
+        catch
+        {
+            // Every other way out propagates: a second conflict or deadlock, a coverage miss past the
+            // restarts, a programming error, a failed re-read, a cancellation. The attempt's transaction
+            // has rolled back, but its tracked changes (the channel's success stamps, a first
+            // observation interval, new emotes and slots) would stay in the context — and the periodic
+            // resync shares one context across every channel of its tick, where the next channel's
+            // save would write them without their locks, or its lock assertion would refuse them.
+            db.ChangeTracker.Clear();
+            throw;
         }
     }
 

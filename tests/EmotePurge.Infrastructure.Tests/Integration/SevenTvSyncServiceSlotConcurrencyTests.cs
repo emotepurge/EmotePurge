@@ -339,6 +339,66 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         Assert.Empty(await setup.EmoteSlots.Where(s => s.Emote.ChannelId == channel.Id).ToListAsync());
     }
 
+    // Review P2-2: a sync that fails for good must not leave its tracked changes in the context. The
+    // periodic resync runs every channel of its tick on one scope and one context; channel A fails
+    // terminally (a coverage miss past the restarts, or a deadlock in the retry as well), channel B
+    // follows on the same service. B must succeed with its own stamps, and nothing of A — success
+    // stamps, a first observation interval, slots — may ride B's save. Without the cleared tracker,
+    // A's added slots make B's lock assertion throw (deadlock case), and A's stamps and observation
+    // interval are written by B's save without A's channel lock (coverage case).
+    [Theory]
+    [InlineData("coverage")]
+    [InlineData("deadlock")]
+    public async Task TerminalFailureOfOneChannel_LeavesNothingForTheNextChannelOfTheTick(string failure)
+    {
+        await using var setup = fixture.CreateDbContext();
+        var a = await SeedChannelAsync(setup, $"slot_c_tick_a_{failure}");
+        var b = await SeedChannelAsync(setup, $"slot_c_tick_b_{failure}");
+        string[] newcomers = ["n1", "n2", "n3"];
+        var coverageHook = new CommandHook(
+            text => failure == "coverage" && text.Contains(EmoteLockMarker, StringComparison.Ordinal),
+            async occurrence =>
+            {
+                if (occurrence > newcomers.Length)
+                {
+                    return;
+                }
+
+                await using var writer = fixture.CreateDbContext();
+                var id = newcomers[occurrence - 1];
+                await ArchivedEmoteRowUpsert.EnsureRowsAsync(
+                    writer, a.Id, [new ArchivedEmoteRow(id, id, Url(id), null)], DateTime.UtcNow, CancellationToken.None);
+            });
+        var deadlockHook = new SaveHook((_, call) => failure == "deadlock" && call <= 2
+            ? throw new PostgresException("deadlock detected", "ERROR", "ERROR", PostgresErrorCodes.DeadlockDetected)
+            : Task.CompletedTask);
+        var apiClient = Substitute.For<ISevenTvApiClient>();
+        SevenTvEmote[] liveA = failure == "coverage" ? [.. newcomers.Select(id => Live(id, id, T1))] : [Live("a1", "Alpha", T1)];
+        apiClient.GetChannelStateForTwitchUserAsync(a.TwitchChannelId!, Arg.Any<CancellationToken>())
+            .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-a", new SevenTvEmoteSet(SetA, liveA))));
+        apiClient.GetChannelStateForTwitchUserAsync(b.TwitchChannelId!, Arg.Any<CancellationToken>())
+            .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-b", new SevenTvEmoteSet(SetB, [Live("b1", "Beta", T2)]))));
+        await using var tickDb = fixture.CreateDbContext([coverageHook, deadlockHook]);
+        var service = CreateService(tickDb, apiClient, slotsEnabled: true);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => service.SyncChannelAsync(a.ChannelName));
+        Assert.DoesNotContain(tickDb.ChangeTracker.Entries(), e => e.State != EntityState.Unchanged);
+        var result = await service.SyncChannelAsync(b.ChannelName);
+
+        Assert.NotNull(result);
+        var rowA = await setup.Channels.AsNoTracking().SingleAsync(c => c.Id == a.Id);
+        var rowB = await setup.Channels.AsNoTracking().SingleAsync(c => c.Id == b.Id);
+        Assert.Null(rowA.LastSyncedAtUtc);
+        Assert.Null(rowA.LastSyncAttemptAtUtc);
+        Assert.NotNull(rowB.LastSyncedAtUtc);
+        Assert.Equal(SetB, rowB.ActiveEmoteSetId);
+        Assert.False(await setup.ChannelEmoteSetObservations.AnyAsync(o => o.ChannelId == a.Id));
+        Assert.True(await setup.ChannelEmoteSetObservations.AnyAsync(o => o.ChannelId == b.Id && o.SevenTvEmoteSetId == SetB));
+        Assert.Empty(await setup.EmoteSlots.Where(s => s.Emote.ChannelId == a.Id).ToListAsync());
+        var betaSlot = Assert.Single(await SlotsAsync(setup, (await EmoteAsync(setup, b, "b1")).Id));
+        Assert.Equal(("Beta", T2), (betaSlot.Name, betaSlot.AddedAt));
+    }
+
     // (10) E28: renamed while the 7TV call is in flight, with a warm cache under the old login that
     // nobody's LEAVE cleans up — the sync removes it and caches under the new login only. The slot
     // summary (flag on) names the new login too (review P3-6).
