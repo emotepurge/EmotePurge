@@ -246,6 +246,64 @@ src/EmotePurge.Api`.
 the stack with a build that contains the broadcaster self-purge (#245). The variable is read at
 startup; recreate the `api` container after changing it.
 
+## Admin dashboard
+
+`/admin/monitoring` (global admins only, see below) has three sections besides the health and
+capacity cards.
+
+- **Activity:** how many channels were observed live per UTC day, for the last 30 days, 90 days or
+  13 months. The running day is partial; a day without any observation is a gap, not a zero.
+- **Rate-limit exceptions:** which policies rejected requests and which channels or callers caused
+  it, with a 24-hour trend and a details dialog.
+- **Load and work:** eleven small charts on one shared time axis for host CPU, host memory, host
+  load average, process and container CPU and container memory of Api and Worker, active and live
+  channels, and the Worker's chat lines and emote matches. Ranges are 1 hour, 24 hours (default),
+  7 days, 30 days, 90 days and 13 months.
+
+### Where the load ranges read from
+
+| Range | Source | Bucket width |
+|---|---|---|
+| 1 hour, 24 hours | `SystemLoadSamples` (raw samples, kept 7 days) | 1 minute, 5 minutes |
+| 7 days, 30 days, 90 days, 13 months | `SystemLoadHourly` (hourly rollups, kept 13 months) | 1 hour, 2 hours, 6 hours, 1 day |
+
+The server buckets the whole range and answers with one compact response; the browser never merges
+partial data. Raw ranges show the P95 and maximum of the valid observations per bucket. Rollup
+ranges can only show what the hourly rows keep, so they show the highest stored hourly P95 and
+maximum per bucket (the axis titles say so), the sum of the stored interval counters for chat lines
+and emote matches, and no percentage against a CPU or memory limit (the rollup keeps only the last
+limit of each hour). Swap is not rolled up and has no long-range chart. A bucket without data is
+drawn as a gap, never as zero. The counting start on production is 2026-10-11 18:47 CEST; earlier
+time is empty by construction.
+
+### Caching, polling and the busy answer
+
+- Each Api instance caches the load response per range: 30 seconds for 1 hour and 24 hours, 60
+  seconds for the longer ranges. The activity series is cached for 60 seconds, the rate-limit
+  snapshot and its trend for 30 seconds.
+- Concurrent requests for the same range share one rebuild. Across all ranges at most one load
+  rebuild runs per Api instance at a time; a request that has waited 5 seconds for its turn gets
+  `503` with `Retry-After: 5` and no body. That is expected under bursts, not a fault, and the page
+  keeps the last complete chart and marks it stale.
+- An open page re-reads every 60 seconds for the 1-hour and 24-hour ranges and every 5 minutes for
+  the longer ones, and pauses while the tab is in the background (it reloads when the tab returns).
+- There is no new migration and no new setting for the dashboard.
+
+### What `SystemLoad:IntervalSeconds` does to the charts
+
+Rates are derived from pairs of consecutive samples of the same source and process instance. A pair
+further apart than 2.5 times the **currently configured** `SystemLoad:IntervalSeconds` is dropped
+(a restart or an outage leaves a gap instead of a bogus rate), exactly as in the rollup.
+
+- Changing the interval therefore changes the gap rule for history too. After a change, the raw
+  ranges (1 hour, 24 hours) can show fewer CPU pairs, or none, for samples taken under the old
+  cadence for up to 24 hours; for example, going from 30 s to 1 s drops 30-second pairs because
+  they now exceed 2.5 s. Going from 1 s to 30 s drops nothing, because 1-second pairs stay below
+  75 s. Hours already rolled up under the old interval are not recomputed.
+- A cadence of 1 second is a stress setting: it multiplies the raw rows read for a 24-hour chart
+  (172,800 instead of 5,760 per source at the default), so keep it for short experiments.
+- Memory, channel and workload series do not depend on pairs and are unaffected.
+
 ## Excluding a chatter (GDPR objection)
 
 The worker processes public chat on a legitimate-interest basis (GDPR Art. 6(1)(f)) to count emote
@@ -609,8 +667,9 @@ dotnet ef database update --project src/EmotePurge.Infrastructure --startup-proj
 Run the command from the checked-out release containing the migration, with the production
 connection string set. Do not start the new images before it succeeds. The migration was created
 with `dotnet ef migrations add AddSystemLoadSampling --project src/EmotePurge.Infrastructure
---startup-project src/EmotePurge.Api`. The first cut has no endpoint or UI; inspect operational
-behaviour through the Worker rollup and retention count logs.
+--startup-project src/EmotePurge.Api`. The samples are shown in the load and work section of the
+admin dashboard (see [Admin dashboard](#admin-dashboard)); the Worker rollup and retention count
+logs remain the way to inspect the rollup itself.
 
 Sampling contains no personal identifiers. It records process and host resource measurements and
 aggregate worker activity counts, so these periods do not change the personal-data retention list
