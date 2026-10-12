@@ -4,7 +4,7 @@
  * testable without rendering anything.
  */
 
-export type ChartUnit = 'cores' | 'bytes' | 'percent' | 'tasks' | 'count';
+export type ChartUnit = 'cores' | 'bytes' | 'percent' | 'tasks' | 'count' | 'rate';
 
 /** Plot area and value domain a series is projected into. X is index-based: bucket `i` of `count`. */
 export interface LineGeometry {
@@ -120,12 +120,45 @@ export function niceTicks(min: number, max: number, count: number, minStep = 0):
 }
 
 /**
- * A value with its unit, readable on an axis and in the reading line. Cores keep two decimals,
- * percent one (a value of 12.5 means 12.5 %), bytes switch between MiB and GiB at 1 GiB, tasks and
- * counts are shown with the precision their magnitude needs. `locale` only picks separators;
- * `unitWord` is the translated word for cores and tasks, which have no symbol.
+ * Decimals for a number that may be small. With a tick step: just enough to tell the ticks apart.
+ * Without: `base`, raised for a non-zero value below 0.1 (cores, two significant digits, at most
+ * four decimals) or, for a rate, to `fractional` where the value is not whole.
  */
-export function formatUnit(value: number, unit: ChartUnit, locale: string, unitWord = ''): string {
+function fractionDigits(
+  value: number,
+  base: number,
+  tickStep: number | undefined,
+  significant: boolean,
+  fractional = base,
+): number {
+  if (tickStep !== undefined && tickStep > 0 && Number.isFinite(tickStep)) {
+    return Math.min(4, Math.max(base, Math.ceil(-Math.log10(tickStep) - 1e-9)));
+  }
+  if (significant) {
+    const magnitude = Math.abs(value);
+    return magnitude > 0 && magnitude < 0.1
+      ? Math.min(4, Math.max(base, 1 - Math.floor(Math.log10(magnitude))))
+      : base;
+  }
+  return Number.isInteger(value) ? base : fractional;
+}
+
+/**
+ * A value with its unit, readable on an axis and in the reading line. Cores keep two decimals
+ * (more for a value below 0.1, so a small load never reads as zero), a `rate` (per-minute counts)
+ * shows up to two decimals where it is fractional, percent one (a value of 12.5 means 12.5 %), bytes switch between MiB and GiB at 1 GiB, tasks and
+ * counts are shown with the precision their magnitude needs. `locale` only picks separators;
+ * `unitWord` is the translated word for cores and tasks, which have no symbol. `tickStep` is set for
+ * y-axis labels: cores and rates then take as many decimals as the step needs, so neighbouring
+ * labels stay distinct instead of all rounding to the same text.
+ */
+export function formatUnit(
+  value: number,
+  unit: ChartUnit,
+  locale: string,
+  unitWord = '',
+  tickStep?: number,
+): string {
   const number = (digits: number) =>
     new Intl.NumberFormat(locale, {
       minimumFractionDigits: digits,
@@ -134,7 +167,9 @@ export function formatUnit(value: number, unit: ChartUnit, locale: string, unitW
 
   switch (unit) {
     case 'cores':
-      return `${number(2)} ${unitWord}`.trim();
+      return `${number(fractionDigits(value, 2, tickStep, true))} ${unitWord}`.trim();
+    case 'rate':
+      return number(fractionDigits(value, 0, tickStep, false, 2));
     case 'percent':
       return `${number(1)} %`;
     case 'bytes':

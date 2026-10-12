@@ -133,11 +133,43 @@ describe('buildLoadCharts', () => {
       expect(noteKeys(load('raw', { api }), 'cgroup-memory-api')).toContain('memoryLimit');
     });
 
+    it('takes the memory share from the bucket the limit comes from, never from an older one', () => {
+      const api = {
+        sampleCount: [5, 5],
+        cgroupMemoryLimitBytes: [536_870_912, null],
+        cgroupMemoryShareP95: [42, null],
+      };
+
+      const keys = noteKeys(load('raw', { api }), 'cgroup-memory-api');
+
+      expect(keys).toContain('memoryLimitNone');
+      expect(keys).not.toContain('memoryShare');
+    });
+
+    it('shows the share next to the limit when both come from the newest sampled bucket', () => {
+      const api = {
+        sampleCount: [5, 5],
+        cgroupMemoryLimitBytes: [536_870_912, 536_870_912],
+        cgroupMemoryShareP95: [10, 42],
+      };
+
+      const note = chart(load('raw', { api }), 'cgroup-memory-api').notes.find(
+        (n) => n.key === 'memoryShare',
+      );
+
+      expect(note?.params?.['percent']).toContain('42');
+    });
+
     it('shows the host RAM total of the newest sampled bucket only', () => {
       const host = { apiSampleCount: [3, 3], memoryTotalBytes: [8_000_000_000, null] };
 
       expect(noteKeys(load('raw', { host }), 'host-memory')).toContain('memoryTotalNone');
     });
+  });
+
+  it('reads per-minute workload as a rate and hourly sums as whole counts', () => {
+    expect(chart(load('raw'), 'chatLines').unit).toBe('rate');
+    expect(chart(load('hourly'), 'chatLines').unit).toBe('count');
   });
 
   it('names the maxima of process and container series in the reading text', () => {

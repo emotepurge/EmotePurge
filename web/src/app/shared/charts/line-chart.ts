@@ -59,6 +59,8 @@ interface RenderedSeries {
  */
 const FALLBACK_WIDTH = 640;
 const VIEW_HEIGHT = 176;
+/** One plot origin for charts stacked on one time axis: room for the widest usual y label ("1,60 Kerne"). */
+export const SHARED_PLOT_LEFT = 92;
 const PLOT_LEFT = 60;
 const PLOT_RIGHT = 8;
 const PLOT_TOP = 8;
@@ -371,7 +373,7 @@ export class LineChart {
     Math.max(
       0,
       ...this.yDomain().ticks.map((value) =>
-        this.estimateLabelWidth(this.format(value, this.locale())),
+        this.estimateLabelWidth(this.format(value, this.locale(), this.tickStep())),
       ),
     ),
   );
@@ -414,8 +416,9 @@ export class LineChart {
     const { ticks, min, max } = this.yDomain();
     const locale = this.locale();
     const room = this.plot().x - Y_LABEL_GAP - 2;
+    const step = this.tickStep();
     return ticks.map((value) => {
-      const label = this.format(value, locale);
+      const label = this.format(value, locale, step);
       return {
         value,
         y: yAt(value, min, max, PLOT_HEIGHT),
@@ -762,13 +765,18 @@ export class LineChart {
     return label.length * TICK_FONT_SIZE * LABEL_CHAR_EM;
   }
 
-  private format(value: number, locale: string): string {
+  private tickStep(): number | undefined {
+    const { ticks } = this.yDomain();
+    return ticks.length > 1 ? ticks[1] - ticks[0] : undefined;
+  }
+
+  private format(value: number, locale: string, tickStep?: number): string {
     const unit = this.unit();
     const word =
       unit === 'cores' || unit === 'tasks'
         ? this.transloco.translate(`admin.dashboard.chart.unitWord.${unit}`)
         : '';
-    return formatUnit(value, unit, locale, word);
+    return formatUnit(value, unit, locale, word, tickStep);
   }
 
   private locale(): string {

@@ -23,7 +23,7 @@ import { pollWhileVisible } from '../../core/live/poll-while-visible';
 import { pageVisible } from '../../core/page-visibility/page-visibility';
 import { LiveStatus, LiveUpdateService } from '../../core/live/live-update.service';
 import { sumMinutesIntoBuckets } from '../../shared/charts/chart-series';
-import { LineChart, LineChartSeries } from '../../shared/charts/line-chart';
+import { LineChart, LineChartSeries, SHARED_PLOT_LEFT } from '../../shared/charts/line-chart';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { HealthMarker, HealthTone } from '../../shared/ui/health-marker';
@@ -294,6 +294,7 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
                   legendStat="sum"
                   unit="count"
                   [partialLastBucket]="true"
+                  [minPlotLeft]="trendPlotLeft()"
                   [title]="trendTitleKey() | transloco: trendTitleParams()"
                 />
                 @if (trendSeries().length === 1) {
@@ -660,6 +661,10 @@ export class AdminMonitoringPage {
     () => this.loadSection()?.trendAxis() ?? { kind: 'own' },
   );
 
+  /** On the load axis the trend lines up with the load charts above it; on its own axis it does not. */
+  protected readonly trendPlotLeft = computed(() =>
+    this.trendAxis().kind === 'load' ? SHARED_PLOT_LEFT : 0,
+  );
   protected readonly trendXStarts = computed(() => {
     const axis = this.trendAxis();
     return axis.kind === 'load' ? axis.startsUtc : (this.trend()?.minuteStartsUtc ?? []);

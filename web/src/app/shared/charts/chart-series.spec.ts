@@ -107,6 +107,28 @@ describe('formatUnit', () => {
     expect(formatUnit(0.456, 'tasks', 'en', 'Tasks')).toBe('0.46 Tasks');
   });
 
+  it('keeps a small core count readable instead of rounding it to zero', () => {
+    expect(formatUnit(0.003, 'cores', 'en', 'cores')).toBe('0.0030 cores');
+    expect(formatUnit(0.008, 'cores', 'en', 'cores')).toBe('0.0080 cores');
+    expect(formatUnit(0, 'cores', 'en', 'cores')).toBe('0.00 cores');
+  });
+
+  it('gives core axis labels as many decimals as the tick step needs', () => {
+    const ticks = niceTicks(0, 0.003, 4);
+    const labels = ticks.map((t) => formatUnit(t, 'cores', 'en', '', ticks[1] - ticks[0]));
+
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels.at(-1)).toBe('0.003');
+    expect(labels.slice(1).every((label) => label !== '0.00')).toBe(true);
+  });
+
+  it('shows a per-minute rate below one with decimals and a whole rate without', () => {
+    expect(formatUnit(0.4, 'rate', 'en')).toBe('0.40');
+    expect(formatUnit(0.456, 'rate', 'en')).toBe('0.46');
+    expect(formatUnit(12, 'rate', 'en')).toBe('12');
+    expect(formatUnit(0.2, 'rate', 'en', '', 0.2)).toBe('0.2');
+  });
+
   it('rounds counts to whole numbers', () => {
     expect(formatUnit(1234.6, 'count', 'en')).toBe('1,235');
   });

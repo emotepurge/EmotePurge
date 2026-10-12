@@ -622,7 +622,8 @@
           "bytes": "Einheit: Byte (MiB/GiB)",
           "percent": "Einheit: Prozent",
           "tasks": "Einheit: Tasks im Mittel",
-          "count": "Einheit: Anzahl"
+          "count": "Einheit: Anzahl",
+          "rate": "Einheit: pro Minute"
         },
         "utc": "Zeiten in UTC",
         "unitWord": {

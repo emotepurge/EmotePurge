@@ -40,23 +40,18 @@ type Column = readonly (number | null)[];
 function latestWithSamples(
   values: Column,
   sampleCounts: readonly Column[],
-): { found: boolean; value: number | null } {
+): { found: boolean; value: number | null; index: number } {
   for (let i = values.length - 1; i >= 0; i--) {
     if (sampleCounts.some((counts) => (counts[i] ?? 0) > 0)) {
       const value = values[i];
-      return { found: true, value: value !== null && Number.isFinite(value) ? value : null };
+      return {
+        found: true,
+        value: value !== null && Number.isFinite(value) ? value : null,
+        index: i,
+      };
     }
   }
-  return { found: false, value: null };
-}
-
-function lastKnown(values: Column): number | null {
-  for (let i = values.length - 1; i >= 0; i--) {
-    if (values[i] !== null && Number.isFinite(values[i])) {
-      return values[i];
-    }
-  }
-  return null;
+  return { found: false, value: null, index: -1 };
 }
 
 /**
@@ -173,7 +168,8 @@ export function buildLoadCharts(load: AdminDashboardLoad, ctx: LoadChartContext)
   const cgroupMemory = (source: SourceName): LoadChart => {
     const series = source === 'api' ? api : worker;
     const limit = latestWithSamples(series.cgroupMemoryLimitBytes, [series.sampleCount]);
-    const share = raw ? lastKnown(series.cgroupMemoryShareP95) : null;
+    // The share comes from the bucket the limit comes from, so the two notes never disagree.
+    const share = raw && limit.found ? (series.cgroupMemoryShareP95[limit.index] ?? null) : null;
     return {
       id: `cgroup-memory-${source}`,
       titleKey: 'admin.dashboard.load.charts.cgroupMemory',
@@ -216,7 +212,7 @@ export function buildLoadCharts(load: AdminDashboardLoad, ctx: LoadChartContext)
     id,
     titleKey: `admin.dashboard.load.charts.${id}.${workload.workloadUnit}`,
     titleParams: { hours: number.format(bucketHours) },
-    unit: 'count',
+    unit: workload.workloadUnit === 'perMinute' ? 'rate' : 'count',
     series: [{ id, labelKey: `admin.dashboard.load.series.${id}`, values }],
     details: load.bucketStartsUtc.map((_, i) => {
       if (workload.workloadUnit === 'perMinute') {

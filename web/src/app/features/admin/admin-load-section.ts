@@ -12,7 +12,7 @@ import { toLocale } from '../../core/i18n/locale';
 import { pollWhileVisible } from '../../core/live/poll-while-visible';
 import { pageVisible } from '../../core/page-visibility/page-visibility';
 import { formatBucketTime } from '../../shared/charts/chart-series';
-import { LineChart } from '../../shared/charts/line-chart';
+import { LineChart, SHARED_PLOT_LEFT } from '../../shared/charts/line-chart';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { SegmentedControl, SegmentedControlOption } from '../../shared/ui/segmented-control';
@@ -33,8 +33,6 @@ const PROBE_RANGE: AdminDashboardLoadRange = '13mo';
 const POLL_TICK_MS = 60_000;
 const LONG_RANGE_INTERVAL_MS = 300_000;
 const TICK_TOLERANCE_MS = 5_000;
-/** One plot origin for all eleven stacked charts: room for the widest usual y label ("1,60 Kerne"). */
-const SHARED_PLOT_LEFT = 92;
 const HOUR_SECONDS = 3_600;
 const DAY_SECONDS = 86_400;
 
