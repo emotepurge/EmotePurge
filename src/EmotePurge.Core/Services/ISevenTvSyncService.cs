@@ -37,8 +37,8 @@ public interface ISevenTvSyncService
     /// subscription on a set the channel has switched away from) or when the delta would wipe a
     /// non-empty channel (implausible; see the empty-set guard in SyncChannelAsync). With the
     /// slot reconcile flag on, a dispatch that cannot be attributed to single slots ends as
-    /// <see cref="SevenTvDeltaOutcome.AmbiguousDelta"/> without an inventory write (flag off never
-    /// produces it).
+    /// <see cref="SevenTvDeltaOutcome.AmbiguousDelta"/> without an inventory write — only the certain
+    /// last-slot leaves of its pulls are recorded (plan #374 E7) — and flag off never produces it.
     /// Callers — not this method — run the follow-up full resync those outcomes ask for:
     /// SyncChannelAsync takes the same non-reentrant gate and would deadlock if called from here.
     /// <para>

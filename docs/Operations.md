@@ -1064,7 +1064,7 @@ system behaves as before the slot work, with one difference since #373: usage ro
 
 | Key | Default | Compose variable | Meaning |
 |---|---|---|---|
-| `SevenTv:SlotReconcile:Enabled` | `false` | `SEVENTV_SLOT_RECONCILE_ENABLED` | Read by **api and worker**; set both together. The value is read once at startup, so a change needs a restart. Off: emote-wide reconcile and readers; the match map keeps today's names (one per emote) and counts onto the slot of the (emote, active set) pair. No writes to `EmoteSlots` except unsettled base seeds, created together with a pair's first counted row (usage flush) or by a backfill enqueue. On: the slot reconcile, and the match map counts per slot — an emote that still has an unsettled seed of the active set is not counted until the reconcile settles it. |
+| `SevenTv:SlotReconcile:Enabled` | `false` | `SEVENTV_SLOT_RECONCILE_ENABLED` | Read by **api and worker**; set both together. The value is read once at startup, so a change needs a restart. Off: emote-wide reconcile and readers; the match map keeps today's names (one per emote) and counts onto the slot of the (emote, active set) pair. No writes to `EmoteSlots` except unsettled base seeds, created together with a pair's first counted row (usage flush) or by a backfill enqueue; EventAPI deltas stay emote-wide and write no slot. On: the slot reconcile, and the match map counts per slot — an emote that still has an unsettled seed of the active set is not counted until the reconcile settles it; EventAPI deltas add, rename and archive single slots, and an ambiguous dispatch writes no inventory (only certain last-slot leaves) and triggers a REST resync. |
 
 ### Usage key switch (M2, #373)
 

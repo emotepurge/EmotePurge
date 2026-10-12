@@ -327,6 +327,13 @@ SevenTvEmoteSetDelta(
 
 `AmbiguousDelta` schreibt nichts; Worker wie `SetNotActive` (`ResyncChannelAsync`). Leave nur für IDs, deren letzter aktiver Slot ging oder die schon archiviert waren. `Emote.Name`/`FirstSeenAt` nach D13.
 
+*Geändert in Kind 4 (#374), Betreiber 2026-10-12 (Plan-374 R1, R4, R5): Zeile `updated` — in place nur, wenn das Emote genau
+einen aktiven eigenen Slot hat; bei ≥ 2 aktiven eigenen Slots ist jede Umbenennung mehrdeutig, REST benennt über die
+Datums-Identität um (R4). Zeile `pulled` — zusätzlich mehrdeutig, wenn das Emote aktiv ist und kein aktiver eigener Slot den
+gezogenen Namen trägt (R1). „`AmbiguousDelta` schreibt nichts" gilt für Emote- und Slot-Zeilen; Leave-Beobachtungen gezogener
+IDs, deren eigener Ausgang für sich eindeutig „kein aktiver Slot mehr" ist, werden trotzdem geschrieben (R5). Begründung in
+DECISIONS (#365, Absatz „Child 4").*
+
 ## 8. Backfill-Änderungen (löst AC 26 / D36 ab)
 
 | Stelle | Neu |
@@ -468,6 +475,9 @@ Ein von der Enqueue gesettelter Seed ist kein `CreatedSlot` und bleibt (AK 39).
 18. Parser-Fixtures: `pushed` → `(Id, Name)`; `updated` mit beiden Namen; `pulled` zwei Items einer ID; fehlende Namen `null`.
 19. Push `(X, probeB)` auf `probeA` → zweiter Slot provisorisch; Push eines Namens, der schon aktiv ist → No-op; Push unter dem Namen eines archivierten Slots → `AmbiguousDelta`, REST-Abgleich wendet D7 mit Datum an; Pull `(X, probeA)` → nur `probeA` archiviert, keine Leave; Pull `(X, probeB)` → Emote archiviert, Leave.
 20. Rename `(X, probeB → probeC)` → in place; Rename auf den Namen eines **aktiven** Slots derselben ID → `AmbiguousDelta`; Pull ohne Name bei ≥ 2 aktiven → `AmbiguousDelta`; Delta auf unsettled Seed → `AmbiguousDelta`.
+    *Geändert in Kind 4 (#374), Betreiber 2026-10-12 (Plan-374 R4): das Beispiel „Rename `(X, probeB → probeC)` → in place" gilt
+    für ein Emote mit genau einem aktiven Slot; Rename bei zwei aktiven Slots (auf den Geschwisternamen wie auf einen freien
+    Namen) → `AmbiguousDelta`. Begründung in DECISIONS (#365, Absatz „Child 4").*
 21. Worker: `AmbiguousDelta` → `ResyncChannelAsync`, kein `channel.synced`.
 
 **Backfill**
@@ -528,6 +538,11 @@ Ein von der Enqueue gesettelter Seed ist kein `CreatedSlot` und bleibt (AK 39).
 5. ~~Wiederaufnahme und Verlaufskarte.~~ **Entschieden (Betreiber, 2026-10-10, D7):** Restore reaktiviert die exakte `SlotId`; externe Wiederaufnahme folgt 6.2 nach den exakten Datumstreffern.
 
 **Zur Kenntnis des Betreibers, keine Frage:** (a) D7 setzt „Neu"/„Im Set seit" auf das neue REST-Datum zurück, die Zählreihe bleibt auf derselben Karte; ein vorhandener aktiver Slot gleichen Namens erzwingt einen neuen Slot bei 0. (b) D33 ist das eine Restrisiko, das die Spec nicht schließen kann (kein 7TV-Selektor über `added_at`); es ist auf einen Request-Umlauf begrenzt, wird nach dem Lauf erkannt und ist über den Restore reparierbar. (c) D12: bleibt das v4-Overlay für ein Set dauerhaft aus, zählen dessen Mehr-Slot-Emotes bis zur ersten datierten Antwort nicht.
+
+*Geändert in Kind 4 (#374), Betreiber 2026-10-12 (Plan-374 R3, R4):* (d) Grenze zu D17: ein Push unter dem Namen eines archivierten
+Slots, jeder Push im virtuellen Zustand (aktives Emote ohne aktiven eigenen Slot) und jede Umbenennung eines Mehr-Slot-Emotes
+zählen erst ab dem nächsten aktuellen REST-Abgleich (bis zu 30 min, SevenTV/SevenTV#81). Begründung in DECISIONS (#365, Absatz
+„Child 4").
 
 ## 15. Testpyramide
 
