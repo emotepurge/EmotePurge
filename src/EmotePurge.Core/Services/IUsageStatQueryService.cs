@@ -270,7 +270,7 @@ public interface IUsageStatQueryService
     /// <param name="setScope">
     /// Which emote sets' counts to sum: <see cref="EmoteSetScope.Set"/> restricts to one set (a
     /// set-session's ballot), <see cref="EmoteSetScope.AllSets"/> applies no set predicate at all
-    /// (a null-session, which has no set of its own; the flush writes one row per emote, set and
+    /// (a null-session, which has no set of its own; the flush writes one row per slot, set and
     /// day, so summing across sets counts nothing twice, and an empty active set id no longer
     /// matters). <see cref="EmoteSetScope.ActiveSet"/> is rejected with
     /// <see cref="ArgumentException"/>: this method takes ids, not a channel, so it has nothing to

@@ -15,7 +15,9 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
 
         // UseCount alone, like every product read path in this class: neither bot nor shared-chat
         // usage is this channel's own human usage. A debug raw list, so it never carried the D5
-        // transitional sum to begin with and needed nothing reverted when that bridge fell.
+        // transitional sum to begin with and needed nothing reverted when that bridge fell. Raw by
+        // design: one entry per row, so since M2 (slot plan #373) the same name and day can appear
+        // twice — once per slot of the emote, or once per set — and nothing here sums them.
         return await db.UsageStats
             .Where(u => u.Emote.Channel.ChannelName == normalized)
             .OrderByDescending(u => u.Date).ThenByDescending(u => u.UseCount)
@@ -168,8 +170,9 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
         // equally absent from this series, because neither is a day this channel used the emote.
         // The set filter is what makes the drilldown agree with the row it was opened from: the
         // grid's total is one set's counts, so the days behind it have to be the same set's.
-        // Grouped by day: across sets the same day can carry one row per set, and the DTO promises
-        // one entry per day. Single-table GroupBy, so rule 10 is untouched.
+        // Grouped by day: the same day can carry one row per set and, since M2 (slot plan #373), one
+        // per slot of the emote, and the DTO promises one entry per day. Single-table GroupBy, so
+        // rule 10 is untouched.
         var days = await db.UsageStats
             .Where(u => u.EmoteId == emote.Id && (allSets || u.EmoteSetId == setId) && u.Date >= from && u.Date <= to && u.UseCount > 0)
             .GroupBy(u => u.Date)
@@ -290,12 +293,17 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
 
         // Named by the 7TV id from #200 on, with the guid carried along for one transition (spec
         // 6.5, step 1) — an entry only exists where a row exists, so the guid is never empty here.
+        // Days are summed per emote: since M2 (slot plan #373) two slots of one emote can each have a
+        // row on the same day, and this series stays one point per emote and day until the slot read
+        // path of child 6. The rows arrive ordered by (EmoteId, Date), and GroupBy keeps that order.
         var entries = rows
             .GroupBy(r => r.EmoteId)
             .Select(g => new EmoteSeriesEntryDto(
                 sevenTvEmoteIdByEmoteId[g.Key],
                 g.Key,
-                g.Select(r => new[] { r.Date.DayNumber - from.DayNumber, r.UseCount }).ToList()))
+                g.GroupBy(r => r.Date)
+                    .Select(day => new[] { day.Key.DayNumber - from.DayNumber, day.Sum(r => r.UseCount) })
+                    .ToList()))
             .ToList();
 
         return new ChannelUsageSeriesDto(from, to, liveDayOffsets, entries, firstCountedDay, lastCountedDay, channelFirstCountedDay);

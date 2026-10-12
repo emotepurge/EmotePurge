@@ -708,6 +708,28 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         Assert.Equal(new DateOnly(2026, 7, 7), series.To);
     }
 
+    // Reader audit of slot plan #373: since M2 two slots of one emote can each have a row on the same
+    // day; the per-emote series sums them into one point instead of emitting the day twice.
+    [Fact]
+    public async Task GetChannelSeriesAsync_SumsTheRowsOfTwoSlotsOfOneEmoteOnTheSameDay()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "seriestest-twoslots");
+        var emote = await SeedEmoteAsync(db, channel.Id, "ome44");
+        var ome44 = await db.SeedUsageSlotAsync(emote.Id);
+        var hob44 = await db.SeedUsageSlotAsync(emote.Id, UsageSlotKind.Provisional);
+        db.UsageStats.AddRange(
+            new UsageStat { EmoteId = emote.Id, SlotId = ome44, Date = new DateOnly(2026, 7, 2), UseCount = 3 },
+            new UsageStat { EmoteId = emote.Id, SlotId = hob44, Date = new DateOnly(2026, 7, 2), UseCount = 4 },
+            new UsageStat { EmoteId = emote.Id, SlotId = hob44, Date = new DateOnly(2026, 7, 3), UseCount = 1 });
+        await db.SaveChangesAsync();
+
+        var series = await new UsageStatQueryService(db).GetChannelSeriesAsync(
+            channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
+
+        Assert.Equal([[1, 7], [2, 1]], Assert.Single(series.Emotes).Days);
+    }
+
     [Fact]
     public async Task GetChannelSeriesAsync_OmitsEmotesWithoutUsageInTheRange()
     {
