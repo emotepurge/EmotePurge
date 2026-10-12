@@ -75,6 +75,41 @@ describe('UsageStatService', () => {
     req.flush(SERIES);
   });
 
+  it('getDailySeries for a slot target sends slotId and never emoteId', () => {
+    service
+      .getDailySeries('sensitron', { slotId: 's1' }, '2026-07-01', '2026-07-28', null)
+      .subscribe();
+
+    const req = httpMock.expectOne(
+      (r) =>
+        r.url === '/api/channels/sensitron/usage-stats/daily' &&
+        r.params.get('slotId') === 's1' &&
+        r.params.get('emoteId') === null &&
+        r.params.get('from') === '2026-07-01' &&
+        r.params.get('to') === '2026-07-28',
+    );
+    req.flush(SERIES);
+  });
+
+  it('caches a slot series and an emote series with the same id apart', () => {
+    service
+      .getDailySeries('sensitron', { slotId: 'x1' }, '2026-07-01', '2026-07-28', null)
+      .subscribe();
+    httpMock.expectOne((r) => r.params.get('slotId') === 'x1').flush(SERIES);
+
+    service
+      .getDailySeries('sensitron', { emoteId: 'x1' }, '2026-07-01', '2026-07-28', null)
+      .subscribe();
+    httpMock.expectOne((r) => r.params.get('emoteId') === 'x1').flush(SERIES);
+
+    // Both are cached now: asking again for either costs no request.
+    service
+      .getDailySeries('sensitron', { slotId: 'x1' }, '2026-07-01', '2026-07-28', null)
+      .subscribe();
+    service.getDailySeries('sensitron', 'x1', '2026-07-01', '2026-07-28', null).subscribe();
+    httpMock.expectNone((r) => r.url === '/api/channels/sensitron/usage-stats/daily');
+  });
+
   it('serves a second identical getDailySeries call from the cache', () => {
     service.getDailySeries('sensitron', 'e1', '2026-07-01', '2026-07-28', null).subscribe();
     httpMock.expectOne((r) => r.url === '/api/channels/sensitron/usage-stats/daily').flush(SERIES);

@@ -298,6 +298,32 @@ describe('EmoteDrilldownDialog', () => {
       expect(component['series']()).toBeNull();
     });
   });
+  describe('series target (slot cards)', () => {
+    it('asks for the slot series when its data carries a slotId', () => {
+      render(data({ slotId: 'slot-1' }), of());
+
+      expect(TestBed.inject(UsageStatService).getDailySeries).toHaveBeenCalledWith(
+        'sensitron',
+        { slotId: 'slot-1' },
+        '2026-01-15',
+        '2026-01-21',
+        null,
+      );
+    });
+
+    it('asks for the emote series when its data has no slotId or a null one', () => {
+      render(data({ slotId: null }), of());
+
+      expect(TestBed.inject(UsageStatService).getDailySeries).toHaveBeenCalledWith(
+        'sensitron',
+        'emote-1',
+        '2026-01-15',
+        '2026-01-21',
+        null,
+      );
+    });
+  });
+
   describe('set scope (spec #200, 7.2, AK 64)', () => {
     it('asks for the series of the set frozen into its data', () => {
       render(data({ emoteSetId: 'set-halloween' }), of());

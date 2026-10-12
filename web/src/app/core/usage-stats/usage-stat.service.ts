@@ -46,6 +46,9 @@ function dailyScopeKey(scope: DailySeriesSetScope): string {
   return typeof scope === 'object' ? '*all' : scope;
 }
 
+/** Which series a daily request asks for: one slot card, or one emote (exactly one key). */
+export type DailySeriesTarget = { slotId: string } | { emoteId: string };
+
 @Injectable({ providedIn: 'root' })
 export class UsageStatService {
   private readonly http = inject(HttpClient);
@@ -81,7 +84,9 @@ export class UsageStatService {
 
   getDailySeries(
     channelName: string,
-    emoteId: string,
+    /** One slot card's days (`{ slotId }`) or one emote's (`{ emoteId }`, or the bare id as
+     *  shorthand). Exactly one is sent: the server would let `slotId` win over both. */
+    target: DailySeriesTarget | string,
     from: string,
     to: string,
     /** `null` omits the parameter (the channel's active set) — see {@link getTotals}; the
@@ -89,12 +94,18 @@ export class UsageStatService {
      *  data, never a live read (spec #200, 7.2, F4). */
     scope: DailySeriesSetScope,
   ): Observable<EmoteUsageSeries> {
-    const key = `${channelName}|${dailyScopeKey(scope)}|${emoteId}|${from}|${to}`;
+    const resolved: DailySeriesTarget = typeof target === 'string' ? { emoteId: target } : target;
+    // The kind prefix keeps a slot id and an emote id that happen to be equal from sharing an entry.
+    const targetParam: Record<string, string> =
+      'slotId' in resolved ? { slotId: resolved.slotId } : { emoteId: resolved.emoteId };
+    const targetKey =
+      'slotId' in resolved ? `slot:${resolved.slotId}` : `emote:${resolved.emoteId}`;
+    const key = `${channelName}|${dailyScopeKey(scope)}|${targetKey}|${from}|${to}`;
     let series$ = this.seriesCache.get(key);
     if (!series$) {
       series$ = this.http
         .get<EmoteUsageSeries>(`/api/channels/${channelName}/usage-stats/daily`, {
-          params: withDailyScope({ emoteId, from, to }, scope),
+          params: withDailyScope({ ...targetParam, from, to }, scope),
         })
         // refCount:false keeps the replayed value alive with no subscriber — that is the cache.
         .pipe(shareReplay({ bufferSize: 1, refCount: false }));
