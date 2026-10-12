@@ -21,7 +21,7 @@ public class UsageStatFlushService(AppDbContext db, ILogger<UsageStatFlushServic
         // Validation still runs over Emote.Id alone (spec section 5, rule 4): a set switch does not
         // change which emotes exist, so the distinct id list for the FK check collapses the set
         // dimension back out — nothing here decides between two keys of the same emote.
-        var emoteIds = usageCounts.Keys.Select(k => k.EmoteId).Distinct(StringComparer.Ordinal).ToList();
+        var emoteIds = usageCounts.Keys.Select(k => k.SlotId).Distinct(StringComparer.Ordinal).ToList();
 
         // A channel leave deactivates instead of deleting nowadays, but archived emotes can still
         // be hard-deleted by an admin purge — and a count buffered before that would otherwise
@@ -53,10 +53,10 @@ public class UsageStatFlushService(AppDbContext db, ILogger<UsageStatFlushServic
         // keys that share an EmoteId but differ in EmoteSetId (a cache swap between two chat
         // messages) write two separate rows instead of being summed together.
         var validEntries = usageCounts
-            .Where(kvp => validIds.Contains(kvp.Key.EmoteId))
+            .Where(kvp => validIds.Contains(kvp.Key.SlotId))
             .ToList();
 
-        var entryEmoteIds = validEntries.Select(e => e.Key.EmoteId).ToArray();
+        var entryEmoteIds = validEntries.Select(e => e.Key.SlotId).ToArray();
         var entryEmoteSetIds = validEntries.Select(e => e.Key.EmoteSetId).ToArray();
         var useCounts = validEntries.Select(e => e.Value.Human).ToArray();
         var botUseCounts = validEntries.Select(e => e.Value.Bot).ToArray();

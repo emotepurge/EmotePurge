@@ -818,14 +818,14 @@ public class SevenTvSyncService(
     /// </summary>
     private async Task WarmMatchCacheIfEmptyAsync(Channel channel, CancellationToken cancellationToken)
     {
-        if (emoteMatchCache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Count != 0)
+        if (emoteMatchCache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.Count != 0)
         {
             return;
         }
 
         await RefreshMatchCacheAsync(channel, cancellationToken);
 
-        var warmedCount = emoteMatchCache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Count;
+        var warmedCount = emoteMatchCache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.Count;
         if (warmedCount > 0)
         {
             logger.LogInformation(

@@ -519,13 +519,13 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
 
         var sync = service.SyncChannelAsync(channel.ChannelName);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        Assert.Contains("Alpha", cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Keys);
+        Assert.Contains("Alpha", cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.Keys);
         await RenameAsync(channel, newName);
         release.SetResult();
         var result = await sync.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal(newName, result!.ChannelName);
-        Assert.Contains("Alpha", cache.GetChannelSnapshot(newName).NameToEmoteId.Keys);
+        Assert.Contains("Alpha", cache.GetChannelSnapshot(newName).NameToSlotId.Keys);
         Assert.DoesNotContain(channel.ChannelName, cache.GetCachedChannelNames());
         Assert.Equal(slotsEnabled ? [$"{newName}: slot reconcile created 1"] : [], Lines(logger, "slot reconcile created").Select(l => l[..l.IndexOf(" and", StringComparison.Ordinal)]));
     }
@@ -589,7 +589,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         release.SetResult();
         await sync.WaitAsync(TimeSpan.FromSeconds(30));
 
-        Assert.Contains("Live", cache.GetChannelSnapshot(oldName).NameToEmoteId.Keys);
+        Assert.Contains("Live", cache.GetChannelSnapshot(oldName).NameToSlotId.Keys);
     }
 
     // (10) E17 + E28: renamed in flight, then the first save is a deadlock victim; after the retry's
@@ -613,14 +613,14 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
 
         var sync = service.SyncChannelAsync(channel.ChannelName);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        Assert.Contains("Alpha", cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Keys);
+        Assert.Contains("Alpha", cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.Keys);
         await RenameAsync(channel, newName);
         release.SetResult();
         var result = await sync.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal(newName, result!.ChannelName);
         Assert.Single(Lines(logger, DeadlockLine));
-        Assert.Contains("Alpha", cache.GetChannelSnapshot(newName).NameToEmoteId.Keys);
+        Assert.Contains("Alpha", cache.GetChannelSnapshot(newName).NameToSlotId.Keys);
         Assert.DoesNotContain(channel.ChannelName, cache.GetCachedChannelNames());
     }
 

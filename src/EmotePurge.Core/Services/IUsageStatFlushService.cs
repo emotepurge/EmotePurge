@@ -26,12 +26,13 @@ namespace EmotePurge.Core.Services;
 public readonly record struct EmoteUsageCounts(int Human, int Bot, int SharedChat);
 
 /// <summary>
-/// The buffering/flush pipeline's key: an emote together with the 7TV set the match cache had
+/// The buffering/flush pipeline's key: a slot together with the 7TV set the match cache had
 /// active when the chat message that produced the hit was matched (spec 2026-09-20, section 5).
 /// Shared by <c>EmotePurge.Worker</c> (buffering) and <c>EmotePurge.Infrastructure</c> (flush), so
-/// it lives here rather than in either project alone.
+/// it lives here rather than in either project alone. Interim: until the slot model lands, <c>SlotId</c>
+/// still carries the emote id.
 /// </summary>
-public readonly record struct UsageCounterKey(string EmoteId, string EmoteSetId);
+public readonly record struct UsageCounterKey(string SlotId, string EmoteSetId);
 
 public interface IUsageStatFlushService
 {

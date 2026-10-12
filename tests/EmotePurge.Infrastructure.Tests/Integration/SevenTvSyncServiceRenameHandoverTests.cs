@@ -62,8 +62,8 @@ public class SevenTvSyncServiceRenameHandoverTests(PostgresFixture fixture)
         var result = await syncTask.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.NotNull(result);
-        Assert.True(cache.GetChannelSnapshot("handover_new").NameToEmoteId.ContainsKey("Alpha"));
-        Assert.Empty(cache.GetChannelSnapshot("handover_old").NameToEmoteId);
+        Assert.True(cache.GetChannelSnapshot("handover_new").NameToSlotId.ContainsKey("Alpha"));
+        Assert.Empty(cache.GetChannelSnapshot("handover_old").NameToSlotId);
 
         // Issue #60: the cache assertions above only prove the *service* followed the rename. Until
         // the new login also travelled out with the result, every worker caller went on keying its
@@ -130,7 +130,7 @@ public class SevenTvSyncServiceRenameHandoverTests(PostgresFixture fixture)
         rowLease.Dispose();
 
         Assert.Null(await syncTask.WaitAsync(TimeSpan.FromSeconds(30)));
-        Assert.Empty(cache.GetChannelSnapshot("handover_merged").NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot("handover_merged").NameToSlotId);
     }
 
     [Fact]

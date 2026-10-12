@@ -48,6 +48,6 @@ public class EmoteMatchCacheSwitchCountingTests
     private static void CountMessage(EmoteMatchCache cache, EmoteUsageCounter counter, string emoteName)
     {
         var snapshot = cache.GetChannelSnapshot(ChannelName);
-        counter.Increment(snapshot.NameToEmoteId[emoteName], snapshot.EmoteSetId, UsageCategory.Human);
+        counter.Increment(snapshot.NameToSlotId[emoteName], snapshot.EmoteSetId, UsageCategory.Human);
     }
 }

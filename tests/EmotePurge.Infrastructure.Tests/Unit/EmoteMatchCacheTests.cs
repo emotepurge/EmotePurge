@@ -19,7 +19,7 @@ public class EmoteMatchCacheTests
 
         var snapshot = cache.GetChannelSnapshot("unknownchannel");
 
-        Assert.Empty(snapshot.NameToEmoteId);
+        Assert.Empty(snapshot.NameToSlotId);
     }
 
     [Fact]
@@ -30,7 +30,7 @@ public class EmoteMatchCacheTests
 
         cache.ReplaceChannel("SomeChannel", "set-1", emotes);
 
-        var result = cache.GetChannelSnapshot("somechannel").NameToEmoteId;
+        var result = cache.GetChannelSnapshot("somechannel").NameToSlotId;
         Assert.Equal(2, result.Count);
         Assert.Equal("emote-1", result["PogChamp"]);
     }
@@ -41,7 +41,7 @@ public class EmoteMatchCacheTests
         var cache = new EmoteMatchCache();
         cache.ReplaceChannel("  Sensitron  ", "set-1", new Dictionary<string, string> { ["Foo"] = "emote-1" });
 
-        var result = cache.GetChannelSnapshot("sensitron").NameToEmoteId;
+        var result = cache.GetChannelSnapshot("sensitron").NameToSlotId;
 
         Assert.Single(result);
     }
@@ -54,7 +54,7 @@ public class EmoteMatchCacheTests
 
         cache.ReplaceChannel("channel", "set-1", new Dictionary<string, string> { ["New"] = "emote-new" });
 
-        var result = cache.GetChannelSnapshot("channel").NameToEmoteId;
+        var result = cache.GetChannelSnapshot("channel").NameToSlotId;
         Assert.Single(result);
         Assert.True(result.ContainsKey("New"));
         Assert.False(result.ContainsKey("Old"));
@@ -68,7 +68,7 @@ public class EmoteMatchCacheTests
 
         cache.RemoveChannel("channel");
 
-        Assert.Empty(cache.GetChannelSnapshot("channel").NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot("channel").NameToSlotId);
     }
 
     [Fact]
@@ -88,9 +88,9 @@ public class EmoteMatchCacheTests
         cache.ReplaceChannel("channel-a", "set-1", new Dictionary<string, string> { ["A"] = "emote-a" });
         cache.ReplaceChannel("channel-b", "set-2", new Dictionary<string, string> { ["B"] = "emote-b" });
 
-        Assert.Single(cache.GetChannelSnapshot("channel-a").NameToEmoteId);
-        Assert.Single(cache.GetChannelSnapshot("channel-b").NameToEmoteId);
-        Assert.True(cache.GetChannelSnapshot("channel-a").NameToEmoteId.ContainsKey("A"));
+        Assert.Single(cache.GetChannelSnapshot("channel-a").NameToSlotId);
+        Assert.Single(cache.GetChannelSnapshot("channel-b").NameToSlotId);
+        Assert.True(cache.GetChannelSnapshot("channel-a").NameToSlotId.ContainsKey("A"));
     }
 
     [Fact]
@@ -121,7 +121,7 @@ public class EmoteMatchCacheTests
 
         Assert.Equal("set-42", snapshot.EmoteSetId);
         Assert.True(snapshot.GeneratedAtUtc >= before && snapshot.GeneratedAtUtc <= after);
-        Assert.True(snapshot.NameToEmoteId.ContainsKey("Foo"));
+        Assert.True(snapshot.NameToSlotId.ContainsKey("Foo"));
     }
 
     [Fact]
@@ -170,13 +170,13 @@ public class EmoteMatchCacheTests
             while (!cts.IsCancellationRequested)
             {
                 var snapshot = cache.GetChannelSnapshot(channel);
-                if (snapshot.NameToEmoteId.Count == 0)
+                if (snapshot.NameToSlotId.Count == 0)
                 {
                     continue;
                 }
 
-                var isSetA = ReferenceEquals(snapshot.NameToEmoteId, dictA);
-                var isSetB = ReferenceEquals(snapshot.NameToEmoteId, dictB);
+                var isSetA = ReferenceEquals(snapshot.NameToSlotId, dictA);
+                var isSetB = ReferenceEquals(snapshot.NameToSlotId, dictB);
                 var claimsSetA = snapshot.EmoteSetId == "set-a";
                 var claimsSetB = snapshot.EmoteSetId == "set-b";
 

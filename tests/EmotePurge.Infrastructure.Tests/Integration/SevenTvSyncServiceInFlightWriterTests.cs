@@ -44,7 +44,7 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
 
         Assert.NotNull(result);
         Assert.Equal("inflight_new", result.ChannelName);
-        Assert.Contains("Alpha", cache.GetChannelSnapshot("inflight_new").NameToEmoteId.Keys);
+        Assert.Contains("Alpha", cache.GetChannelSnapshot("inflight_new").NameToSlotId.Keys);
         Assert.DoesNotContain("inflight_old", cache.GetCachedChannelNames());
     }
 
@@ -115,7 +115,7 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
         release.SetResult();
         await syncTask.WaitAsync(TimeSpan.FromSeconds(30));
 
-        Assert.Contains("Live", cache.GetChannelSnapshot("inflight_swap_a").NameToEmoteId.Keys);
+        Assert.Contains("Live", cache.GetChannelSnapshot("inflight_swap_a").NameToSlotId.Keys);
     }
 
     [Fact]
@@ -204,7 +204,7 @@ public class SevenTvSyncServiceInFlightWriterTests(PostgresFixture fixture)
         var second = await service.SyncChannelAsync("inflight_ctx_next");
 
         Assert.NotNull(second);
-        Assert.Contains("Alpha", cache.GetChannelSnapshot("inflight_ctx_next").NameToEmoteId.Keys);
+        Assert.Contains("Alpha", cache.GetChannelSnapshot("inflight_ctx_next").NameToSlotId.Keys);
     }
 
     private static (SevenTvSyncService Service, TaskCompletionSource Entered, TaskCompletionSource Release) CreateBlockedService(

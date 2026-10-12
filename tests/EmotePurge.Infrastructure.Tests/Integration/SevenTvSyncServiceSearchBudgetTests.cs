@@ -198,8 +198,8 @@ public class SevenTvSyncServiceSearchBudgetTests(PostgresFixture fixture)
 
         await harness.Client.Received(1).ResolveTwitchUserIdAsync(backedOff.ChannelName, Arg.Any<CancellationToken>());
         await harness.Client.DidNotReceive().ResolveTwitchUserIdAsync(refused.ChannelName, Arg.Any<CancellationToken>());
-        Assert.Empty(harness.Cache.GetChannelSnapshot(backedOff.ChannelName).NameToEmoteId);
-        Assert.Empty(harness.Cache.GetChannelSnapshot(refused.ChannelName).NameToEmoteId);
+        Assert.Empty(harness.Cache.GetChannelSnapshot(backedOff.ChannelName).NameToSlotId);
+        Assert.Empty(harness.Cache.GetChannelSnapshot(refused.ChannelName).NameToSlotId);
     }
 
     [Fact]

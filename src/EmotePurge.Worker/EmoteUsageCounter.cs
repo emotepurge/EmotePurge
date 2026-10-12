@@ -13,10 +13,10 @@ public class EmoteUsageCounter : IEmoteUsageCounter
     // `category` as the factory argument keeps both lambdas static, so Increment allocates nothing
     // beyond the dictionary's own first insert per key — UsageCategory is a value type and does
     // not box across the generic TArg.
-    public void Increment(string emoteId, string emoteSetId, UsageCategory category)
+    public void Increment(string slotId, string emoteSetId, UsageCategory category)
     {
         _counts.AddOrUpdate(
-            new UsageCounterKey(emoteId, emoteSetId),
+            new UsageCounterKey(slotId, emoteSetId),
             static (_, cat) => cat switch
             {
                 UsageCategory.Bot => new EmoteUsageCounts(Human: 0, Bot: 1, SharedChat: 0),
