@@ -981,6 +981,16 @@ matters:
 After the cleanup, verify: `SELECT count(*) FROM "UsageStats" WHERE "Source" = 1;` is 0, the usage page
 shows the plain "counting since" sentence, and the vote rows you care about are still there.
 
+## Slot-aware 7TV reconcile (feature flag)
+
+Epic #365 tracks every set entry of an emote as its own slot (one emote under two aliases is two slots). The
+reconcile, the v4 date overlay and the slot readers stay off until the flag is switched on; with the flag off the
+system behaves exactly as before the slot work.
+
+| Key | Default | Compose variable | Meaning |
+|---|---|---|---|
+| `SevenTv:SlotReconcile:Enabled` | `false` | `SEVENTV_SLOT_RECONCILE_ENABLED` | Read by **api and worker**; set both together. The value is read once at startup, so a change needs a restart. Off: emote-wide reconcile and readers, no writes to `EmoteSlots`. |
+
 ## Database backup and restore
 
 [`scripts/backup-postgres.sh`](../scripts/backup-postgres.sh) dumps the database and rotates

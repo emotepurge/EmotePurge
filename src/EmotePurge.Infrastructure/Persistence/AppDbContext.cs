@@ -60,7 +60,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             // Identity of an authoritative slot (Name only breaks a tie on the same date). The slot
             // sync's conflict detection refers to this index by name.
             entity.HasIndex(s => new { s.EmoteId, s.AddedAt, s.Name })
-                .HasDatabaseName("IX_EmoteSlots_EmoteId_AddedAt_Name_Authoritative")
+                .HasDatabaseName(EmoteSlotKeys.AuthoritativeIndexName)
                 .IsUnique()
                 .HasFilter("\"AddedAtFromRest\"");
 

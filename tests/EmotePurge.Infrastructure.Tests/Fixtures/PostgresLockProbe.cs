@@ -1,5 +1,6 @@
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Npgsql;
 using Xunit;
 
@@ -41,6 +42,35 @@ public static class PostgresLockProbe
     }
 
     /// <summary>
+    /// <see cref="CreateTaggedDbContext(PostgresFixture, string)"/> with EF Core interceptors and, when
+    /// given, libpq-style session <paramref name="options"/> (Npgsql's <c>Options</c>, e.g.
+    /// <c>-c deadlock_timeout=200</c> to make one contender the deterministic deadlock victim; the
+    /// container's user is a superuser, so every session setting is allowed). Optionally against
+    /// another database of the same container.
+    /// </summary>
+    public static AppDbContext CreateTaggedDbContext(
+        this PostgresFixture fixture,
+        string applicationName,
+        IEnumerable<IInterceptor> interceptors,
+        string? options = null,
+        string? databaseName = null)
+    {
+        using var probe = fixture.CreateDbContext();
+        var connectionString = new NpgsqlConnectionStringBuilder(probe.Database.GetConnectionString())
+        {
+            ApplicationName = applicationName,
+            Database = databaseName ?? probe.Database.GetDbConnection().Database,
+            Pooling = false,
+            Options = options
+        }.ConnectionString;
+
+        return new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(connectionString)
+            .AddInterceptors(interceptors)
+            .Options);
+    }
+
+    /// <summary>
     /// Returns once the backend tagged <paramref name="applicationName"/> is waiting on a lock. Fails
     /// fast if <paramref name="contender"/> finishes instead — then it never blocked, and the ordering
     /// the test depends on did not happen.
@@ -72,5 +102,18 @@ public static class PostgresLockProbe
 
             await Task.Delay(20);
         }
+    }
+
+    /// <summary>
+    /// The statement the backend tagged <paramref name="applicationName"/> is waiting in, for a test
+    /// that must prove <i>which</i> lock a contender waits at, not only that it waits. Call it after
+    /// <see cref="WaitUntilBlockedOnLockAsync"/>.
+    /// </summary>
+    public static async Task<string> WaitingQueryAsync(this PostgresFixture fixture, string applicationName)
+    {
+        await using var probe = fixture.CreateDbContext();
+        return await probe.Database
+            .SqlQuery<string>($"""SELECT query AS "Value" FROM pg_stat_activity WHERE application_name = {applicationName} AND wait_event_type = 'Lock'""")
+            .SingleAsync();
     }
 }
