@@ -212,7 +212,7 @@ internal sealed class SevenTvFileJsonDto
 }
 
 // GQL v4 (host-absolute /v4/gql — the shared BaseAddress points at v3):
-// emoteSets { emoteSet(id) { emotes(page, perPage) { pageCount items { addedAt emote { id } } } } }
+// emoteSets { emoteSet(id) { emotes(page, perPage) { pageCount items { alias addedAt emote { id defaultName } } } } }
 // The only source of the real set-entry added-at; see the comment on SevenTvEmoteJsonDto.
 internal sealed class SevenTvGqlSetEntriesResponseDto
 {
@@ -242,6 +242,7 @@ internal sealed class SevenTvGqlSetEntriesPageDto
 
 internal sealed class SevenTvGqlSetEntryDto
 {
+    public string? Alias { get; set; }
     public DateTimeOffset? AddedAt { get; set; }
     public SevenTvGqlSetEntryEmoteDto? Emote { get; set; }
 }
@@ -249,6 +250,7 @@ internal sealed class SevenTvGqlSetEntryDto
 internal sealed class SevenTvGqlSetEntryEmoteDto
 {
     public string Id { get; set; } = string.Empty;
+    public string? DefaultName { get; set; }
 }
 
 // GQL v4 (host-absolute /v4/gql), foreign-channel-import spec: emoteSets { emoteSet(id) {

@@ -80,6 +80,12 @@ public static class ServiceCollectionExtensions
         configuration.GetSection(EmoteTagOptions.SectionName).Bind(emoteTagOptions);
         services.AddSingleton(emoteTagOptions);
 
+        // The slot-aware reconcile switch (emote-slots spec child 2): a plain boolean, read once here so
+        // the typed 7TV client and the services after it see the same value for the whole process.
+        var slotReconcileOptions = new SlotReconcileOptions();
+        configuration.GetSection(SlotReconcileOptions.SectionName).Bind(slotReconcileOptions);
+        services.AddSingleton(slotReconcileOptions);
+
         // GDPR Art. 21 objection gate for channels (#252, the counterpart of
         // IExcludedChatterFilter in EmotePurge.Worker): read once here so both the Api's join
         // endpoint (ChannelService) and the Worker's identity reconcile (ChannelIdentityService) see

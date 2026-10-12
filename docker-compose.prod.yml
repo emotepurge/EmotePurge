@@ -112,6 +112,8 @@ services:
       - ChatLogBackfill__Enabled=${CHAT_LOG_BACKFILL_ENABLED:-false}
       - ChatLogBackfill__RequestDelaySeconds=${CHAT_LOG_BACKFILL_REQUEST_DELAY_SECONDS:-10}
       - ChatLogArchive__BaseUrl=${CHAT_LOG_ARCHIVE_BASE_URL:-https://logs.cyex.app/}
+      # Slot-aware 7TV reconcile (default off, epic #365): read by api AND worker, set both together, restart required.
+      - SevenTv__SlotReconcile__Enabled=${SEVENTV_SLOT_RECONCILE_ENABLED:-false}
     volumes:
       - dataprotection-keys:/keys
       - /opt/emotepurge/legal:/legal:ro
@@ -148,6 +150,8 @@ services:
       - Redis__ConnectionString=redis:6379,password=${REDIS_PASSWORD}
       # 7TV EventAPI live updates (default off): rollout/rollback via env change without a rebuild.
       - SevenTv__EventApi__Enabled=${SEVENTV_EVENTAPI_ENABLED:-false}
+      # Slot-aware 7TV reconcile (default off, epic #365): read by api AND worker, set both together, restart required.
+      - SevenTv__SlotReconcile__Enabled=${SEVENTV_SLOT_RECONCILE_ENABLED:-false}
       - SevenTv__ResyncIntervalSeconds=${SEVENTV_RESYNC_INTERVAL_SECONDS:-60}
       # Client credentials for the Helix live poll (A10) — the same Twitch app as the Api,
       # but its own App Access Token (no user token, no scopes).

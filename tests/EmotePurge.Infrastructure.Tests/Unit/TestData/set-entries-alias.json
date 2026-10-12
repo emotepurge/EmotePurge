@@ -1,0 +1,61 @@
+{
+  "data": {
+    "emote_sets": {
+      "emote_set": {
+        "emotes": {
+          "page_count": 1,
+          "items": [
+            {
+              "alias": "inkorrekt",
+              "added_at": "2024-10-01T19:18:43.115+00:00",
+              "emote": {
+                "id": "01GCQTH5B80005MW1W9ACDPQXA",
+                "default_name": "Nerdge"
+              }
+            },
+            {
+              "alias": "ome44",
+              "added_at": "2026-10-08T17:14:07.910+00:00",
+              "emote": {
+                "id": "01M4E7KHK5DV534ZBGHKATJNKZ",
+                "default_name": "hob44"
+              }
+            },
+            {
+              "alias": "hob44",
+              "added_at": "2026-10-10T10:13:15.006+00:00",
+              "emote": {
+                "id": "01M4E7KHK5DV534ZBGHKATJNKZ",
+                "default_name": "hob44"
+              }
+            },
+            {
+              "alias": "Nerdge",
+              "added_at": "2026-10-10T11:54:31.085+00:00",
+              "emote": {
+                "id": "01GCQTH5B80005MW1W9ACDPQXA",
+                "default_name": "Nerdge"
+              }
+            },
+            {
+              "alias": "OMEGALUL",
+              "added_at": "2024-10-01T19:03:46.853+00:00",
+              "emote": {
+                "id": "01GDR51Q1R0006171NHFCC48HX",
+                "default_name": "OMEGALUL"
+              }
+            },
+            {
+              "alias": ":3",
+              "added_at": "2024-10-01T19:03:51.045+00:00",
+              "emote": {
+                "id": "01GDT7Z0H80002EH47C1YMSD3D",
+                "default_name": ":3"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
