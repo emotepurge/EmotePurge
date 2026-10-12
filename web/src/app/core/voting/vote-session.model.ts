@@ -56,6 +56,8 @@ export interface CreateVoteSessionRequest {
 export interface VoteSessionResult {
   emoteId: string;
   emoteName: string;
+  // Every name the ballot entry stands for, `emoteName` first. Absent on an older response.
+  emoteNames?: string[];
   sevenTvEmoteId: string;
   imageUrl: string;
   // Manager-only context: null = withheld, or no longer computed for an archived null-session

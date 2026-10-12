@@ -7,6 +7,7 @@ interface Row {
   sevenTvEmoteId: string;
   totalUseCount: number | null;
   firstSeenAt?: string | null;
+  emoteNames?: readonly string[];
 }
 
 const NOW = new Date('2026-08-01T12:00:00Z');
@@ -41,6 +42,23 @@ describe('EmoteUsageFilter', () => {
     expect(filter.apply(ROWS).map((row) => row.emoteName)).toEqual(['peepoHappy', 'peepoSad']);
 
     expect(filter.isAnyActive()).toBe(true);
+  });
+
+  it('matches a name search against every name in emoteNames, and against emoteName alone without it', () => {
+    const rows: Row[] = [
+      { emoteName: 'ome44', emoteNames: ['ome44', 'hob44'], sevenTvEmoteId: 'A', totalUseCount: 1 },
+      { emoteName: 'catJAM', sevenTvEmoteId: 'C', totalUseCount: 1 },
+    ];
+    const filter = new EmoteUsageFilter<Row>();
+
+    filter.setNameFilter('hob44');
+    expect(filter.apply(rows).map((row) => row.sevenTvEmoteId)).toEqual(['A']);
+
+    filter.setNameFilter('ome*');
+    expect(filter.apply(rows).map((row) => row.sevenTvEmoteId)).toEqual(['A']);
+
+    filter.setNameFilter('cat');
+    expect(filter.apply(rows).map((row) => row.sevenTvEmoteId)).toEqual(['C']);
   });
 
   it('reset() clears every filter', () => {

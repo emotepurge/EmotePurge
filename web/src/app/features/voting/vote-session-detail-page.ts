@@ -741,6 +741,17 @@ export class VoteSessionDetailPage {
    * aria-haspopup/aria-label bindings and `onCardActivate` below, so a row without a chartable
    * number never claims the dialog button semantics it cannot deliver on.
    */
+  /**
+   * What the row is called on screen: every name the ballot entry stands for ("ome44 / hob44" when
+   * one 7TV id sits in the set under two aliases). Display only; the drilldown title, the delete
+   * name and the ballot logic keep `emoteName`. A response without `emoteNames` reads as before.
+   */
+  protected displayName(emote: VoteSessionResult): string {
+    return emote.emoteNames && emote.emoteNames.length > 1
+      ? emote.emoteNames.join(' / ')
+      : emote.emoteName;
+  }
+
   protected rowAction(emote: VoteSessionResult): 'drilldown' | 'select' | 'none' {
     const action = this.cellAction();
     return action === 'drilldown' && !this.canDrilldown(emote) ? 'none' : action;
