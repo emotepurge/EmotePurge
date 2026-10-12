@@ -781,7 +781,7 @@
               >
                 <!-- Keyed by the 7TV id (spec #200, 7.2): a set view's live member without a counted
                      row has no Emote.Id, and two of those tracked by a null would collide (NG0955). -->
-                @for (emote of row.items; track emote.sevenTvEmoteId; let i = $index) {
+                @for (emote of row.items; track emote.slotKey; let i = $index) {
                   <!-- Wrapper, not a nested button: the history trigger has to sit ON the cell, and a
                      <button> inside a <button> is invalid HTML. Both are siblings inside a
                      positioned box instead, so the trigger overlays the cell without nesting. -->

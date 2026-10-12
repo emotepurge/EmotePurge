@@ -72,7 +72,11 @@ import { EmoteTagEntry, EmoteTagSummary } from '../../core/tags/emote-tag.model'
 import { ImportCoverage } from '../../core/usage/import-coverage.model';
 import { ImportCoverageService } from '../../core/usage/import-coverage.service';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
-import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
+import {
+  EmoteSeriesEntry,
+  EmoteUsageTotal,
+  EmoteUsageTotalDto,
+} from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
 import { EmoteDrilldownData } from '../../shared/emotes/emote-drilldown-dialog';
 import { CSV_MIME } from '../../shared/export/csv';
@@ -228,6 +232,20 @@ function emote(id: string, name: string, totalUseCount = 10): EmoteUsageTotalDto
     siblingNames: [],
     firstSeenAtShared: false,
   };
+}
+
+/**
+ * A slot-mode `/totals` row (plan 377, 2.1): `emote(id, …)` with a `slotId`, so every slot of one
+ * emote shares its Guid (`id`) and its 7TV id (`7tv-${id}`).
+ */
+function slotRow(
+  id: string,
+  slotId: string,
+  name: string,
+  totalUseCount = 10,
+  overrides: Partial<EmoteUsageTotalDto> = {},
+): EmoteUsageTotalDto {
+  return { ...emote(id, name, totalUseCount), slotId, ...overrides };
 }
 
 /**
@@ -5419,6 +5437,51 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       expect(asked[0].request.params.get('refresh')).toBe('true');
     });
   });
+
+  // Plan 377 (child 7), T3: a non-active view of a slot response (a `/totals` row with a `slotId`).
+  describe('slot cards in a non-active view (plan 377, T3)', () => {
+    const TIE = '2026-04-01T00:00:00.000Z';
+
+    function dated(sevenTvEmoteId: string, name: string, addedAt: string): ForeignEmoteRow {
+      return { ...member(sevenTvEmoteId, name), addedAt };
+    }
+
+    function card(slotKey: string): EmoteUsageTotal {
+      const row = component['emotes']().find((candidate) => candidate.slotKey === slotKey);
+      if (!row) {
+        throw new Error(`no card ${slotKey}`);
+      }
+      return row;
+    }
+
+    it('marks and inspects two uncounted entries of one emote at the same instant independently (S1)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [
+          slotRow('x', 'slot-ome', 'ome44', 30, {
+            firstSeenAt: '2026-03-01T00:00:00.000Z',
+            firstSeenAtFromRest: true,
+          }),
+        ],
+        members: memberList([
+          dated('7tv-x', 'ome44', '2026-03-01T00:00:00.000Z'),
+          dated('7tv-y', 'PumpA', TIE),
+          dated('7tv-y', 'PumpB', TIE),
+        ]),
+      });
+      const keyA = `live:7tv-y#${TIE}#PumpA`;
+      const keyB = `live:7tv-y#${TIE}#PumpB`;
+
+      component['selection'].onRowClick(card(keyA), { shiftKey: false } as MouseEvent);
+      expect(component['selection'].selectedKeys()).toEqual([keyA]);
+      expect(component['selection'].isSelected(card(keyB))).toBe(false);
+
+      component['inspect'](card(keyB));
+      expect(component['inspected']()?.emoteName).toBe('PumpB');
+      component['inspect'](card(keyA));
+      expect(component['inspected']()?.emoteName).toBe('PumpA');
+    });
+  });
 });
 
 /**
@@ -8138,5 +8201,231 @@ describe('UsageStatsPage — imported numbers keep their source without a tracki
 
       expect(component['importCaption']()).not.toBeNull();
     });
+  });
+});
+
+/**
+ * Plan 377 (emote slots, child 7), T3: the page keys every card by `slotKey` (2.3). With the slot
+ * reconcile flag on, one emote under two names arrives as two slot rows sharing a 7TV id and a
+ * Guid; each must be a card of its own for the selection, the inspector, the rank, the fill bar,
+ * the curve and the drilldown. Emote-mode rows keep the 7TV id as their key (F4), which the
+ * unchanged blocks above guard.
+ */
+describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let openSpy: ReturnType<typeof vi.fn>;
+
+  const OLD_DATE = '2026-01-05T10:00:00.000Z';
+  const ome = (count = 30, overrides: Partial<EmoteUsageTotalDto> = {}) =>
+    slotRow('x', 'slot-ome', 'ome44', count, {
+      siblingNames: ['hob44'],
+      firstSeenAt: OLD_DATE,
+      firstSeenAtFromRest: true,
+      ...overrides,
+    });
+  const hob = (count = 10, overrides: Partial<EmoteUsageTotalDto> = {}) =>
+    slotRow('x', 'slot-hob', 'hob44', count, {
+      siblingNames: ['ome44'],
+      firstSeenAt: '2026-02-05T10:00:00.000Z',
+      firstSeenAtFromRest: true,
+      ...overrides,
+    });
+  const other = () => emote('y', 'Other', 20);
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+    openSpy = vi.fn();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+        { provide: Dialog, useValue: { open: openSpy } as unknown as Dialog },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Mounts channel 'a' on its active set with the given rows and series entries. Both "since"
+   *  dates are set so a later usage burst asks for nothing but the totals (see the #94 block). */
+  function mount(totals: EmoteUsageTotalDto[], seriesEmotes: EmoteSeriesEntry[] = []): void {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
+      setStatus({
+        activeEmoteSetId: 'set-a',
+        capacity: 600,
+        occupiedSlots: 10,
+        trackedSince: '2026-01-01T00:00:00Z',
+        botsExcludedSince: '2026-01-02T00:00:00Z',
+        sharedChatSeparatedSince: '2026-01-02T00:00:00Z',
+      }),
+    );
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: seriesEmotes,
+    });
+  }
+
+  function silentReload(totals: EmoteUsageTotalDto[]): void {
+    FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+  }
+
+  function card(slotKey: string): EmoteUsageTotal {
+    const row = component['emotes']().find((candidate) => candidate.slotKey === slotKey);
+    if (!row) {
+      throw new Error(`no card ${slotKey}`);
+    }
+    return row;
+  }
+
+  function click(slotKey: string): void {
+    component['selection'].onRowClick(card(slotKey), { shiftKey: false } as MouseEvent);
+  }
+
+  function seriesEntry(
+    sevenTvEmoteId: string,
+    slotId: string | null,
+    name: string,
+    days: [number, number][],
+  ): EmoteSeriesEntry {
+    return { sevenTvEmoteId, emoteId: sevenTvEmoteId.slice(4), slotId, name, days };
+  }
+
+  it('shows two slot rows of one emote as two cards, each with its own rank, band and fill bar, and a name search finds exactly one (AK 34)', () => {
+    mount([ome(), other(), hob()]);
+
+    expect(component['atlasOrder']().map((row) => row.slotKey)).toEqual([
+      'slot-ome',
+      '7tv-y',
+      'slot-hob',
+    ]);
+    const banded = component['bands']().flatMap((band) => band.items.map((row) => row.slotKey));
+    expect(banded.filter((key) => key === 'slot-ome')).toHaveLength(1);
+    expect(banded.filter((key) => key === 'slot-hob')).toHaveLength(1);
+    expect([...component['fillPercents']().keys()].sort()).toEqual([
+      '7tv-y',
+      'slot-hob',
+      'slot-ome',
+    ]);
+
+    component['inspect'](card('slot-ome'));
+    expect(component['inspectedRank']()).toBe(1);
+    component['inspect'](card('slot-hob'));
+    expect(component['inspectedRank']()).toBe(3);
+    expect(component['inspected']()?.emoteName).toBe('hob44');
+
+    component['usageFilter'].setNameFilter('hob44');
+    expect(component['atlasOrder']().map((row) => row.slotKey)).toEqual(['slot-hob']);
+  });
+
+  it('marks one slot card without marking its sibling', () => {
+    mount([ome(), hob()]);
+
+    click('slot-ome');
+
+    expect(component['selection'].selectedKeys()).toEqual(['slot-ome']);
+    expect(component['selection'].isSelected(card('slot-hob'))).toBe(false);
+  });
+
+  it('keeps the inspector on the slot card across a silent reload', () => {
+    mount([ome(), hob()]);
+    component['inspect'](card('slot-hob'));
+
+    silentReload([ome(), hob(12)]);
+
+    expect(component['inspected']()?.slotKey).toBe('slot-hob');
+    expect(component['inspected']()?.totalUseCount).toBe(12);
+  });
+
+  it("draws each slot card's curve from its own slot entry and an emote-mode row's from the entry without a slot", () => {
+    mount(
+      [ome(), hob(), other()],
+      [
+        seriesEntry('7tv-x', 'slot-ome', 'ome44', [[0, 5]]),
+        seriesEntry('7tv-x', 'slot-hob', 'hob44', [[1, 7]]),
+        seriesEntry('7tv-y', null, 'Other', [[2, 9]]),
+      ],
+    );
+    const firstDays = () =>
+      component['inspectedPoints']()
+        .slice(0, 3)
+        .map((point) => point.useCount);
+
+    component['inspect'](card('slot-ome'));
+    expect(firstDays()).toEqual([5, 0, 0]);
+    component['inspect'](card('slot-hob'));
+    expect(firstDays()).toEqual([0, 7, 0]);
+    component['inspect'](card('7tv-y'));
+    expect(firstDays()).toEqual([0, 0, 9]);
+  });
+
+  it("hands a slot card's slotId to the drilldown, and none for an emote-mode row (plan 377, 2.9)", () => {
+    mount([ome(), other()]);
+    openSpy.mockReturnValue({ closed: of(undefined) });
+
+    component['openDrilldown'](card('slot-ome'));
+    component['openDrilldown'](card('7tv-y'));
+
+    const slotData = openSpy.mock.calls[0][1].data as EmoteDrilldownData;
+    expect(slotData.slotId).toBe('slot-ome');
+    expect(slotData.emoteId).toBe('x');
+    const emoteData = openSpy.mock.calls[1][1].data as EmoteDrilldownData;
+    expect(emoteData.slotId).toBeNull();
+    expect(emoteData.emoteId).toBe('y');
+  });
+
+  it('keeps a resumed slot on the same card — still marked and inspected, with its new date and the higher count (D7, AK 46)', () => {
+    mount([ome(30), hob()]);
+    click('slot-ome');
+    component['inspect'](card('slot-ome'));
+    expect(component['isUnderObservation'](card('slot-ome'))).toBe(false);
+
+    // The slot left the set and came back: same slotId, a fresh 7TV date, the count kept going.
+    silentReload([ome(45, { firstSeenAt: new Date().toISOString() }), hob()]);
+
+    expect(component['selection'].selectedKeys()).toEqual(['slot-ome']);
+    const resumed = component['inspected']();
+    expect(resumed?.slotKey).toBe('slot-ome');
+    expect(resumed?.totalUseCount).toBe(45);
+    expect(component['isUnderObservation'](resumed!)).toBe(true);
   });
 });

@@ -327,6 +327,15 @@ function byName(a: EmoteUsageTotal, b: EmoteUsageTotal): number {
   return a.emoteName.localeCompare(b.emoteName, undefined, { sensitivity: 'base' });
 }
 
+/**
+ * The key a `/series` entry and a grid row meet on (plan 377, F4): the slot for a slot card and a
+ * slot entry, the 7TV id for an emote-mode row and an emote-mode entry. Read the same way on both
+ * sides, so the two can never disagree about which form applies.
+ */
+function seriesJoinKey(item: { slotId: string | null; sevenTvEmoteId: string }): string {
+  return item.slotId ?? item.sevenTvEmoteId;
+}
+
 function sortableLastUsed(lastUsedDate: string | null): number {
   if (!lastUsedDate) {
     return NEVER_USED_SORT_VALUE;
@@ -524,8 +533,11 @@ export class UsageStatsPage {
    * (`liveMembers`); until then `viewLoading()` keeps the skeleton up (8.3), and without a readable
    * list the rows stay the DB rows alone.
    *
-   * Keyed by `sevenTvEmoteId` everywhere below (7.2): a live member without a counted row has no
-   * `Emote.Id` at all, and two of those must still be two distinct cells (NG0955, AK 54/55).
+   * Keyed by `slotKey` everywhere below (plan 377, 2.3): the `slotId` of a slot card, the 7TV id of
+   * an emote-mode row or a grouped live member (as before slots), a `live:` key per entry for a
+   * live member without a counted row in a slot response. A live member without a counted row has
+   * no `Emote.Id` at all, and two of those must still be two distinct cells (NG0955, AK 54/55);
+   * two slot cards of one emote share their 7TV id and must still be two cells (AK 34).
    */
   protected readonly emotes = computed<EmoteUsageTotal[]>(() => {
     const rows = this.totalsRows();
@@ -1395,12 +1407,13 @@ export class UsageStatsPage {
     () => packAtlasRows<EmoteUsageTotal, AtlasGroupKey>(this.atlasGroups(), this.columns()).rows,
   );
 
-  /** Fill-bar width per 7TV id — precomputed per band peak so the template stays a lookup. */
+  /** Fill-bar width per card (`slotKey`) — precomputed per band peak so the template stays a
+   *  lookup. */
   protected readonly fillPercents = computed(() => {
     const map = new Map<string, number>();
     for (const band of this.bands()) {
       for (const emote of band.items) {
-        map.set(emote.sevenTvEmoteId, usageFillPercent(emote.totalUseCount, band.peak));
+        map.set(emote.slotKey, usageFillPercent(emote.totalUseCount, band.peak));
       }
     }
     return map;
@@ -1440,12 +1453,13 @@ export class UsageStatsPage {
   );
 
   /** Position in the set's usage ranking — the inspector's "#003", stable across sort changes.
-   *  Counted rows only: a row without counts has no place in a ranking by counts. */
+   *  Counted rows only: a row without counts has no place in a ranking by counts. Per card
+   *  (`slotKey`): two slot cards of one emote hold two places (D1). */
   private readonly usageRank = computed(() => {
     const ranks = new Map<string, number>();
     [...this.countedEmotes()]
       .sort((a, b) => b.totalUseCount - a.totalUseCount)
-      .forEach((emote, index) => ranks.set(emote.sevenTvEmoteId, index + 1));
+      .forEach((emote, index) => ranks.set(emote.slotKey, index + 1));
     return ranks;
   });
 
@@ -1459,12 +1473,14 @@ export class UsageStatsPage {
   // 1) — selectedItems() resolves against the latter, so a filter change can no longer make a
   // marked-but-hidden row unresolvable to the delete/export/vote-session run that reads it.
   //
-  // Keyed by the 7TV id, not `Emote.Id` (spec #200, 7.2, AK 54): a set view's live member without a
-  // counted row has no Guid, and keying on a `null` would fold every such row into one selection
-  // entry. The class itself is untouched — it has always been generic over its key.
+  // Keyed by the card's `slotKey` (plan 377, 2.3), not `Emote.Id` (spec #200, 7.2, AK 54): a set
+  // view's live member without a counted row has no Guid, and keying on a `null` would fold every
+  // such row into one selection entry; nor the 7TV id alone, which two slot cards of one emote
+  // share (AK 34). For an emote-mode row the key still is the 7TV id, so with the flag off nothing
+  // changes. The class itself is untouched — it has always been generic over its key.
   protected readonly selection = new ListSelection(
     this.atlasOrder,
-    (emote) => emote.sevenTvEmoteId,
+    (emote) => emote.slotKey,
     this.emotes,
   );
 
@@ -1680,7 +1696,7 @@ export class UsageStatsPage {
    * a row that no longer exists. Falls back to the busiest emote so the line is never empty —
    * before the first hover, the top of the set is the honest thing to be looking at.
    */
-  // Held by 7TV id, like the selection (7.2).
+  // Held by `slotKey`, like the selection (plan 377, 2.3).
   private readonly inspectedId = signal<string | null>(null);
   protected readonly inspected = linkedSignal<
     {
@@ -1709,15 +1725,13 @@ export class UsageStatsPage {
       if (pending) {
         return previous?.value ?? null;
       }
-      return (
-        (id ? order.find((emote) => emote.sevenTvEmoteId === id) : undefined) ?? order[0] ?? null
-      );
+      return (id ? order.find((emote) => emote.slotKey === id) : undefined) ?? order[0] ?? null;
     },
   });
 
   protected readonly inspectedRank = computed(() => {
     const emote = this.inspected();
-    return emote ? (this.usageRank().get(emote.sevenTvEmoteId) ?? null) : null;
+    return emote ? (this.usageRank().get(emote.slotKey) ?? null) : null;
   });
 
   protected readonly inspectedBand = computed<AtlasGroupKey>(() => {
@@ -1885,12 +1899,14 @@ export class UsageStatsPage {
     return this.setStatusFailedChannel() === this.channelName() && this.importCoverageSettled();
   });
 
-  // Keyed by 7TV id (spec 6.5 step 1, 7.2): `/series` still carries `emoteId` beside it, but a set
-  // view's row need not have one.
+  // Keyed by `slotId ?? sevenTvEmoteId` (plan 377, F4): a slot entry joins its slot card, an
+  // emote-mode entry the emote-mode row of its 7TV id — equivalent to a join by `emoteId`, since a
+  // 7TV id has either one emote-mode row or only slot rows in one response, but a set view's row
+  // need not have an `Emote.Id` at all (spec 6.5 step 1, 7.2).
   private readonly seriesByEmote = computed(
     () =>
       new Map(
-        this.channelSeries()?.emotes.map((entry) => [entry.sevenTvEmoteId, entry.days]) ?? [],
+        this.channelSeries()?.emotes.map((entry) => [seriesJoinKey(entry), entry.days]) ?? [],
       ),
   );
 
@@ -1931,7 +1947,7 @@ export class UsageStatsPage {
     // An emote absent from the response had no usage in the range — the same statement its absent
     // days would make, one level up. Zero-filling here is what turns that into a flat baseline.
     return fillOffsetSeries(
-      this.seriesByEmote().get(emote.sevenTvEmoteId) ?? [],
+      this.seriesByEmote().get(seriesJoinKey(emote)) ?? [],
       series.from,
       series.to,
     );
@@ -2762,8 +2778,8 @@ export class UsageStatsPage {
 
   // See VoteSessionDetailPage.trackRow for the full reasoning: rows() rebuilds fresh row arrays on
   // every recompute, so tracking by index (not identity) keeps the row views stable and avoids
-  // rebuilding every cell — the inner @for (… track emote.sevenTvEmoteId) still reconciles row
-  // content correctly on a resize (DECISIONS 2026-08-30; the inner key is the 7TV id since #200).
+  // rebuilding every cell — the inner @for (… track emote.slotKey) still reconciles row content
+  // correctly on a resize (DECISIONS 2026-08-30; the inner key is the card's slotKey since #377).
   protected trackRow(index: number): number {
     return index;
   }
@@ -2841,12 +2857,12 @@ export class UsageStatsPage {
   }
 
   protected inspect(emote: EmoteUsageTotal): void {
-    this.inspectedId.set(emote.sevenTvEmoteId);
+    this.inspectedId.set(emote.slotKey);
   }
 
   /** Pointer or focus landing on a cell makes it both the inspected row and the grid's tab stop. */
   protected onCellFocus(emote: EmoteUsageTotal, index: number): void {
-    this.inspectedId.set(emote.sevenTvEmoteId);
+    this.inspectedId.set(emote.slotKey);
     this.activeIndex.set(index);
   }
 
@@ -2876,7 +2892,7 @@ export class UsageStatsPage {
    * focus handler alone would leave the same gap on a desktop browser.
    */
   protected onCellClick(emote: EmoteUsageTotal, index: number, event: MouseEvent): void {
-    this.inspectedId.set(emote.sevenTvEmoteId);
+    this.inspectedId.set(emote.slotKey);
     this.activeIndex.set(index);
 
     // On a coarse pointer the cell has only one meaning left. Returning before the selection call
@@ -2935,7 +2951,7 @@ export class UsageStatsPage {
   }
 
   protected fillPercent(emote: EmoteUsageTotal): number {
-    return this.fillPercents().get(emote.sevenTvEmoteId) ?? 0;
+    return this.fillPercents().get(emote.slotKey) ?? 0;
   }
 
   /** Compact figure printed onto the sprite — "9,4k" fits a 64 px cell, "9412" does not. */
@@ -3225,6 +3241,8 @@ export class UsageStatsPage {
       from: this.from(),
       to: this.to(),
       emoteId: emote.emoteId,
+      // A slot card asks its slot's own series, an emote-mode row the emote's (plan 377, 2.9).
+      slotId: emote.slotId ?? null,
       sevenTvEmoteId: emote.sevenTvEmoteId,
       // The set these numbers were counted under, frozen into the dialog (F4, AK 64) — the set of
       // the rows on screen, not a dropdown value that may already be moving.
