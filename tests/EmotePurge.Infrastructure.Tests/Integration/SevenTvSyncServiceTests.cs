@@ -799,11 +799,12 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task ApplyEmoteSetUpdate_NoOpDispatch_StaysNoChange_EvenWhenItCouldBackfill()
+    public async Task ApplyEmoteSetUpdate_NoOpRename_StaysNoChange_AndLeavesFirstSeenAtNull()
     {
-        // The dispatch path decides NoChange vs Applied by asking the ChangeTracker, so it must not
-        // backfill at all — the periodic resync fills the same gap within a tick without turning a
-        // no-op dispatch into a live event for every open page.
+        // A rename carries no push date, so the dispatch has nothing to backfill FirstSeenAt from. The
+        // dispatch path decides NoChange vs Applied by asking the ChangeTracker, so a no-op rename must
+        // not touch the row — the periodic resync fills the gap without turning a no-op dispatch into
+        // a live event for every open page.
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_firstseen_dispatch", ("e1", "stable", false));
