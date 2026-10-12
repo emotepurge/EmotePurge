@@ -3,8 +3,23 @@ namespace EmotePurge.Core.Services;
 public record EmoteUsageDto(string EmoteName, DateOnly Date, int UseCount);
 
 /// <summary>
-/// One emote with everything needed to judge it as a deletion candidate.
+/// One row of the usage grid with everything needed to judge it as a deletion candidate — one row per
+/// set entry (slot) or, in emote mode, one per emote (emote-slots spec 5.1, plan #376 2.2).
 /// </summary>
+/// <remarks>
+/// <b>Two modes.</b> A slot-mode row (<see cref="SlotId"/> set) shows exactly one slot: its name, its add
+/// date and the counts of that one slot, which is what <c>/daily?slotId=</c> answers for it. An emote-mode
+/// row (<see cref="SlotId"/> <c>null</c>) is the row as it was before slots: the emote's name and
+/// <c>FirstSeenAt</c>, and the counts of every slot of the emote under the requested set. With
+/// <c>SevenTv:SlotReconcile:Enabled</c> off every row is in emote mode (R1); with it on, an emote whose
+/// counts under the set still sit on an unsettled seed, or — in the active set's view — that has no active
+/// slot of its own, is in emote mode (R2), every other one shows one row per slot.
+/// </remarks>
+/// <param name="SlotId">
+/// The <c>EmoteSlot</c> this row shows, or <c>null</c> in emote mode (see remarks). At most one row per
+/// slot id; exactly one row per emote id in emote mode.
+/// </param>
+/// <param name="EmoteName">The slot's name in slot mode, <c>Emote.Name</c> in emote mode.</param>
 /// <param name="TotalUseCount">
 /// Sum of <c>UseCount</c> over the requested range and the requested emote set — this channel's
 /// own human usage, and nothing else. Messages from known bots (<c>BotUseCount</c>) and messages
@@ -31,10 +46,16 @@ public record EmoteUsageDto(string EmoteName, DateOnly Date, int UseCount);
 /// too short to support it.
 /// </param>
 /// <param name="FirstSeenAt">
-/// When the emote entered the 7TV set. <c>null</c> means unknown — never "new".
+/// When the entry entered the 7TV set: the slot's <c>AddedAt</c> in slot mode, <c>Emote.FirstSeenAt</c> in
+/// emote mode. <c>null</c> means unknown — never "new".
+/// </param>
+/// <param name="FirstSeenAtFromRest">
+/// Whether <see cref="FirstSeenAt"/> is 7TV's authoritative date for the entry (the slot's
+/// <c>AddedAtFromRest</c>) rather than a provisional one. Always <c>false</c> in emote mode.
 /// </param>
 /// <param name="IsArchived">
-/// Whether this emote row is archived (gone from 7TV). Always <c>false</c> in the active set's
+/// Whether this row is archived (gone from 7TV) — in slot mode when either the slot or its emote is.
+/// Always <c>false</c> in the active set's
 /// view, which excludes archived emotes outright. Only a non-active set can carry <c>true</c>
 /// here: there the base set is "every row of the channel with at least one count under that set",
 /// and an emote that has since left 7TV still carries the counts it earned while it was in the set
@@ -47,10 +68,18 @@ public record EmoteUsageDto(string EmoteName, DateOnly Date, int UseCount);
 /// anywhere else. The set the caller asked about is never among them: a twin counted <em>there</em>
 /// stands in the same view already and needs no pointer (spec E24). This is a hint about where a
 /// same-named emote's history went, not a claim that the two are the same emote — chat matching
-/// decides by name, so a name shared across sets is exactly the case where the counts split.
+/// decides by name, so a name shared across sets is exactly the case where the counts split. In slot mode
+/// the name is the slot's, and a twin also matches through one of its own slot names (plan #376 2.6); two
+/// slots of one emote are never twins.
+/// </param>
+/// <param name="SiblingNames">
+/// The names of the other rows of the same emote in this response, in the order of their slots (add date
+/// ascending, unknown last, then name), ordinal distinct, without this row's own name. Always empty in
+/// emote mode.
 /// </param>
 public record EmoteUsageContextDto(
     string EmoteId,
+    string? SlotId,
     string EmoteName,
     string SevenTvEmoteId,
     string ImageUrl,
@@ -58,8 +87,10 @@ public record EmoteUsageContextDto(
     DateOnly? LastUsedDate,
     int PreviousWindowUseCount,
     DateTime? FirstSeenAt,
+    bool FirstSeenAtFromRest,
     bool IsArchived,
-    IReadOnlyList<string> NameTwinEmoteSetIds);
+    IReadOnlyList<string> NameTwinEmoteSetIds,
+    IReadOnlyList<string> SiblingNames);
 
 public record EmoteDailyUsageDto(DateOnly Date, int UseCount);
 
@@ -102,7 +133,8 @@ public record EmoteUsageSeriesDto(
     IReadOnlyList<DateOnly> LiveDays);
 
 /// <summary>
-/// One emote's day rows inside <see cref="ChannelUsageSeriesDto"/>.
+/// One usage-grid row's day rows inside <see cref="ChannelUsageSeriesDto"/> — the same rows, in the same
+/// two modes, as <see cref="EmoteUsageContextDto"/>: one entry per slot, or per emote in emote mode.
 /// </summary>
 /// <param name="Days">
 /// One <c>[dayOffset, useCount]</c> pair per day with actual usage, ascending, where the offset
@@ -124,7 +156,13 @@ public record EmoteUsageSeriesDto(
 /// here, because a series entry can only exist where a database row exists, and it will be dropped
 /// in a step of its own once no client reads it any more.
 /// </param>
-public record EmoteSeriesEntryDto(string SevenTvEmoteId, string EmoteId, IReadOnlyList<int[]> Days);
+/// <param name="SlotId">
+/// The slot whose days these are, or <c>null</c> in emote mode, where each day is the sum over the
+/// emote's slots — the join key to <see cref="EmoteUsageContextDto.SlotId"/> (by <paramref name="EmoteId"/>
+/// when <c>null</c>).
+/// </param>
+/// <param name="Name">The row's name, the same as <see cref="EmoteUsageContextDto.EmoteName"/>.</param>
+public record EmoteSeriesEntryDto(string SevenTvEmoteId, string EmoteId, string? SlotId, string Name, IReadOnlyList<int[]> Days);
 
 /// <summary>
 /// Every active emote's daily usage for one channel and range in a single response — the batch twin
@@ -143,8 +181,10 @@ public record EmoteSeriesEntryDto(string SevenTvEmoteId, string EmoteId, IReadOn
 /// "absent means unknown, not offline" caveat as <see cref="EmoteUsageSeriesDto.LiveDays"/>.
 /// </param>
 /// <param name="Emotes">
-/// Only emotes with at least one day of own usage in the range (rows with <c>UseCount = 0</c>, be
-/// they bot-only or shared-chat-only, do not count) under the requested emote set. Unarchived only
+/// One entry per row of the usage grid (see <see cref="EmoteSeriesEntryDto"/>), ordered by
+/// <c>EmoteId</c> and, within one emote, by the order of its slots. Only rows with at least one day of own
+/// usage in the range (rows with <c>UseCount = 0</c>, be they bot-only or shared-chat-only, do not count)
+/// under the requested emote set. Unarchived only
 /// while the requested set is the channel's active one; a non-active set reports its archived rows
 /// too, for the reason given on <see cref="EmoteUsageContextDto.IsArchived"/>. An emote the caller
 /// knows about but does not find here has no own usage in the window — the same statement the
@@ -208,6 +248,9 @@ public interface IUsageStatQueryService
     /// Every active emote of the channel with its usage context, zero-filled — an unused emote must
     /// still be findable in a usage UI. Archived emotes are excluded: they are already gone from
     /// 7TV and must not reappear as deletion candidates just because they still carry history.
+    /// One row per emote in emote mode, one per shown slot otherwise (see
+    /// <see cref="EmoteUsageContextDto"/>); sorted by <see cref="EmoteUsageContextDto.TotalUseCount"/>
+    /// descending, with no promise about the order of equal totals.
     /// </summary>
     /// <param name="emoteSetId">
     /// Which emote set's counts to report. <c>null</c> means the channel's currently active set, so

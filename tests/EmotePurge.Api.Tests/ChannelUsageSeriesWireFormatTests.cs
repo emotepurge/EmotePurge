@@ -31,17 +31,38 @@ public class ChannelUsageSeriesWireFormatTests
         // named by its 7TV id — the only key our own rows and 7TV's live membership list share —
         // and carries the Emote.Id guid alongside it for the length of one transition (spec 6.5,
         // step 1). Dropping either one early breaks a client that is still reading it, so this
-        // case fails if either goes missing.
+        // case fails if either goes missing. The entry is an emote-mode one — what every entry is
+        // with the slot flag off: slotId present and null, never omitted (plan #376 2.4).
         var dto = new ChannelUsageSeriesDto(
             new DateOnly(2026, 7, 1),
             new DateOnly(2026, 7, 7),
             [0, 6],
-            [new EmoteSeriesEntryDto("01JB8QK3X0000000000000000", "emote-1", [[0, 3], [4, 8]])]);
+            [new EmoteSeriesEntryDto("01JB8QK3X0000000000000000", "emote-1", null, "PogChamp", [[0, 3], [4, 8]])]);
 
         var json = JsonSerializer.Serialize(dto, Options);
 
         Assert.Equal(
-            """{"from":"2026-07-01","to":"2026-07-07","liveDays":[0,6],"emotes":[{"sevenTvEmoteId":"01JB8QK3X0000000000000000","emoteId":"emote-1","days":[[0,3],[4,8]]}],"firstCountedDay":null,"lastCountedDay":null,"channelFirstCountedDay":null}""",
+            """{"from":"2026-07-01","to":"2026-07-07","liveDays":[0,6],"emotes":[{"sevenTvEmoteId":"01JB8QK3X0000000000000000","emoteId":"emote-1","slotId":null,"name":"PogChamp","days":[[0,3],[4,8]]}],"firstCountedDay":null,"lastCountedDay":null,"channelFirstCountedDay":null}""",
+            json);
+    }
+
+    [Fact]
+    public void ASlotEntry_CarriesSlotIdAndName_BeforeTheUnchangedDayPairs()
+    {
+        // protects=the slot entry's field names and their order sevenTvEmoteId, emoteId, slotId, name,
+        // days (spec 5.3, plan #376 2.4), with the day pairs still pairs;
+        // fails_when=slotId or name is renamed, dropped or moved, or the pairs change shape;
+        // no_claim=nothing about which rows are slot-mode rows (the service tests decide that).
+        var dto = new ChannelUsageSeriesDto(
+            new DateOnly(2026, 7, 1),
+            new DateOnly(2026, 7, 7),
+            [],
+            [new EmoteSeriesEntryDto("01JB8QK3X0000000000000000", "emote-1", "slot-2", "hob44", [[2, 5]])]);
+
+        var json = JsonSerializer.Serialize(dto, Options);
+
+        Assert.Equal(
+            """{"from":"2026-07-01","to":"2026-07-07","liveDays":[],"emotes":[{"sevenTvEmoteId":"01JB8QK3X0000000000000000","emoteId":"emote-1","slotId":"slot-2","name":"hob44","days":[[2,5]]}],"firstCountedDay":null,"lastCountedDay":null,"channelFirstCountedDay":null}""",
             json);
     }
 

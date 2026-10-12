@@ -171,19 +171,41 @@ Invariante (ab M2): eine Zelle `(SlotId, EmoteSetId, Date)` ist live **oder** im
 
 ### 5.1 `GET /api/channels/{c}/usage-stats/totals?from&to[&emoteSetId]`
 
-Eine Zeile **je Slot**:
+*Geändert in Kind 6 (#376), Betreiber 2026-10-12 (Plan-376 R1, R2): Emote-Modus statt eigener Seed-Zeilen, `SlotId` nullable,
+Verzweigung am Flag. Bestätigte Abweichung vom ursprünglichen Text, Begründung in DECISIONS (#365, Absatz „Child 6").*
+
+Eine Zeile **je Slot** (Slot-Modus) oder **je Emote** (Emote-Modus):
 
 ```
 EmoteUsageContextDto(
-  string EmoteId, string SlotId, string EmoteName /* Slot-Name */, string SevenTvEmoteId, string ImageUrl,
+  string EmoteId, string? SlotId /* null = Emote-Modus */, string EmoteName /* Slot-Name bzw. Emote.Name */,
+  string SevenTvEmoteId, string ImageUrl,
   int TotalUseCount, DateOnly? LastUsedDate, int PreviousWindowUseCount,
-  DateTime? FirstSeenAt /* Slot.AddedAt */, bool FirstSeenAtFromRest,
-  bool IsArchived /* Slot oder Emote archiviert */,
-  IReadOnlyList<string> NameTwinEmoteSetIds /* je Slot-Name */,
-  IReadOnlyList<string> SiblingNames /* andere aktive Slots desselben Emotes in dieser Ansicht, nach AddedAt */)
+  DateTime? FirstSeenAt /* Slot.AddedAt bzw. Emote.FirstSeenAt */, bool FirstSeenAtFromRest /* Emote-Modus: false */,
+  bool IsArchived /* Slot oder Emote archiviert; Emote-Modus: Emote.IsArchived */,
+  IReadOnlyList<string> NameTwinEmoteSetIds /* je Slot-Name; Emote-Modus: über Emote.Name */,
+  IReadOnlyList<string> SiblingNames /* andere Zeilen desselben Emotes in dieser Antwort, D2-Ordnung; Emote-Modus: leer */)
 ```
 
-Aktive Ansicht: jeder aktive Slot jedes aktiven Emotes, mit 0 aufgefüllt (unsettled Seeds sichtbar, nur nicht zählend). Eine D7-Wiederaufnahme erscheint auf derselben Karte mit deren bisherigen Zählungen; das neue REST-Datum setzt nur „Neu"/„Im Set seit" zurück. Nicht-aktive Ansicht: jeder Slot mit ≥ 1 `UsageStat` unter dem Set (archivierte eingeschlossen, E23). Aggregation `GroupBy(u => u.SlotId)` nach Slot-ID-Liste (Regel 10). Für beide Ansichten zählt nur das angefragte `EmoteSetId`.
+**Modus je Emote im angefragten Set X.** Flag `SevenTv:SlotReconcile:Enabled` aus: **jedes** Emote im Emote-Modus — die
+Antwort ist die von vor den Slots, nur um die neuen Felder mit ihren Aus-Werten ergänzt (`SlotId` `null`,
+`FirstSeenAtFromRest` `false`, `SiblingNames` leer). Flag an: Emote-Modus, wenn das Emote einen unsettled Seed mit Zeilen
+unter X hat (dieselbe Seed-Abfrage wie Settle und Map-Ausschluss, E7) oder — nur in der aktiven Ansicht — keinen aktiven
+eigenen Slot (E14, virtueller Slot); sonst Slot-Modus. Ein Seed zählt nicht, sein `AddedAt` ist `null`, sein Name kann
+veraltet sein — deshalb erscheint er nie als eigene Zeile.
+
+**Zeilen.** Emote-Modus: genau eine Zeile, Zahlen = Summe über alle Zeilen des Emotes unter X. Slot-Modus, aktive
+Ansicht: eine Zeile je aktivem eigenem Slot, mit 0 aufgefüllt; archivierte eigene Slots erscheinen nicht — eine
+D7-Wiederaufnahme erscheint auf derselben Karte mit deren bisherigen Zählungen, das neue REST-Datum setzt nur „Neu"/„Im Set
+seit" zurück. Slot-Modus, nicht-aktive Ansicht: eine Zeile je eigenem Slot mit ≥ 1 `UsageStat` unter X (archivierte
+eingeschlossen, E23). Basismenge wie bisher: aktive Ansicht = nicht archivierte Emotes, nicht-aktive = Emotes mit ≥ 1
+Zeile unter X.
+
+**Invariante:** `SlotId` gesetzt ⇔ die Zeile zeigt genau die Zahlen dieses einen Slots (dieselben wie `/daily?slotId=`);
+je `SlotId` höchstens eine Zeile, je Emote im Emote-Modus genau eine. Sortierung nach `TotalUseCount` absteigend, keine
+Zusage bei Gleichstand. Aggregation `GroupBy(u => u.SlotId)` nach Slot-ID-Liste über den Slot-Index (Regel 10); der
+Emote-Modus faltet die Slot-Aggregate im Speicher. Für beide Ansichten zählt nur das angefragte `EmoteSetId`. AK 28 gilt
+für den Slot-Modus wörtlich.
 
 ### 5.2 `GET …/usage-stats/daily?slotId=|emoteId=&from&to[&emoteSetId|setScope=all]`
 
@@ -191,7 +213,7 @@ Aktive Ansicht: jeder aktive Slot jedes aktiven Emotes, mit 0 aufgefüllt (unset
 
 ### 5.3 `GET …/usage-stats/series?from&to[&emoteSetId]`
 
-Eine Entry **je Slot**: `EmoteSeriesEntryDto(string SevenTvEmoteId, string EmoteId, string SlotId, string Name, IReadOnlyList<int[]> Days)` — additiv, Kodierung bytegleich. Der Client joint über `SlotId`.
+Eine Entry **je Zeile von 5.1** (mit ≥ 1 Tag eigener Nutzung im Bereich): `EmoteSeriesEntryDto(string SevenTvEmoteId, string EmoteId, string? SlotId, string Name, IReadOnlyList<int[]> Days)` — additiv, Kodierung bytegleich. Im Emote-Modus (Kind 6, 5.1) ist `SlotId` `null` und jeder Tag die Summe über die Slots des Emotes. Der Client joint über `SlotId`, bei `null` über `EmoteId`.
 
 ### 5.4 `GET /api/channels/{c}/emotes/active-set`
 
