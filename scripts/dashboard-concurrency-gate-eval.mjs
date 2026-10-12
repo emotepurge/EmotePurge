@@ -54,7 +54,8 @@
 //   (e) uncached 24h load responses: median time_total < 500 ms (the time limit gates 24h only;
 //       13mo is reported); every load response <= 256 KiB
 
-import { readFileSync } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
+import { extname, resolve } from 'node:path';
 
 const MEMORY_LIMIT_KIB = 64 * 1024;
 const MEMORY_JITTER_KIB = 4 * 1024;
@@ -78,7 +79,7 @@ if (!file) {
   process.exit(64);
 }
 
-const rows = parseCsv(readFileSync(file, 'utf8'));
+const rows = parseCsv(readCsvFile(file));
 const byKind = (kind) => rows.filter((row) => row.kind === kind);
 const probes = byKind('probe');
 const loads = byKind('load');
@@ -372,12 +373,33 @@ function buildPlan({ mainTicks, cooldownTicks, dualCycles }) {
   return result;
 }
 
+// Developer harness input: accept only a regular, non-symlink *.csv file.
+function readCsvFile(candidate) {
+  const resolved = resolve(candidate);
+  if (extname(resolved).toLowerCase() !== '.csv') {
+    console.error('the gate input must be a .csv file');
+    process.exit(64);
+  }
+  let stats;
+  try {
+    stats = lstatSync(resolved);
+  } catch {
+    console.error('the gate CSV does not exist or is not readable');
+    process.exit(64);
+  }
+  if (!stats.isFile()) {
+    console.error('the gate CSV must be a regular file (no symlink, no directory)');
+    process.exit(64);
+  }
+  return readFileSync(resolved, 'utf8');
+}
+
 function parseCsv(text) {
   const [header, ...body] = text.trim().split(/\r?\n/);
   const names = header.split(',');
   const expected = 'kind,phase,tick,range,start_ms,end_ms,status,value,size_bytes,note';
   if (header !== expected) {
-    console.error(`unexpected CSV header: ${header}`);
+    console.error(`unexpected CSV header: does not match the expected columns (${expected})`);
     process.exit(64);
   }
   return body.map((line, index) => {
