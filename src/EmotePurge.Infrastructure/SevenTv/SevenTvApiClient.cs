@@ -129,6 +129,10 @@ public class SevenTvApiClient(
     private const string SearchRateLimitRemainingHeader = "x-ratelimit-search-remaining";
     private const string SearchRateLimitResetHeader = "x-ratelimit-search-reset";
 
+    // Plan #372 E26: read once from the singleton options, like the services behind it; absent (tests)
+    // means off.
+    private readonly bool slotReconcileEnabled = slotReconcile?.Enabled ?? false;
+
     // Latches the fallback-set-load path (issue #43) from Information down to Debug after its first
     // occurrence in this process. Once 7TV finishes rolling out the null embedded emote_set, this
     // fallback becomes the permanent path for every channel on every 60s resync tick — an
@@ -1210,7 +1214,7 @@ public class SevenTvApiClient(
         var entryCount = 0;
         try
         {
-            var slotAware = slotReconcile?.Enabled == true;
+            var slotAware = slotReconcileEnabled;
             var result = new Dictionary<string, DateTime>();
             var resultBySlotKey = new Dictionary<(string EmoteId, string Name), DateTime>();
             for (var page = 1; page <= MaxSetEntryPages; page++)
