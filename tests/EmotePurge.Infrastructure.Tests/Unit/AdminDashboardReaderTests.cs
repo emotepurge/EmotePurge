@@ -1,6 +1,7 @@
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 using NSubstitute;
 using Xunit;
@@ -13,13 +14,27 @@ public class AdminDashboardReaderTests
     private readonly IAdminDashboardQueryService _query = Substitute.For<IAdminDashboardQueryService>();
     private readonly IRateLimitTelemetryReader _telemetry = Substitute.For<IRateLimitTelemetryReader>();
 
+    private readonly CapturingLogger _log = new();
+
     private AdminDashboardReader NewReader()
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => _query);
         return new AdminDashboardReader(
-            services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(), _telemetry, _time);
+            services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(),
+            _telemetry,
+            _time,
+            new SystemLoadOptions { IntervalSeconds = 15 },
+            _log);
     }
+
+    private static AdminDashboardLoad Load(AdminDashboardLoadRange range) =>
+        new(false, AdminDashboardLoadRanges.ToWire(range), "raw", 60, default, default, default, null, 15, [],
+            null!, null!, null!, null!, null);
+
+    private void StubLoad(Func<AdminDashboardLoadRange, Task<AdminDashboardLoad>> answer) =>
+        _query.GetLoadAsync(Arg.Any<AdminDashboardLoadRange>(), Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call => answer(call.Arg<AdminDashboardLoadRange>()));
 
     private static AdminDashboardActivity Activity(AdminDashboardActivityRange range) =>
         new(AdminDashboardActivityRanges.ToWire(range), default, default, true, default, []);
@@ -141,5 +156,251 @@ public class AdminDashboardReaderTests
         gate.SetResult(RateLimitTelemetryTrend.Unavailable);
 
         Assert.Same(RateLimitTelemetryTrend.Unavailable, await patient);
+    }
+
+    [Theory]
+    [InlineData(AdminDashboardLoadRange.Hour1, 30)]
+    [InlineData(AdminDashboardLoadRange.Hours24, 30)]
+    [InlineData(AdminDashboardLoadRange.Days7, 60)]
+    [InlineData(AdminDashboardLoadRange.Days30, 60)]
+    [InlineData(AdminDashboardLoadRange.Days90, 60)]
+    [InlineData(AdminDashboardLoadRange.Months13, 60)]
+    public async Task Load_IsCachedForTheRangesTtl(AdminDashboardLoadRange range, int ttlSeconds)
+    {
+        StubLoad(r => Task.FromResult(Load(r)));
+        var reader = NewReader();
+
+        await reader.GetLoadAsync(range);
+        _time.Advance(TimeSpan.FromSeconds(ttlSeconds - 1));
+        await reader.GetLoadAsync(range);
+        await _query.Received(1).GetLoadAsync(range, Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+
+        _time.Advance(TimeSpan.FromSeconds(1));
+        await reader.GetLoadAsync(range);
+        await _query.Received(2).GetLoadAsync(range, Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Load_PassesTheClockAndTheConfiguredSamplingInterval()
+    {
+        StubLoad(r => Task.FromResult(Load(r)));
+
+        var read = await NewReader().GetLoadAsync(AdminDashboardLoadRange.Days7);
+
+        Assert.False(read.Busy);
+        Assert.NotNull(read.Load);
+        await _query.Received(1).GetLoadAsync(
+            AdminDashboardLoadRange.Days7,
+            Arg.Is<DateTime>(d => d == new DateTime(2026, 10, 11, 12, 0, 0, DateTimeKind.Utc) && d.Kind == DateTimeKind.Utc),
+            15,
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Load_ConcurrentReadersOfOneRangeShareOneRebuild()
+    {
+        var gate = new TaskCompletionSource<AdminDashboardLoad>();
+        StubLoad(_ => gate.Task);
+        var reader = NewReader();
+
+        var first = reader.GetLoadAsync(AdminDashboardLoadRange.Hours24);
+        var second = reader.GetLoadAsync(AdminDashboardLoadRange.Hours24);
+        var third = reader.GetLoadAsync(AdminDashboardLoadRange.Hours24);
+        gate.SetResult(Load(AdminDashboardLoadRange.Hours24));
+
+        Assert.Same((await first).Load, (await second).Load);
+        Assert.Same((await first).Load, (await third).Load);
+        await _query.Received(1).GetLoadAsync(
+            AdminDashboardLoadRange.Hours24, Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+        Assert.Equal(2, _log.Debug.Count);
+    }
+
+    [Fact]
+    public async Task Load_RebuildsRunOneAtATimeAcrossRanges()
+    {
+        var running = 0;
+        var maxRunning = 0;
+        var release = new TaskCompletionSource();
+        StubLoad(async r =>
+        {
+            maxRunning = Math.Max(maxRunning, Interlocked.Increment(ref running));
+            if (r == AdminDashboardLoadRange.Hours24)
+            {
+                await release.Task;
+            }
+
+            Interlocked.Decrement(ref running);
+            return Load(r);
+        });
+        var reader = NewReader();
+
+        var a = reader.GetLoadAsync(AdminDashboardLoadRange.Hours24);
+        await WaitUntilAsync(() => running == 1);
+        var b = reader.GetLoadAsync(AdminDashboardLoadRange.Days7);
+
+        // Positive proof, driven by the fake clock only: the second range ends as Busy (it sat at the
+        // gate until its 5 s expired) and its query was never called while the first rebuild held it.
+        var busy = await AdvanceUntilCompletedAsync(b);
+        Assert.True(busy.Busy);
+        await _query.DidNotReceive().GetLoadAsync(
+            AdminDashboardLoadRange.Days7, Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+
+        release.SetResult();
+        Assert.False((await a).Busy);
+        Assert.False((await reader.GetLoadAsync(AdminDashboardLoadRange.Days7)).Busy);
+        await _query.Received(1).GetLoadAsync(
+            AdminDashboardLoadRange.Days7, Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+        Assert.Equal(1, maxRunning);
+    }
+
+    [Fact]
+    public async Task Load_WaitingLongerThanFiveSecondsForTheGateAnswersBusyWithoutStartingARebuild()
+    {
+        var release = new TaskCompletionSource();
+        StubLoad(async r =>
+        {
+            await release.Task;
+            return Load(r);
+        });
+        var reader = NewReader();
+
+        var holder = reader.GetLoadAsync(AdminDashboardLoadRange.Hours24);
+        await WaitUntilAsync(() => _query.ReceivedCalls().Any());
+        var waiting = reader.GetLoadAsync(AdminDashboardLoadRange.Days7);
+
+        var busy = await AdvanceUntilCompletedAsync(waiting);
+
+        Assert.True(busy.Busy);
+        Assert.Null(busy.Load);
+        Assert.Equal(5, busy.RetryAfterSeconds);
+        await _query.DidNotReceive().GetLoadAsync(
+            AdminDashboardLoadRange.Days7, Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<CancellationToken>());
+
+        // The busy answer is not cached: once the gate is free the same range rebuilds normally.
+        release.SetResult();
+        Assert.False((await holder).Busy);
+        var retry = await reader.GetLoadAsync(AdminDashboardLoadRange.Days7);
+        Assert.False(retry.Busy);
+        Assert.NotNull(retry.Load);
+    }
+
+    [Fact]
+    public async Task Load_ALoggerThatThrowsDoesNotLeaveTheGateTaken()
+    {
+        StubLoad(r => Task.FromResult(Load(r)));
+        _log.ThrowOnDebug = true;
+        var reader = NewReader();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reader.GetLoadAsync(AdminDashboardLoadRange.Days7));
+        _log.ThrowOnDebug = false;
+        var read = await reader.GetLoadAsync(AdminDashboardLoadRange.Days7).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.False(read.Busy);
+    }
+
+    [Fact]
+    public async Task Load_AStalledRebuildIsCancelledAtTheDeadlineIsNotCachedAndFreesTheGate()
+    {
+        var calls = 0;
+        _query.GetLoadAsync(Arg.Any<AdminDashboardLoadRange>(), Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call => ++calls == 1
+                ? Stall(call.Arg<CancellationToken>())
+                : Task.FromResult(Load(call.Arg<AdminDashboardLoadRange>())));
+        var reader = NewReader();
+
+        var stalled = reader.GetLoadAsync(AdminDashboardLoadRange.Days30);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => AdvanceUntilCompletedAsync(stalled, AdminDashboardReader.RebuildDeadline));
+        var recovered = await reader.GetLoadAsync(AdminDashboardLoadRange.Days30).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.False(recovered.Busy);
+        Assert.Equal(2, calls);
+    }
+
+    private static async Task<AdminDashboardLoad> Stall(CancellationToken token)
+    {
+        await Task.Delay(Timeout.Infinite, token);
+        throw new InvalidOperationException("unreachable");
+    }
+
+    [Fact]
+    public async Task Load_AFailedRebuildIsNotCachedAndFreesTheGate()
+    {
+        var calls = 0;
+        StubLoad(r => ++calls == 1
+            ? Task.FromException<AdminDashboardLoad>(new InvalidOperationException("db down"))
+            : Task.FromResult(Load(r)));
+        var reader = NewReader();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => reader.GetLoadAsync(AdminDashboardLoadRange.Days30));
+        var recovered = await reader.GetLoadAsync(AdminDashboardLoadRange.Days30);
+
+        Assert.False(recovered.Busy);
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public async Task Load_LogsStartAndEndOnlyForRealRebuilds()
+    {
+        StubLoad(r => Task.FromResult(Load(r)));
+        var reader = NewReader();
+
+        await reader.GetLoadAsync(AdminDashboardLoadRange.Days7);
+        await reader.GetLoadAsync(AdminDashboardLoadRange.Days7);
+
+        Assert.Equal(2, _log.Debug.Count);
+        Assert.Equal("Load dashboard cold rebuild started range=7d", _log.Debug[0]);
+        Assert.Matches(@"^Load dashboard cold rebuild finished range=7d ms=\d+ outcome=ok$", _log.Debug[1]);
+    }
+
+    // A waiter's timeout timer only exists once its fill reached the gate, so a single Advance can come
+    // too early; advance repeatedly (each step well past the timeout) until the task settles, with an
+    // overall real-time bound so a regression fails instead of hanging.
+    private async Task<T> AdvanceUntilCompletedAsync<T>(Task<T> task, TimeSpan? step = null)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (!task.IsCompleted)
+        {
+            _time.Advance(step ?? AdminDashboardReader.RebuildWaitTimeout);
+            await Task.Delay(1, cts.Token);
+        }
+
+        return await task;
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (!condition())
+        {
+            await Task.Delay(5, cts.Token);
+        }
+    }
+
+    private sealed class CapturingLogger : ILogger<AdminDashboardReader>
+    {
+        public List<string> Debug { get; } = [];
+
+        public bool ThrowOnDebug { get; set; }
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Debug)
+            {
+                if (ThrowOnDebug)
+                {
+                    throw new InvalidOperationException("log sink down");
+                }
+
+                lock (Debug)
+                {
+                    Debug.Add(formatter(state, exception));
+                }
+            }
+        }
     }
 }

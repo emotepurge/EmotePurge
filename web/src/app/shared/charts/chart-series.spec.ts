@@ -4,7 +4,9 @@ import {
   formatBucketTime,
   formatUnit,
   niceTicks,
+  provenanceSources,
   summarizeSeries,
+  sumMinutesIntoBuckets,
   toLinePath,
 } from './chart-series';
 
@@ -105,6 +107,28 @@ describe('formatUnit', () => {
     expect(formatUnit(0.456, 'tasks', 'en', 'Tasks')).toBe('0.46 Tasks');
   });
 
+  it('keeps a small core count readable instead of rounding it to zero', () => {
+    expect(formatUnit(0.003, 'cores', 'en', 'cores')).toBe('0.0030 cores');
+    expect(formatUnit(0.008, 'cores', 'en', 'cores')).toBe('0.0080 cores');
+    expect(formatUnit(0, 'cores', 'en', 'cores')).toBe('0.00 cores');
+  });
+
+  it('gives core axis labels as many decimals as the tick step needs', () => {
+    const ticks = niceTicks(0, 0.003, 4);
+    const labels = ticks.map((t) => formatUnit(t, 'cores', 'en', '', ticks[1] - ticks[0]));
+
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels.at(-1)).toBe('0.003');
+    expect(labels.slice(1).every((label) => label !== '0.00')).toBe(true);
+  });
+
+  it('shows a per-minute rate below one with decimals and a whole rate without', () => {
+    expect(formatUnit(0.4, 'rate', 'en')).toBe('0.40');
+    expect(formatUnit(0.456, 'rate', 'en')).toBe('0.46');
+    expect(formatUnit(12, 'rate', 'en')).toBe('12');
+    expect(formatUnit(0.2, 'rate', 'en', '', 0.2)).toBe('0.2');
+  });
+
   it('rounds counts to whole numbers', () => {
     expect(formatUnit(1234.6, 'count', 'en')).toBe('1,235');
   });
@@ -138,5 +162,46 @@ describe('formatBucketTime', () => {
 
     expect(text).toContain('11');
     expect(text).not.toContain('UTC');
+  });
+});
+
+describe('sumMinutesIntoBuckets', () => {
+  const minutes = ['2026-10-11T10:00:00Z', '2026-10-11T10:01:00Z', '2026-10-11T10:02:00Z'];
+
+  it('sums minutes into the bucket that contains them', () => {
+    const buckets = ['2026-10-11T10:00:00Z', '2026-10-11T10:02:00Z'];
+
+    expect(sumMinutesIntoBuckets(minutes, [1, 2, 4], buckets, 120)).toEqual([3, 4]);
+  });
+
+  it('keeps an empty covered bucket at 0, the partial sum of the running bucket, and marks one before the covered span unknown', () => {
+    const buckets = ['2026-10-11T09:58:00Z', '2026-10-11T10:00:00Z', '2026-10-11T10:02:00Z'];
+
+    // The first bucket starts before the first minute; the last one is still filling.
+    expect(sumMinutesIntoBuckets(minutes, [0, 0, 7], buckets, 120)).toEqual([null, 0, 7]);
+  });
+
+  it('ignores minutes outside every bucket', () => {
+    const buckets = ['2026-10-11T10:01:00Z'];
+
+    expect(sumMinutesIntoBuckets(minutes, [5, 6, 7], buckets, 60)).toEqual([6]);
+  });
+
+  it('is all unknown without minutes or buckets', () => {
+    expect(sumMinutesIntoBuckets([], [], ['2026-10-11T10:00:00Z'], 60)).toEqual([null]);
+    expect(sumMinutesIntoBuckets(minutes, [1, 2, 3], [], 60)).toEqual([]);
+  });
+});
+
+describe('provenanceSources', () => {
+  it('names the contributing processes in a fixed order', () => {
+    expect(provenanceSources('A')).toEqual(['api']);
+    expect(provenanceSources('W')).toEqual(['worker']);
+    expect(provenanceSources('AW')).toEqual(['api', 'worker']);
+  });
+
+  it('names nobody for an unknown or missing code', () => {
+    expect(provenanceSources(null)).toEqual([]);
+    expect(provenanceSources('X')).toEqual([]);
   });
 });

@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AdminDashboardActivity,
+  AdminDashboardLoad,
+  AdminDashboardLoadRange,
   AdminHealth,
   AdminRoster,
   RateLimitPolicySnapshot,
@@ -154,7 +156,94 @@ const ROSTER: AdminRoster = {
   unknownToDatabaseTotal: 0,
 };
 
+const LOAD_STARTS = ['2026-10-11T11:55:00Z', '2026-10-11T12:00:00Z'];
+
+/** A two-bucket answer in which only the host CPU is known; every other column is unknown. */
+function loadFor(range: AdminDashboardLoadRange): AdminDashboardLoad {
+  const unknown = (names: string[]) =>
+    Object.fromEntries(names.map((name) => [name, LOAD_STARTS.map(() => null)]));
+  const hourly = range !== '1h' && range !== '24h';
+  return {
+    available: true,
+    range,
+    sourceKind: hourly ? 'hourly' : 'raw',
+    bucketSeconds: range === '24h' ? 300 : 3600,
+    fromUtc: LOAD_STARTS[0],
+    toUtc: LOAD_STARTS[1],
+    generatedAtUtc: LOAD_STARTS[1],
+    dataThroughUtc: LOAD_STARTS[1],
+    samplingIntervalSeconds: 30,
+    bucketStartsUtc: LOAD_STARTS,
+    host: {
+      ...unknown([
+        'cpuBusyMax',
+        'memoryUsedP95Bytes',
+        'memoryUsedMaxBytes',
+        'memoryTotalBytes',
+        'loadAverage1P95',
+        'loadAverage1Max',
+        'provenance',
+        'cpuValueSource',
+        'memoryValueSource',
+        'loadAverageValueSource',
+        'apiSampleCount',
+        'workerSampleCount',
+        'apiCpuBusyMean',
+        'workerCpuBusyMean',
+        'apiMemoryUsedMeanBytes',
+        'workerMemoryUsedMeanBytes',
+        'apiLoadAverage1Mean',
+        'workerLoadAverage1Mean',
+      ]),
+      cpuBusyP95: [10, 12],
+    } as unknown as AdminDashboardLoad['host'],
+    api: unknown([
+      'processCpuP95',
+      'processCpuMax',
+      'cgroupCpuP95',
+      'cgroupCpuMax',
+      'cgroupCpuQuotaCores',
+      'cgroupCpuQuotaShareP95',
+      'cgroupCpuQuotaShareMax',
+      'cgroupMemoryP95Bytes',
+      'cgroupMemoryMaxBytes',
+      'cgroupMemoryLimitBytes',
+      'cgroupMemoryShareP95',
+      'cgroupMemoryShareMax',
+      'sampleCount',
+    ]) as unknown as AdminDashboardLoad['api'],
+    worker: unknown([
+      'processCpuP95',
+      'processCpuMax',
+      'cgroupCpuP95',
+      'cgroupCpuMax',
+      'cgroupCpuQuotaCores',
+      'cgroupCpuQuotaShareP95',
+      'cgroupCpuQuotaShareMax',
+      'cgroupMemoryP95Bytes',
+      'cgroupMemoryMaxBytes',
+      'cgroupMemoryLimitBytes',
+      'cgroupMemoryShareP95',
+      'cgroupMemoryShareMax',
+      'sampleCount',
+    ]) as unknown as AdminDashboardLoad['worker'],
+    workload: {
+      workloadUnit: hourly ? 'perBucket' : 'perMinute',
+      ...unknown([
+        'activeChannelsMax',
+        'liveChannelsMax',
+        'chatLines',
+        'emoteMatches',
+        'workloadIntervalSeconds',
+        'workloadHoursWithData',
+      ]),
+    } as unknown as AdminDashboardLoad['workload'],
+    swap: null,
+  };
+}
+
 interface Streams {
+  load?: (range: AdminDashboardLoadRange) => Observable<AdminDashboardLoad>;
   health?: Observable<AdminHealth>;
   rateLimits?: Observable<RateLimitTelemetrySnapshot>;
   trend?: Observable<RateLimitTelemetryTrend>;
@@ -197,6 +286,9 @@ describe('AdminMonitoringPage — real template', () => {
     vi.spyOn(service, 'getRateLimitTrend').mockReturnValue(streams.trend ?? of(trend()));
     vi.spyOn(service, 'getDashboardActivity').mockReturnValue(streams.activity ?? of(ACTIVITY));
     vi.spyOn(service, 'getRoster').mockReturnValue(of(ROSTER));
+    vi.spyOn(service, 'getDashboardLoad').mockImplementation(
+      streams.load ?? ((range) => of({ ...loadFor(range), available: false, bucketStartsUtc: [] })),
+    );
     fixture = TestBed.createComponent(AdminMonitoringPage);
     fixture.detectChanges();
     return fixture.nativeElement as HTMLElement;
@@ -231,6 +323,26 @@ describe('AdminMonitoringPage — real template', () => {
       expect(region(root, 'admin-rate-limits')).not.toBeNull();
       expect(region(root, 'admin-health')).not.toBeNull();
       expect(root.querySelector('app-admin-roster-card')).not.toBeNull();
+    });
+
+    it('puts load and work first, ahead of the activity history', () => {
+      const root = render();
+      const load = region(root, 'admin-load') as HTMLElement;
+      const activity = region(root, 'admin-activity') as HTMLElement;
+
+      expect(
+        load.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it('reloads the load history with the refresh button', () => {
+      const root = render({ load: (range) => of(loadFor(range)) });
+      const calls = vi.mocked(service.getDashboardLoad).mock.calls.length;
+
+      refreshButton(root).click();
+      fixture.detectChanges();
+
+      expect(vi.mocked(service.getDashboardLoad).mock.calls.length).toBeGreaterThan(calls);
     });
 
     it('shows skeletons on the first load and no cards yet', () => {
@@ -422,6 +534,37 @@ describe('AdminMonitoringPage — real template', () => {
       );
       expect(section.textContent).toContain('admin.dashboard.rateLimits.series.local');
       expect(section.textContent).not.toContain('admin.dashboard.rateLimits.series.provider');
+    });
+
+    describe('together with the load history', () => {
+      const trendTitle = (root: HTMLElement) =>
+        region(root, 'admin-rate-limits')
+          ?.querySelector('svg[role="img"]')
+          ?.getAttribute('aria-label');
+
+      it('keeps its own minute axis until the load history has an answer', () => {
+        const root = render();
+
+        expect(trendTitle(root)).toContain('admin.dashboard.rateLimits.trend.title');
+        expect(trendTitle(root)).not.toContain('titleBucketed');
+      });
+
+      it('takes the load axis for a range up to 24 hours', () => {
+        const root = render({ load: (range) => of(loadFor(range)) });
+
+        expect(trendTitle(root)).toContain('admin.dashboard.rateLimits.trend.titleBucketed');
+        expect(region(root, 'admin-trend-hidden')).toBeNull();
+      });
+
+      it('hides the time series for a longer range', () => {
+        const root = render({ load: (range) => of(loadFor(range)) });
+
+        root.querySelectorAll<HTMLElement>('[role="radio"]')[2].click(); // 7 d
+        fixture.detectChanges();
+
+        expect(region(root, 'admin-trend-hidden')).not.toBeNull();
+        expect(region(root, 'admin-rate-limits')?.querySelector('app-line-chart')).toBeNull();
+      });
     });
 
     it('adds a provider series to the trend and drops the explanatory note', () => {

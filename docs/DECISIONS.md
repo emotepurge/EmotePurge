@@ -14,9 +14,10 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 **Betrifft:** `src/EmotePurge.Core/Services/IAdminDashboardQueryService.cs` ·
 `src/EmotePurge.Infrastructure/Services/AdminDashboardQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/{AdminDashboardLoadBucketing,AdminDashboardLoadSeriesBuilder,AdminDashboardRawLoadQuery,AdminDashboardRawLoadAccumulator,AdminDashboardHourlyLoadAccumulator,SystemLoadRollupMath}.cs` ·
 `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Integration/AdminDashboardQueryServiceTests.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Unit/AdminDashboard{ActivityRange,QueryServiceStructure}Tests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/{AdminDashboardQueryService,AdminDashboardLoadQuery,AdminDashboardRawLoadReader,AdminDashboardLoadPerformanceGate}Tests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/AdminDashboard{ActivityRange,QueryServiceStructure,LoadBucketing}Tests.cs` ·
 `src/EmotePurge.Core/Services/IRateLimitTelemetryReader.cs` ·
 `src/EmotePurge.Infrastructure/Redis/RateLimitTelemetryStore.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Integration/RateLimitTelemetryStoreTests.cs` ·
@@ -24,11 +25,12 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Core/Services/IAdminDashboardReader.cs` ·
 `src/EmotePurge.Infrastructure/Services/AdminDashboardReader.cs` ·
 `web/src/app/core/i18n/api-error.ts` · `web/public/i18n/{de,en}.json` ·
-`tests/EmotePurge.Api.Tests/{ApiFactory,AuthFilterMatrixTests,AdminDashboardActivityEndpointTests,AdminRateLimitsTrendEndpointTests}.cs` ·
+`tests/EmotePurge.Api.Tests/{ApiFactory,AuthFilterMatrixTests,AdminDashboardActivityEndpointTests,AdminDashboardLoadEndpointTests,AdminRateLimitsTrendEndpointTests}.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Unit/{AdminDashboardReaderTests,LiveEventTests}.cs` ·
 `web/src/app/shared/charts/{line-chart,chart-series}.ts` ·
 `web/src/app/core/live/poll-while-visible.ts` · `web/src/app/core/page-visibility/page-visibility.ts` ·
-`web/src/app/features/admin/{admin-monitoring-page,admin-activity-section,admin-rate-limit-details-dialog}.ts` ·
+`web/src/app/features/admin/{admin-monitoring-page,admin-activity-section,admin-rate-limit-details-dialog,admin-load-section,admin-load-charts}.ts` ·
+`web/src/app/core/admin/{admin.model,admin.service}.ts` · `web/e2e/` (admin-monitoring spec, audit files) · `scripts/` (load gate) ·
 `docs/UI-Designsprache.md` (2.6)
 
 The activity series counts, per UTC calendar day, the `ChannelLiveDays` rows with `LiveMinutes > 0`.
@@ -44,8 +46,10 @@ back it reaches; the ranges are display windows, not a statement about retention
 
 The dashboard does not read `UsageStats` (operator decision 2026-10-11): the slot epic reshapes that
 table, and monthly workload comes from the system-load rollups instead. A container-free structure test
-(`AdminDashboardQueryServiceStructureTests`) fails the build if `AdminDashboardQueryService` mentions
-`UsageStat` or `UsageStats`.
+(`AdminDashboardQueryServiceStructureTests`) fails the build if any `AdminDashboard*.cs` file in
+`Infrastructure/Services` mentions `UsageStat` or `UsageStats`, so a newly split-out file is covered without a list. It scans the source files rather
+than the IL: an IL walk would have to follow the compiler-generated async state machines and closures
+and would still miss the table name inside a raw SQL string.
 
 The 24-hour rate-limit trend is read from the existing one-minute Redis buckets
 (`ratelimit:telemetry:m:*`); there are no new keys or fields.
@@ -74,8 +78,8 @@ stream in `LiveEventTests`), so the dashboard adds no stream traffic and no new 
 of the activity query and both telemetry reads, and `GET /api/admin/rate-limits` now goes through it
 with a byte-identical response. The caches are per Api instance, with single-flight: 60 s per range
 for the activity series, 30 s for the rate-limit snapshot and 30 s for the trend. Concurrent readers
-share one fill, which runs without any caller's token (`CancellationToken.None`), so one navigating browser cannot
-cancel it for the others. Expiry is counted from the end of the fill, and a failed fill is expired at once and therefore
+share one fill, which runs without any caller's token, so one navigating browser cannot
+cancel it for the others (the load rebuild has a 30-second deadline of its own instead). Expiry is counted from the end of the fill, and a failed fill is expired at once and therefore
 never cached; the next request retries. The clock is the injected `TimeProvider`, and the same value is
 the `nowUtc` passed to the query service. There is no cross-instance sharing or invalidation: with
 more than one Api replica each holds its own copy for at most one TTL.
@@ -97,6 +101,150 @@ details dialog; the page itself shows exceptions only (spec section 4.2). Each i
 (activity, rate limits, worker health) renders its own error banner inside itself. In practice a
 quiet day and a poller outage both read as a gap: the poller credits minutes only to channels it saw
 live and never writes zero-minute `ChannelLiveDays` rows, so `0` is reachable only in principle.
+
+Load range, query side (cut B). `IAdminDashboardQueryService.GetLoadAsync(range, nowUtc,
+samplingIntervalSeconds)` returns one complete, server-bucketed `AdminDashboardLoad`; there is no tail
+read and no client merge. The bucket width is a function of the range alone, never of the sampling
+cadence: `1h` 1 min, `24h` 5 min, `7d` 1 h, `30d` 2 h, `90d` 6 h, `13mo` 24 h (UTC days). `toUtc` is
+`nowUtc`, `fromUtc` is `nowUtc - duration` floored to a UTC multiple of the width, and the buckets run
+up to and including the one that holds `nowUtc` (61, 289, 169, 361, 361 buckets). `13mo` is a rolling
+window for the load: 13 calendar months back via `DateTime.AddMonths` (month-end clamping), floored to
+UTC midnight, so it is 396 buckets on 2026-10-11 and at most 398 (2028-03-31, leap year plus month end);
+the first-of-month start belongs to the activity series only. The budget is 400 buckets, and it is
+enforced, not assumed: a window of more than 400 buckets throws `InvalidOperationException` (a 500),
+because it can only come from a broken ladder. Leading buckets before the first observation are left
+out of `BucketStartsUtc`; inner and trailing gaps stay as `null`. `FromUtc`/`ToUtc` remain the requested
+window. Hourly rows before `fromUtc` (retention off or failed) are filtered, never appended, so older
+history can shorten a range but never widen it. `Available` is false when the window holds no
+observation at all.
+
+`1h` and `24h` read `SystemLoadSamples`, every longer range reads `SystemLoadHourly` only, `7d`
+included although raw samples are kept for seven days: at 1-second cadence the seven-day raw scan
+failed its budget (spec section 7, B1). A test pins this per range on the SQL text.
+
+The raw path pairs samples exactly like the rollup: same source and `ProcessInstanceId`, positive gap of
+at most 2.5 x the configured `SystemLoad:IntervalSeconds` (the raw path uses the Api's value, the
+rollup the Worker's; both containers must be recreated after a change), monotonic counter; the rate of a pair counts in the bucket of its later sample. The helpers for that rule (gap,
+counter delta, rate, host jiffy delta, host memory used, nearest-rank P95 index) are now `internal` in
+`SystemLoadRollupMath` and used by both paths, so there is one implementation of the gap rule. The read
+starts one maximum pair gap (`SystemLoadRollupMath.MaximumPairGap`, 2.5 intervals) before the window
+instead of looking up predecessors: only a sample in that stretch can form a valid pair with an
+instance's first window sample, and the last such sample of the instance is exactly its immediate
+predecessor (a predecessor further back fails the gap rule anyway). Samples of that stretch only seed
+the pairing and never count. An instance without a sample there, such as one that starts inside the
+window, has no predecessor and its first point no rate. With the same rule, the raw and
+the hourly path compute every hour that both compute now identically (a test reads one hour as a single
+raw bucket and compares it with `SystemLoadRollupMath.Calculate` at 1, 30, 60 and 3,600 s). Two known
+limits remain, both properties of the rollup on `main`: an hour that was rolled up under an earlier
+interval and lies outside the rollup's three-hour recompute window keeps its old values, so after a
+30 s -> 1 s change `24h` shows such an hour without CPU pairs while `7d` shows its 30-s rates (bounded to
+the 24 hours after the change); and missing hours that the rollup back-fills only after a cadence change
+are computed with the new interval against the old gaps and lose their CPU pairs in both paths. Persisting
+the cadence was declined by the operator; this is a #380 follow-up, not dashboard logic.
+
+Host metrics are merged without ever summing the sources. Raw: per-source pairs first, then P95 and max
+over the union of both sources' valid rates (CPU) or observations (memory used, load average) per
+bucket. Hourly: per bucket the highest stored hourly P95 and the highest stored hourly max over every
+(source, hour) in the bucket; a cross-source P95 cannot be rebuilt from two per-source P95 values and is
+not claimed. Each host metric names its own winning source (`CpuValueSource`, `MemoryValueSource`,
+`LoadAverageValueSource`, so CPU can come from the Api while memory comes from the Worker), next to
+`Provenance` (`A`/`W`/`AW`: which sources contributed) and both sample counts. Tie rule, the same in both
+paths: equal P95 -> the higher max of that source (hourly: of that hour row) wins; still equal -> `W`,
+the canonical workload source. Per-source means in the tooltip are jiffy-weighted for CPU like the
+rollup's mean (raw) or the hourly means weighted by `SampleCount` (hourly; exact for one hour per bucket).
+
+Workload is Worker-only, and so are the channel series (`ActiveChannelsMax`, `LiveChannelsMax`): the
+spec names the Worker as canonical, so Api rows never feed them. Raw ranges report `perMinute`: the
+stored interval counters of the samples in a bucket divided by the sum of their actual interval seconds
+(`SampledAtUtc - PreviousSampledAtUtc`), times 60; the counter belongs to the bucket of its sample, and the
+first sample of an instance (no known interval) does not enter the rate. Hourly ranges report
+`perBucket`: the sum of the stored counters of every hour in the bucket (one hour at `7d`, two at `30d`,
+six at `90d`, 24 at `13mo`), never divided by 60 and never extrapolated; `WorkloadHoursWithData` says how
+many hours contributed, so 1,440 in a day bucket reads as 24 x 60, and a missing hour lowers both.
+
+Null and reset semantics of the display: `null` is unknown, never zero; a real zero (for example
+`CgroupMemoryCurrentBytes = 0`) stays zero. A `ProcessInstanceId` change, a falling counter (process
+restart, host reboot) or a gap above the rule drops the pair and leaves a gap. Quota and memory shares
+exist only in raw ranges and only against a finite limit: the CPU share only for pairs with the same
+finite quota at both ends (a change inside the pair keeps the cores and drops the share), the memory
+share only for samples with a finite `memory.max`. Hourly ranges never compute a share, not even when the
+limit is constant; they show the last stored limit of the bucket. Values are rounded on the server:
+percent to one decimal, cores to four, load average to two, bytes as integers.
+
+The raw path buckets in the Api, not in Postgres, and this was measured. The B response gate
+(`AdminDashboardLoadPerformanceGateTests`, 24 h at 1 s, about 171,600 window samples, uncached, median of
+five, in-process, Release) failed the first version: EF materialised every row through `SqlQueryRaw` +
+`AsAsyncEnumerable`, which took 427 ms against a limit of < 400 ms and allocated ~93 MiB against a limit
+of 64 MiB. Spec 11 B names SQL-side bucketing as the fallback, so that was built and fully tested. It
+used `LAG` pairing per `(Source, ProcessInstanceId)` with the same gap rule and `percentile_disc(0.95)`.
+Its P95, which `percentile_disc` takes at rank ceil(0.95 n), agreed with the rollup in the parity test,
+and it allocated ~1.3 MiB. But it took 1,370 ms, and it was the only complete SQL variant. The leaner
+probes each still lacked some of the aggregates (last values, workload or the host union), and none of
+them included the transfer to the Api. They tried per-bucket value arrays instead of `percentile_disc`,
+one packed array per row, a gap-extended scan instead of a `LATERAL` lookup, no CTE materialisation,
+`jit` off and 64 MB `work_mem`. Inside Postgres alone they still took 509-1,120 ms, so even the fastest
+of them was already slower than the whole read below. The floor was the pairing itself: index
+scan plus `LAG` took ~150 ms, and the per-row rate expressions brought it to ~275 ms, both before any
+aggregation. Every per-bucket aggregate transition then added 0.15-0.2 µs per row.
+
+What passed instead is a lean read of the chart columns: a single range scan in time order, streamed
+through a typed `DbDataReader` loop with one reused row object. The loop feeds
+`AdminDashboardRawLoadAccumulator`, which holds only the current bucket's values and writes into column
+arrays pre-sized to the bucket count. The command runs through EF's relational command pipeline
+(`IRawSqlCommandBuilder`), so command interceptors still see it.
+
+The gate seeds six days of history before the window, because production keeps seven days of raw
+samples; the read is therefore measured with the plan it gets there, a bitmap scan of
+`IX_SystemLoadSamples_Source_SampledAtUtc` (~100 ms in Postgres at 1 s). The gate runs with the seed's own
+interval as `SystemLoad:IntervalSeconds`. Results: 282.4 ms median and 8.0 MiB at 1 s, and 46.1 ms and
+1.6 MiB at 30 s.
+
+A run is valid only if the Api read at least the window's samples, and the response's `SampleCount`s
+add up to exactly the window's samples, so the history and the early start contribute nothing. The
+rollup parity test (`Raw_OneHourBucketEqualsTheRollupOfThatHour`) stays the guard that the raw path
+computes what the rollup computes.
+
+Swap in the response is the last known value (spec 5.1): a later valid reading replaces it, an explicit
+`SwapTotal = 0` means "now none", and an unknown or inconsistent reading keeps what was known.
+
+Load range, route and facade (cut B). `GET /api/admin/dashboard/load?range=` answers with the
+serialized `AdminDashboardLoad` (camelCase, column-oriented lists, `null` stays `null`, timestamps as
+ISO-8601 UTC). A missing or empty `range` selects `24h`; anything else must be exactly `1h`, `24h`, `7d`,
+`30d`, `90d` or `13mo` or the answer is `400 invalid_dashboard_range` (the activity route's code, no new
+one). There is no tail or `latest` route and no client-side merge: one request returns the complete
+range. The response is budgeted at 256 KiB and 400 buckets; the bucket cap lives in the service, the
+byte budget is pinned by a contract test with a fully populated 400-bucket response. No
+`ProcessInstanceId` and no raw row ever leaves the service; a contract test searches the JSON for it.
+
+`IAdminDashboardReader.GetLoadAsync(range)` caches per range: 30 s for `1h` and `24h`, 60 s for the
+longer ranges (their source changes at most hourly). Each key is single-flight: concurrent readers of
+one range share the running rebuild instead of waiting for a turn. Across all ranges only one rebuild
+runs at a time (one `SemaphoreSlim` in the facade), because a cold `24h` read is the memory-heavy one
+and six ranges rebuilding together would stack that peak. A reader that cannot get the turn within 5 s
+starts no rebuild and receives `Busy`, and only that outcome becomes `503` with `Retry-After: 5` and no
+body; since neither the spec nor the error catalogue names a code for it and the client keeps its last
+answer. A rebuild that holds the turn is cancelled after 30 s (on the injected `TimeProvider`; the deadline
+bounds the whole streaming read, whereas Npgsql's 30-s command timeout applies per network wait): it answers
+`500 unexpected_error`, is not cached and frees the gate. A failed or busy outcome is never cached, and the gate is released in every case. Every real
+rebuild writes two Debug lines (`Load dashboard cold rebuild started/finished range=... ms=...`), cache
+hits and joined waiters write none, so a measuring script can reconstruct the rebuild intervals from the
+log alone.
+
+Load range, web side (cut B). One 60-second tick drives the section: the 1-hour and 24-hour ranges
+act on every tick, 7 days and longer on every fifth (5 minutes), and nothing runs while the page is
+hidden; on return the section reloads once immediately. A `503` or any other error keeps the last
+complete answer on screen and marks it stale with the UTC time of the last success; the next success
+replaces it entirely (no tail, no merge). While the selected range holds no measurement the section
+sends one extra `13mo` read as a history probe and stops once a range is positive. The rate-limit trend
+shares the load buckets only up to 24 hours and is hidden beyond (its source is 24 hours of minutes),
+otherwise it keeps its own minute axis. From two series on the chart legend is shown, so the dash
+patterns that tell same-tone series apart are keyed (UI-Designsprache 2.6, a convention change). The
+eleven charts share one plot origin through `minPlotLeft` (`SHARED_PLOT_LEFT`) with the left margin
+capped at 40 % of the width. Small values stay readable: core axis labels follow the tick step, and
+per-minute workload is a `rate` unit with up to two decimals while hourly sums stay integers. The host
+RAM share (R-5) is derived on the client from the raw used/total pair of one bucket, raw ranges only. The
+bucket counts include the running bucket (61, 289, 169, 361, 361; `13mo` has at most 398, about 396, depending on month lengths): the numbers in spec sections 5.2 and
+11 are one short by design.
 
 ### 2026-10-11 — The "set observed" date preset is removed; a live day needs counts of the viewed set (#391)
 

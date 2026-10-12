@@ -13,6 +13,7 @@ import {
   mockAdminChannelDetail,
   mockAdminChannelList,
   mockAdminDashboardActivity,
+  mockAdminDashboardLoad,
   mockAdminHealth,
   mockAdminRateLimits,
   mockAdminRateLimitsTrend,
@@ -283,8 +284,10 @@ async function adminDashboard(
     activity?: Parameters<typeof mockAdminDashboardActivity>[1];
     rateLimits?: Parameters<typeof mockAdminRateLimits>[1];
     trend?: Parameters<typeof mockAdminRateLimitsTrend>[1];
+    load?: Parameters<typeof mockAdminDashboardLoad>[1];
   } = {},
 ): Promise<void> {
+  await mockAdminDashboardLoad(page, options.load);
   await mockAdminDashboardActivity(page, options.activity);
   await mockAdminRateLimits(page, options.rateLimits);
   await mockAdminRateLimitsTrend(page, options.trend);
@@ -831,6 +834,58 @@ const SCENARIOS: Scenario[] = [
           ],
         },
       });
+    },
+  },
+  {
+    // No samples at all, in 24 h and in the hourly history: the section's empty state, no range menu.
+    slug: 'admin-monitoring-load-empty',
+    path: '/admin/monitoring',
+    setup: async (page) => {
+      await adminShell(page);
+      await mockAdminHealth(page);
+      await mockAdminRoster(page);
+      await adminDashboard(page, { load: { buckets: { '24h': 0, '13mo': 0 } } });
+    },
+  },
+  {
+    // The default range with its full 289 raw buckets: eleven charts, the rate-limit series on the
+    // same axis below them (bursts, so that chart draws something).
+    slug: 'admin-monitoring-load-24h',
+    path: '/admin/monitoring',
+    setup: async (page) => {
+      await adminShell(page);
+      await mockAdminHealth(page);
+      await mockAdminRoster(page);
+      await adminDashboard(page, {
+        load: { buckets: { '24h': 289 } },
+        trend: { localRejections: trendBursts(5) },
+      });
+    },
+  },
+  {
+    // 13 months of daily hourly-rollup buckets (397) with gaps: hourly titles, perBucket workload,
+    // the quota chart with its "no quota in hourly values" note, the rate-limit series hidden.
+    slug: 'admin-monitoring-load-13mo',
+    path: '/admin/monitoring',
+    setup: async (page) => {
+      await adminShell(page);
+      await mockAdminHealth(page);
+      await mockAdminRoster(page);
+      await adminDashboard(page, {
+        load: {
+          buckets: { '13mo': 397 },
+          gap: (index) => (index >= 120 && index < 131) || index === 250 || index === 251,
+        },
+        trend: { localRejections: trendBursts(5) },
+      });
+    },
+    afterLoad: async (page) => {
+      await page
+        .getByRole('radiogroup', { name: /Lastzeitraum|Load range/ })
+        .getByRole('radio', { name: /13 Monate|13 months/ })
+        .click();
+      await page.waitForLoadState('networkidle');
+      await page.waitForTimeout(400);
     },
   },
   {

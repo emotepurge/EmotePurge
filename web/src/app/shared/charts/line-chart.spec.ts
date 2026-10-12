@@ -106,6 +106,46 @@ describe('LineChart', () => {
     expect(d.match(/M/g)).toHaveLength(2);
   });
 
+  describe('plot margin', () => {
+    const plotX = (root: HTMLElement) =>
+      Number(
+        /translate\((\d+(?:\.\d+)?)/.exec(
+          root.querySelector('svg[role="img"] > g')?.getAttribute('transform') ?? '',
+        )?.[1],
+      );
+
+    it('widens for long y labels', () => {
+      const small = plotX(render([series('a', [1, 5, 3, 2])]));
+      const large = plotX(render([series('a', [1_500_000_000, 5, 3, 2])]));
+
+      expect(large).toBeGreaterThan(small);
+    });
+
+    it('lets stacked charts share one origin through minPlotLeft', () => {
+      const origin = (values: number[]) => {
+        render([series('a', values)]);
+        fixture.componentRef.setInput('minPlotLeft', 100);
+        fixture.detectChanges();
+        return plotX(fixture.nativeElement as HTMLElement);
+      };
+
+      expect(origin([1, 5, 3, 2])).toBe(100);
+      expect(origin([1_500, 5, 3, 2])).toBe(100);
+    });
+
+    it('keeps the plot inside the viewBox when a long label meets a narrow chart', () => {
+      const root = render([series('a', [1e12, 5, 3, 2])]);
+      fixture.componentRef.setInput('minPlotLeft', 400);
+      fixture.detectChanges();
+      const svg = root.querySelector('svg[role="img"]') as SVGElement;
+      const viewWidth = Number(svg.getAttribute('viewBox')?.split(' ')[2]);
+      const x = plotX(root);
+
+      expect(x).toBeLessThanOrEqual(viewWidth * 0.4);
+      expect(viewWidth - x).toBeGreaterThanOrEqual(40);
+    });
+  });
+
   it('starts without a cursor and an empty live line', () => {
     const root = render([series('a', [1, 5, 3, 2])]);
 
@@ -132,6 +172,22 @@ describe('LineChart', () => {
     press(root, 'End');
     press(root, 'ArrowRight'); // clamps at the last bucket
     expect(liveLine(root).textContent).toContain('Alpha: 2');
+  });
+
+  it('appends the per-bucket detail text to the cursor line and tolerates missing entries', () => {
+    const root = render([series('a', [1, 5, 3, 2])]);
+    fixture.componentRef.setInput('bucketDetails', ['sources: Api', null]);
+    fixture.detectChanges();
+
+    press(root, 'Home');
+    expect(liveLine(root).textContent).toContain('Alpha: 1 · sources: Api');
+
+    press(root, 'ArrowRight');
+    expect(liveLine(root).textContent).toContain('Alpha: 5');
+    expect(liveLine(root).textContent).not.toContain('·');
+
+    press(root, 'End');
+    expect(liveLine(root).textContent).not.toContain('·');
   });
 
   it('names an unknown value as such instead of reading it as zero', () => {
@@ -176,18 +232,25 @@ describe('LineChart', () => {
     expect(liveLine(root).textContent).toContain('Alpha: 2');
   });
 
-  it('renders a text legend with name and last value only from three series on', () => {
-    const two = render([series('a', [1, 2, 3, 4]), series('b', [4, 3, 2, 1])]);
-    expect(two.querySelector('[data-testid="chart-legend"]')).toBeNull();
+  it('renders a text legend naming every series with its last value from two series on', () => {
+    const one = render([series('a', [1, 2, 3, 4])]);
+    expect(one.querySelector('[data-testid="chart-legend"]')).toBeNull();
 
-    const three = render([
-      series('a', [1, 2, 3, 4]),
-      series('b', [4, 3, 2, 1]),
-      series('c', [7, 7, 7, 9]),
-    ]);
-    const legend = three.querySelector('[data-testid="chart-legend"]')?.textContent ?? '';
-    expect(legend).toContain('Gamma: 9');
+    const two = render([series('a', [1, 2, 3, 4]), series('b', [4, 3, 2, 1])]);
+    const legend = two.querySelector('[data-testid="chart-legend"]')?.textContent ?? '';
+    expect(legend).toContain('Alpha: 4');
     expect(legend).toContain('Beta: 1');
+  });
+
+  it('keys a marks series with a marker in the legend and a line series with a line', () => {
+    const marks: LineChartSeries = { ...series('b', [4, 3, 2, 1]), emphasis: 'marks' };
+    const root = render([series('a', [1, 2, 3, 4]), marks]);
+    const entries = root.querySelectorAll('[data-testid="chart-legend"] li');
+
+    expect(entries[0].querySelector('[data-testid="legend-line"]')).not.toBeNull();
+    expect(entries[0].querySelector('[data-testid="legend-marker"]')).toBeNull();
+    expect(entries[1].querySelector('[data-testid="legend-marker"]')).not.toBeNull();
+    expect(entries[1].querySelector('[data-testid="legend-line"]')).toBeNull();
   });
 
   it('says in the text alternative and at the cursor that the last bucket is incomplete', () => {
@@ -271,7 +334,7 @@ describe('LineChart', () => {
     expect(root.querySelectorAll('svg[role="img"] circle[fill="none"]')).toHaveLength(1);
   });
 
-  it('shows the total or the maximum in the legend when asked, even for fewer than three series', () => {
+  it('shows the total or the maximum in the legend when asked, even for a single series', () => {
     const sum = render([series('a', [1, 5, 3, 2])], { legendStat: 'sum' });
     expect(sum.querySelector('[data-testid="chart-legend"]')?.textContent).toContain(
       'Alpha: total 11',

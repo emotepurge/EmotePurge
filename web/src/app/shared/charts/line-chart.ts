@@ -59,11 +59,18 @@ interface RenderedSeries {
  */
 const FALLBACK_WIDTH = 640;
 const VIEW_HEIGHT = 176;
+/** One plot origin for charts stacked on one time axis: room for the widest usual y label: "0,0015 Kerne" is 12 characters, about 89 px at 12 px x 0.62, plus gap and padding = 100. */
+export const SHARED_PLOT_LEFT = 100;
 const PLOT_LEFT = 60;
 const PLOT_RIGHT = 8;
 const PLOT_TOP = 8;
 const PLOT_HEIGHT = 144;
 const TICK_FONT_SIZE = 12;
+/** Average glyph width of a tick label in em (digits and units, a little generous). */
+const LABEL_CHAR_EM = 0.62;
+const Y_LABEL_GAP = 6;
+/** The y-label margin never takes more than this share of the chart width. */
+const PLOT_LEFT_MAX_SHARE = 0.4;
 
 /** Which number a legend entry shows: the latest value, the total or the maximum of the window. */
 export type LegendStat = 'last' | 'sum' | 'max';
@@ -109,7 +116,7 @@ function styleOf(
 }
 
 /** From this many series on (or with a non-default `legendStat`), a text legend stands under the plot. */
-const LEGEND_FROM_SERIES = 3;
+const LEGEND_FROM_SERIES = 2;
 
 let nextChartId = 0;
 
@@ -167,6 +174,8 @@ let nextChartId = 0;
               class="fill-fg-muted"
               [attr.font-size]="fontSize"
               text-anchor="end"
+              [attr.textLength]="tick.fitLength"
+              lengthAdjust="spacingAndGlyphs"
               [attr.x]="plot().x - 6"
               [attr.y]="plot().y + tick.y + 4"
             >
@@ -290,15 +299,20 @@ let nextChartId = 0;
                 viewBox="0 0 16 8"
                 aria-hidden="true"
               >
-                <line
-                  x1="0"
-                  y1="4"
-                  x2="16"
-                  y2="4"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  [attr.stroke-dasharray]="item.dash"
-                />
+                @if (item.marks) {
+                  <circle cx="8" cy="4" r="2.5" fill="currentColor" data-testid="legend-marker" />
+                } @else {
+                  <line
+                    x1="0"
+                    y1="4"
+                    x2="16"
+                    y2="4"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    [attr.stroke-dasharray]="item.dash"
+                    data-testid="legend-line"
+                  />
+                }
               </svg>
               <span>{{ item.label }}: {{ item.statText }}</span>
             </li>
@@ -325,6 +339,17 @@ export class LineChart {
   readonly legendStat = input<LegendStat>('last');
   /** Small markers on each known bucket of a line series; the partial bucket keeps its hollow ring. */
   readonly pointMarkers = input<PointMarkers>('never');
+  /**
+   * Extra reading text per bucket (sources, sample counts), appended to the cursor line and so
+   * spoken by the live region. Optional; `null` or a missing entry adds nothing.
+   */
+  readonly bucketDetails = input<readonly (string | null)[]>([]);
+  /**
+   * Smallest left margin of the plot in SVG units. Charts stacked on one time axis pass the same
+   * number so their plots start at one x, whatever their own labels need; the chart still grows
+   * past it for a wider label (up to a share of its width).
+   */
+  readonly minPlotLeft = input(0);
 
   private readonly transloco = inject(TranslocoService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
@@ -333,13 +358,30 @@ export class LineChart {
   protected readonly viewHeight = VIEW_HEIGHT;
   protected readonly fontSize = TICK_FONT_SIZE;
   protected readonly width = signal(FALLBACK_WIDTH);
-  protected readonly plot = computed(() => ({
-    x: PLOT_LEFT,
-    y: PLOT_TOP,
-    width: Math.max(40, this.width() - PLOT_LEFT - PLOT_RIGHT),
-    height: PLOT_HEIGHT,
-  }));
+  protected readonly plot = computed(() => {
+    // The margin follows the widest y label (unit-carrying labels such as "1,60 Kerne" overflowed a
+    // fixed 60 units), is raised to the caller's shared minimum and is capped so the plot keeps
+    // its room on a narrow chart; a label that still does not fit is squeezed in `yTicks`.
+    const needed = Math.ceil(this.widestYLabel()) + Y_LABEL_GAP + 4;
+    const cap = Math.floor(this.width() * PLOT_LEFT_MAX_SHARE);
+    const left = Math.min(Math.max(PLOT_LEFT, this.minPlotLeft(), needed), Math.max(cap, 0));
+    return {
+      x: left,
+      y: PLOT_TOP,
+      width: Math.max(40, this.width() - left - PLOT_RIGHT),
+      height: PLOT_HEIGHT,
+    };
+  });
   protected readonly descriptionId = `app-line-chart-description-${nextChartId++}`;
+
+  private readonly widestYLabel = computed(() =>
+    Math.max(
+      0,
+      ...this.yDomain().ticks.map((value) =>
+        this.estimateLabelWidth(this.format(value, this.locale(), this.tickStep())),
+      ),
+    ),
+  );
 
   private readonly rawCursor = signal<number | null>(null);
 
@@ -376,14 +418,20 @@ export class LineChart {
   });
 
   protected readonly yTicks = computed(() => {
-    const plot = this.plot();
     const { ticks, min, max } = this.yDomain();
     const locale = this.locale();
-    return ticks.map((value) => ({
-      value,
-      y: yAt(value, min, max, plot.height),
-      label: this.format(value, locale),
-    }));
+    const room = this.plot().x - Y_LABEL_GAP - 2;
+    const step = this.tickStep();
+    return ticks.map((value) => {
+      const label = this.format(value, locale, step);
+      return {
+        value,
+        y: yAt(value, min, max, PLOT_HEIGHT),
+        label,
+        // Only a label wider than its margin is squeezed (never stretched).
+        fitLength: this.estimateLabelWidth(label) > room ? Math.max(room, 0) : null,
+      };
+    });
   });
 
   protected readonly xTicks = computed(() => {
@@ -611,7 +659,8 @@ export class LineChart {
       this.partialLastBucket() && index === this.bucketCount() - 1
         ? ` (${this.transloco.translate('admin.dashboard.chart.incompleteShort')})`
         : '';
-    return `${time}${incomplete} — ${values}`;
+    const detail = this.bucketDetails()[index];
+    return `${time}${incomplete} — ${values}${detail ? ` · ${detail}` : ''}`;
   });
 
   constructor() {
@@ -717,13 +766,22 @@ export class LineChart {
     return this.format(summary.last as number, locale);
   }
 
-  private format(value: number, locale: string): string {
+  private estimateLabelWidth(label: string): number {
+    return label.length * TICK_FONT_SIZE * LABEL_CHAR_EM;
+  }
+
+  private tickStep(): number | undefined {
+    const { ticks } = this.yDomain();
+    return ticks.length > 1 ? ticks[1] - ticks[0] : undefined;
+  }
+
+  private format(value: number, locale: string, tickStep?: number): string {
     const unit = this.unit();
     const word =
       unit === 'cores' || unit === 'tasks'
         ? this.transloco.translate(`admin.dashboard.chart.unitWord.${unit}`)
         : '';
-    return formatUnit(value, unit, locale, word);
+    return formatUnit(value, unit, locale, word, tickStep);
   }
 
   private locale(): string {

@@ -9,6 +9,8 @@ import {
   AdminChannelsResult,
   AdminDashboardActivity,
   AdminDashboardActivityRange,
+  AdminDashboardLoad,
+  AdminDashboardLoadRange,
   AdminHealth,
   AdminRoster,
   AdminUser,
@@ -50,6 +52,12 @@ export class AdminService {
     return this.http.get<AdminDashboardActivity>('/api/admin/dashboard/activity', {
       params: { range },
     });
+  }
+
+  /** The complete load-and-work history of one range, bucketed server-side. A busy server answers
+   *  503 with an empty body and `Retry-After: 5`; callers keep their last answer. */
+  getDashboardLoad(range: AdminDashboardLoadRange): Observable<AdminDashboardLoad> {
+    return this.http.get<AdminDashboardLoad>('/api/admin/dashboard/load', { params: { range } });
   }
 
   /** The last 24 hours of rate-limit rejections as minute buckets. Redis being down is a 200 with
