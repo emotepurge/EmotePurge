@@ -884,6 +884,7 @@ namespace EmotePurge.Infrastructure.Migrations
                         .HasColumnType("integer");
 
                     b.Property<string>("SlotId")
+                        .IsRequired()
                         .HasColumnType("text");
 
                     b.Property<int>("Source")
@@ -896,12 +897,12 @@ namespace EmotePurge.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EmoteId", "EmoteSetId", "Date")
-                        .IsUnique();
+                    b.HasIndex("EmoteId", "EmoteSetId", "Date");
 
                     NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("EmoteId", "EmoteSetId", "Date"), new[] { "UseCount" });
 
-                    b.HasIndex("SlotId", "EmoteSetId", "Date");
+                    b.HasIndex("SlotId", "EmoteSetId", "Date")
+                        .IsUnique();
 
                     NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("SlotId", "EmoteSetId", "Date"), new[] { "UseCount" });
 
@@ -1217,7 +1218,8 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.HasOne("EmotePurge.Core.Entities.EmoteSlot", null)
                         .WithMany()
                         .HasForeignKey("SlotId")
-                        .OnDelete(DeleteBehavior.Cascade);
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.Navigation("Emote");
                 });

@@ -5,11 +5,11 @@ public class UsageStat
     public long Id { get; set; }
     public string EmoteId { get; set; } = string.Empty;
 
-    // UTC calendar day; one row per emote per day.
+    // UTC calendar day; one row per slot per emote set per day.
     public DateOnly Date { get; set; }
     public int UseCount { get; set; }
 
-    // A row stays (EmoteId, Date)-unique regardless of these columns: either of them can push a row
+    // A row stays (SlotId, EmoteSetId, Date)-unique regardless of these columns: either of them can push a row
     // into existence with UseCount = 0 — BotUseCount > 0 (only a bot posted this emote in the
     // batch) or SharedChatUseCount > 0 (only foreign-room messages did). The read queries in
     // UsageStatQueryService treat both cases identically and filter on UseCount > 0, so neither
@@ -30,14 +30,16 @@ public class UsageStat
     public string EmoteSetId { get; set; } = string.Empty;
 
     // Provenance (#346): Live for everything the flush wrote, ChatLogArchive for rows the chat-log
-    // backfill imported. The unique (EmoteId, EmoteSetId, Date) index stays as it is, so one cell is
-    // either live or imported, never both; the flush never names this column and gets the default 0.
+    // backfill imported. One cell — since M2 the unique (SlotId, EmoteSetId, Date) — is either live or
+    // imported, never both; the flush never names this column and gets the default 0.
     public UsageStatSource Source { get; set; }
 
-    // The slot this row's usage belongs to (emote slots spec section 4.2). Nullable until the key
-    // switch: writers that predate it still insert rows without it. No navigation on purpose — no
-    // reader needs one yet.
-    public string? SlotId { get; set; }
+    // The slot this row's usage belongs to (emote slots spec section 4.2), and since M2
+    // (SwitchUsageStatsToSlotKey, #373) part of the row's key: two slots of one emote write two rows on
+    // the same day. Required; every writer names it (the flush, the backfill block, the settle's
+    // rebinding). EmoteId stays alongside for the cascade and the emote-wide readers. No navigation on
+    // purpose — no reader needs one yet.
+    public string SlotId { get; set; } = string.Empty;
 
     public Emote Emote { get; set; } = null!;
 }

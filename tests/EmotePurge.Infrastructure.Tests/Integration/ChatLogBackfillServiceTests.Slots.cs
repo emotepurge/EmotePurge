@@ -6,6 +6,7 @@ using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
@@ -174,10 +175,11 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal(2, await verify.EmoteSlots.CountAsync());
     }
 
-    // E6: the enqueue and a flush-shaped get-or-create (flush phase 2: its own locks, then a usage row on
-    // the seed) for the same pair end with one seed, whichever starts first. Flush first: the enqueue
-    // waits at the channel row, then binds the flush's seed through rule (a). Enqueue first: the flush
-    // waits, then finds the enqueue's row-less seed through rule (b).
+    // E6 / plan 6.2: the enqueue and the real usage flush resolving a pending key (phase 2: its own
+    // locks, then the pair's first usage row on the seed) for the same pair end with one seed, whichever
+    // starts first. Flush first: the enqueue waits at the channel row, then binds the flush's seed
+    // through rule (a). Enqueue first: the flush waits, then finds the enqueue's row-less seed through
+    // rule (b).
     [Fact]
     public async Task Enqueue_AndAFlushCreatingTheSameSeed_EndWithOneSeed_WhenTheFlushStartsFirst()
     {
@@ -186,21 +188,32 @@ public partial class ChatLogBackfillServiceTests
         var emote = await SeedEmoteAsync(channel, "e1", "E1");
         PreviewReturns(SetB, "Set B", Member("e1", "BE1", null));
 
-        await using var flush = CreateDbContext();
-        await using var flushTransaction = await flush.Database.BeginTransactionAsync();
-        var seed = await FlushShapedGetOrCreateAsync(flush, emote.Id, SetB);
-
         const string tag = "bfseedflushfirst-enq";
         await using var enqueueDb = fixture.CreateTaggedDbContext(tag, DatabaseName);
-        var enqueue = Task.Run(() => CreateService(enqueueDb).EnqueueAsync(channel.ChannelName, SetB, 6, Today, Actor));
-        await fixture.WaitUntilBlockedOnLockAsync(tag, enqueue);
+        Task<ChatLogBackfillEnqueueResult>? enqueue = null;
 
-        await flushTransaction.CommitAsync();
+        // Right after phase 2's upsert, before its commit: the seed exists and carries the row, but only
+        // inside the flush's transaction.
+        var hook = new CommandHook(
+            sql => sql.Contains("INSERT INTO \"UsageStats\"", StringComparison.Ordinal),
+            async _ =>
+            {
+                enqueue = Task.Run(() => CreateService(enqueueDb).EnqueueAsync(channel.ChannelName, SetB, 6, Today, Actor));
+                await fixture.WaitUntilBlockedOnLockAsync(tag, enqueue);
+            });
+        await using (var flush = fixture.CreateTaggedDbContext("bfseedflushfirst-flush", [hook], databaseName: DatabaseName))
+        {
+            var result = await new UsageStatFlushService(flush, NullLogger<UsageStatFlushService>.Instance).FlushAsync(
+                new Dictionary<UsageCounterKey, EmoteUsageCounts> { [new UsageCounterKey(PendingSlotKey.For(emote.Id), SetB)] = new(1, 0, 0) });
+            Assert.Empty(result.Requeued);
+        }
+
+        Assert.NotNull(enqueue);
         Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await enqueue).Status);
 
+        var seed = await SlotOfRowAsync(emote.Id, SetB);
         var entry = await SingleSnapshotEntryAsync();
-        Assert.Equal((seed.SlotId, false), (entry.SlotId, entry.CreatedSlot));
-        Assert.True(seed.Created);
+        Assert.Equal((seed, false), (entry.SlotId, entry.CreatedSlot));
         await using var verify = CreateDbContext();
         Assert.Equal(1, await verify.EmoteSlots.CountAsync(s => s.EmoteId == emote.Id));
     }
@@ -215,7 +228,7 @@ public partial class ChatLogBackfillServiceTests
 
         const string tag = "bfseedenqfirst-flush";
         await using var flush = fixture.CreateTaggedDbContext(tag, DatabaseName);
-        Task<(string SlotId, bool Created)>? flushing = null;
+        Task<UsageFlushResult>? flushing = null;
 
         // Right after the snapshot rows are inserted, before the enqueue commits: the seed exists and is
         // bound, but only inside the enqueue's transaction.
@@ -228,13 +241,8 @@ public partial class ChatLogBackfillServiceTests
                     return;
                 }
 
-                flushing = Task.Run(async () =>
-                {
-                    await using var transaction = await flush.Database.BeginTransactionAsync();
-                    var result = await FlushShapedGetOrCreateAsync(flush, emote.Id, SetB);
-                    await transaction.CommitAsync();
-                    return result;
-                });
+                flushing = Task.Run(() => new UsageStatFlushService(flush, NullLogger<UsageStatFlushService>.Instance).FlushAsync(
+                    new Dictionary<UsageCounterKey, EmoteUsageCounts> { [new UsageCounterKey(PendingSlotKey.For(emote.Id), SetB)] = new(1, 0, 0) }));
                 await fixture.WaitUntilBlockedOnLockAsync(tag, flushing);
             });
         await using (var enqueueDb = fixture.CreateTaggedDbContext("bfseedenqfirst-enq", [hook], databaseName: DatabaseName))
@@ -244,9 +252,8 @@ public partial class ChatLogBackfillServiceTests
         }
 
         Assert.NotNull(flushing);
-        var flushed = await flushing;
+        Assert.Empty((await flushing).Requeued);
         var entry = await SingleSnapshotEntryAsync();
-        Assert.Equal((entry.SlotId, false), (flushed.SlotId, flushed.Created));
         Assert.True(entry.CreatedSlot);
         await using var verify = CreateDbContext();
         Assert.Equal(1, await verify.EmoteSlots.CountAsync(s => s.EmoteId == emote.Id));
@@ -370,18 +377,6 @@ public partial class ChatLogBackfillServiceTests
 
     // ---------------------------------------------------------------- Helpers
 
-    // Flush phase 2's shape (plan #373, E9): the base slot rule behind its own locks, then the pair's
-    // first usage row on the slot, in the caller's open transaction.
-    private static async Task<(string SlotId, bool Created)> FlushShapedGetOrCreateAsync(AppDbContext db, string emoteId, string emoteSetId)
-    {
-        var pair = new BaseSlotPair(emoteId, emoteSetId);
-        var result = await BaseSlotRule.LockAndGetOrCreateAsync(db, [pair], NowUtc, CancellationToken.None);
-        var slotId = result.SlotIds[pair];
-        db.UsageStats.Add(new UsageStat { SlotId = slotId, EmoteId = emoteId, EmoteSetId = emoteSetId, Date = Today, UseCount = 1 });
-        await db.SaveChangesAsync();
-        return (slotId, result.Created.Contains(pair));
-    }
-
     private async Task<string> SeedSlotAsync(string emoteId, string name, DateTime addedAt)
     {
         await using var db = CreateDbContext();
@@ -394,7 +389,7 @@ public partial class ChatLogBackfillServiceTests
     private async Task<string> SlotOfRowAsync(string emoteId, string emoteSetId)
     {
         await using var db = CreateDbContext();
-        return (await db.UsageStats.AsNoTracking().SingleAsync(u => u.EmoteId == emoteId && u.EmoteSetId == emoteSetId)).SlotId!;
+        return (await db.UsageStats.AsNoTracking().SingleAsync(u => u.EmoteId == emoteId && u.EmoteSetId == emoteSetId)).SlotId;
     }
 
     private async Task<ChatLogBackfillRunEmote> SingleSnapshotEntryAsync(bool newest = false)

@@ -450,7 +450,8 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Null(reloadedChannel.LastSyncFailureReason);
         Assert.True(await verifyDb.ChannelEmoteSetObservations.AnyAsync(
             o => o.ChannelId == channel.Id && o.SevenTvEmoteSetId == SetId && o.ObservedToUtc == null));
-        Assert.Equal(row.Id, cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId["RaceX"]);
+        // Flag off and no usage row yet: the map hands out the pending key of the emote (plan #373, E8).
+        Assert.Equal(PendingSlotKey.For(row.Id), cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId["RaceX"]);
         Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
     }
 
@@ -1540,7 +1541,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
     //
     // Both tests below drive the exact per-message algorithm TwitchChatManager runs
     // (TwitchChatManager.cs:1024-1055) — one GetChannelSnapshot call per message, a hit keyed by
-    // (resolved emote id, snapshot.EmoteSetId) — through the real cache and a real switch performed
+    // (resolved slot key, snapshot.EmoteSetId) — through the real cache and a real switch performed
     // by SyncChannelAsync against Postgres, not through TwitchLib (that stays live-verified, rule
     // 11/16). The counting dictionary is not EmoteUsageCounter: EmotePurge.Worker is not referenced
     // from this project, so the key (EmotePurge.Core.Services.UsageCounterKey) is used directly —
@@ -1576,8 +1577,9 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var emoteId = await db.Emotes.Where(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1")
             .Select(e => e.Id).SingleAsync();
         Assert.Equal(2, counts.Count);
-        Assert.Equal(1, counts[new UsageCounterKey(emoteId, SetId)]);
-        Assert.Equal(2, counts[new UsageCounterKey(emoteId, SwitchedSetId)]);
+        // Flag off, no usage rows: the key is the emote's pending key in both sets (plan #373, E8).
+        Assert.Equal(1, counts[new UsageCounterKey(PendingSlotKey.For(emoteId), SetId)]);
+        Assert.Equal(2, counts[new UsageCounterKey(PendingSlotKey.For(emoteId), SwitchedSetId)]);
     }
 
     [Fact]
@@ -1607,11 +1609,11 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
             .Select(e => e.Id).SingleAsync();
         Assert.NotEqual(rowAId, rowBId);
         Assert.Equal(2, counts.Count);
-        Assert.Equal(1, counts[new UsageCounterKey(rowAId, SetId)]);
-        Assert.Equal(2, counts[new UsageCounterKey(rowBId, SwitchedSetId)]);
-        // Never counted on both: neither row's id appears combined with the other switch state.
-        Assert.False(counts.ContainsKey(new UsageCounterKey(rowAId, SwitchedSetId)));
-        Assert.False(counts.ContainsKey(new UsageCounterKey(rowBId, SetId)));
+        Assert.Equal(1, counts[new UsageCounterKey(PendingSlotKey.For(rowAId), SetId)]);
+        Assert.Equal(2, counts[new UsageCounterKey(PendingSlotKey.For(rowBId), SwitchedSetId)]);
+        // Never counted on both: neither row's key appears combined with the other switch state.
+        Assert.False(counts.ContainsKey(new UsageCounterKey(PendingSlotKey.For(rowAId), SwitchedSetId)));
+        Assert.False(counts.ContainsKey(new UsageCounterKey(PendingSlotKey.For(rowBId), SetId)));
     }
 
     // A switch line is the only one that has to name both sets at once, which identifies it without

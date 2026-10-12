@@ -18,6 +18,13 @@ public class UsageFlushWorker(
     // eventually be booked on the wrong calendar day. Five attempts ≈ 2.5 minutes of tolerance.
     private const int MaxConsecutiveFailuresToRequeue = 5;
 
+    // Plan #373, E9: how many flushes in a row handed keys back without throwing (flush phase 2, the
+    // pending keys of the flag-off map). Its own streak, so the overall failure streak and the admin
+    // health keep meaning "the flush itself fails"; same bound and same reason (the day a count is
+    // booked on). Only the flush loop and the final flush touch it, and those never run concurrently
+    // (see StopAsync).
+    private int _consecutivePartialFlushes;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(FlushInterval);
@@ -71,39 +78,42 @@ public class UsageFlushWorker(
             return;
         }
 
-        IReadOnlyCollection<string> affectedChannels;
+        UsageFlushResult result;
         try
         {
             using var scope = scopeFactory.CreateScope();
             var flushService = scope.ServiceProvider.GetRequiredService<IUsageStatFlushService>();
-            affectedChannels = await flushService.FlushAsync(counts, ct);
-            // Bookkeeping moved to the shared WorkerStats so GET /api/admin/health can report it;
-            // the requeue/drop behaviour below is unchanged.
-            stats.RecordFlushSuccess(counts.Count, DateTime.UtcNow);
+            result = await flushService.FlushAsync(counts, ct);
+            // Bookkeeping moved to the shared WorkerStats so GET /api/admin/health can report it. A
+            // result with handed-back keys is still a success for what it wrote (plan #373, E9).
+            stats.RecordFlushSuccess(counts.Count - result.Requeued.Count, DateTime.UtcNow);
         }
         catch (Exception ex)
         {
-            // An unhandled exception here would (StopHost default) kill the whole Worker
-            // process, not just this flush cycle — so it never propagates.
+            // A throw means nothing was written (flush phase 1 failed), so the whole batch goes back.
+            // An unhandled exception here would (StopHost default) kill the whole Worker process, not
+            // just this flush cycle — so it never propagates.
             var consecutiveFailures = stats.RecordFlushFailure();
             if (consecutiveFailures <= MaxConsecutiveFailuresToRequeue)
             {
                 usageCounter.Merge(counts);
                 logger.LogWarning(
                     ex,
-                    "Usage-Stat-Flush fehlgeschlagen ({Attempt}. Versuch in Folge), {Count} Counts für den nächsten Durchlauf zurückgestellt.",
+                    "Usage flush failed ({Attempt}. attempt in a row), {Count} counts put back for the next run.",
                     consecutiveFailures, counts.Count);
             }
             else
             {
                 logger.LogError(
                     ex,
-                    "Usage-Stat-Flush seit {Attempt} Durchläufen fehlgeschlagen, {Count} Counts verworfen.",
+                    "Usage flush has failed for {Attempt} runs in a row, {Count} counts dropped.",
                     consecutiveFailures, counts.Count);
             }
 
             return;
         }
+
+        RequeueHandedBack(result.Requeued);
 
         // Deliberately its own try/catch, and deliberately *after* RecordFlushSuccess: at this point
         // the flush is committed. If a Redis outage were allowed to fall into the catch above, a
@@ -114,7 +124,7 @@ public class UsageFlushWorker(
         // automatic refresh; every page still has its refresh button.
         try
         {
-            foreach (var channelName in affectedChannels)
+            foreach (var channelName in result.WrittenChannels)
             {
                 await redisPublisher.PublishAsync(
                     LiveEvents.Channel,
@@ -125,6 +135,32 @@ public class UsageFlushWorker(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Live-Event '{Type}' konnte nicht veröffentlicht werden.", LiveEvents.UsageFlushed);
+        }
+    }
+
+    // The keys a flush wrote nothing for and handed back (they are pending keys and go back as such,
+    // to be resolved afresh). Dropped keys — of deleted slots or emotes — never come back here.
+    private void RequeueHandedBack(IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts> requeued)
+    {
+        if (requeued.Count == 0)
+        {
+            _consecutivePartialFlushes = 0;
+            return;
+        }
+
+        _consecutivePartialFlushes++;
+        if (_consecutivePartialFlushes <= MaxConsecutiveFailuresToRequeue)
+        {
+            usageCounter.Merge(requeued);
+            logger.LogWarning(
+                "Usage flush handed back {Count} counts without a slot yet ({Attempt}. time in a row); they are put back for the next run.",
+                requeued.Count, _consecutivePartialFlushes);
+        }
+        else
+        {
+            logger.LogError(
+                "Usage flush has handed back counts without a slot yet for {Attempt} runs in a row, {Count} counts dropped.",
+                _consecutivePartialFlushes, requeued.Count);
         }
     }
 }

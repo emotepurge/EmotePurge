@@ -28,6 +28,21 @@ public class EmoteUsageCounterTests
         Assert.Equal(0, new EmoteUsageCounter().PendingEmoteCount);
     }
 
+    // Emote slots spec O1/AK 14: the key is the slot, so two slots of one emote matched in one message
+    // are two keys, each +1 — the counter knows nothing of the emote behind them.
+    [Fact]
+    public void Increment_TwoSlotsOfOneEmote_AreTwoKeys()
+    {
+        var counter = new EmoteUsageCounter();
+        counter.Increment("slot-ome44", SetA, UsageCategory.Human);
+        counter.Increment("slot-hob44", SetA, UsageCategory.Human);
+
+        var drained = counter.DrainAndReset();
+        Assert.Equal(2, drained.Count);
+        Assert.Equal(1, drained[new UsageCounterKey("slot-ome44", SetA)].Human);
+        Assert.Equal(1, drained[new UsageCounterKey("slot-hob44", SetA)].Human);
+    }
+
     [Fact]
     public void PendingEmoteCount_CountsDistinctEmotesNotHits()
     {

@@ -1,12 +1,9 @@
 using EmotePurge.Core.Entities;
-using EmotePurge.Core.Services;
-using EmotePurge.Infrastructure.Migrations;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using static EmotePurge.Infrastructure.Tests.Integration.SlotSyncKit;
 
@@ -494,48 +491,6 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         Assert.Empty(Lines(logger, SettleLine));
     }
 
-    // 21 — production transition: rows written while the flag was off end up on the REST slot.
-    [Fact]
-    public async Task ProductionTransition_OffRunThenOnRunThenAttachThenOnRun_AllRowsOnTheRestSlot()
-    {
-        var databaseName = $"slot_transition_{Guid.NewGuid():N}";
-        await using (var admin = fixture.CreateDbContext())
-        {
-#pragma warning disable EF1002 // locally generated Guid, CREATE DATABASE cannot be parameterized
-            await admin.Database.ExecuteSqlRawAsync($"CREATE DATABASE {databaseName}");
-#pragma warning restore EF1002
-        }
-
-        await using var db = fixture.CreateDbContext(databaseName);
-        await db.Database.MigrateAsync();
-        var channel = await SeedChannelAsync(db, "slot_transition");
-
-        // Flag off: today's emote-wide reconcile creates the emote without a slot ...
-        await SyncAsync(db, channel, false, SetA, null, Live("x", "A", T1));
-        var x = await EmoteAsync(db, channel, "x");
-        Assert.Empty(await SlotsAsync(db, x.Id));
-        // ... and today's flush writes a row with SlotId NULL.
-        await new UsageStatFlushService(db, NullLogger<UsageStatFlushService>.Instance).FlushAsync(
-            new Dictionary<UsageCounterKey, EmoteUsageCounts> { [new UsageCounterKey(x.Id, SetA)] = new(7, 1, 2) });
-        var totals = await UsageTotalsAsync(db, x.Id, SetA);
-
-        // Flag on: the first own slot, the NULL row untouched.
-        var on = await SyncOnAsync(db, channel, Live("x", "A", T1));
-        var rest = Assert.Single(await SlotsAsync(db, x.Id));
-        Assert.False(on!.HasChanges);
-        Assert.Equal((1, 7), (await UsageBySlotAsync(db, x.Id, SetA))["<null>"]);
-
-        // M2's attach step seeds next to the REST slot; the next pass settles it onto the REST slot.
-        await db.Database.ExecuteSqlRawAsync(EmoteSlotSeedSql.AttachUnslottedUsageRowsSql);
-        Assert.Contains(await SlotsAsync(db, x.Id), s => s.SeedUnsettled);
-        await SyncOnAsync(db, channel, Live("x", "A", T1));
-
-        var usage = await UsageBySlotAsync(db, x.Id, SetA);
-        Assert.Equal(rest.Id, Assert.Single(usage).Key);
-        Assert.Equal(totals, await UsageTotalsAsync(db, x.Id, SetA));
-        Assert.DoesNotContain(await SlotsAsync(db, x.Id), s => s.SeedUnsettled);
-    }
-
     // 22 — on → off (rename in 7TV) → on: the date binds the same slot back and renames it.
     [Fact]
     public async Task OnOffOn_RenameWhileOff_SameSlotIsRenamed()
@@ -637,7 +592,7 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
     {
         var rows = await db.UsageStats.AsNoTracking()
             .Where(u => u.Emote.ChannelId == channel.Id)
-            .Select(u => u.Id + ":" + (u.SlotId ?? "null"))
+            .Select(u => u.Id + ":" + u.SlotId)
             .ToListAsync();
         return [.. rows.Order(StringComparer.Ordinal)];
     }

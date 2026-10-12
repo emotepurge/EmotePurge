@@ -1,3 +1,4 @@
+using EmotePurge.Core.Matching;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Services;
 using Xunit;
@@ -41,6 +42,38 @@ public class EmoteMatchCacheSwitchCountingTests
         Assert.Equal(2, drained.Count);
         Assert.Equal(1, drained[new UsageCounterKey("emote-1", SetA)].Human);
         Assert.Equal(2, drained[new UsageCounterKey("emote-1", SetB)].Human);
+    }
+
+    // AK 17 / O1 (emote slots spec): while the flag-on map leaves an emote out (a seed of the active set
+    // is not settled yet) nothing of it is counted; once the map carries its two slots, one message with
+    // both names counts +1 on each slot — deduplicated per slot, not per emote.
+    [Fact]
+    public void AnEmptyMapCountsNothing_AndAMapWithTwoSlotsOfOneEmoteCountsEachSlotOncePerMessage()
+    {
+        var cache = new EmoteMatchCache();
+        var counter = new EmoteUsageCounter();
+        cache.ReplaceChannel(ChannelName, SetA, new Dictionary<string, string>());
+
+        CountChatLine(cache, counter, "hob44 ome44");
+        Assert.Empty(counter.DrainAndReset());
+
+        cache.ReplaceChannel(ChannelName, SetA, new Dictionary<string, string> { ["ome44"] = "slot-ome44", ["hob44"] = "slot-hob44" });
+        CountChatLine(cache, counter, "ome44 hob44 ome44");
+
+        var drained = counter.DrainAndReset();
+        Assert.Equal(2, drained.Count);
+        Assert.Equal(1, drained[new UsageCounterKey("slot-ome44", SetA)].Human);
+        Assert.Equal(1, drained[new UsageCounterKey("slot-hob44", SetA)].Human);
+    }
+
+    // The whole-line variant: the shared matching rule TwitchChatManager applies to a chat message.
+    private static void CountChatLine(EmoteMatchCache cache, EmoteUsageCounter counter, string message)
+    {
+        var snapshot = cache.GetChannelSnapshot(ChannelName);
+        foreach (var slotId in EmoteNameMatching.MatchEmoteIds(message, snapshot.NameToSlotId))
+        {
+            counter.Increment(slotId, snapshot.EmoteSetId, UsageCategory.Human);
+        }
     }
 
     // The counting half of TwitchChatManager's per-message loop: one snapshot read, one resolved

@@ -519,7 +519,10 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
 
         var sync = service.SyncChannelAsync(channel.ChannelName);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        Assert.Contains("Alpha", cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.Keys);
+        // The warm start built a cache entry under the old login. With the flag on the emote has no own
+        // slot yet and the map has no virtual entries (plan #373, E7), so the name is still missing.
+        Assert.Contains(channel.ChannelName, cache.GetCachedChannelNames());
+        Assert.Equal(!slotsEnabled, cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.ContainsKey("Alpha"));
         await RenameAsync(channel, newName);
         release.SetResult();
         var result = await sync.WaitAsync(TimeSpan.FromSeconds(30));
@@ -613,7 +616,10 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
 
         var sync = service.SyncChannelAsync(channel.ChannelName);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        Assert.Contains("Alpha", cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.Keys);
+        // The warm start built a cache entry under the old login. With the flag on the emote has no own
+        // slot yet and the map has no virtual entries (plan #373, E7), so the name is still missing.
+        Assert.Contains(channel.ChannelName, cache.GetCachedChannelNames());
+        Assert.Equal(!slotsEnabled, cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.ContainsKey("Alpha"));
         await RenameAsync(channel, newName);
         release.SetResult();
         var result = await sync.WaitAsync(TimeSpan.FromSeconds(30));

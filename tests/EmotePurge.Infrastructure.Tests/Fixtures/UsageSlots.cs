@@ -35,7 +35,7 @@ public static class UsageSlots
     public static async Task AssignUsageSlotsAsync(this AppDbContext db, UsageSlotKind kind = UsageSlotKind.UnsettledSeed)
     {
         var pending = db.ChangeTracker.Entries<UsageStat>()
-            .Where(e => e.State == EntityState.Added && e.Entity.SlotId is null)
+            .Where(e => e.State == EntityState.Added && e.Entity.SlotId.Length == 0)
             .Select(e => e.Entity)
             .ToList();
         await AssignAsync(db, pending, kind);
@@ -43,7 +43,7 @@ public static class UsageSlots
 
     /// <summary>The same for rows that are not tracked yet (a test that builds them before adding).</summary>
     public static Task AssignUsageSlotsAsync(this AppDbContext db, IEnumerable<UsageStat> rows, UsageSlotKind kind = UsageSlotKind.UnsettledSeed) =>
-        AssignAsync(db, [.. rows.Where(r => r.SlotId is null)], kind);
+        AssignAsync(db, [.. rows.Where(r => r.SlotId.Length == 0)], kind);
 
     /// <summary>
     /// Creates and saves one slot of <paramref name="emoteId"/> on <paramref name="db"/> and returns its id, for a
@@ -65,9 +65,9 @@ public static class UsageSlots
             var (emoteId, setId) = pair.Key;
             var tracked = db.ChangeTracker.Entries<UsageStat>()
                 .Select(e => e.Entity)
-                .FirstOrDefault(u => u.EmoteId == emoteId && u.EmoteSetId == setId && u.SlotId is not null)?.SlotId;
+                .FirstOrDefault(u => u.EmoteId == emoteId && u.EmoteSetId == setId && u.SlotId.Length > 0)?.SlotId;
             var slotId = tracked ?? await db.UsageStats.AsNoTracking()
-                .Where(u => u.EmoteId == emoteId && u.EmoteSetId == setId && u.SlotId != null)
+                .Where(u => u.EmoteId == emoteId && u.EmoteSetId == setId && u.SlotId != "")
                 .Select(u => u.SlotId)
                 .FirstOrDefaultAsync();
             if (slotId is null)

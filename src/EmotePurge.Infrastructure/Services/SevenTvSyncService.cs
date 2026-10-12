@@ -24,7 +24,8 @@ public class SevenTvSyncService(
     TwitchIdResolutionBackoff resolutionBackoff,
     IEmptySetConfirmationTracker emptySetConfirmations,
     ILogger<SevenTvSyncService> logger,
-    SlotReconcileOptions? slotReconcile = null)
+    SlotReconcileOptions? slotReconcile = null,
+    MatchMapExclusionTracker? matchMapExclusions = null)
     : ISevenTvSyncService
 {
     private const string EmoteKeyIndexName = "IX_Emotes_ChannelId_SevenTvEmoteId";
@@ -51,6 +52,10 @@ public class SevenTvSyncService(
     // Plan #372 E26: read once from the singleton options; absent (tests, older call sites) means off,
     // which is the emote-wide reconcile exactly as before the slot work.
     private readonly bool slotReconcileEnabled = slotReconcile?.Enabled ?? false;
+
+    // Plan #373, E7: the process-wide memory of the flag-on map's left-out count per channel, so its
+    // information line is written on change only. Absent (tests) means a private one.
+    private readonly MatchMapExclusionTracker exclusionTracker = matchMapExclusions ?? new MatchMapExclusionTracker();
 
     public async Task WarmChannelAsync(string channelName, CancellationToken cancellationToken = default)
     {
@@ -1099,33 +1104,12 @@ public class SevenTvSyncService(
 
     private async Task RefreshMatchCacheAsync(Channel channel, string channelName, CancellationToken cancellationToken)
     {
-        var activeEmotes = await db.Emotes
-            .Where(e => e.ChannelId == channel.Id && !e.IsArchived)
-            .Select(e => new { e.Name, e.Id })
-            .ToListAsync(cancellationToken);
-
-        // 7TV active sets can legitimately contain two emotes sharing the same chat alias
-        // (observed live) — ToDictionary would throw, so duplicates are coalesced instead,
-        // keeping whichever was loaded first (the load order above has no OrderBy, so "first" is
-        // whatever Postgres returns). Logged only when the collision set changes: this method
-        // runs on every resync tick, and a static collision would spam the log otherwise. The
-        // full current state is served by EmoteSetStatusService's DuplicateNames field instead.
-        var (emoteNameToId, emoteWideDuplicates) = EmoteNameMatching.Coalesce(
-            activeEmotes.Select(e => new KeyValuePair<string, string>(e.Name, e.Id)));
-
-        // Flag on (plan 372 E15): the tracker reads names off the slots (an emote renamed in 7TV keeps
-        // its old slot, and two aliases of one emote are no collision), while the match map above stays
-        // keyed by Emote.Name until child 3 (D19). Distinct (name, emote) pairs, so that the coalescing
-        // only reports names claimed by more than one emote.
-        var duplicateNames = emoteWideDuplicates;
-        if (slotReconcileEnabled)
-        {
-            var entries = await db.ForChannel(channel.Id).ToListAsync(cancellationToken);
-            duplicateNames = EmoteNameMatching.Coalesce(
-                entries
-                    .Select(x => new KeyValuePair<string, string>(x.Name, x.EmoteId))
-                    .Distinct()).AmbiguousNames;
-        }
+        // Plan #373 §3.2: the map's values are slot keys in both flag states, but who gets an entry
+        // and under which name depends on the flag. Nothing here writes: a slot is only ever created
+        // by the flush (E4) or by a reconcile.
+        var (nameToSlotKey, duplicateNames) = slotReconcileEnabled
+            ? await BuildSlotMatchMapAsync(channel, channelName, cancellationToken)
+            : await BuildEmoteMatchMapAsync(channel, cancellationToken);
 
         if (duplicateNameTracker.Update(channelName, duplicateNames))
         {
@@ -1150,7 +1134,7 @@ public class SevenTvSyncService(
         // start too: it runs before either 7TV call and therefore pairs the emote rows in Postgres
         // with the set id those rows were last reconciled against.
         var previous = emoteMatchCache.GetChannelSnapshot(channelName);
-        emoteMatchCache.ReplaceChannel(channelName, channel.ActiveEmoteSetId, emoteNameToId);
+        emoteMatchCache.ReplaceChannel(channelName, channel.ActiveEmoteSetId, nameToSlotKey);
 
         // Only a swap between two known sets is worth a line — it is what makes the delay between
         // a set switch on 7TV and our observing it measurable in production. Two non-cases: a first
@@ -1169,6 +1153,92 @@ public class SevenTvSyncService(
                 channel.ActiveEmoteSetId,
                 emoteMatchCache.GetChannelSnapshot(channelName).GeneratedAtUtc);
         }
+    }
+
+    /// <summary>
+    /// Flag off (plan #373, E8): today's semantics — every active emote under <c>Emote.Name</c>,
+    /// collisions coalesced onto the first loaded (the load order has no <c>OrderBy</c>, so "first" is
+    /// whatever Postgres returns), the emote-wide collision report. Only the value changed: the base
+    /// slot of (emote, active set) by rule (a) when the pair already has one, else the pending key the
+    /// flush resolves (E4). Read-only.
+    /// </summary>
+    private async Task<(Dictionary<string, string> NameToSlotKey, IReadOnlySet<string> DuplicateNames)> BuildEmoteMatchMapAsync(
+        Channel channel, CancellationToken cancellationToken)
+    {
+        var activeEmotes = await db.Emotes
+            .Where(e => e.ChannelId == channel.Id && !e.IsArchived)
+            .Select(e => new { e.Name, e.Id })
+            .ToListAsync(cancellationToken);
+
+        var baseSlots = await BaseSlotRule.FindAsync(
+            db,
+            [.. activeEmotes.Select(e => new BaseSlotPair(e.Id, channel.ActiveEmoteSetId))],
+            cancellationToken);
+
+        // 7TV active sets can legitimately contain two emotes sharing the same chat alias (observed
+        // live) — ToDictionary would throw, so duplicates are coalesced instead. Logged only when the
+        // collision set changes: this method runs on every resync tick, and a static collision would
+        // spam the log otherwise. The full current state is served by EmoteSetStatusService's
+        // DuplicateNames field instead.
+        var map = EmoteNameMatching.Coalesce(
+            activeEmotes.Select(e => new KeyValuePair<string, string>(
+                e.Name,
+                baseSlots.TryGetValue(new BaseSlotPair(e.Id, channel.ActiveEmoteSetId), out var slotId)
+                    ? slotId
+                    : PendingSlotKey.For(e.Id))));
+        return (map.NameToId, map.AmbiguousNames);
+    }
+
+    /// <summary>
+    /// Flag on (plan #373, E7; D15, AK 15, AK 17): one entry per active, settled slot (not archived,
+    /// not an unsettled seed) of an active emote, under the slot's name, with the slot id as value —
+    /// except for every emote that still has an unsettled seed of the active set, which is left out
+    /// with all of its slots, settled ones included, until a dated reconcile settles it (a deferred
+    /// settle keeps it out, spec §14 (c)). "Seed of the active set" is the settle's own population
+    /// (<see cref="ActiveSetSeeds"/>), so map and settle can never disagree. No virtual entries: an
+    /// active emote without an active own slot has no slot id and counts from the next reconcile on.
+    /// The collision report reads exactly this input, as distinct (name, emote) pairs, so two aliases
+    /// of one emote are no collision. An information line names the number of left-out emotes when it
+    /// changes for the channel. Read-only.
+    /// </summary>
+    private async Task<(Dictionary<string, string> NameToSlotKey, IReadOnlySet<string> DuplicateNames)> BuildSlotMatchMapAsync(
+        Channel channel, string channelName, CancellationToken cancellationToken)
+    {
+        var activeSetSeeds = ActiveSetSeeds(channel.Id, channel.ActiveEmoteSetId);
+        var entries = await db.EmoteSlots
+            .Where(s => !s.IsArchived && !s.SeedUnsettled
+                        && s.Emote.ChannelId == channel.Id && !s.Emote.IsArchived
+                        && !activeSetSeeds.Any(seed => seed.EmoteId == s.EmoteId))
+            .Select(s => new { s.Name, s.Id, s.EmoteId })
+            .ToListAsync(cancellationToken);
+
+        var excludedEmotes = await activeSetSeeds
+            .Where(seed => !seed.Emote.IsArchived)
+            .Select(seed => seed.EmoteId)
+            .Distinct()
+            .CountAsync(cancellationToken);
+        if (exclusionTracker.Update(channelName, excludedEmotes))
+        {
+            if (excludedEmotes > 0)
+            {
+                logger.LogInformation(
+                    "{Channel}: {Count} active emotes are not counted until their unsettled seed of the active set is settled.",
+                    channelName, excludedEmotes);
+            }
+            else
+            {
+                logger.LogInformation(
+                    "{Channel}: every active emote with a slot is counted again — no unsettled seed of the active set is left.",
+                    channelName);
+            }
+        }
+
+        var map = EmoteNameMatching.Coalesce(entries.Select(e => new KeyValuePair<string, string>(e.Name, e.Id)));
+        var duplicateNames = EmoteNameMatching.Coalesce(
+            entries
+                .Select(e => new KeyValuePair<string, string>(e.Name, e.EmoteId))
+                .Distinct()).AmbiguousNames;
+        return (map.NameToId, duplicateNames);
     }
 
     /// <summary>
@@ -1350,20 +1420,28 @@ public class SevenTvSyncService(
 
     /// <summary>
     /// The ids of the channel's unsettled seeds that carry usage rows of the active set (plan 2.2 step
-    /// 6, spec §6.3) — one query over <c>UsageStats</c>, never derived from <c>IsArchived</c> (the
-    /// archive state of a seed is copied 1:1 from its emote by M1 and says nothing about its set).
+    /// 6, spec §6.3).
     /// </summary>
     private async Task<IReadOnlySet<string>> LoadActiveSetSeedIdsAsync(
         string channelId, string activeEmoteSetId, CancellationToken cancellationToken)
     {
-        var ids = await db.EmoteSlots
-            .Where(s => s.SeedUnsettled
-                && s.Emote.ChannelId == channelId
-                && db.UsageStats.Any(u => u.SlotId == s.Id && u.EmoteSetId == activeEmoteSetId))
+        var ids = await ActiveSetSeeds(channelId, activeEmoteSetId)
             .Select(s => s.Id)
             .ToListAsync(cancellationToken);
         return ids.ToHashSet(StringComparer.Ordinal);
     }
+
+    /// <summary>
+    /// The channel's unsettled seeds that carry usage rows of <paramref name="activeEmoteSetId"/> —
+    /// the settle's population (<see cref="LoadActiveSetSeedIdsAsync"/>) and the flag-on match map's
+    /// exclusion (plan #373, E7) in one query, so the two cannot drift apart. Derived from
+    /// <c>UsageStats</c>, never from <c>IsArchived</c> (the archive state of a seed is copied 1:1 from
+    /// its emote by M1 and says nothing about its set).
+    /// </summary>
+    private IQueryable<EmoteSlot> ActiveSetSeeds(string channelId, string activeEmoteSetId) =>
+        db.EmoteSlots.Where(s => s.SeedUnsettled
+                                 && s.Emote.ChannelId == channelId
+                                 && db.UsageStats.Any(u => u.SlotId == s.Id && u.EmoteSetId == activeEmoteSetId));
 
     /// <summary>
     /// Step 1 of spec §6.2 with the flag on: find, create or un-archive the emote row, image from the

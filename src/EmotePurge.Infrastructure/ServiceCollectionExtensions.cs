@@ -120,6 +120,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IEmoteMatchCache, EmoteMatchCache>();
         services.AddSingleton<IDuplicateEmoteNameTracker, DuplicateEmoteNameTracker>();
+        services.AddSingleton<MatchMapExclusionTracker>();
         services.AddScoped<IUsageStatFlushService, UsageStatFlushService>();
         services.AddScoped<IUsageStatQueryService, UsageStatQueryService>();
         services.AddScoped<ILiveCoverageService, LiveCoverageService>();

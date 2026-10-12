@@ -83,15 +83,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         modelBuilder.Entity<UsageStat>(entity =>
         {
-            // One aggregated row per emote per emote set per UTC day (#200, spec section 4.1): the
-            // same emote can be counted under two set ids on the same day (a mid-day set switch), so
-            // the old (EmoteId, Date) key stopped being able to hold one row per real count. Covering
-            // index (UseCount included) so range-sum queries over (EmoteId, EmoteSetId, Date) — and,
-            // with the EmoteId-only prefix, over (EmoteId, Date) for set-agnostic reads — can still
-            // be answered as an index-only scan. Replaces the former
-            // IX_UsageStats_EmoteId_Date, which the AddUsageStatEmoteSetId migration (T1.3b) drops.
+            // Emote-wide covering index (UseCount included), so range-sum queries over (EmoteId,
+            // EmoteSetId, Date) — and, with the EmoteId-only prefix, over (EmoteId, Date) for
+            // set-agnostic reads — can still be answered as an index-only scan. Unique from #200 until
+            // M2 (SwitchUsageStatsToSlotKey, #373); since then two slots of one emote can each have a
+            // row on the same day, and the key is the slot index below (D18). Kept, non-unique, for
+            // the emote readers and the seed constant's plans.
             entity.HasIndex(u => new { u.EmoteId, u.EmoteSetId, u.Date })
-                .IsUnique()
                 .IncludeProperties(u => u.UseCount);
 
             // Provenance of the row (#346). The default is what the live flush gets without naming
@@ -103,9 +101,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasForeignKey(u => u.EmoteId)
                 .OnDelete(DeleteBehavior.Cascade);
 
-            // Slot key, not yet unique (the key switch is a later migration); the unique index above
-            // stays authoritative until then.
+            // The row's key since M2 (D18): one row per slot per emote set per UTC day, and the
+            // flush's ON CONFLICT target. Covering like the emote index.
             entity.HasIndex(u => new { u.SlotId, u.EmoteSetId, u.Date })
+                .IsUnique()
                 .IncludeProperties(u => u.UseCount);
 
             // No navigation on either side: nothing reads one yet.

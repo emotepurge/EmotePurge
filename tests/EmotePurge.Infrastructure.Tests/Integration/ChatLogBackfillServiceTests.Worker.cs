@@ -77,8 +77,8 @@ public partial class ChatLogBackfillServiceTests
         var e2SetCSlot = imported[^1].SlotId;
         Assert.Equal(
             [
-                new { EmoteId = e1.Id, EmoteSetId = SetB, Date = new DateOnly(2026, 6, 1), UseCount = 2, BotUseCount = 1, SharedChatUseCount = 0, SlotId = (string?)slots[e1.Id] },
-                new { EmoteId = e2.Id, EmoteSetId = SetB, Date = new DateOnly(2026, 6, 7), UseCount = 0, BotUseCount = 0, SharedChatUseCount = 4, SlotId = (string?)slots[e2.Id] },
+                new { EmoteId = e1.Id, EmoteSetId = SetB, Date = new DateOnly(2026, 6, 1), UseCount = 2, BotUseCount = 1, SharedChatUseCount = 0, SlotId = slots[e1.Id] },
+                new { EmoteId = e2.Id, EmoteSetId = SetB, Date = new DateOnly(2026, 6, 7), UseCount = 0, BotUseCount = 0, SharedChatUseCount = 4, SlotId = slots[e2.Id] },
                 new { EmoteId = e2.Id, EmoteSetId = SetC, Date = new DateOnly(2026, 6, 12), UseCount = 5, BotUseCount = 0, SharedChatUseCount = 0, SlotId = e2SetCSlot },
             ],
             imported);
@@ -199,6 +199,42 @@ public partial class ChatLogBackfillServiceTests
         Assert.False(await verify.ChatLogBackfillCoverage.AnyAsync(d => d.ChannelId == channel.Id));
         var after = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id);
         Assert.Equal((ChatLogBackfillRunStatus.Running, 0, 0L), (after.Status, after.WeeksDone, after.BytesReceived));
+    }
+
+    // Plan #373 §4, the boundary the M2 switch moves: the 23505 now comes from the slot index, so a live
+    // row of another slot of the same emote on the imported cell no longer conflicts — the import row
+    // lands next to it on the snapshot's slot. With the flag off this cannot arise (one slot per pair
+    // carries rows, E6a); with the flag on it is the known limit until child 5.
+    [Fact]
+    public async Task ReplaceBlock_WithALiveRowOfAnotherSlotOfTheSameEmote_WritesTheImportRowNextToIt()
+    {
+        var channel = await SeedChannelAsync("bfreplaceotherslot", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
+        var e1 = await SeedEmoteAsync(channel, "e1", "E1");
+        var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, windowFrom: BlockFrom);
+        var slots = await BindSnapshotAsync(run, e1);
+        string otherSlot;
+        await using (var db = CreateDbContext())
+        {
+            otherSlot = await db.SeedUsageSlotAsync(e1.Id, UsageSlotKind.Provisional);
+            db.UsageStats.Add(new UsageStat { EmoteId = e1.Id, SlotId = otherSlot, EmoteSetId = SetB, Date = new DateOnly(2026, 6, 3), UseCount = 1 });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = CreateDbContext())
+        {
+            Assert.IsType<ChatLogBackfillBlockResult.Committed>(await CreateService(db).ReplaceBlockAsync(
+                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(e1.Id, new DateOnly(2026, 6, 3), 2, 0, 0)], 10, 1, isLastBlock: false));
+        }
+
+        await using var verify = CreateDbContext();
+        var cell = await verify.UsageStats.AsNoTracking()
+            .Where(u => u.EmoteId == e1.Id && u.EmoteSetId == SetB && u.Date == new DateOnly(2026, 6, 3))
+            .OrderBy(u => u.Source)
+            .Select(u => new { u.SlotId, u.Source, u.UseCount })
+            .ToListAsync();
+        Assert.Equal(
+            [new { SlotId = otherSlot, Source = UsageStatSource.Live, UseCount = 1 }, new { SlotId = slots[e1.Id], Source = UsageStatSource.ChatLogArchive, UseCount = 2 }],
+            cell);
     }
 
     [Fact]
