@@ -11,17 +11,13 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { pollWhileVisible } from '../../core/live/poll-while-visible';
 import { pageVisible } from '../../core/page-visibility/page-visibility';
-import {
-  ChartUnit,
-  formatBucketTime,
-  formatUnit,
-  provenanceSources,
-} from '../../shared/charts/chart-series';
-import { LineChart, LineChartSeries } from '../../shared/charts/line-chart';
+import { formatBucketTime } from '../../shared/charts/chart-series';
+import { LineChart } from '../../shared/charts/line-chart';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { SegmentedControl, SegmentedControlOption } from '../../shared/ui/segmented-control';
 import { SkeletonSections } from '../../shared/ui/skeleton-sections';
+import { buildLoadCharts, LoadChart } from './admin-load-charts';
 
 const RANGES: AdminDashboardLoadRange[] = ['1h', '24h', '7d', '30d', '90d', '13mo'];
 const RANGE_OPTIONS: SegmentedControlOption[] = RANGES.map((value) => ({
@@ -49,34 +45,8 @@ export type TrendAxis =
   | { kind: 'load'; startsUtc: readonly string[]; bucketSeconds: number }
   | { kind: 'hidden' };
 
-interface NoteLine {
-  key: string;
-  params?: Record<string, unknown>;
-}
-
-interface LoadChart {
-  id: string;
-  titleKey: string;
-  titleParams: Record<string, unknown>;
-  unit: ChartUnit;
-  series: LineChartSeries[];
-  details: (string | null)[];
-  notes: NoteLine[];
-}
-
-type SourceName = 'api' | 'worker';
-
 function pollIntervalMs(range: AdminDashboardLoadRange): number {
   return range === '1h' || range === '24h' ? POLL_TICK_MS : LONG_RANGE_INTERVAL_MS;
-}
-
-function lastKnown(values: readonly (number | null)[]): number | null {
-  for (let i = values.length - 1; i >= 0; i--) {
-    if (values[i] !== null && Number.isFinite(values[i])) {
-      return values[i];
-    }
-  }
-  return null;
 }
 
 /**
@@ -283,6 +253,7 @@ export class AdminLoadSection {
   });
 
   protected readonly emptyDescription = computed(() => {
+    this.languageService.lang();
     const first = this.probe()?.bucketStartsUtc[0];
     if (!first) {
       return this.historyKnown()
@@ -331,7 +302,12 @@ export class AdminLoadSection {
   protected readonly charts = computed<LoadChart[]>(() => {
     const load = this.data();
     this.languageService.lang();
-    return load && load.available ? this.buildCharts(load) : [];
+    return load && load.available
+      ? buildLoadCharts(load, {
+          translate: (key, params) => this.transloco.translate(key, params),
+          locale: this.locale(),
+        })
+      : [];
   });
 
   private lastRequestAt = Date.now();
@@ -356,7 +332,10 @@ export class AdminLoadSection {
   reload(): void {
     this.lastRequestAt = Date.now();
     this.resource.reload();
-    this.probeResource.reload();
+    // A positive probe answer is final enough: history does not vanish, so stop asking.
+    if (!this.probe()?.available) {
+      this.probeResource.reload();
+    }
   }
 
   protected onRangeChange(value: string): void {
@@ -377,289 +356,8 @@ export class AdminLoadSection {
     }
   }
 
-  private buildCharts(load: AdminDashboardLoad): LoadChart[] {
-    const raw = load.sourceKind === 'raw';
-    const kind = raw ? 'raw' : 'hourly';
-    const stat = this.transloco.translate(`admin.dashboard.load.stat.${kind}`);
-    const p95Key = `admin.dashboard.load.series.p95.${kind}`;
-    const maxKey = `admin.dashboard.load.series.max.${kind}`;
-    const { host, api, worker, workload } = load;
-    const bucketHours = load.bucketSeconds / HOUR_SECONDS;
-
-    const hostSeries = (p95: (number | null)[], max: (number | null)[], id: string) => [
-      { id: `${id}-p95`, labelKey: p95Key, values: p95 },
-      { id: `${id}-max`, labelKey: maxKey, values: max, emphasis: 'marks' as const },
-    ];
-    const bySource = (id: string, pick: (s: typeof api) => (number | null)[]) => [
-      { id: `${id}-api`, labelKey: 'admin.dashboard.load.series.api', values: pick(api) },
-      { id: `${id}-worker`, labelKey: 'admin.dashboard.load.series.worker', values: pick(worker) },
-    ];
-    const processDetails = () =>
-      load.bucketStartsUtc.map((_, i) =>
-        this.listText('detail.samples', [
-          ['api', api.sampleCount[i]],
-          ['worker', worker.sampleCount[i]],
-        ]),
-      );
-    const cgroupMemory = (source: SourceName): LoadChart => {
-      const series = source === 'api' ? api : worker;
-      const limit = lastKnown(series.cgroupMemoryLimitBytes);
-      const share = raw ? lastKnown(series.cgroupMemoryShareP95) : null;
-      return {
-        id: `cgroup-memory-${source}`,
-        titleKey: 'admin.dashboard.load.charts.cgroupMemory',
-        titleParams: { source: this.sourceName(source), stat },
-        unit: 'bytes',
-        series: [
-          { id: `cgroup-memory-${source}`, labelKey: p95Key, values: series.cgroupMemoryP95Bytes },
-        ],
-        details: load.bucketStartsUtc.map((_, i) =>
-          this.listText('detail.samples', [[source, series.sampleCount[i]]]),
-        ),
-        notes: [
-          limit === null
-            ? { key: 'memoryLimitNone' }
-            : { key: 'memoryLimit', params: { limit: this.format(limit, 'bytes') } },
-          ...(share === null
-            ? []
-            : [{ key: 'memoryShare', params: { percent: this.format(share, 'percent') } }]),
-        ],
-      };
-    };
-    const quotaNotes = (): NoteLine[] =>
-      (['api', 'worker'] as const).map((source) => {
-        const quota = lastKnown((source === 'api' ? api : worker).cgroupCpuQuotaCores);
-        return quota === null
-          ? { key: 'cpuQuotaNone', params: { source: this.sourceName(source) } }
-          : {
-              key: 'cpuQuota',
-              params: { source: this.sourceName(source), cores: this.format(quota, 'cores') },
-            };
-      });
-    const workloadChart = (
-      id: 'chatLines' | 'emoteMatches',
-      values: (number | null)[],
-    ): LoadChart => ({
-      id,
-      titleKey: `admin.dashboard.load.charts.${id}.${workload.workloadUnit}`,
-      titleParams: { hours: new Intl.NumberFormat(this.locale()).format(bucketHours) },
-      unit: 'count',
-      series: [{ id, labelKey: `admin.dashboard.load.series.${id}`, values }],
-      details: load.bucketStartsUtc.map((_, i) => {
-        const seconds = workload.workloadIntervalSeconds[i];
-        const hours = workload.workloadHoursWithData[i];
-        if (workload.workloadUnit === 'perMinute') {
-          return seconds === null || seconds === undefined
-            ? null
-            : this.transloco.translate('admin.dashboard.load.detail.intervalSeconds', { seconds });
-        }
-        return hours === null || hours === undefined
-          ? null
-          : this.transloco.translate('admin.dashboard.load.detail.hoursWithData', { hours });
-      }),
-      notes: [],
-    });
-
-    const lastIndexWithMemory = [...host.memoryUsedP95Bytes.keys()]
-      .reverse()
-      .find((i) => host.memoryUsedP95Bytes[i] !== null && host.memoryTotalBytes[i] !== null);
-    const memoryTotal = lastKnown(host.memoryTotalBytes);
-    // The share is derived here from the raw used/total pair of one bucket; only for a finite,
-    // known total (spec: percent only against a finite bound), and never from hourly rows.
-    const memoryShare =
-      raw &&
-      lastIndexWithMemory !== undefined &&
-      (host.memoryTotalBytes[lastIndexWithMemory] ?? 0) > 0
-        ? (100 * (host.memoryUsedP95Bytes[lastIndexWithMemory] as number)) /
-          (host.memoryTotalBytes[lastIndexWithMemory] as number)
-        : null;
-
-    return [
-      {
-        id: 'host-cpu',
-        titleKey: 'admin.dashboard.load.charts.hostCpu',
-        titleParams: { stat },
-        unit: 'percent',
-        series: hostSeries(host.cpuBusyP95, host.cpuBusyMax, 'host-cpu'),
-        details: this.hostDetails(load, 'cpu', 'percent'),
-        notes: [],
-      },
-      {
-        id: 'host-memory',
-        titleKey: 'admin.dashboard.load.charts.hostMemory',
-        titleParams: { stat },
-        unit: 'bytes',
-        series: hostSeries(host.memoryUsedP95Bytes, host.memoryUsedMaxBytes, 'host-memory'),
-        details: this.hostDetails(load, 'memory', 'bytes'),
-        notes: [
-          memoryTotal === null
-            ? { key: 'memoryTotalNone' }
-            : { key: 'memoryTotal', params: { total: this.format(memoryTotal, 'bytes') } },
-          ...(memoryShare === null
-            ? []
-            : [
-                {
-                  key: 'memoryShareHost',
-                  params: { percent: this.format(memoryShare, 'percent') },
-                },
-              ]),
-        ],
-      },
-      {
-        id: 'host-load',
-        titleKey: 'admin.dashboard.load.charts.hostLoad',
-        titleParams: { stat },
-        unit: 'tasks',
-        series: hostSeries(host.loadAverage1P95, host.loadAverage1Max, 'host-load'),
-        details: this.hostDetails(load, 'load', 'tasks'),
-        notes: [],
-      },
-      {
-        id: 'process-cpu',
-        titleKey: 'admin.dashboard.load.charts.processCpu',
-        titleParams: { stat },
-        unit: 'cores',
-        series: bySource('process-cpu', (s) => s.processCpuP95),
-        details: processDetails(),
-        notes: [],
-      },
-      {
-        id: 'cgroup-cpu',
-        titleKey: 'admin.dashboard.load.charts.cgroupCpu',
-        titleParams: { stat },
-        unit: 'cores',
-        series: bySource('cgroup-cpu', (s) => s.cgroupCpuP95),
-        details: processDetails(),
-        notes: quotaNotes(),
-      },
-      {
-        // Stays in every range so the chart count never changes; hourly rows carry no share.
-        id: 'cgroup-cpu-share',
-        titleKey: 'admin.dashboard.load.charts.cgroupCpuShare',
-        titleParams: { stat },
-        unit: 'percent',
-        series: bySource('cgroup-cpu-share', (s) => s.cgroupCpuQuotaShareP95),
-        details: processDetails(),
-        notes: raw ? [] : [{ key: 'quotaShareHourly' }, ...quotaNotes()],
-      },
-      cgroupMemory('api'),
-      cgroupMemory('worker'),
-      {
-        id: 'channels',
-        titleKey: 'admin.dashboard.load.charts.channels',
-        titleParams: {},
-        unit: 'count',
-        series: [
-          {
-            id: 'channels-active',
-            labelKey: 'admin.dashboard.load.series.activeChannels',
-            values: workload.activeChannelsMax,
-          },
-          {
-            id: 'channels-live',
-            labelKey: 'admin.dashboard.load.series.liveChannels',
-            values: workload.liveChannelsMax,
-          },
-        ],
-        details: [],
-        notes: [],
-      },
-      workloadChart('chatLines', workload.chatLines),
-      workloadChart('emoteMatches', workload.emoteMatches),
-    ];
-  }
-
-  /** Sources, the source of the shown value, sample counts and per-source means of one host bucket. */
-  private hostDetails(
-    load: AdminDashboardLoad,
-    metric: 'cpu' | 'memory' | 'load',
-    unit: ChartUnit,
-  ): (string | null)[] {
-    const host = load.host;
-    const winners =
-      metric === 'cpu'
-        ? host.cpuValueSource
-        : metric === 'memory'
-          ? host.memoryValueSource
-          : host.loadAverageValueSource;
-    const [apiMean, workerMean] =
-      metric === 'cpu'
-        ? [host.apiCpuBusyMean, host.workerCpuBusyMean]
-        : metric === 'memory'
-          ? [host.apiMemoryUsedMeanBytes, host.workerMemoryUsedMeanBytes]
-          : [host.apiLoadAverage1Mean, host.workerLoadAverage1Mean];
-
-    return load.bucketStartsUtc.map((_, i) => {
-      const parts: string[] = [];
-      const sources = provenanceSources(host.provenance[i] ?? null);
-      if (sources.length > 0) {
-        parts.push(
-          this.transloco.translate('admin.dashboard.load.detail.sources', {
-            list: sources.map((source) => this.sourceName(source)).join(', '),
-          }),
-        );
-      }
-      const winner = winners[i];
-      if (winner) {
-        parts.push(
-          this.transloco.translate('admin.dashboard.load.detail.valueFrom', {
-            source: this.sourceName(winner === 'A' ? 'api' : 'worker'),
-          }),
-        );
-      }
-      const counts = this.listText('detail.samples', [
-        ['api', host.apiSampleCount[i]],
-        ['worker', host.workerSampleCount[i]],
-      ]);
-      if (counts) {
-        parts.push(counts);
-      }
-      const means = this.listText(
-        'detail.means',
-        [
-          ['api', apiMean[i]],
-          ['worker', workerMean[i]],
-        ],
-        unit,
-      );
-      if (means) {
-        parts.push(means);
-      }
-      return parts.length > 0 ? parts.join(' · ') : null;
-    });
-  }
-
-  /** "Api 120, Worker 118" under a translated lead-in; null when no source has a value. */
-  private listText(
-    key: string,
-    entries: [SourceName, number | null | undefined][],
-    unit?: ChartUnit,
-  ): string | null {
-    const list = entries
-      .filter((entry): entry is [SourceName, number] => entry[1] !== null && entry[1] !== undefined)
-      .map(
-        ([source, value]) =>
-          `${this.sourceName(source)} ${unit ? this.format(value, unit) : new Intl.NumberFormat(this.locale()).format(value)}`,
-      );
-    return list.length > 0
-      ? this.transloco.translate(`admin.dashboard.load.${key}`, { list: list.join(', ') })
-      : null;
-  }
-
-  private sourceName(source: SourceName): string {
-    return this.transloco.translate(`admin.dashboard.load.source.${source}`);
-  }
-
-  private format(value: number, unit: ChartUnit): string {
-    const word =
-      unit === 'cores' || unit === 'tasks'
-        ? this.transloco.translate(`admin.dashboard.chart.unitWord.${unit}`)
-        : '';
-    return formatUnit(value, unit, this.locale(), word);
-  }
-
   private formatDateTime(iso: string): string {
-    return new Date(iso).toLocaleString(this.locale(), { dateStyle: 'short', timeStyle: 'medium' });
+    return formatBucketTime(iso, 1, this.locale());
   }
 
   private locale(): string {

@@ -313,6 +313,18 @@ describe('AdminLoadSection', () => {
       expect(probes()).toBe(2);
     });
 
+    it('stops probing once the probe has found history', () => {
+      answers['13mo'] = () => of(load('13mo'));
+      mount();
+      const probes = () => getLoad.mock.calls.filter(([range]) => range === '13mo').length;
+      expect(probes()).toBe(1);
+
+      fixture.componentInstance.reload();
+      fixture.detectChanges();
+
+      expect(probes()).toBe(1);
+    });
+
     it('shows the menu and names the hourly history when only the 13-month probe has data', () => {
       answers['13mo'] = () =>
         of(load('13mo', { bucketStartsUtc: ['2026-09-01T00:00:00Z', '2026-09-02T00:00:00Z'] }));

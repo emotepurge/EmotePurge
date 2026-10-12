@@ -676,7 +676,7 @@
         "trend": {
           "title": "Rejections per minute, last 24 hours",
           "noProviderRejections": "No provider answered with HTTP 429 in the last 24 hours.",
-          "titleBucketed": "Rejections per {{ minutes }} min, last 24 hours, on the load axis",
+          "titleBucketed": "Rejections per {{ minutes }} min on the load axis (shown range only)",
           "hiddenForRange": "Rejection time series hidden: it follows the load range only up to 24 hours. The summary above stays."
         },
         "help": {
@@ -752,7 +752,8 @@
           "memoryShare": "Share of the limit at the latest value: {{ percent }}",
           "cpuQuota": "{{ source }}: CPU quota {{ cores }}",
           "cpuQuotaNone": "{{ source }}: no finite CPU quota known",
-          "quotaShareHourly": "No quota share in hourly values: the table keeps only the last limit of an hour. Last known limit:"
+          "quotaShareHourly": "No quota share in hourly values: the table keeps only the last limit of an hour. Last known limit:",
+          "swap": "Swap, last measured ({{ at }}): {{ used }} of {{ total }}"
         },
         "detail": {
           "sources": "sources: {{ list }}",
@@ -760,7 +761,11 @@
           "samples": "samples: {{ list }}",
           "means": "means: {{ list }}",
           "intervalSeconds": "{{ seconds }} s of intervals",
-          "hoursWithData": "{{ hours }} hours with data"
+          "hoursWithData": "{{ hours }} hours with data",
+          "max": {
+            "raw": "maximum: {{ list }}",
+            "hourly": "highest hourly maximum: {{ list }}"
+          }
         },
         "empty": {
           "waitingTitle": "Waiting for the first samples",

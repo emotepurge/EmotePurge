@@ -676,8 +676,8 @@
         "trend": {
           "title": "Ablehnungen pro Minute, letzte 24 Stunden",
           "noProviderRejections": "Kein Provider hat in den letzten 24 Stunden mit HTTP 429 geantwortet.",
-          "titleBucketed": "Abweisungen je {{ minutes }} min, letzte 24 Stunden, auf der Lastachse",
-          "hiddenForRange": "Abweisungs-Zeitreihe ausgeblendet: Sie folgt dem Lastzeitraum nur bis 24 Stunden. Die Zusammenfassung oben bleibt."
+          "titleBucketed": "Ablehnungen je {{ minutes }} min auf der Lastachse (nur der gezeigte Zeitraum)",
+          "hiddenForRange": "Ablehnungs-Zeitreihe ausgeblendet: Sie folgt dem Lastzeitraum nur bis 24 Stunden. Die Zusammenfassung oben bleibt."
         },
         "help": {
           "share": "Der Anteil ist die Quote abgewiesener Entscheidungen einer Policy über alle Partitionen – kein Füllstand eines einzelnen Buckets. Keine Ablehnung heißt nicht, dass niemand nahe am Limit war."
@@ -752,7 +752,8 @@
           "memoryShare": "Anteil am Limit beim letzten Wert: {{ percent }}",
           "cpuQuota": "{{ source }}: CPU-Quota {{ cores }}",
           "cpuQuotaNone": "{{ source }}: keine endliche CPU-Quota bekannt",
-          "quotaShareHourly": "Keine Quota in Stundenwerten: Die Tabelle hält nur das letzte Limit einer Stunde. Letztes bekanntes Limit:"
+          "quotaShareHourly": "Keine Quota in Stundenwerten: Die Tabelle hält nur das letzte Limit einer Stunde. Letztes bekanntes Limit:",
+          "swap": "Swap, zuletzt gemessen ({{ at }}): {{ used }} von {{ total }}"
         },
         "detail": {
           "sources": "Quellen: {{ list }}",
@@ -760,7 +761,11 @@
           "samples": "Samples: {{ list }}",
           "means": "Mittelwerte: {{ list }}",
           "intervalSeconds": "{{ seconds }} s Intervalle",
-          "hoursWithData": "{{ hours }} Stunden mit Daten"
+          "hoursWithData": "{{ hours }} Stunden mit Daten",
+          "max": {
+            "raw": "Maximum: {{ list }}",
+            "hourly": "höchstes Stundenmaximum: {{ list }}"
+          }
         },
         "empty": {
           "waitingTitle": "Wartet auf erste Samples",
