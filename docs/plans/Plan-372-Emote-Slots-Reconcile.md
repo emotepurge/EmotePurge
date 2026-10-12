@@ -1,7 +1,7 @@
 # Plan #372 — Emote-Slots, Kind 2: REST-Abgleich je Slot mit Datums-Identität und Wiederaufnahme
 
 Erstellt am 2026-10-11 im Worktree `EmotePurge-slots` (Branch `feat/372-slot-reconcile`, Basis `origin/main` @ `38e640c8`).
-**Status: Revision 2 (12.10.) nach dem zweiten adversarialen Review (Codex Sol); Revision 1 nach dem ersten Review und den
+**Status: umgesetzt (Branch `feat/372-slot-reconcile`, 12.10.; hinter Feature-Flag, auf Prod aus). Revision 2 (12.10.) nach dem zweiten adversarialen Review (Codex Sol); Revision 1 nach dem ersten Review und den
 Betreiberentscheidungen R1–R3; keine offenen Rückfragen.** Quelle und einzige Vertragsquelle: [die Spec](../superpowers/specs/2026-10-10-emote-slots-spec.md)
 (§6.2–6.5, §4.1, §5.4, §10, §13 AK 5–13, 27, 29, 32, 47–50, §15, §16 Kind 2), Issue #372 samt Übergabekommentar aus #371, Epic #365.
 Formatvorlage: [Plan-371](Plan-371-Emote-Slots-M1.md).
@@ -619,7 +619,7 @@ hochgehebelt).
   Mischfenster deckt Z2). Davor der Prod-Kopie-Lauf mit Flag an (Abschnitt 7 wiederverwendbar, inkl. der Aus-Prüfsumme), danach Nachkontrolle
   §11.2 Schritt 6 (a) über „{Channel}: settle deferred …". DECISIONS final inkl. E1 und Flag; Rückbau der Aus-Zweige erst nach bewährtem
   Prod-Betrieb (eigener Folgeschritt) — mit ihm entfallen die Bestands-Zyklen Purge ↔ Sync/Bericht im Aus-Zustand (2.2a „Bestand" (b)); die
-  Epic-Zeile dazu dann schließen bzw. auf (a) kürzen.
+  Epic-Zeile dazu dann schließen bzw. auf (a) kürzen. **Vorbedingung vor dem Einschalten (DECISIONS Kind 2, „Known cost"):** Mit Flag an sperrt jeder Resync-Tick alle Abgleichsziele eines Kanals `FOR NO KEY UPDATE`, auch ohne Schreibvorgang (Normalfall): ~55–70 B WAL je gesperrter Zeile und Tick, gemessen 100–125 KB/Tick bei ~1.900 Zeilen; Obergrenze 80 × 900 Zeilen ≈ 4 MB/min, dazu dauerhaft gelöschte All-Visible-Bits auf `Emotes`. Vor dem Umlegen ist eine von drei Entscheidungen zu treffen und in DECISIONS festzuhalten: (1) **Trockenlauf zuerst** in `ReconcileSlotsAsync` — ungesperrt lesen und planen, mutationsfrei; nur bei geplanten Schreibvorgängen die heutige Sequenz E23 → E3 → Lesen → E24 → Schreiben; sonst nur die Kanalzeile stempeln (eigenes Code-Kind vor #379, mit Test „No-op-Tick nimmt keine Emote-Sperre" per `pg_locks`-Probe); (2) **Kosten tragen**, mit `SevenTv:ResyncIntervalSeconds` angehoben und begründet; (3) anderes, begründet. Im Prod-Kopie-Lauf (Abschnitt 7) zusätzlich messen: `pg_current_wal_lsn()`-Differenz über 10 Ticks Flag aus vs. an auf der Kopie (serverweit, also mit dem Nachbarbetrieb als Rauschen notieren).
 
 ## 12. Rückfragen an den Betreiber
 
