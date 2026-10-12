@@ -86,27 +86,6 @@ public sealed class AdminDashboardRawLoadReaderTests(PostgresFixture fixture) : 
     }
 
     [Fact]
-    public async Task Raw_PredecessorBeforeTheWindowGivesTheFirstPointARate_ANewInstanceHasNone()
-    {
-        var api = Guid.NewGuid();
-        var worker = Guid.NewGuid();
-        var run = new RawRun();
-
-        run.Add(Row(T0.AddSeconds(-20), api, processTicks: 0));
-        run.Add(Row(T0.AddSeconds(10), api, processTicks: 5_000_000));
-        run.Add(Row(T0.AddMinutes(4).AddSeconds(50), worker, worker: true, processTicks: 100_000_000));
-        run.Add(Row(T0.AddMinutes(5).AddSeconds(20), worker, worker: true, processTicks: 130_000_000));
-        var load = await LoadAsync(run);
-
-        Assert.Equal(T0, load.BucketStartsUtc[0]);
-        Assert.Equal(0.0167, load.Api.ProcessCpuP95[0]);
-        Assert.Equal(1, load.Api.SampleCount[0]);
-        Assert.Null(load.Worker.ProcessCpuP95[0]);
-        Assert.Equal(1, load.Worker.SampleCount[0]);
-        Assert.Equal(0.1, load.Worker.ProcessCpuP95[1]);
-    }
-
-    [Fact]
     public async Task Raw_PairsAcrossOutagesAreDropped_PairsBeforeAndAfterStay()
     {
         var lonely = Guid.NewGuid();

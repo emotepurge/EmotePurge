@@ -293,9 +293,33 @@ public class AdminDashboardReaderTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => reader.GetLoadAsync(AdminDashboardLoadRange.Days7));
         _log.ThrowOnDebug = false;
-        var read = await reader.GetLoadAsync(AdminDashboardLoadRange.Days7);
+        var read = await reader.GetLoadAsync(AdminDashboardLoadRange.Days7).WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.False(read.Busy);
+    }
+
+    [Fact]
+    public async Task Load_AStalledRebuildIsCancelledAtTheDeadlineIsNotCachedAndFreesTheGate()
+    {
+        var calls = 0;
+        _query.GetLoadAsync(Arg.Any<AdminDashboardLoadRange>(), Arg.Any<DateTime>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call => ++calls == 1
+                ? Stall(call.Arg<CancellationToken>())
+                : Task.FromResult(Load(call.Arg<AdminDashboardLoadRange>())));
+        var reader = NewReader();
+
+        var stalled = reader.GetLoadAsync(AdminDashboardLoadRange.Days30);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => AdvanceUntilCompletedAsync(stalled, AdminDashboardReader.RebuildDeadline));
+        var recovered = await reader.GetLoadAsync(AdminDashboardLoadRange.Days30).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.False(recovered.Busy);
+        Assert.Equal(2, calls);
+    }
+
+    private static async Task<AdminDashboardLoad> Stall(CancellationToken token)
+    {
+        await Task.Delay(Timeout.Infinite, token);
+        throw new InvalidOperationException("unreachable");
     }
 
     [Fact]
@@ -331,12 +355,12 @@ public class AdminDashboardReaderTests
     // A waiter's timeout timer only exists once its fill reached the gate, so a single Advance can come
     // too early; advance repeatedly (each step well past the timeout) until the task settles, with an
     // overall real-time bound so a regression fails instead of hanging.
-    private async Task<T> AdvanceUntilCompletedAsync<T>(Task<T> task)
+    private async Task<T> AdvanceUntilCompletedAsync<T>(Task<T> task, TimeSpan? step = null)
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         while (!task.IsCompleted)
         {
-            _time.Advance(AdminDashboardReader.RebuildWaitTimeout);
+            _time.Advance(step ?? AdminDashboardReader.RebuildWaitTimeout);
             await Task.Delay(1, cts.Token);
         }
 

@@ -14,6 +14,8 @@ public sealed class AdminDashboardReader : IAdminDashboardReader
     public static readonly TimeSpan ShortLoadTtl = TimeSpan.FromSeconds(30);
     public static readonly TimeSpan LongLoadTtl = TimeSpan.FromSeconds(60);
     public static readonly TimeSpan RebuildWaitTimeout = TimeSpan.FromSeconds(5);
+    // A stalled read must not hold the single gate until the driver's own command timeout.
+    public static readonly TimeSpan RebuildDeadline = TimeSpan.FromSeconds(30);
     public const int BusyRetryAfterSeconds = 5;
 
     private const string SingleKey = "";
@@ -113,13 +115,14 @@ public sealed class AdminDashboardReader : IAdminDashboardReader
         {
             wire = AdminDashboardLoadRanges.ToWire(range);
             started = _time.GetTimestamp();
+            using var deadline = new CancellationTokenSource(RebuildDeadline, _time);
             _logger.LogDebug("Load dashboard cold rebuild started range={Range}", wire);
 
             // The query service is scoped (AppDbContext); the fill outlives the request that started it.
             await using var scope = _scopeFactory.CreateAsyncScope();
             var query = scope.ServiceProvider.GetRequiredService<IAdminDashboardQueryService>();
             var load = await query.GetLoadAsync(
-                range, _time.GetUtcNow().UtcDateTime, _loadOptions.IntervalSeconds, CancellationToken.None);
+                range, _time.GetUtcNow().UtcDateTime, _loadOptions.IntervalSeconds, deadline.Token);
             outcome = "ok";
             return load;
         }
