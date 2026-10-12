@@ -194,4 +194,9 @@ internal static class ApiErrorCodes
     public const string BackfillSetTruncated = "backfill_set_truncated";
     // 409: a rename/merge handed the login to another Twitch identity while the request ran.
     public const string BackfillChannelIdentityChanged = "backfill_channel_identity_changed";
+
+    // Admin dashboard (#381).
+    // 400 from both dashboard routes: the range query value is present but not one of 30d, 90d, 13mo.
+    // A missing or empty range is not an error, it selects the default.
+    public const string InvalidDashboardRange = "invalid_dashboard_range";
 }

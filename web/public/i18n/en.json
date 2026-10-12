@@ -356,8 +356,7 @@
       }
     },
     "rateLimits": {
-      "title": "Rate limits",
-      "degraded": "The counter store is currently unreachable. Only the active configuration is shown, no numbers.",
+      "degraded": "The counter store is currently unreachable. The policy list shows only the active configuration, no numbers.",
       "policies": {
         "title": "Local policies",
         "capacity": "Capacity",
@@ -378,7 +377,9 @@
           "PublicHealth": "Public health check",
           "ForeignEmoteLookup": "Foreign channel preview (7TV)",
           "TrackedEmoteSetPreview": "Tracked-channel set preview (7TV)",
-          "SevenTvLeaderboard": "7TV leaderboard"
+          "SevenTvLeaderboard": "7TV leaderboard",
+          "PublicLegal": "Public legal pages",
+          "Contact": "Contact form"
         }
       },
       "lastRejection": {
@@ -402,6 +403,7 @@
         "misses24h": "Misses (24 h)",
         "names": {
           "foreign-emote-set": "Foreign channel emote sets",
+          "foreign-emote-set-by-set-id": "Foreign emote sets by set ID",
           "moderated-channels": "Moderated channels",
           "seventv-grants": "7TV editor grants",
           "subscriber-check": "Subscriber check"
@@ -428,7 +430,8 @@
           "twitch-auth": "Auth client (OAuth/refresh)",
           "seventv-rest": "7TV REST client",
           "seventv-foreign-preview": "7TV foreign-preview client",
-          "seventv-leaderboard": "7TV leaderboard client"
+          "seventv-leaderboard": "7TV leaderboard client",
+          "seventv-emote-set-list": "7TV set-list client"
         }
       },
       "hints": {
@@ -600,6 +603,87 @@
         "noMatches": "No entries for these filters.",
         "noMatchesHint": "Adjust or reset the filters to see entries again.",
         "reset": "Reset filters"
+      }
+    },
+    "dashboard": {
+      "chart": {
+        "noRange": "No data in this range",
+        "legend": {
+          "sum": "total {{ value }}",
+          "max": "max {{ value }}"
+        },
+        "noData": "no data",
+        "incomplete": "The last value is still incomplete and may change.",
+        "incompleteShort": "incomplete",
+        "cursorHint": "{{ title }} – read values with the arrow keys",
+        "summary": "{{ label }}: minimum {{ min }}, maximum {{ max }}, latest {{ last }}, {{ known }} of {{ total }} values known.",
+        "unit": {
+          "cores": "Unit: cores",
+          "bytes": "Unit: bytes (MiB/GiB)",
+          "percent": "Unit: percent",
+          "tasks": "Unit: tasks on average",
+          "count": "Unit: count"
+        },
+        "utc": "times in UTC",
+        "unitWord": {
+          "cores": "cores",
+          "tasks": "tasks"
+        }
+      },
+      "activity": {
+        "title": "Activity history",
+        "chartTitle": "Observed live channels per day",
+        "shownRange": "Still showing: {{ range }}",
+        "series": {
+          "liveChannels": "Observed live channels per day"
+        },
+        "range": {
+          "label": "Time range",
+          "30d": "30 days",
+          "90d": "90 days",
+          "13mo": "13 months"
+        },
+        "context": "Tracked: {{tracked}} / {{max}}",
+        "help": {
+          "poller": "Counts the distinct channels the live poller saw streaming at least once on that day. It is not a real-time figure and not a stream duration.",
+          "purge": "Deleted channels are missing retroactively: the further back, the more the curve understates the count at the time.",
+          "today": "Today (UTC) is not finished yet and may still change. Days without an observation are unknown, not zero – so a quiet day with no streams and a poller outage look the same: a gap.",
+          "cap": "Tracked channels against the configured admission limit for normal users – not a server limit. Global admins may exceed it, and a simultaneous rush can overshoot it slightly."
+        }
+      },
+      "rateLimits": {
+        "title": "Rate-limit exceptions",
+        "acute": "now",
+        "lastMinute": "{{count}} in the last minute",
+        "none": {
+          "title": "No rejections in 24 hours",
+          "description": "Neither a local policy nor a provider rejected anything in the last 24 hours. The full configuration is under “Details”."
+        },
+        "policies": {
+          "title": "Local policies with rejections",
+          "share": "{{rejected}} of {{decisions}} decisions rejected ({{percent}} %) in 24 h",
+          "noRequests": "no requests"
+        },
+        "providers": {
+          "title": "Provider 429s",
+          "count": "{{count}} × HTTP 429 in 24 h"
+        },
+        "series": {
+          "local": "Local rejections",
+          "provider": "{{provider}} · {{source}}"
+        },
+        "trendUnavailable": "Trend currently unavailable — the counter store could not be read.",
+        "trend": {
+          "title": "Rejections per minute, last 24 hours",
+          "noProviderRejections": "No provider answered with HTTP 429 in the last 24 hours."
+        },
+        "help": {
+          "share": "The share is a policy's rate of rejected decisions across all partitions – not the fill level of a single bucket. No rejection does not mean nobody was close to the limit."
+        },
+        "details": {
+          "open": "Details",
+          "title": "Rate-limit details"
+        }
       }
     }
   },
@@ -2004,6 +2088,7 @@
       "foreign_channel_no_active_emote_set": "This channel currently has no active 7TV emote set.",
       "foreign_channel_seventv_unavailable": "7TV is not reachable right now. Please try again shortly.",
       "invalid_leaderboard_sort": "Invalid sort for the 7TV leaderboard.",
+      "invalid_dashboard_range": "Invalid range for the dashboard.",
       "vote_session_not_found": "Voting session not found.",
       "vote_session_ended": "This voting session has already ended.",
       "emote_not_eligible": "This emote can no longer be voted on.",

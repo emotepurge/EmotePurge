@@ -38,6 +38,7 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'foreign_channel_no_active_emote_set',
   'foreign_channel_seventv_unavailable',
   'invalid_leaderboard_sort',
+  'invalid_dashboard_range',
   'vote_session_not_found',
   'vote_session_ended',
   'emote_not_eligible',

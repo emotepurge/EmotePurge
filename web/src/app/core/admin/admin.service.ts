@@ -7,11 +7,14 @@ import { PagedResult } from '../models/paged-result.model';
 import {
   AdminChannelDetail,
   AdminChannelsResult,
+  AdminDashboardActivity,
+  AdminDashboardActivityRange,
   AdminHealth,
   AdminRoster,
   AdminUser,
   AuditLogFilter,
   RateLimitTelemetrySnapshot,
+  RateLimitTelemetryTrend,
 } from './admin.model';
 
 /**
@@ -40,6 +43,19 @@ export class AdminService {
    *  unaffected by Redis. */
   getRateLimits(): Observable<RateLimitTelemetrySnapshot> {
     return this.http.get<RateLimitTelemetrySnapshot>('/api/admin/rate-limits');
+  }
+
+  /** Live channels per UTC day over the chosen range, including the running (partial) day. */
+  getDashboardActivity(range: AdminDashboardActivityRange): Observable<AdminDashboardActivity> {
+    return this.http.get<AdminDashboardActivity>('/api/admin/dashboard/activity', {
+      params: { range },
+    });
+  }
+
+  /** The last 24 hours of rate-limit rejections as minute buckets. Redis being down is a 200 with
+   *  `telemetryAvailable: false` and empty lists, not an error. */
+  getRateLimitTrend(): Observable<RateLimitTelemetryTrend> {
+    return this.http.get<RateLimitTelemetryTrend>('/api/admin/rate-limits/trend');
   }
 
   /** The worker's per-channel roster next to the channels the database considers active. Separate

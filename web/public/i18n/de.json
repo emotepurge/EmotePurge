@@ -356,8 +356,7 @@
       }
     },
     "rateLimits": {
-      "title": "Rate Limits",
-      "degraded": "Der Zähler-Store ist gerade nicht erreichbar. Es wird nur die aktive Konfiguration angezeigt, keine Zahlen.",
+      "degraded": "Der Zähler-Store ist gerade nicht erreichbar. Die Policy-Liste zeigt nur die aktive Konfiguration, keine Zahlen.",
       "policies": {
         "title": "Lokale Policies",
         "capacity": "Kapazität",
@@ -378,7 +377,9 @@
           "PublicHealth": "Öffentlicher Health-Check",
           "ForeignEmoteLookup": "Fremdkanal-Vorschau (7TV)",
           "TrackedEmoteSetPreview": "Set-Vorschau getrackter Kanäle (7TV)",
-          "SevenTvLeaderboard": "7TV-Bestenliste"
+          "SevenTvLeaderboard": "7TV-Bestenliste",
+          "PublicLegal": "Öffentliche Rechtstexte",
+          "Contact": "Kontaktformular"
         }
       },
       "lastRejection": {
@@ -402,6 +403,7 @@
         "misses24h": "Fehltreffer (24 h)",
         "names": {
           "foreign-emote-set": "Fremdkanal-Emote-Sets",
+          "foreign-emote-set-by-set-id": "Fremd-Emote-Sets per Set-ID",
           "moderated-channels": "Moderierte Channels",
           "seventv-grants": "7TV-Editor-Grants",
           "subscriber-check": "Subscriber-Check"
@@ -428,7 +430,8 @@
           "twitch-auth": "Auth-Client (OAuth/Refresh)",
           "seventv-rest": "7TV-REST-Client",
           "seventv-foreign-preview": "7TV-Fremdvorschau-Client",
-          "seventv-leaderboard": "7TV-Bestenlisten-Client"
+          "seventv-leaderboard": "7TV-Bestenlisten-Client",
+          "seventv-emote-set-list": "7TV-Set-Listen-Client"
         }
       },
       "hints": {
@@ -600,6 +603,87 @@
         "noMatches": "Keine Einträge für diese Filter.",
         "noMatchesHint": "Filter anpassen oder zurücksetzen, um wieder Einträge zu sehen.",
         "reset": "Filter zurücksetzen"
+      }
+    },
+    "dashboard": {
+      "chart": {
+        "noRange": "Keine Daten in diesem Zeitraum",
+        "legend": {
+          "sum": "gesamt {{ value }}",
+          "max": "Max. {{ value }}"
+        },
+        "noData": "keine Daten",
+        "incomplete": "Der letzte Wert ist noch unvollständig und kann sich ändern.",
+        "incompleteShort": "unvollständig",
+        "cursorHint": "{{ title }} – mit den Pfeiltasten Werte ablesen",
+        "summary": "{{ label }}: Minimum {{ min }}, Maximum {{ max }}, zuletzt {{ last }}, {{ known }} von {{ total }} Werten bekannt.",
+        "unit": {
+          "cores": "Einheit: Kerne",
+          "bytes": "Einheit: Byte (MiB/GiB)",
+          "percent": "Einheit: Prozent",
+          "tasks": "Einheit: Tasks im Mittel",
+          "count": "Einheit: Anzahl"
+        },
+        "utc": "Zeiten in UTC",
+        "unitWord": {
+          "cores": "Kerne",
+          "tasks": "Tasks"
+        }
+      },
+      "activity": {
+        "title": "Aktivitätsverlauf",
+        "chartTitle": "Beobachtete Live-Channels pro Tag",
+        "shownRange": "Angezeigt wird noch: {{ range }}",
+        "series": {
+          "liveChannels": "Beobachtete Live-Channels pro Tag"
+        },
+        "range": {
+          "label": "Zeitraum",
+          "30d": "30 Tage",
+          "90d": "90 Tage",
+          "13mo": "13 Monate"
+        },
+        "context": "Verfolgt: {{tracked}} / {{max}}",
+        "help": {
+          "poller": "Gezählt wird, an wie vielen verschiedenen Channels der Live-Poller an einem Tag mindestens einmal einen Stream erkannt hat. Das ist keine Echtzeitzahl und keine Streamdauer.",
+          "purge": "Gelöschte Channels fehlen rückwirkend: je weiter zurück, desto stärker unterschätzt die Kurve den damaligen Stand.",
+          "today": "Der heutige Tag (UTC) ist noch nicht abgeschlossen und kann sich ändern. Tage ohne Beobachtung sind unbekannt, nicht null – ein ruhiger Tag ohne Stream und ein Poller-Ausfall sehen daher gleich aus: als Lücke.",
+          "cap": "Verfolgte Channels gegen die konfigurierte Admission-Grenze für normale Nutzer – kein Serverlimit. Globale Admins dürfen sie überschreiten, und ein gleichzeitiger Andrang kann sie knapp übersteigen."
+        }
+      },
+      "rateLimits": {
+        "title": "Rate-Limit-Ausnahmen",
+        "acute": "aktuell",
+        "lastMinute": "{{count}} in der letzten Minute",
+        "none": {
+          "title": "Keine Ablehnungen in 24 Stunden",
+          "description": "Weder eine lokale Policy noch ein Provider hat in den letzten 24 Stunden abgewiesen. Die vollständige Konfiguration steht unter „Details“."
+        },
+        "policies": {
+          "title": "Lokale Policies mit Ablehnungen",
+          "share": "{{rejected}} von {{decisions}} Entscheidungen abgewiesen ({{percent}} %) in 24 h",
+          "noRequests": "keine Requests"
+        },
+        "providers": {
+          "title": "Provider-429",
+          "count": "{{count}} × HTTP 429 in 24 h"
+        },
+        "series": {
+          "local": "Lokale Ablehnungen",
+          "provider": "{{provider}} · {{source}}"
+        },
+        "trendUnavailable": "Trend gerade nicht verfügbar — der Zähler-Store konnte nicht gelesen werden.",
+        "trend": {
+          "title": "Ablehnungen pro Minute, letzte 24 Stunden",
+          "noProviderRejections": "Kein Provider hat in den letzten 24 Stunden mit HTTP 429 geantwortet."
+        },
+        "help": {
+          "share": "Der Anteil ist die Quote abgewiesener Entscheidungen einer Policy über alle Partitionen – kein Füllstand eines einzelnen Buckets. Keine Ablehnung heißt nicht, dass niemand nahe am Limit war."
+        },
+        "details": {
+          "open": "Details",
+          "title": "Rate-Limit-Details"
+        }
       }
     }
   },
@@ -2004,6 +2088,7 @@
       "foreign_channel_no_active_emote_set": "Dieser Channel hat aktuell kein aktives 7TV-Emote-Set.",
       "foreign_channel_seventv_unavailable": "7TV ist gerade nicht erreichbar. Bitte versuch es in Kürze erneut.",
       "invalid_leaderboard_sort": "Ungültige Sortierung für die 7TV-Bestenliste.",
+      "invalid_dashboard_range": "Ungültiger Zeitraum für das Dashboard.",
       "vote_session_not_found": "Abstimmung nicht gefunden.",
       "vote_session_ended": "Diese Abstimmung ist bereits beendet.",
       "emote_not_eligible": "Dieses Emote ist nicht mehr abstimmbar.",

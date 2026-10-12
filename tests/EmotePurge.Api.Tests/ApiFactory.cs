@@ -214,6 +214,12 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// </summary>
     public IAuditLogQueryService AuditLogQuery { get; } = Substitute.For<IAuditLogQueryService>();
 
+    /// <summary>
+    /// Substituted like <see cref="AdminUserQuery"/>; the <c>IAdminDashboardReader</c> facade in front of
+    /// it stays real so the cache path runs in the contract tests.
+    /// </summary>
+    public IAdminDashboardQueryService AdminDashboardQuery { get; } = Substitute.For<IAdminDashboardQueryService>();
+
     /// <summary>Substituted for the same reason as <see cref="AuditLogQuery"/>.</summary>
     public IAdminUserQueryService AdminUserQuery { get; } = Substitute.For<IAdminUserQueryService>();
 
@@ -290,6 +296,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => TwitchAuth);
             services.AddScoped(_ => AuditLogQuery);
             services.AddScoped(_ => AdminUserQuery);
+            services.AddScoped(_ => AdminDashboardQuery);
             services.AddScoped(_ => ChatLogBackfill);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected

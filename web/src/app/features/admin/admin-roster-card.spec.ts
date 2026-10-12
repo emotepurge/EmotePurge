@@ -31,7 +31,11 @@ function roster(overrides: Partial<AdminRoster> = {}): AdminRoster {
   return {
     snapshotAvailable: true,
     trackedChannelCount: 10,
-    ceilings: { twitchConcurrentChannelLimit: 100, twitchJoinBudgetChannels: 100 },
+    ceilings: {
+      twitchConcurrentChannelLimit: 100,
+      twitchJoinBudgetChannels: 100,
+      maxActiveChannels: 80,
+    },
     bootRecoveryCompleted: true,
     ageSeconds: 0,
     ircConfirmedCount: 10,
@@ -85,7 +89,11 @@ describe('AdminRosterCard', () => {
         of(
           roster({
             trackedChannelCount: 81,
-            ceilings: { twitchConcurrentChannelLimit: 100, twitchJoinBudgetChannels: 80 },
+            ceilings: {
+              twitchConcurrentChannelLimit: 100,
+              twitchJoinBudgetChannels: 80,
+              maxActiveChannels: 80,
+            },
           }),
         ),
       );
@@ -101,7 +109,11 @@ describe('AdminRosterCard', () => {
         of(
           roster({
             trackedChannelCount: 96,
-            ceilings: { twitchConcurrentChannelLimit: 100, twitchJoinBudgetChannels: 100 },
+            ceilings: {
+              twitchConcurrentChannelLimit: 100,
+              twitchJoinBudgetChannels: 100,
+              maxActiveChannels: 80,
+            },
           }),
         ),
       );
@@ -114,7 +126,11 @@ describe('AdminRosterCard', () => {
         of(
           roster({
             trackedChannelCount: 85,
-            ceilings: { twitchConcurrentChannelLimit: 100, twitchJoinBudgetChannels: 100 },
+            ceilings: {
+              twitchConcurrentChannelLimit: 100,
+              twitchJoinBudgetChannels: 100,
+              maxActiveChannels: 80,
+            },
           }),
         ),
       );
@@ -127,7 +143,11 @@ describe('AdminRosterCard', () => {
         of(
           roster({
             trackedChannelCount: 10,
-            ceilings: { twitchConcurrentChannelLimit: 100, twitchJoinBudgetChannels: 100 },
+            ceilings: {
+              twitchConcurrentChannelLimit: 100,
+              twitchJoinBudgetChannels: 100,
+              maxActiveChannels: 80,
+            },
           }),
         ),
       );
@@ -140,7 +160,11 @@ describe('AdminRosterCard', () => {
         of(
           roster({
             trackedChannelCount: 10,
-            ceilings: { twitchConcurrentChannelLimit: 100, twitchJoinBudgetChannels: 0 },
+            ceilings: {
+              twitchConcurrentChannelLimit: 100,
+              twitchJoinBudgetChannels: 0,
+              maxActiveChannels: 80,
+            },
           }),
         ),
       );
@@ -155,7 +179,11 @@ describe('AdminRosterCard', () => {
         of(
           roster({
             trackedChannelCount: 150,
-            ceilings: { twitchConcurrentChannelLimit: 100, twitchJoinBudgetChannels: 100 },
+            ceilings: {
+              twitchConcurrentChannelLimit: 100,
+              twitchJoinBudgetChannels: 100,
+              maxActiveChannels: 80,
+            },
           }),
         ),
       );
@@ -168,7 +196,11 @@ describe('AdminRosterCard', () => {
         of(
           roster({
             trackedChannelCount: 10,
-            ceilings: { twitchConcurrentChannelLimit: 100, twitchJoinBudgetChannels: 0 },
+            ceilings: {
+              twitchConcurrentChannelLimit: 100,
+              twitchJoinBudgetChannels: 0,
+              maxActiveChannels: 80,
+            },
           }),
         ),
       );

@@ -222,7 +222,8 @@ export class AdminRosterCard {
     stream: () => this.adminService.getRoster(),
   });
 
-  protected readonly roster = computed(() =>
+  /** Public: the monitoring page reads the channel count for its activity heading from here. */
+  readonly roster = computed(() =>
     this.rosterResource.hasValue() ? this.rosterResource.value() : undefined,
   );
 

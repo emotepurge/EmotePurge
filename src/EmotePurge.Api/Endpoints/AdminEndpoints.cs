@@ -5,6 +5,7 @@ using EmotePurge.Api.RateLimiting;
 using EmotePurge.Api.Validation;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.Services;
 using Microsoft.Extensions.Options;
 
 namespace EmotePurge.Api.Endpoints;
@@ -139,11 +140,13 @@ public static class AdminEndpoints
         // /health: that contract's "same shape when unavailable" promise is about the worker snapshot,
         // and a second, unrelated availability flag on the same payload would blur which one flipped.
         group.MapGet("/rate-limits", async (
-            IRateLimitTelemetryReader telemetryReader,
+            IAdminDashboardReader dashboardReader,
             IOptions<RateLimitingOptions> rateLimitOptions,
             CancellationToken ct) =>
         {
-            var snapshot = await telemetryReader.ReadAsync(ct);
+            // Through the dashboard facade (30 s per-instance cache): the page polls, and the counters
+            // are a read of 1,440 Redis buckets each. The response contract is unchanged.
+            var snapshot = await dashboardReader.GetRateLimitSnapshotAsync(ct);
             var countersByPolicy = snapshot.Policies.ToDictionary(p => p.PolicyName, StringComparer.Ordinal);
 
             // Built from configuration, not from the snapshot: a policy the counter store never saw
@@ -186,9 +189,30 @@ public static class AdminEndpoints
             });
         });
 
+        // Last 24 hours of rate-limit rejections per minute (#381). Redis down is a 200 with
+        // telemetryAvailable=false and empty lists, never an error code.
+        group.MapGet("/rate-limits/trend", async (IAdminDashboardReader dashboardReader, CancellationToken ct) =>
+            Results.Ok(await dashboardReader.GetRateLimitTrendAsync(ct)));
+
+        // Live channels per UTC day (#381). Missing or empty range selects 30d; any other value must be
+        // exactly 30d, 90d or 13mo — whitespace-only included — or the answer is 400.
+        group.MapGet("/dashboard/activity", async (string? range, IAdminDashboardReader dashboardReader, CancellationToken ct) =>
+        {
+            var parsed = string.IsNullOrEmpty(range)
+                ? AdminDashboardActivityRange.Days30
+                : AdminDashboardActivityRanges.Parse(range);
+            if (parsed is null)
+            {
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidDashboardRange });
+            }
+
+            return Results.Ok(await dashboardReader.GetActivityAsync(parsed.Value, ct));
+        });
+
         group.MapGet("/roster", async (
             IWorkerRosterReader rosterReader,
             IAdminChannelQueryService channelQueryService,
+            ChannelCapacityOptions channelCapacity,
             CancellationToken ct) =>
         {
             // Its own endpoint rather than more fields on /health: /health is refetched on every
@@ -204,7 +228,7 @@ public static class AdminEndpoints
                 {
                     snapshotAvailable = false,
                     trackedChannelCount = trackedChannels.Count,
-                    ceilings = Ceilings(),
+                    ceilings = Ceilings(channelCapacity),
                 });
             }
 
@@ -252,7 +276,7 @@ public static class AdminEndpoints
                 missingFromSevenTvTotal = missingFromSevenTv.Count,
                 unknownToDatabase = unknownToDatabase.Take(DeficitListLimit).ToList(),
                 unknownToDatabaseTotal = unknownToDatabase.Count,
-                ceilings = Ceilings(),
+                ceilings = Ceilings(channelCapacity),
             });
         });
 
@@ -479,10 +503,14 @@ public static class AdminEndpoints
 
     // Shipped in both branches of /roster so the page renders one layout: the ceilings are constants
     // and do not depend on a snapshot being available.
-    private static object Ceilings() => new
+    private static object Ceilings(ChannelCapacityOptions channelCapacity) => new
     {
         twitchConcurrentChannelLimit = WorkerCapacity.TwitchConcurrentChannelLimit,
         twitchJoinBudgetChannels = WorkerCapacity.TwitchJoinBudgetChannels,
+        // The admission cap Channels:MaxActiveChannels (configurable, unlike the two Twitch constants);
+        // additive field for the dashboard: the configured admission limit for normal users, shown as a
+        // context value next to the tracked-channel count, not as a capacity measure.
+        maxActiveChannels = channelCapacity.MaxActiveChannels,
     };
 
     // The one policy list the app registers, described for display rather than re-derived from
