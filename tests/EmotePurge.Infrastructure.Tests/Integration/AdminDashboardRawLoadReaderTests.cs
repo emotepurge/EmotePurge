@@ -8,14 +8,15 @@ using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
-// Raw-path semantics of the admin dashboard load range (#381, spec 5.1/5.2, section 11 B) against the
-// SQL bucketing in Postgres: predecessor, gap rule, outages, host union and value source with its tie
+// Raw-path semantics of the admin dashboard load range (#381, spec 5.1/5.2, section 11 B) through the
+// real read: the typed reader of AdminDashboardRawLoadQuery feeding AdminDashboardRawLoadAccumulator,
+// against Postgres. Covers predecessor, gap rule, outages, host union and value source with its tie
 // rule, quota and memory shares, resets, workload per minute, trimming and swap. Each case seeds its
 // samples and reads a 10:00-12:00 UTC window in 5-minute buckets (25 buckets).
 [Collection("Postgres")]
-public sealed class AdminDashboardRawLoadSqlTests(PostgresFixture fixture) : IAsyncLifetime
+public sealed class AdminDashboardRawLoadReaderTests(PostgresFixture fixture) : IAsyncLifetime
 {
-    private const string DatabaseName = "admin_dashboard_raw_load_tests";
+    private const string DatabaseName = "admin_dashboard_raw_load_reader_tests";
     private const long Megabyte = 1_000_000;
     private static readonly SemaphoreSlim DatabaseGate = new(1, 1);
     private static readonly DateTime NowUtc = new(2026, 10, 11, 12, 0, 0, DateTimeKind.Utc);
@@ -404,23 +405,30 @@ public sealed class AdminDashboardRawLoadSqlTests(PostgresFixture fixture) : IAs
         Assert.Equal(90.0, load.Host.ApiCpuBusyMean[0]);
     }
 
-    // Swap shows the latest sample of the window: a later sample without swap means "now none".
+    // Swap is the last known value (spec 5.1): an unknown or inconsistent reading keeps it, an explicit
+    // SwapTotal of 0 means "now none", and a later valid reading replaces it.
     [Fact]
-    public async Task Raw_Swap_TheLatestSampleWins()
+    public async Task Raw_Swap_IsTheLastKnownValue()
     {
         var api = Guid.NewGuid();
         var worker = Guid.NewGuid();
         var run = new RawRun(30);
         run.Add(Row(T0.AddMinutes(1), api, swapTotal: 1_000, swapFree: 400));
-        run.Add(Row(T0.AddMinutes(2), worker, worker: true, swapTotal: 0, swapFree: 0));
+        run.Add(Row(T0.AddMinutes(2), worker, worker: true));
+        run.Add(Row(T0.AddMinutes(3), api, swapTotal: 1_000, swapFree: 2_000));
 
+        var kept = await LoadAsync(run);
+        Assert.Equal(new AdminDashboardSwap(600, 1_000, T0.AddMinutes(1)), kept.Swap);
+
+        await TruncateAsync();
+        run.Add(Row(T0.AddMinutes(4), worker, worker: true, swapTotal: 0, swapFree: 0));
         var none = await LoadAsync(run);
         Assert.Null(none.Swap);
 
         await TruncateAsync();
-        run.Add(Row(T0.AddMinutes(3), api, swapTotal: 2_000, swapFree: 500));
+        run.Add(Row(T0.AddMinutes(5), api, swapTotal: 2_000, swapFree: 500));
         var latest = await LoadAsync(run);
-        Assert.Equal(new AdminDashboardSwap(1_500, 2_000, T0.AddMinutes(3)), latest.Swap);
+        Assert.Equal(new AdminDashboardSwap(1_500, 2_000, T0.AddMinutes(5)), latest.Swap);
     }
 
     // ---- helpers --------------------------------------------------------------------------------

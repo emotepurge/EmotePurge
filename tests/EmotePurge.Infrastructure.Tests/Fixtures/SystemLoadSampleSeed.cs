@@ -4,10 +4,14 @@ using NpgsqlTypes;
 
 namespace EmotePurge.Infrastructure.Tests.Fixtures;
 
-// Bulk-seeds SystemLoadSamples for the load-dashboard performance gate: 24 h of samples per source
-// at a fixed cadence ending at nowUtc, with realistic monotone counters, two process-instance
-// changes per source (counters reset, no predecessor) and one 10-minute gap shared by both sources.
-// Binary COPY, not EF inserts: 172,800 rows must seed in seconds. Deterministic (fixed Random seed).
+// Bulk-seeds SystemLoadSamples for the load-dashboard performance gate: per source at a fixed cadence
+// ending at nowUtc, the 24-hour window plus historyDays of earlier samples (production keeps seven days
+// of raw samples, so the read must find its window by index, not by scanning a table that holds only
+// the window). Realistic monotone counters with per-interval workload counters, two process-instance
+// changes per source inside the window (counters reset, no predecessor) and one 10-minute gap shared by
+// both sources. The instance alive at the window start began in the history, so the read's early start
+// before the window is exercised. Binary COPY, not EF inserts: over a million rows must seed in seconds.
+// Deterministic (fixed Random seed).
 internal static class SystemLoadSampleSeed
 {
     public static readonly TimeSpan GapLength = TimeSpan.FromMinutes(10);
@@ -20,10 +24,18 @@ internal static class SystemLoadSampleSeed
         "\"HostMemoryTotalBytes\", \"HostMemoryAvailableBytes\", \"HostSwapTotalBytes\", \"HostSwapFreeBytes\", " +
         "\"ActiveChannels\", \"LiveChannels\", \"ChatLines\", \"EmoteMatches\") FROM STDIN (FORMAT BINARY)";
 
-    // Seeds 24 h ending at nowUtc and returns the number of rows written.
-    public static async Task<long> SeedAsync(string connectionString, DateTime nowUtc, int intervalSeconds)
+    public const int DefaultHistoryDays = 6;
+
+    // Seeds the 24 h ending at nowUtc plus historyDays before it and returns the number of rows written.
+    public static async Task<long> SeedAsync(
+        string connectionString,
+        DateTime nowUtc,
+        int intervalSeconds,
+        int historyDays = DefaultHistoryDays)
     {
-        var slots = 24 * 3600 / intervalSeconds;
+        var windowSlots = 24 * 3600 / intervalSeconds;
+        var slots = windowSlots + historyDays * 24 * 3600 / intervalSeconds;
+        var windowStartSlot = slots - windowSlots;
         var gapStart = nowUtc.AddHours(-12) - GapLength / 2;
         var gapEnd = gapStart + GapLength;
         long written = 0;
@@ -42,7 +54,7 @@ internal static class SystemLoadSampleSeed
             for (var slot = 0; slot < slots; slot++)
             {
                 var at = nowUtc.AddSeconds(-(double)(slots - 1 - slot) * intervalSeconds);
-                if (slot == slots / 3 || slot == 2 * slots / 3)
+                if (slot == windowStartSlot + windowSlots / 3 || slot == windowStartSlot + 2 * windowSlots / 3)
                 {
                     // Process restart: new instance id, counters start over, nothing to pair with.
                     instance = Guid.NewGuid();
@@ -148,8 +160,9 @@ internal static class SystemLoadSampleSeed
             {
                 ActiveChannels = Math.Clamp(ActiveChannels + random.Next(-1, 2), 30, 60);
                 LiveChannels = Math.Clamp(LiveChannels + random.Next(-1, 2), 0, ActiveChannels);
-                ChatLines += random.Next(0, 400);
-                EmoteMatches += random.Next(0, 150);
+                // Interval counters, as the schema stores them: what was counted since the last sample.
+                ChatLines = (long)(random.Next(0, 14) * (long)seconds);
+                EmoteMatches = (long)(random.Next(0, 5) * (long)seconds);
             }
         }
     }

@@ -15,9 +15,10 @@ namespace EmotePurge.Infrastructure.Services;
 /// Measured at 24 h x 1 s (171,600 samples, the response gate of spec section 11 B):
 /// <list type="bullet">
 /// <item>EF materialization of every row cost ~430 ms and ~93 MiB per read.</item>
-/// <item>Bucketing in SQL (LAG pairing, percentile_disc or per-bucket value arrays) was slower still, at
-/// 750-1,400 ms: Postgres evaluates the per-row rate expressions and aggregate transitions far slower
-/// than this loop does.</item>
+/// <item>Bucketing in SQL (LAG pairing, percentile_disc or per-bucket value arrays) was slower still: the
+/// complete variant took 1,370 ms, and leaner probes that still lacked some aggregates took 509-1,120 ms
+/// inside Postgres alone. Postgres evaluates the per-row rate expressions and aggregate transitions far
+/// slower than this loop does.</item>
 /// <item>This typed reader loop reads in ~260-290 ms with under 1 MiB allocated.</item>
 /// </list>
 /// The read starts one maximum pair gap (<see cref="SystemLoadRollupMath.MaximumPairGap"/>) before the

@@ -6,7 +6,7 @@ using Xunit;
 namespace EmotePurge.Infrastructure.Tests.Unit;
 
 // Pure C# of the admin dashboard load range (#381, spec 5.2, section 11 B): the ladder and the hourly
-// path. The raw path is bucketed in Postgres; its cases are in AdminDashboardRawLoadSqlTests and
+// path. The raw path reads through Postgres; its cases are in AdminDashboardRawLoadReaderTests and
 // AdminDashboardLoadQueryTests.
 public class AdminDashboardLoadBucketingTests
 {

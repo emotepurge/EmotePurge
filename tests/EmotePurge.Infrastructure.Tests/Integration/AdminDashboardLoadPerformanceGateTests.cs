@@ -22,7 +22,10 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 // "B-Response-Performance-Gate"): the in-process half. The HTTP half runs against the container in B6.
 //
 //   EMOTEPURGE_PERF_GATES=1 dotnet test tests/EmotePurge.Infrastructure.Tests -c Release --filter Category=PerformanceGate
-//   EMOTEPURGE_PERF_INTERVAL_SECONDS=30 ...   (optional: 30 s cadence = 5,760 rows per source instead of 1 s)
+//   EMOTEPURGE_PERF_INTERVAL_SECONDS=30 ...   (optional: 30 s cadence = 2,880 window rows per source instead of 86,400)
+//
+// The table also holds six days of history before the window, as production keeps seven days of raw
+// samples, so the read is measured with the plan it gets there (an index range, not a full scan).
 //
 // Deliberately not in the shared "Postgres" collection: it owns a container (started only when the gate
 // actually runs, so a skipped run costs nothing) and a non-parallel collection, because the allocation
@@ -40,6 +43,7 @@ public sealed class AdminDashboardLoadPerformanceGateTests(ITestOutputHelper out
     private const long MaxAllocatedBytes = 64L * 1024 * 1024;
 
     private static readonly DateTime NowUtc = new(2026, 10, 11, 12, 0, 0, DateTimeKind.Utc);
+    private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:16-alpine")
         .WithDatabase("emotepurge")
@@ -50,6 +54,7 @@ public sealed class AdminDashboardLoadPerformanceGateTests(ITestOutputHelper out
     private readonly RowCountingInterceptor _rows = new();
     private string _connectionString = string.Empty;
     private long _seeded;
+    private long _inWindow;
     private int _intervalSeconds = 1;
 
     public async Task InitializeAsync()
@@ -68,9 +73,19 @@ public sealed class AdminDashboardLoadPerformanceGateTests(ITestOutputHelper out
 
         var watch = Stopwatch.StartNew();
         await SystemLoadSampleSeed.SeedAsync(_connectionString, NowUtc, _intervalSeconds);
+        var seededIn = watch.ElapsedMilliseconds;
         await using var count = new AppDbContext(options);
+
+        // Production tables are vacuumed and analysed by autovacuum; give the planner the same footing.
+        await count.Database.ExecuteSqlRawAsync("VACUUM ANALYZE \"SystemLoadSamples\"");
+        var window = AdminDashboardLoadBucketing.GetWindow(AdminDashboardLoadRange.Hours24, NowUtc);
         _seeded = await count.SystemLoadSamples.LongCountAsync();
-        output.WriteLine($"Seeded {_seeded} SystemLoadSamples rows (interval {_intervalSeconds} s, gap {SystemLoadSampleSeed.GapLength.TotalMinutes} min) in {watch.ElapsedMilliseconds} ms");
+        _inWindow = await count.SystemLoadSamples.LongCountAsync(
+            sample => sample.SampledAtUtc >= window.FromUtc && sample.SampledAtUtc <= window.ToUtc);
+        output.WriteLine(
+            $"Seeded {_seeded} SystemLoadSamples rows, {_inWindow} of them in the 24-h window (interval {_intervalSeconds} s, " +
+            $"{SystemLoadSampleSeed.DefaultHistoryDays} days of history, gap {SystemLoadSampleSeed.GapLength.TotalMinutes} min) " +
+            $"in {seededIn} ms, vacuum analyze done at {watch.ElapsedMilliseconds} ms");
     }
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
@@ -99,7 +114,7 @@ public sealed class AdminDashboardLoadPerformanceGateTests(ITestOutputHelper out
         {
             output.WriteLine(
                 $"run {i + 1}: {runs[i].Milliseconds:F1} ms, allocated {runs[i].AllocatedBytes / 1048576.0:F1} MiB, " +
-                $"payload {runs[i].PayloadBytes} B, samples bucketed {runs[i].SamplesBucketed} (seeded {_seeded}), " +
+                $"payload {runs[i].PayloadBytes} B, samples bucketed {runs[i].SamplesBucketed} (in window {_inWindow}), " +
                 $"rows read by the Api {runs[i].RowsRead}");
         }
 
@@ -107,12 +122,16 @@ public sealed class AdminDashboardLoadPerformanceGateTests(ITestOutputHelper out
             $"median {median:F1} ms (limit {MaxMedianMilliseconds}), max allocated {maxAllocated / 1048576.0:F1} MiB " +
             $"(limit {MaxAllocatedBytes / 1048576.0:F0}), max payload {maxPayload} B (limit {MaxPayloadBytes})");
 
-        // A run that bucketed fewer samples than were seeded measured a smaller problem: invalid, not
-        // fast. The evidence is the response's own sample counts, which hold however the path reads its
-        // rows; the rows the Api read are logged next to them.
-        Assert.All(runs, r => Assert.True(
-            r.SamplesBucketed >= _seeded,
-            $"Invalid run: {r.SamplesBucketed} samples bucketed, {_seeded} seeded in the window."));
+        // A run that read or bucketed fewer samples than the window holds measured a smaller problem:
+        // invalid, not fast. Rows read include the few of the early start before the window; the
+        // response must account for exactly the window's samples, none of the history.
+        Assert.All(runs, r =>
+        {
+            Assert.True(r.RowsRead >= _inWindow, $"Invalid run: {r.RowsRead} rows read, {_inWindow} in the window.");
+            Assert.True(
+                r.SamplesBucketed == _inWindow,
+                $"Invalid run: {r.SamplesBucketed} samples bucketed, {_inWindow} in the window.");
+        });
         Assert.True(median < MaxMedianMilliseconds, $"Median {median:F1} ms >= {MaxMedianMilliseconds} ms.");
         Assert.True(maxPayload <= MaxPayloadBytes, $"Payload {maxPayload} B > {MaxPayloadBytes} B.");
         Assert.True(
@@ -135,7 +154,7 @@ public sealed class AdminDashboardLoadPerformanceGateTests(ITestOutputHelper out
             provider.GetRequiredService<IServiceScopeFactory>(),
             Substitute.For<IRateLimitTelemetryReader>(),
             new FakeTimeProvider(new DateTimeOffset(NowUtc)),
-            new SystemLoadOptions { IntervalSeconds = 30 },
+            new SystemLoadOptions { IntervalSeconds = _intervalSeconds },
             NullLogger<AdminDashboardReader>.Instance);
 
         _rows.Reset();
@@ -154,8 +173,6 @@ public sealed class AdminDashboardLoadPerformanceGateTests(ITestOutputHelper out
         var bucketed = read.Load.Api.SampleCount.Sum() + read.Load.Worker.SampleCount.Sum();
         return new Run(timer.Elapsed.TotalMilliseconds, after - before, payload.Length, bucketed, _rows.RowsRead);
     }
-
-    private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
 
     private sealed record Run(double Milliseconds, long AllocatedBytes, int PayloadBytes, long SamplesBucketed, long RowsRead);
 
@@ -257,7 +274,7 @@ public sealed class AdminDashboardLoadPerformanceGateTests(ITestOutputHelper out
     }
 }
 
-// A Fact that is skipped unless EMOTEPURGE_PERF_GATES=1: the gate seeds 172,800 rows and starts a
+// A Fact that is skipped unless EMOTEPURGE_PERF_GATES=1: the gate seeds over a million rows and starts a
 // container, which `dotnet test EmotePurge.slnx` must not pay for.
 [AttributeUsage(AttributeTargets.Method)]
 public sealed class PerformanceGateFactAttribute : FactAttribute

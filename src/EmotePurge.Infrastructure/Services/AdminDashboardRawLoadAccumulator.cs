@@ -77,13 +77,19 @@ internal sealed class AdminDashboardRawLoadAccumulator(AdminDashboardLoadWindow 
 
         _dataThroughUtc = row.SampledAtUtc;
 
-        // The latest sample decides: a later sample without swap means "now none", not the older value.
-        _swap = row.HostSwapTotalBytes is > 0 && row.HostSwapFreeBytes is >= 0 && row.HostSwapFreeBytes <= row.HostSwapTotalBytes
-            ? new AdminDashboardSwap(
+        // Last known value (spec 5.1): a later valid reading replaces it, an explicit SwapTotal of 0 means
+        // "now none", and an unknown or inconsistent reading keeps what was known.
+        if (row.HostSwapTotalBytes is > 0 && row.HostSwapFreeBytes is >= 0 && row.HostSwapFreeBytes <= row.HostSwapTotalBytes)
+        {
+            _swap = new AdminDashboardSwap(
                 row.HostSwapTotalBytes.Value - row.HostSwapFreeBytes.Value,
                 row.HostSwapTotalBytes.Value,
-                row.SampledAtUtc)
-            : null;
+                row.SampledAtUtc);
+        }
+        else if (row.HostSwapTotalBytes == 0)
+        {
+            _swap = null;
+        }
 
         _bucket.Add(row, previous, samplingIntervalSeconds);
     }

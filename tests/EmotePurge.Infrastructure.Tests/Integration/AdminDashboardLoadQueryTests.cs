@@ -117,6 +117,35 @@ public sealed class AdminDashboardLoadQueryTests(PostgresFixture fixture) : IAsy
         Assert.Equal(1, load.Worker.SampleCount[0]);
     }
 
+    // Samples of the early-start stretch [from - 2.5 x interval, from) only seed the pairing: two of them
+    // that form a valid pair with each other (here with a huge delta) show up in no bucket and change no
+    // count, gauge or workload figure.
+    [Fact]
+    public async Task Raw_PairInsideTheEarlyStartStretchCountsNowhere()
+    {
+        var fromUtc = NowUtc.AddHours(-24);
+        var worker = Guid.NewGuid();
+        await SeedAsync(
+            Full(worker, fromUtc.AddSeconds(-60), fromUtc.AddSeconds(-90), ticks: 0, busy: 0, total: 0, memory: 100 * Megabyte, chat: 1_000),
+            Full(worker, fromUtc.AddSeconds(-30), fromUtc.AddSeconds(-60), ticks: 290_000_000_000, busy: 900, total: 1_000, memory: 9_000 * Megabyte, chat: 50_000),
+            Full(worker, fromUtc, fromUtc.AddSeconds(-30), ticks: 290_030_000_000, busy: 930, total: 1_300, memory: 120 * Megabyte, chat: 30));
+
+        await using var db = CreateDbContext();
+        var load = await new AdminDashboardQueryService(db).GetLoadAsync(AdminDashboardLoadRange.Hours24, NowUtc, 30);
+
+        Assert.Equal(fromUtc, load.BucketStartsUtc[0]);
+        Assert.Equal(fromUtc, load.DataThroughUtc);
+        Assert.Equal(1, load.Worker.SampleCount.Sum());
+        Assert.Equal(0, load.Api.SampleCount.Sum());
+        Assert.Equal(0.1, load.Worker.ProcessCpuP95[0]);
+        Assert.Equal(0.1, load.Worker.ProcessCpuMax[0]);
+        Assert.Equal(10.0, load.Host.CpuBusyP95[0]);
+        Assert.Equal(10.0, load.Host.CpuBusyMax[0]);
+        Assert.Equal(120 * Megabyte, load.Worker.CgroupMemoryMaxBytes[0]);
+        Assert.Equal(60.0, load.Workload.ChatLines[0]);
+        Assert.Equal(30.0, load.Workload.WorkloadIntervalSeconds[0]);
+    }
+
     // Spec 5.1: raw path and rollup apply the same gap rule, so one hour read as a single raw bucket
     // equals SystemLoadRollupMath.Calculate for that hour, for every allowed cadence.
     [Theory]
@@ -475,6 +504,27 @@ public sealed class AdminDashboardLoadQueryTests(PostgresFixture fixture) : IAsy
             .Options;
         return new AppDbContext(options);
     }
+
+    private static SystemLoadSample Full(
+        Guid processInstanceId,
+        DateTime atUtc,
+        DateTime previous,
+        long ticks,
+        long busy,
+        long total,
+        long memory,
+        long chat) => new()
+        {
+            SampledAtUtc = atUtc,
+            Source = SystemLoadSource.Worker,
+            ProcessInstanceId = processInstanceId,
+            PreviousSampledAtUtc = previous,
+            ProcessCpuTimeTicks = ticks,
+            HostCpuBusyJiffies = busy,
+            HostCpuTotalJiffies = total,
+            CgroupMemoryCurrentBytes = memory,
+            ChatLines = chat,
+        };
 
     private static SystemLoadSample Sample(
         SystemLoadSource source,

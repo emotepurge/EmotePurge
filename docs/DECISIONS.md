@@ -16,7 +16,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Infrastructure/Services/AdminDashboardQueryService.cs` ·
 `src/EmotePurge.Infrastructure/Services/{AdminDashboardLoadBucketing,AdminDashboardLoadSeriesBuilder,AdminDashboardRawLoadQuery,AdminDashboardRawLoadAccumulator,AdminDashboardHourlyLoadAccumulator,SystemLoadRollupMath}.cs` ·
 `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Integration/{AdminDashboardQueryService,AdminDashboardLoadQuery,AdminDashboardRawLoadSql,AdminDashboardLoadPerformanceGate}Tests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/{AdminDashboardQueryService,AdminDashboardLoadQuery,AdminDashboardRawLoadReader,AdminDashboardLoadPerformanceGate}Tests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Unit/AdminDashboard{ActivityRange,QueryServiceStructure,LoadBucketing}Tests.cs` ·
 `src/EmotePurge.Core/Services/IRateLimitTelemetryReader.cs` ·
 `src/EmotePurge.Infrastructure/Redis/RateLimitTelemetryStore.cs` ·
@@ -171,27 +171,40 @@ limit is constant; they show the last stored limit of the bucket. Values are rou
 percent to one decimal, cores to four, load average to two, bytes as integers.
 
 The raw path buckets in the Api, not in Postgres, and this was measured. The B response gate
-(`AdminDashboardLoadPerformanceGateTests`, 24 h at 1 s, 171,600 samples, uncached, median of five,
-in-process, Release) failed the first version: EF materialised every row through `SqlQueryRaw` +
+(`AdminDashboardLoadPerformanceGateTests`, 24 h at 1 s, about 171,600 window samples, uncached, median of
+five, in-process, Release) failed the first version: EF materialised every row through `SqlQueryRaw` +
 `AsAsyncEnumerable`, which took 427 ms against a limit of < 400 ms and allocated ~93 MiB against a limit
 of 64 MiB. Spec 11 B names SQL-side bucketing as the fallback, so that was built and fully tested. It
 used `LAG` pairing per `(Source, ProcessInstanceId)` with the same gap rule and `percentile_disc(0.95)`.
 Its P95, which `percentile_disc` takes at rank ceil(0.95 n), agreed with the rollup in the parity test,
-and it allocated ~1.3 MiB. But it took 1,370 ms. Neither leaner variants (per-bucket value arrays instead
-of `percentile_disc`, a gap-extended scan instead of a `LATERAL` lookup, no CTE materialisation, `jit` off,
-64 MB `work_mem`) nor any of their combinations went below ~750 ms. The floor was the pairing itself
-(index scan plus `LAG`: ~150 ms; plus the per-row rate expressions: ~275 ms) before any aggregation, and
-every per-bucket aggregate transition then added 0.15-0.2 µs per row. What passed instead is a lean read
-of the chart columns, a single range scan in time order (~90 ms in Postgres), streamed through a typed
-`DbDataReader` loop with one reused row object. The loop feeds `AdminDashboardRawLoadAccumulator`, which
-holds only the current bucket's values and writes into column arrays pre-sized to the bucket count:
-337.7 ms median and 8.0 MiB at 1 s, and 56.6 ms and 1.6 MiB at 30 s, with byte-identical payload sizes.
-The command runs through EF's relational command pipeline (`IRawSqlCommandBuilder`), so command
-interceptors still see it. The gate's validity check now counts the samples the response accounts for
-(the sum of `SampleCount`), not the rows the Api reads. The rollup parity test
-(`Raw_OneHourBucketEqualsTheRollupOfThatHour`) stays the guard that the raw path computes what the rollup
-computes. Swap in the response is the latest sample's: a later sample without swap reads as "now none",
-not as the last value seen.
+and it allocated ~1.3 MiB. But it took 1,370 ms, and it was the only complete SQL variant. The leaner
+probes each still lacked some of the aggregates (last values, workload or the host union), and none of
+them included the transfer to the Api. They tried per-bucket value arrays instead of `percentile_disc`,
+one packed array per row, a gap-extended scan instead of a `LATERAL` lookup, no CTE materialisation,
+`jit` off and 64 MB `work_mem`. Inside Postgres alone they still took 509-1,120 ms, so even the fastest
+of them was already slower than the whole read below. The floor was the pairing itself: index
+scan plus `LAG` took ~150 ms, and the per-row rate expressions brought it to ~275 ms, both before any
+aggregation. Every per-bucket aggregate transition then added 0.15-0.2 µs per row.
+
+What passed instead is a lean read of the chart columns: a single range scan in time order, streamed
+through a typed `DbDataReader` loop with one reused row object. The loop feeds
+`AdminDashboardRawLoadAccumulator`, which holds only the current bucket's values and writes into column
+arrays pre-sized to the bucket count. The command runs through EF's relational command pipeline
+(`IRawSqlCommandBuilder`), so command interceptors still see it.
+
+The gate seeds six days of history before the window, because production keeps seven days of raw
+samples; the read is therefore measured with the plan it gets there, a bitmap scan of
+`IX_SystemLoadSamples_Source_SampledAtUtc` (~100 ms in Postgres at 1 s). The gate runs with the seed's own
+interval as `SystemLoad:IntervalSeconds`. Results: 282.4 ms median and 8.0 MiB at 1 s, and 46.1 ms and
+1.6 MiB at 30 s.
+
+A run is valid only if the Api read at least the window's samples, and the response's `SampleCount`s
+add up to exactly the window's samples, so the history and the early start contribute nothing. The
+rollup parity test (`Raw_OneHourBucketEqualsTheRollupOfThatHour`) stays the guard that the raw path
+computes what the rollup computes.
+
+Swap in the response is the last known value (spec 5.1): a later valid reading replaces it, an explicit
+`SwapTotal = 0` means "now none", and an unknown or inconsistent reading keeps what was known.
 
 Load range, route and facade (cut B). `GET /api/admin/dashboard/load?range=` answers with the
 serialized `AdminDashboardLoad` (camelCase, column-oriented lists, `null` stays `null`, timestamps as
