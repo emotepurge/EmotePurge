@@ -1,8 +1,8 @@
 # Plan #374 — Emote-Slots, Kind 4: EventAPI-Deltas je `(Id, Name)`
 
 Erstellt am 2026-10-12 im Worktree `EmotePurge-slots374` (Branch `feat/374-eventapi-slot-deltas`, Basis `origin/main` @ `4b754279`).
-**Status: Revision 1 (12.10.) — nach dem adversarialen Review (Codex Sol: 2 × P1, 4 × P2, alle eingearbeitet); offene Rückfragen
-R1–R5 (Abschnitt 13).**
+**Status: Revision 2 (12.10.) — adversariales Review (Codex Sol: 2 × P1, 4 × P2) eingearbeitet, Betreiberentscheidungen R1, R3, R4, R5
+eingetragen; offen nur R2 (Freigabe des Live-Laufs, wird vor T5 eingeholt).**
 Quelle und einzige Vertragsquelle: [die Spec](../superpowers/specs/2026-10-10-emote-slots-spec.md) (§2.3, §7.1, §7.2, §10, §13 AK 18–21,
 §15, §16 Kind 4; D4, D7, D11 b, D12, D13, D14, D17, O5, O6), Issue #374 mit den Übergabekommentaren aus #372 und #373 (bindend),
 [Plan-372](Plan-372-Emote-Slots-Reconcile.md) §2.0, §2.2, §2.2a (Z8), §2.5 (E14), §11; [Plan-373](Plan-373-Emote-Slots-Usage-Key.md)
@@ -13,8 +13,8 @@ Formatvorlage: Plan-373/Plan-376.
 Änderungsart und Emote-Zustand, Sperre und Wiederholung, Leave-Regel, Worker-Rückfall, Tests, Live-Prüfung, Aufgabenfolge. Kein Code:
 Namen von Typen und Methoden stehen nur als Form. D0–D33 und die Betreiberentscheidungen aus #371–#376 werden nicht wieder aufgemacht.
 
-**Lesehinweis:** **[E]** = Planer-Entscheidung, kein Spec-Text. **[A]** = Abweichung vom Spec-Wortlaut, braucht Betreiberbestätigung
-(Abschnitt 13). **[P]** = Präzisierung, die der Spec-Text offen lässt, ohne ihm zu widersprechen. **Sol-P*n*** = Befund des
+**Lesehinweis:** **[E]** = Planer-Entscheidung, kein Spec-Text. **[A]** = Abweichung vom Spec-Wortlaut; alle [A] sind vom Betreiber
+bestätigt (Abschnitt „Betreiber-Entscheidungen (12.10.)"). **[P]** = Präzisierung, die der Spec-Text offen lässt, ohne ihm zu widersprechen. **Sol-P*n*** = Befund des
 adversarialen Reviews (Revision 1).
 
 ### Revision 1 (12.10.) — was sich geändert hat
@@ -29,6 +29,23 @@ adversarialen Reviews (Revision 1).
 | **Live-Lauf (8) neu geschnitten:** jede abhängige 7TV-Änderung erst nach belegter Vorbedingung (v3-REST zeigt den erwarteten Stand, Worker-Neustart, DB-Prüfung); Delta-Ergebnis und Folge-Resync getrennt protokolliert; Zählung des Push-Slots vor der REST-Autorisierung Pflichtschritt | Sol-P2-4 |
 | **T1 mit Orakel:** vor dem Umbau ein Charakterisierungstest des Aus-Pfads auf dem `main`-Stand (Eingaben → Emote-Zeilen, Leaves, Outcomes), der nach dem Umbau unverändert grün bleiben muss | Sol, „next steps" |
 | Neue Rückfragen R4 (Abweichung von AK 20s Beispiel) und R5 (Leave trotz Mehrdeutigkeit); R1 auf die Momentaufnahme umgestellt; Aufwand 3,75 → 4,75 Tage | Folge |
+
+### Revision 2 (12.10.) — was sich geändert hat
+
+| Änderung | beantwortet |
+|---|---|
+| Abschnitt „Betreiber-Entscheidungen (12.10.)" neu; R1, R3, R4, R5 entschieden wie empfohlen, R2 offen bis vor T5; Abschnitt 13 umgestellt | Betreiber 12.10. |
+| T3 und Abschnitt 10 nennen die Spec-Stellen (§7.2, AK 20, Grenze zu D17 in §14) und den DECISIONS-Absatz „Child 4", die im Implementierungs-Commit (3) mitgepflegt werden | Betreiber 12.10., Regel 3 |
+
+## Betreiber-Entscheidungen (12.10.)
+
+| # | Frage | Entscheidung | Wirkung im Plan |
+|---|---|---|---|
+| **R1** [A] | Pull eines Namens, zu dem im Ausgangsstand kein aktiver eigener Slot passt, bei aktivem Emote | **`AmbiguousDelta`** (Grund `pull-target-missing`) | 4.2 Zeile `pulled`, S2 mit Namen; Ergänzung in Spec §7.2 |
+| **R2** | Freigabe des Live-Laufs (rund 12 7TV-Schreibzugriffe, vier Tore mit Neustart, zwei Testnachrichten) | **offen** — wird vor T5 eingeholt | T5 startet erst nach der Freigabe; jeder POST zusätzlich einzeln im Chat |
+| **R3** | Rückkehr eines entfernten Alias (und jeder Push im virtuellen Zustand) zählt bis zum REST-Nachlauf nicht | **hinnehmen**, als bekannte Grenze dokumentieren | DECISIONS „Child 4"; Spec §14 „Zur Kenntnis" als Grenze zu D17 |
+| **R4** [A] | Umbenennung in place bei Mehr-Slot-Emotes | **nur bei genau einem aktiven eigenen Slot**; bei ≥ 2 `AmbiguousDelta` (`rename-with-siblings`), REST benennt per Datums-Identität um; das AK-20-Beispiel wird auf einen Slot umgestellt | E10, 4.2 Zeile `updated`, 7.3 Fälle 6/7; Änderung in Spec §7.2 und AK 20 |
+| **R5** [A] | Leave-Beobachtung trotz mehrdeutigem Dispatch | **beobachten**: „`AmbiguousDelta` schreibt nichts" heißt „kein Inventar"; Leaves gezogener Ids mit für sich eindeutigem Ausgang „kein aktiver Slot mehr" werden geschrieben | E7, 3.2 Schritt 5, 3.4; Ergänzung in Spec §7.2 |
 
 ## 0. Migrationsbefund (Auftrag A): **keine Migration**
 
@@ -469,9 +486,17 @@ danach `fix:`/`test:`/`docs:` aus Review und Live-Lauf.
 - **Operations:** die Flag-Zeile (`docs/Operations.md`, Tabelle bei `SevenTv:SlotReconcile:Enabled`) um je einen Halbsatz ergänzen — Off:
   „EventAPI deltas stay emote-wide and write no slot"; On: „EventAPI deltas add, rename and archive single slots; an ambiguous dispatch
   writes no inventory (only certain last-slot leaves) and triggers a REST resync".
-- **Spec:** bei bestätigten R1, R4, R5 ein datierter Nachtrag in §7.2 (Tabelle `updated` und `pulled`, Satz „`AmbiguousDelta` schreibt
-  nichts") und in AK 20 (Umbenennungs-Beispiel mit einem Slot) im Stil von Kind 6 („Geändert in Kind 4 (#374), Betreiber …"). [P]-Punkte
-  nicht in die Spec (DECISIONS genügt).
+- **Spec (im Commit (3), Betreiber 12.10.):** datierte Nachträge im Stil von Kind 6 („*Geändert in Kind 4 (#374), Betreiber 2026-10-12
+  (Plan-374 R1, R4, R5): … Begründung in DECISIONS (#365, Absatz „Child 4").*"), Text bleibt sonst stehen:
+  - **§7.2 Tabelle, Zeile `updated`:** in place nur bei genau einem aktiven eigenen Slot; bei ≥ 2 mehrdeutig (R4).
+  - **§7.2 Tabelle, Zeile `pulled`:** zusätzlich mehrdeutig, wenn kein aktiver eigener Slot den gezogenen Namen trägt und das Emote aktiv ist (R1).
+  - **§7.2 Satz „`AmbiguousDelta` schreibt nichts":** gilt für Emote- und Slot-Zeilen; Leave-Beobachtungen gezogener Ids mit eindeutigem
+    Ausgang „kein aktiver Slot mehr" werden trotzdem geschrieben (R5).
+  - **§13 AK 20:** das Beispiel „Rename `(X, probeB → probeC)` → in place" gilt für ein Emote mit genau einem Slot; dazu „Rename bei zwei
+    aktiven Slots → `AmbiguousDelta`" (R4).
+  - **§14 „Zur Kenntnis"** neuer Punkt als Grenze zu D17: ein Push unter dem Namen eines archivierten Slots, jeder Push im virtuellen
+    Zustand und jede Umbenennung eines Mehr-Slot-Emotes zählen erst ab dem nächsten aktuellen REST (bis zu 30 min, SevenTV#81) (R3, R4).
+  [P]-Punkte nicht in die Spec (DECISIONS genügt).
 - **Statuszeilen:** nach dem Merge (Orchestrator, per REST-PATCH, weil `gh issue edit` an Projects-classic scheitert) die Zeile 4 der
   Kindertabelle in Epic #365 („merged (PR #…, sha, Datum); no migration, flag off on prod") und, falls Epic #346 eine #365-Zeile führt,
   deren Stand. Feature-Ideen und `CLAUDE.md` bleiben bei #379.
@@ -482,7 +507,7 @@ danach `fix:`/`test:`/`docs:` aus Review und Live-Lauf.
 |---|---|---|---|---|---|
 | T1 | **Zuerst** Orakel des Aus-Pfads auf dem `main`-Stand (7.4), dann Parser, Delta-Modell, `AmbiguousDelta`-Wert, Aus-Zweig auf das neue Modell, 11 Test-Konstruktionen, Parser-Tests | sonnet | 0,75 T | 3.1, E1, 7.1, 7.4 „Orakel"; `SevenTvDispatchParser.cs`, `SevenTvModels.cs`, `SevenTvSyncService.ApplyDeltaAttemptAsync` (nur Aus-Lesestellen), Fixtures | Orakel grün vor dem Umbau (Commit 0b) und unverändert grün danach; Parser-Tests grün (AK 18); alle Delta-Tests unverändert grün; drei Suiten bauen; Commit (1) |
 | T2 | Entscheidungsklasse (rein, BCL), je Emote gegen den Ausgangsstand, Wiederverwendung der D13-Ableitung aus `EmoteSlotReconcilePlanner` | **opus** | 1 T | Abschnitt 4 vollständig (E3–E8, E10, E12), 3.3, 7.2; `EmoteSlotReconcilePlanner` (`SlotState`, `Derive`) | 7.2 grün inkl. Permutationen, jede Regel trägt im Code ihren Verweis (§7.2/D17 bzw. Plan-Kürzel), Commit (2) |
-| T3 | Integration bei Flag an: Lesen der Slots hinter der Sperre, Seed-Abfrage, Deckung, Plan anwenden, D13, Leave-Regel inkl. E7-Ausnahme (Leave-only-Commit), Plausibilität auf dem Plan, Wiederholung (E9), Slot-Schlüsselkonflikt → `AmbiguousDelta`, Logzeile; DECISIONS, Operations, Spec-Nachtrag | **opus** | 1,5 T | 3.2–3.4, Abschnitte 5, 6, 7.3, 7.4, 10; Plan-372 2.2 (E24) und Z8; `EmoteTagService` (`Holds`); Ergebnis T1/T2 | 7.3 und 7.4 grün, ganze Infrastructure-Suite grün, Commit (3) |
+| T3 | Integration bei Flag an: Lesen der Slots hinter der Sperre, Seed-Abfrage, Deckung, Plan anwenden, D13, Leave-Regel inkl. E7-Ausnahme (Leave-only-Commit), Plausibilität auf dem Plan, Wiederholung (E9), Slot-Schlüsselkonflikt → `AmbiguousDelta`, Logzeile; **im selben Commit (Regel 3):** DECISIONS-Absatz „Child 4" (zwischen „Child 3" und „Child 6", mit R1/R4/R5 als Betreiberentscheidung und R3 als bekannter Grenze), Operations-Flag-Zeile, Spec-Nachträge §7.2 (`updated`, `pulled`, Satz „schreibt nichts"), AK 20 und §14 (Grenze zu D17) nach Abschnitt 10 | **opus** | 1,5 T | 3.2–3.4, Abschnitte 5, 6, 7.3, 7.4, 10, „Betreiber-Entscheidungen"; Plan-372 2.2 (E24) und Z8; `EmoteTagService` (`Holds`); Ergebnis T1/T2 | 7.3 und 7.4 grün, ganze Infrastructure-Suite grün, Spec- und DECISIONS-Stellen gepflegt, Commit (3) |
 | T4 | Worker: Abbildung E11, `AmbiguousDelta`-Zweig, Test | sonnet | 0,25 T | 3.5, 7.5; `SevenTvEventClient.cs` | Worker.Tests grün, Commit (4) |
 | T5 | Live-Verifikation mit Toren G–G4 | sonnet | 0,75 T + Betreiberzeit | Abschnitt 8; jeder 7TV-POST erst nach Freigabe im Chat | Protokoll 8.1–8.5 mit Ergebnis je Tor und getrenntem Nachweis „Delta schrieb nichts", Set wiederhergestellt, Abbau erledigt, Fixture-Kandidaten abgelegt |
 | T6 | Review, Gates, PR | **opus** (Review); Codex Sol | 0,5 T | Branch, Abschnitte 0, 1.3, 9, 10, 12 | `dotnet test EmotePurge.slnx` grün, `npm --prefix web test -- --watch=false` grün, kein E2E (kein `web/`), `dotnet format` sauber, Probe-`migrations add` leer, erst committen dann `node scripts/coverage-local.mjs --backend-only` ≥ 80 %, `/codex:review --model gpt-6.1-sol --scope branch --base origin/main` aus dem Worktree, Befund unverändert vorgelegt (Widerspruch zum Opus-Review → Fable nur über die strittigen Findings), PR mit AK-Tabelle (18–21; 44 anteilig), Kommentare an #375, #378, #379 mit Abschnitt 12 |
@@ -510,32 +535,24 @@ Index-Vorprüfung, Deckung/Wiederholung, Live-Lauf mit vier Toren). Ob T2 oder e
 
 ## 13. Rückfragen an den Betreiber
 
-- **R1 [A] — Pull eines unbekannten Namens.** Ein `pulled (X, n)` trifft ein aktives Emote, dessen **Ausgangsstand** (E6) aktive Slots, aber
-  keinen namens `n` hat (verpasste Umbenennung, veralteter Stand nach einer Aus-Phase oder einem veralteten REST, doppelte Zustellung).
-  Spec: nicht geregelt, wörtlich gelesen ein No-op — der veraltete Slot bliebe aktiv und zählbar bis zum nächsten REST-Tick. Seit Revision 1
-  wird gegen den Ausgangsstand aufgelöst und gemischte Arten sind ohnehin mehrdeutig, R1 betrifft also nur noch reine Pull-Dispatches.
-  **Empfehlung: `AmbiguousDelta`** (sofortiger Resync, symmetrisch zu „Umbenennung: Slot nicht gefunden"); Preis: ein zusätzlicher
-  REST-Aufruf bei doppelten Pull-Zustellungen.
-- **R2 — Umfang der Live-Prüfung.** Abschnitt 8 braucht rund 12 freigegebene 7TV-Schreibzugriffe auf das Set von `olaf_olaf_son` (Phase A:
-  3, Phase B: 7, Wiederherstellung: 1–2), dazu vier Worker-Neustarts an den Toren G1–G4 (je bis zu 30 min Warten auf 7TVs REST) und zwei
-  Pflicht-Testnachrichten des Betreibers (8.3 ii und iv). **Empfehlung:** so freigeben; die Testnachrichten belegen als Einzige live, dass ein
-  Push-Slot vor der REST-Autorisierung zählt (Übergabe #373).
-- **R3 — Rückkehr eines entfernten Alias zählt bis zum REST-Nachlauf nicht.** Ein Push unter dem Namen eines archivierten Slots ist nach D17
-  mehrdeutig und schreibt nichts; ist 7TVs REST-Cache veraltet (10–30 min, SevenTV#81), bleibt das Emote so lange archiviert und ungezählt —
-  heute (Flag aus) zählt es sofort. Ein provisorischer Slot würde die Historie spalten (D7), eine Zählung ohne Slot gibt es bei Flag an nicht
-  (Plan-373 E7). **Empfehlung: hinnehmen** (Spec-Folge von D17, selten, nach dem nächsten aktuellen REST-Tick geheilt); im DECISIONS-Absatz
-  als bekannte Grenze. Dasselbe gilt seit Revision 1 für jeden Push im virtuellen Zustand (E5).
-- **R4 [A] — Umbenennung in place nur bei genau einem aktiven Slot (Sol-P1-1).** Spec AK 20 nennt „Rename `(X, probeB → probeC)` → in place"
-  bei zwei Slots; auf dem Draht ist das der 7TV-Quirk (`value.name` = Name des ersten Slots), und eine Annahme stützt sich auf unsere
-  Geschwisternamen, die ein veralteter REST zurückdreht — dann landet Zählung dauerhaft am falschen Slot. **Empfehlung: ja** —
-  Mehr-Slot-Umbenennungen als `AmbiguousDelta`, REST benennt per Datums-Identität um. Preis: nach einer Umbenennung eines Mehr-Slot-Emotes
-  zählt der neue Name erst ab dem nächsten aktuellen REST (bis zu 30 min), statt sofort. AK 20 wird im Spec-Nachtrag auf ein
-  Ein-Slot-Beispiel umgestellt.
-- **R5 [A] — Leave-Beobachtung trotz mehrdeutigem Dispatch (Sol-P1-2).** Spec §7.2: „`AmbiguousDelta` schreibt nichts". Wörtlich verliert
-  ein Dispatch mit einer mehrdeutigen Änderung auch die Abgangsmeldung eines anderen, eindeutig zuletzt gezogenen Emotes; kehrt dieses
-  innerhalb des 30-min-Fensters zurück, holt REST sie nie nach, und eine Tag-Platzierung gilt über den Abgang hinweg. **Empfehlung: ja** —
-  „nichts" heißt „kein Inventar"; Leaves mit für sich eindeutigem Ausgang „kein aktiver Slot mehr" werden beobachtet (E7), wie `main` es für
-  jede gezogene Id tut. Preis: ein zweiter, schmaler Schreibweg im mehrdeutigen Zweig (eigene Tests).
+Entschieden am 12.10. (Abschnitt „Betreiber-Entscheidungen (12.10.)"), jeweils wie empfohlen:
+
+- **R1 [A] — Pull eines unbekannten Namens: `AmbiguousDelta`.** Gilt für reine Pull-Dispatches, deren Ausgangsstand (E6) aktive Slots,
+  aber keinen mit dem gezogenen Namen hat; Preis: ein zusätzlicher REST-Aufruf bei doppelten Pull-Zustellungen.
+- **R3 — Rückkehr eines entfernten Alias zählt bis zum REST-Nachlauf nicht: hingenommen**, als bekannte Grenze in DECISIONS „Child 4" und
+  Spec §14 dokumentiert (gilt ebenso für jeden Push im virtuellen Zustand, E5).
+- **R4 [A] — Umbenennung in place nur bei genau einem aktiven Slot:** Mehr-Slot-Umbenennungen sind `AmbiguousDelta`, REST benennt per
+  Datums-Identität um; das AK-20-Beispiel wird auf einen Slot umgestellt. Preis: der neue Name eines Mehr-Slot-Emotes zählt erst ab dem
+  nächsten aktuellen REST.
+- **R5 [A] — Leaves trotz mehrdeutigem Dispatch beobachten:** „schreibt nichts" heißt „kein Inventar"; Leaves mit eindeutigem Ausgang „kein
+  aktiver Slot mehr" werden geschrieben (E7), als Ergänzung zu Spec §7.2.
+
+Offen:
+
+- **R2 — Freigabe des Live-Laufs.** Abschnitt 8 braucht rund 12 freigegebene 7TV-Schreibzugriffe auf das Set von `olaf_olaf_son` (Phase A:
+  3, Phase B: 7, Wiederherstellung: 1–2), vier Worker-Neustarts an den Toren G1–G4 (je bis zu 30 min Warten auf 7TVs REST) und zwei
+  Pflicht-Testnachrichten des Betreibers (8.3 ii und iv). Wird vor T5 eingeholt. **Empfehlung:** so freigeben; die Testnachrichten belegen
+  als Einzige live, dass ein Push-Slot vor der REST-Autorisierung zählt (Übergabe #373).
 
 ## 14. Risiken für das adversariale Review
 
