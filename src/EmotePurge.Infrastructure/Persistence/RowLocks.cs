@@ -24,7 +24,8 @@ namespace EmotePurge.Infrastructure.Persistence;
 /// autocommit would release the lock the moment it returns.</item>
 /// </list>
 /// Across tables the order is always <c>Channels</c>, then <c>Emotes</c>, then
-/// <c>EmoteSetLeaveObservations</c>.
+/// <c>EmoteSetLeaveObservations</c>. The one shared entry, <see cref="LockEmotesForShareByIdsAsync"/>
+/// (plan #373 E11a), sits in the <c>Emotes</c> position of that order like every other emote entry.
 /// </summary>
 internal static class RowLocks
 {
@@ -44,6 +45,31 @@ internal static class RowLocks
         var ids = emoteIds.Distinct(StringComparer.Ordinal).ToArray();
         return await db.Database
             .SqlQuery<string>($"""SELECT "Id" AS "Value" FROM "Emotes" WHERE "Id" = ANY({ids}) ORDER BY "Id" COLLATE "C" FOR NO KEY UPDATE""")
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Locks the <c>Emotes</c> rows with the given ids <c>FOR SHARE</c> and returns the ids found and
+    /// locked, in lock order (plan #373 E11a). The reader's entry: the backfill block replace takes it
+    /// after its channel <c>KEY SHARE</c> and before it reads the snapshot's slot ids, so it serializes
+    /// with every writer that moves rows or snapshot entries of those emotes under
+    /// <c>FOR NO KEY UPDATE</c> (the settle, the enqueue, flush phase 2): whichever comes first, the
+    /// other waits. Two share lockers do not wait for each other, and the <c>FOR KEY SHARE</c> of a
+    /// foreign-key insert is not blocked. Same order rules as the exclusive entries (sorted with
+    /// <c>COLLATE "C"</c>, one statement, open transaction required).
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> LockEmotesForShareByIdsAsync(
+        this AppDbContext db, IReadOnlyCollection<string> emoteIds, CancellationToken cancellationToken)
+    {
+        RequireTransaction(db);
+        if (emoteIds.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = emoteIds.Distinct(StringComparer.Ordinal).ToArray();
+        return await db.Database
+            .SqlQuery<string>($"""SELECT "Id" AS "Value" FROM "Emotes" WHERE "Id" = ANY({ids}) ORDER BY "Id" COLLATE "C" FOR SHARE""")
             .ToListAsync(cancellationToken);
     }
 

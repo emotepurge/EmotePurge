@@ -1049,12 +1049,116 @@ shows the plain "counting since" sentence, and the vote rows you care about are 
 ## Slot-aware 7TV reconcile (feature flag)
 
 Epic #365 tracks every set entry of an emote as its own slot (one emote under two aliases is two slots). The
-reconcile, the v4 date overlay and the slot readers stay off until the flag is switched on; with the flag off the
-system behaves exactly as before the slot work.
+reconcile, the v4 date overlay and the slot readers stay off until the flag is switched on. With the flag off the
+system behaves as before the slot work, with one difference since #373: usage rows carry the slot of their
+(emote, set) pair, and a pair counted for the first time gets an unsettled seed slot with that first row.
 
 | Key | Default | Compose variable | Meaning |
 |---|---|---|---|
-| `SevenTv:SlotReconcile:Enabled` | `false` | `SEVENTV_SLOT_RECONCILE_ENABLED` | Read by **api and worker**; set both together. The value is read once at startup, so a change needs a restart. Off: emote-wide reconcile and readers, no writes to `EmoteSlots`. |
+| `SevenTv:SlotReconcile:Enabled` | `false` | `SEVENTV_SLOT_RECONCILE_ENABLED` | Read by **api and worker**; set both together. The value is read once at startup, so a change needs a restart. Off: emote-wide reconcile and readers; the match map keeps today's names (one per emote) and counts onto the slot of the (emote, active set) pair. No writes to `EmoteSlots` except unsettled base seeds, created together with a pair's first counted row (usage flush) or by a backfill enqueue. On: the slot reconcile, and the match map counts per slot — an emote that still has an unsettled seed of the active set is not counted until the reconcile settles it. |
+
+### Usage key switch (M2, #373)
+
+From #373 on, usage is counted per slot: the flush writes `UsageStats.SlotId` and upserts on
+`(SlotId, EmoteSetId, Date)`; it never writes a row without a slot. The migration
+`SwitchUsageStatsToSlotKey` (M2) first gives every row still without a slot the slot of its
+(emote, set) pair — rows that images from before #373 wrote after `AddEmoteSlots` — then makes
+`UsageStats.SlotId` NOT NULL and swaps the unique key from `(EmoteId, EmoteSetId, Date)` to
+`(SlotId, EmoteSetId, Date)`; the emote index stays as a non-unique index. It refuses to run, and
+changes nothing, if a check fails: a row without a slot after the attach step, a row on a slot of
+another emote, two unsettled seeds carrying rows of the same (emote, set), an unsettled seed carrying
+rows of two sets, or a queued, running or paused backfill run with a snapshot row without a slot.
+
+Every image from #373 on needs M2 (api and worker refuse to start with a pending migration). **Never
+run an image from before #373 against a database with M2**: its flush targets the old unique key, which
+no longer exists, so every flush fails. The flag above is independent of M2 and stays off.
+
+**Window**, short, with the first deploy that contains #373:
+
+1. Announce it outside big streams. Stop **worker and api**; `pg_stat_activity` shows no
+   `EmotePurge%` session any more.
+2. Back up with `scripts/backup-postgres.sh`.
+3. Precondition: `SELECT count(*) FROM "ChatLogBackfillRuns" WHERE "Status" IN ('queued', 'running', 'paused');`
+   returns 0. Otherwise cancel those runs first (see "Chat-log backfill"); M2 would abort on them.
+4. Measure the window: `SELECT count(*) FROM "UsageStats";` and
+   `SELECT count(*) FROM "UsageStats" WHERE "SlotId" IS NULL;` (the rows the attach step has to place).
+5. Tunnel to the database as described under "Prod-Migration" in `CLAUDE.md`, then list:
+
+   ```sh
+   dotnet ef migrations list --project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api \
+     --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<DB-PASSWORD>;Command Timeout=600'
+   ```
+
+   Expect exactly `20261012111509_SwitchUsageStatsToSlotKey` as `(Pending)`. More than that means the database is
+   behind by more than this release: review those migrations first.
+6. Apply it, naming the target:
+
+   ```sh
+   dotnet ef database update 20261012111509_SwitchUsageStatsToSlotKey --project src/EmotePurge.Infrastructure \
+     --startup-project src/EmotePurge.Api \
+     --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<DB-PASSWORD>;Command Timeout=600'
+   ```
+
+   `Command Timeout=600` because the attach and the index rebuild run as single statements over the
+   whole table. The migration takes `ACCESS EXCLUSIVE` on `UsageStats` with a 5-second
+   `lock_timeout`; a lock timeout means a session is still open (step 1).
+7. `migrations list` again: nothing pending. Note the time (`SELECT now();`), then bring **both new
+   images up together**.
+8. Check within five minutes: no flush errors in the worker log, `usage.flushed` events, today's row
+   count grows (`SELECT count(*) FROM "UsageStats" WHERE "Date" = current_date;`), and only a few new
+   seeds (`SELECT count(*) FROM "EmoteSlots" WHERE "SeedUnsettled" AND "LastSyncedAt" > '<time from step 7>';`
+   — one per (emote, set) counted for the first time). Take the time after `database update`, not
+   the window start: M2's attach step also creates seeds, stamped with the migration's time, for the
+   pairs first counted between `AddEmoteSlots` and M2 (the rows without a slot from step 4), and those
+   are expected however many there are.
+
+**Rollback** while the flag is off: with the flag off at most one slot per (emote, set) carries rows,
+so M2's `Down` is lossless. Stop worker and api, back up, then
+
+```sh
+dotnet ef database update 20261011184206_AddEmoteSlots --project src/EmotePurge.Infrastructure \
+  --startup-project src/EmotePurge.Api \
+  --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<DB-PASSWORD>;Command Timeout=600'
+```
+
+and bring up the images from before #373. Slot ids and the seeds created since stay; the rows the old
+images write without a slot are attached again by a later M2. `Down` refuses while an
+(emote, set, day) has more than one row — two slots of one emote counted on the same day, which only a
+phase with the flag on produces. Then run the collapse statement first, in one transaction, and repeat
+`Down`; it keeps the row of the oldest slot (earliest `AddedAt`, then name, ordinal) and sums the three
+counters onto it:
+
+```sql
+WITH ranked AS (
+    SELECT u."Id",
+           ROW_NUMBER() OVER w AS rn,
+           COUNT(*) OVER g AS cnt,
+           SUM(u."UseCount") OVER g AS use_sum,
+           SUM(u."BotUseCount") OVER g AS bot_sum,
+           SUM(u."SharedChatUseCount") OVER g AS shared_sum,
+           MIN(u."Source") OVER g AS min_source
+    FROM "UsageStats" u
+    LEFT JOIN "EmoteSlots" s ON s."Id" = u."SlotId"
+    WINDOW g AS (PARTITION BY u."EmoteId", u."EmoteSetId", u."Date"),
+           w AS (g ORDER BY s."AddedAt" ASC NULLS LAST, s."Name" COLLATE "C" ASC NULLS LAST,
+                            u."SlotId" ASC NULLS LAST, u."Id")
+),
+updated AS (
+    UPDATE "UsageStats" t
+    SET "UseCount" = r.use_sum,
+        "BotUseCount" = r.bot_sum,
+        "SharedChatUseCount" = r.shared_sum,
+        "Source" = r.min_source
+    FROM ranked r
+    WHERE t."Id" = r."Id" AND r.rn = 1 AND r.cnt > 1
+    RETURNING t."Id"
+)
+DELETE FROM "UsageStats" t
+USING ranked r
+WHERE t."Id" = r."Id" AND r.rn > 1;
+```
+
+The statement is `EmoteSlotRollbackSql.CollapseUsageStatsSql`; keep both texts identical.
 
 ## Database backup and restore
 

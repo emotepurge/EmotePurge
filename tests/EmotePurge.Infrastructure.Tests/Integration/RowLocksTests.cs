@@ -77,6 +77,7 @@ public class RowLocksTests(PostgresFixture fixture)
         await Assert.ThrowsAsync<InvalidOperationException>(() => db.LockEmotesByIdsAsync(["x"], CancellationToken.None));
         await Assert.ThrowsAsync<InvalidOperationException>(() => db.LockEmotesForReconcileAsync("c", ["x"], CancellationToken.None));
         await Assert.ThrowsAsync<InvalidOperationException>(() => db.LockChannelsByIdsAsync(["x"], CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.LockEmotesForShareByIdsAsync(["x"], CancellationToken.None));
         // Even with nothing to lock: a caller outside a transaction is a bug whether or not it finds rows.
         await Assert.ThrowsAsync<InvalidOperationException>(() => db.LockEmotesByIdsAsync([], CancellationToken.None));
     }
@@ -93,8 +94,15 @@ public class RowLocksTests(PostgresFixture fixture)
         await using var lockTransaction = await locker.Database.BeginTransactionAsync();
         await locker.LockEmotesByIdsAsync([emotes[0]], CancellationToken.None);
 
+        // The slot comes from its own context: the probes below must hold only the lock under test.
+        string slotId;
+        await using (var slotDb = fixture.CreateDbContext())
+        {
+            slotId = await slotDb.SeedUsageSlotAsync(emotes[0]);
+        }
+
         await using var writer = fixture.CreateTaggedDbContext("rowlocks-keyshare-writer");
-        writer.UsageStats.Add(new UsageStat { EmoteId = emotes[0], EmoteSetId = "SETKS", Date = new DateOnly(2026, 10, 1), UseCount = 3 });
+        writer.UsageStats.Add(new UsageStat { EmoteId = emotes[0], SlotId = slotId, EmoteSetId = "SETKS", Date = new DateOnly(2026, 10, 1), UseCount = 3 });
         await writer.SaveChangesAsync().WaitAsync(TimeSpan.FromSeconds(10));
         await lockTransaction.RollbackAsync();
 
@@ -105,11 +113,85 @@ public class RowLocksTests(PostgresFixture fixture)
         await strong.Database.ExecuteSqlRawAsync($"""SELECT 1 FROM "Emotes" WHERE "Id" = '{emotes[0]}' FOR UPDATE""");
 #pragma warning restore EF1002
         await using var blocked = fixture.CreateTaggedDbContext("rowlocks-keyshare-blocked");
-        blocked.UsageStats.Add(new UsageStat { EmoteId = emotes[0], EmoteSetId = "SETKS", Date = new DateOnly(2026, 10, 2), UseCount = 1 });
+        blocked.UsageStats.Add(new UsageStat { EmoteId = emotes[0], SlotId = slotId, EmoteSetId = "SETKS", Date = new DateOnly(2026, 10, 2), UseCount = 1 });
         var insert = blocked.SaveChangesAsync();
         await fixture.WaitUntilBlockedOnLockAsync("rowlocks-keyshare-blocked", insert);
         await strongTransaction.RollbackAsync();
         await insert;
+    }
+
+    [Fact]
+    public async Task LockEmotesForShare_BlocksANoKeyUpdateLocker_UntilItCommits()
+    {
+        // E11a, block first: the block replace holds FOR SHARE; the settle (or enqueue, flush phase 2)
+        // asks for FOR NO KEY UPDATE and must wait.
+        var (_, emotes) = await SeedAsync("rowlocks_share_blocks", ("e1", false), ("e2", false));
+
+        await using var reader = fixture.CreateDbContext();
+        await using var readerTransaction = await reader.Database.BeginTransactionAsync();
+        Assert.Equal(emotes.Order(StringComparer.Ordinal).ToList(), await reader.LockEmotesForShareByIdsAsync([emotes[1], emotes[0], emotes[1]], CancellationToken.None));
+        Assert.Empty(await reader.LockEmotesForShareByIdsAsync([], CancellationToken.None));
+        Assert.Empty(reader.ChangeTracker.Entries());
+
+        await using var writer = fixture.CreateTaggedDbContext("rowlocks-share-blocks-writer");
+        await using var writerTransaction = await writer.Database.BeginTransactionAsync();
+        var waiting = writer.LockEmotesByIdsAsync([emotes[0]], CancellationToken.None);
+        await fixture.WaitUntilBlockedOnLockAsync("rowlocks-share-blocks-writer", waiting);
+
+        await readerTransaction.CommitAsync();
+        Assert.Equal([emotes[0]], await waiting);
+    }
+
+    [Fact]
+    public async Task LockEmotesForShare_WaitsForANoKeyUpdateHolder_ButNotForAnotherShareHolder()
+    {
+        // E11a, settle first: the share locker waits. Two share lockers (two block replaces) do not.
+        var (_, emotes) = await SeedAsync("rowlocks_share_waits", ("e1", false));
+
+        await using var otherReader = fixture.CreateDbContext();
+        await using var otherReaderTransaction = await otherReader.Database.BeginTransactionAsync();
+        await otherReader.LockEmotesForShareByIdsAsync([emotes[0]], CancellationToken.None);
+        await using (var secondReader = fixture.CreateDbContext())
+        await using (var secondReaderTransaction = await secondReader.Database.BeginTransactionAsync())
+        {
+            Assert.Equal([emotes[0]], await secondReader.LockEmotesForShareByIdsAsync([emotes[0]], CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)));
+        }
+
+        await otherReaderTransaction.RollbackAsync();
+
+        await using var settle = fixture.CreateDbContext();
+        await using var settleTransaction = await settle.Database.BeginTransactionAsync();
+        await settle.LockEmotesByIdsAsync([emotes[0]], CancellationToken.None);
+
+        await using var reader = fixture.CreateTaggedDbContext("rowlocks-share-waits-reader");
+        await using var readerTransaction = await reader.Database.BeginTransactionAsync();
+        var waiting = reader.LockEmotesForShareByIdsAsync([emotes[0]], CancellationToken.None);
+        await fixture.WaitUntilBlockedOnLockAsync("rowlocks-share-waits-reader", waiting);
+        Assert.Contains("FOR SHARE", await fixture.WaitingQueryAsync("rowlocks-share-waits-reader"));
+
+        await settleTransaction.CommitAsync();
+        Assert.Equal([emotes[0]], await waiting);
+    }
+
+    [Fact]
+    public async Task LockEmotesForShare_DoesNotBlockTheKeyShareOfAForeignKeyInsert()
+    {
+        var (_, emotes) = await SeedAsync("rowlocks_share_keyshare", ("e1", false));
+
+        await using var reader = fixture.CreateDbContext();
+        await using var readerTransaction = await reader.Database.BeginTransactionAsync();
+        await reader.LockEmotesForShareByIdsAsync([emotes[0]], CancellationToken.None);
+
+        string slotId;
+        await using (var slotDb = fixture.CreateDbContext())
+        {
+            slotId = await slotDb.SeedUsageSlotAsync(emotes[0]);
+        }
+
+        await using var writer = fixture.CreateTaggedDbContext("rowlocks-share-keyshare-writer");
+        writer.UsageStats.Add(new UsageStat { EmoteId = emotes[0], SlotId = slotId, EmoteSetId = "SETKS", Date = new DateOnly(2026, 10, 1), UseCount = 3 });
+        await writer.SaveChangesAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        await readerTransaction.RollbackAsync();
     }
 
     [Fact]

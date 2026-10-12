@@ -44,14 +44,17 @@ internal static class SlotSyncKit
         ISevenTvApiClient apiClient,
         bool slotsEnabled,
         EmoteMatchCache? cache = null,
-        ILogger<SevenTvSyncService>? logger = null) =>
+        ILogger<SevenTvSyncService>? logger = null,
+        MatchMapExclusionTracker? exclusions = null,
+        DuplicateEmoteNameTracker? duplicates = null) =>
         new(
-            db, apiClient, cache ?? new EmoteMatchCache(), new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db),
+            db, apiClient, cache ?? new EmoteMatchCache(), duplicates ?? new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db),
             new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db),
             new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
             logger ?? new RecordingLogger<SevenTvSyncService>(),
-            new SlotReconcileOptions { Enabled = slotsEnabled });
+            new SlotReconcileOptions { Enabled = slotsEnabled },
+            exclusions);
 
     /// <summary>One sync of <paramref name="channel"/> against <paramref name="emotes"/> as set <paramref name="setId"/>.</summary>
     public static Task<SevenTvSyncResult?> SyncAsync(
@@ -136,7 +139,7 @@ internal static class SlotSyncKit
         SeedSlotAsync(db, emote, emote.Name, addedAt: null, fromRest: false, archived: emote.IsArchived, archivedAt: emote.ArchivedAt, seedUnsettled: true);
 
     /// <summary>Usage rows of <paramref name="emote"/> in <paramref name="setId"/> on consecutive past days, all on <paramref name="slot"/>.</summary>
-    public static async Task SeedUsageAsync(AppDbContext db, Emote emote, EmoteSlot? slot, string setId, params int[] dailyCounts)
+    public static async Task SeedUsageAsync(AppDbContext db, Emote emote, EmoteSlot slot, string setId, params int[] dailyCounts)
     {
         var day = new DateOnly(2026, 8, 1);
         foreach (var count in dailyCounts)
@@ -144,7 +147,7 @@ internal static class SlotSyncKit
             db.UsageStats.Add(new UsageStat
             {
                 EmoteId = emote.Id,
-                SlotId = slot?.Id,
+                SlotId = slot.Id,
                 EmoteSetId = setId,
                 Date = day,
                 UseCount = count,
@@ -169,7 +172,7 @@ internal static class SlotSyncKit
     public static Task<Emote> EmoteAsync(AppDbContext db, Channel channel, string sevenTvId) =>
         db.Emotes.AsNoTracking().SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == sevenTvId);
 
-    /// <summary>Usage rows per slot id (null for unslotted): row count and summed use count.</summary>
+    /// <summary>Usage rows per slot id: row count and summed use count.</summary>
     public static async Task<Dictionary<string, (int Rows, int Uses)>> UsageBySlotAsync(AppDbContext db, string emoteId, string setId)
     {
         var rows = await db.UsageStats.AsNoTracking()
@@ -177,7 +180,7 @@ internal static class SlotSyncKit
             .Select(u => new { u.SlotId, u.UseCount })
             .ToListAsync();
         return rows
-            .GroupBy(r => r.SlotId ?? "<null>")
+            .GroupBy(r => r.SlotId)
             .ToDictionary(g => g.Key, g => (g.Count(), g.Sum(r => r.UseCount)));
     }
 

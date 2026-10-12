@@ -24,7 +24,8 @@ public class SevenTvSyncService(
     TwitchIdResolutionBackoff resolutionBackoff,
     IEmptySetConfirmationTracker emptySetConfirmations,
     ILogger<SevenTvSyncService> logger,
-    SlotReconcileOptions? slotReconcile = null)
+    SlotReconcileOptions? slotReconcile = null,
+    MatchMapExclusionTracker? matchMapExclusions = null)
     : ISevenTvSyncService
 {
     private const string EmoteKeyIndexName = "IX_Emotes_ChannelId_SevenTvEmoteId";
@@ -51,6 +52,10 @@ public class SevenTvSyncService(
     // Plan #372 E26: read once from the singleton options; absent (tests, older call sites) means off,
     // which is the emote-wide reconcile exactly as before the slot work.
     private readonly bool slotReconcileEnabled = slotReconcile?.Enabled ?? false;
+
+    // Plan #373, E7: the process-wide memory of the flag-on map's left-out count per channel, so its
+    // information line is written on change only. Absent (tests) means a private one.
+    private readonly MatchMapExclusionTracker exclusionTracker = matchMapExclusions ?? new MatchMapExclusionTracker();
 
     public async Task WarmChannelAsync(string channelName, CancellationToken cancellationToken = default)
     {
@@ -698,11 +703,11 @@ public class SevenTvSyncService(
         // with a plain SELECT, so the report never waits on an observation row (spec 5.5 rule 6).
         //
         // Lock order, flag on (plan #372 E4, E23): the channel row first, then the emote rows the
-        // reconcile can write (sorted), then the usage rows of the settle, then the observation rows,
-        // then the save (slots, emotes ⊆ locked ∪ new, the channel row already held). Purge, merge,
-        // join, identity reconcile, tag report and backfill enqueue all take Channels before Emotes as
-        // well, so none of them forms a cycle with the sync; the cycles that remain (2.2a) end in the
-        // deadlock retry of SaveSyncAsync.
+        // reconcile can write (sorted), then the usage rows of the settle and the backfill snapshot rows
+        // it rebinds (plan #373 E10, E11a), then the observation rows, then the save (slots, emotes ⊆
+        // locked ∪ new, the channel row already held). Purge, merge, join, identity reconcile, tag
+        // report and backfill enqueue all take Channels before Emotes as well, so none of them forms a
+        // cycle with the sync; the cycles that remain (2.2a) end in the deadlock retry of SaveSyncAsync.
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         bool inventoryChanged;
         SlotReconcileSummary? slotSummary = null;
@@ -818,14 +823,14 @@ public class SevenTvSyncService(
     /// </summary>
     private async Task WarmMatchCacheIfEmptyAsync(Channel channel, CancellationToken cancellationToken)
     {
-        if (emoteMatchCache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Count != 0)
+        if (emoteMatchCache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.Count != 0)
         {
             return;
         }
 
         await RefreshMatchCacheAsync(channel, cancellationToken);
 
-        var warmedCount = emoteMatchCache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Count;
+        var warmedCount = emoteMatchCache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.Count;
         if (warmedCount > 0)
         {
             logger.LogInformation(
@@ -1099,33 +1104,12 @@ public class SevenTvSyncService(
 
     private async Task RefreshMatchCacheAsync(Channel channel, string channelName, CancellationToken cancellationToken)
     {
-        var activeEmotes = await db.Emotes
-            .Where(e => e.ChannelId == channel.Id && !e.IsArchived)
-            .Select(e => new { e.Name, e.Id })
-            .ToListAsync(cancellationToken);
-
-        // 7TV active sets can legitimately contain two emotes sharing the same chat alias
-        // (observed live) — ToDictionary would throw, so duplicates are coalesced instead,
-        // keeping whichever was loaded first (the load order above has no OrderBy, so "first" is
-        // whatever Postgres returns). Logged only when the collision set changes: this method
-        // runs on every resync tick, and a static collision would spam the log otherwise. The
-        // full current state is served by EmoteSetStatusService's DuplicateNames field instead.
-        var (emoteNameToId, emoteWideDuplicates) = EmoteNameMatching.Coalesce(
-            activeEmotes.Select(e => new KeyValuePair<string, string>(e.Name, e.Id)));
-
-        // Flag on (plan 372 E15): the tracker reads names off the slots (an emote renamed in 7TV keeps
-        // its old slot, and two aliases of one emote are no collision), while the match map above stays
-        // keyed by Emote.Name until child 3 (D19). Distinct (name, emote) pairs, so that the coalescing
-        // only reports names claimed by more than one emote.
-        var duplicateNames = emoteWideDuplicates;
-        if (slotReconcileEnabled)
-        {
-            var entries = await db.ForChannel(channel.Id).ToListAsync(cancellationToken);
-            duplicateNames = EmoteNameMatching.Coalesce(
-                entries
-                    .Select(x => new KeyValuePair<string, string>(x.Name, x.EmoteId))
-                    .Distinct()).AmbiguousNames;
-        }
+        // Plan #373 §3.2: the map's values are slot keys in both flag states, but who gets an entry
+        // and under which name depends on the flag. Nothing here writes: a slot is only ever created
+        // by the flush (E4) or by a reconcile.
+        var (nameToSlotKey, duplicateNames) = slotReconcileEnabled
+            ? await BuildSlotMatchMapAsync(channel, channelName, cancellationToken)
+            : await BuildEmoteMatchMapAsync(channel, cancellationToken);
 
         if (duplicateNameTracker.Update(channelName, duplicateNames))
         {
@@ -1150,7 +1134,7 @@ public class SevenTvSyncService(
         // start too: it runs before either 7TV call and therefore pairs the emote rows in Postgres
         // with the set id those rows were last reconciled against.
         var previous = emoteMatchCache.GetChannelSnapshot(channelName);
-        emoteMatchCache.ReplaceChannel(channelName, channel.ActiveEmoteSetId, emoteNameToId);
+        emoteMatchCache.ReplaceChannel(channelName, channel.ActiveEmoteSetId, nameToSlotKey);
 
         // Only a swap between two known sets is worth a line — it is what makes the delay between
         // a set switch on 7TV and our observing it measurable in production. Two non-cases: a first
@@ -1169,6 +1153,92 @@ public class SevenTvSyncService(
                 channel.ActiveEmoteSetId,
                 emoteMatchCache.GetChannelSnapshot(channelName).GeneratedAtUtc);
         }
+    }
+
+    /// <summary>
+    /// Flag off (plan #373, E8): today's semantics — every active emote under <c>Emote.Name</c>,
+    /// collisions coalesced onto the first loaded (the load order has no <c>OrderBy</c>, so "first" is
+    /// whatever Postgres returns), the emote-wide collision report. Only the value changed: the base
+    /// slot of (emote, active set) by rule (a) when the pair already has one, else the pending key the
+    /// flush resolves (E4). Read-only.
+    /// </summary>
+    private async Task<(Dictionary<string, string> NameToSlotKey, IReadOnlySet<string> DuplicateNames)> BuildEmoteMatchMapAsync(
+        Channel channel, CancellationToken cancellationToken)
+    {
+        var activeEmotes = await db.Emotes
+            .Where(e => e.ChannelId == channel.Id && !e.IsArchived)
+            .Select(e => new { e.Name, e.Id })
+            .ToListAsync(cancellationToken);
+
+        var baseSlots = await BaseSlotRule.FindAsync(
+            db,
+            [.. activeEmotes.Select(e => new BaseSlotPair(e.Id, channel.ActiveEmoteSetId))],
+            cancellationToken);
+
+        // 7TV active sets can legitimately contain two emotes sharing the same chat alias (observed
+        // live) — ToDictionary would throw, so duplicates are coalesced instead. Logged only when the
+        // collision set changes: this method runs on every resync tick, and a static collision would
+        // spam the log otherwise. The full current state is served by EmoteSetStatusService's
+        // DuplicateNames field instead.
+        var map = EmoteNameMatching.Coalesce(
+            activeEmotes.Select(e => new KeyValuePair<string, string>(
+                e.Name,
+                baseSlots.TryGetValue(new BaseSlotPair(e.Id, channel.ActiveEmoteSetId), out var slotId)
+                    ? slotId
+                    : PendingSlotKey.For(e.Id))));
+        return (map.NameToId, map.AmbiguousNames);
+    }
+
+    /// <summary>
+    /// Flag on (plan #373, E7; D15, AK 15, AK 17): one entry per active, settled slot (not archived,
+    /// not an unsettled seed) of an active emote, under the slot's name, with the slot id as value —
+    /// except for every emote that still has an unsettled seed of the active set, which is left out
+    /// with all of its slots, settled ones included, until a dated reconcile settles it (a deferred
+    /// settle keeps it out, spec §14 (c)). "Seed of the active set" is the settle's own population
+    /// (<see cref="ActiveSetSeeds"/>), so map and settle can never disagree. No virtual entries: an
+    /// active emote without an active own slot has no slot id and counts from the next reconcile on.
+    /// The collision report reads exactly this input, as distinct (name, emote) pairs, so two aliases
+    /// of one emote are no collision. An information line names the number of left-out emotes when it
+    /// changes for the channel. Read-only.
+    /// </summary>
+    private async Task<(Dictionary<string, string> NameToSlotKey, IReadOnlySet<string> DuplicateNames)> BuildSlotMatchMapAsync(
+        Channel channel, string channelName, CancellationToken cancellationToken)
+    {
+        var activeSetSeeds = ActiveSetSeeds(channel.Id, channel.ActiveEmoteSetId);
+        var entries = await db.EmoteSlots
+            .Where(s => !s.IsArchived && !s.SeedUnsettled
+                        && s.Emote.ChannelId == channel.Id && !s.Emote.IsArchived
+                        && !activeSetSeeds.Any(seed => seed.EmoteId == s.EmoteId))
+            .Select(s => new { s.Name, s.Id, s.EmoteId })
+            .ToListAsync(cancellationToken);
+
+        var excludedEmotes = await activeSetSeeds
+            .Where(seed => !seed.Emote.IsArchived)
+            .Select(seed => seed.EmoteId)
+            .Distinct()
+            .CountAsync(cancellationToken);
+        if (exclusionTracker.Update(channelName, excludedEmotes))
+        {
+            if (excludedEmotes > 0)
+            {
+                logger.LogInformation(
+                    "{Channel}: {Count} active emotes are not counted until their unsettled seed of the active set is settled.",
+                    channelName, excludedEmotes);
+            }
+            else
+            {
+                logger.LogInformation(
+                    "{Channel}: every active emote with a slot is counted again — no unsettled seed of the active set is left.",
+                    channelName);
+            }
+        }
+
+        var map = EmoteNameMatching.Coalesce(entries.Select(e => new KeyValuePair<string, string>(e.Name, e.Id)));
+        var duplicateNames = EmoteNameMatching.Coalesce(
+            entries
+                .Select(e => new KeyValuePair<string, string>(e.Name, e.EmoteId))
+                .Distinct()).AmbiguousNames;
+        return (map.NameToId, duplicateNames);
     }
 
     /// <summary>
@@ -1240,7 +1310,9 @@ public class SevenTvSyncService(
     /// (slots, D13 name and date);</item>
     /// <item>per emote without live entry: its active own slots are archived, then the emote-level
     /// archive, leave detection and measurement log exactly as with the flag off;</item>
-    /// <item>moves the settled seeds' active-set usage rows (bulk update), then upserts the leaves.</item>
+    /// <item>moves the active-set usage rows of every seed settled onto an existing target, as a merge
+    /// (plan #373 E10), and the backfill snapshot rows pointing at it (E11a), then upserts the
+    /// leaves.</item>
     /// </list>
     /// Returns whether the visible inventory changed (E18) and the counts for the per-channel log
     /// lines, which <see cref="ApplyAndSaveAsync"/> writes after the commit.
@@ -1333,13 +1405,14 @@ public class SevenTvSyncService(
         var (absentChanged, leaves) = await ArchiveAbsentEmotesAsync(channelId, activeEmoteSetId, existing, liveIds, now, cancellationToken);
         changed |= absentChanged;
 
-        // Lock order E4: usage rows (settle) before the observation rows. Only the rows of the
-        // active set move; the seed's other sets keep theirs (D12).
+        // Lock order E4: usage rows (settle), then the backfill snapshot rows, before the observation
+        // rows. Only the rows of the active set move; the seed's other sets keep theirs (D12).
         foreach (var rebind in rebinds.OrderBy(r => r.FromSeedId, StringComparer.Ordinal))
         {
-            counts.ReboundRows += await db.UsageStats
-                .Where(u => u.SlotId == rebind.FromSeedId && u.EmoteSetId == activeEmoteSetId)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(u => u.SlotId, rebind.ToSlotId), cancellationToken);
+            var (moved, merged) = await MoveSeedUsageAsync(rebind, activeEmoteSetId, cancellationToken);
+            counts.ReboundRows += moved + merged;
+            counts.MergedRows += merged;
+            counts.SnapshotEntries += await MoveSeedSnapshotEntriesAsync(rebind, cancellationToken);
         }
 
         await EmoteSetLeaveObservations.RecordAsync(db, channelId, activeEmoteSetId, leaves, now, cancellationToken);
@@ -1349,21 +1422,95 @@ public class SevenTvSyncService(
     }
 
     /// <summary>
+    /// The usage half of a settle onto an existing target (plan #372 2.4 "target exists", plan #373
+    /// E10): the seed's rows of the active set go to the target as a merge, not a plain re-key. A row
+    /// whose (set, day) cell the target already has is added onto the target's row — all three counters,
+    /// <c>Source</c> live if either row is live (the rule of
+    /// <c>EmoteSlotRollbackSql.CollapseUsageStatsSql</c>) — and deleted; every other row just changes its
+    /// <c>SlotId</c> and keeps its id. A plain re-key would hit the unique slot index
+    /// <c>(SlotId, EmoteSetId, Date)</c> on such a cell, fail the save and with it every following tick
+    /// of the channel. No live path is known to produce the collision (the flag-on map counts no emote
+    /// with an open seed, E7); the merge is the belt, and the snapshot rebind (E11a) relies on it for
+    /// imported rows. Runs behind the settle's locks (channel, then the emote rows), so the backfill
+    /// block and flush phase 2 cannot write these slots meanwhile. Returns the rows re-keyed and the
+    /// rows merged away.
+    /// </summary>
+    private async Task<(int Moved, int Merged)> MoveSeedUsageAsync(
+        SlotUsageRebind rebind, string activeEmoteSetId, CancellationToken cancellationToken)
+    {
+        // One statement: the CTE adds each colliding seed row onto its target row and hands back the
+        // seed row's id, the outer DELETE removes exactly those. The slot index makes the join 1:1.
+        var merged = await db.Database.ExecuteSqlAsync(
+            $"""
+             WITH merged AS (
+                 UPDATE "UsageStats" t
+                 SET "UseCount" = t."UseCount" + s."UseCount",
+                     "BotUseCount" = t."BotUseCount" + s."BotUseCount",
+                     "SharedChatUseCount" = t."SharedChatUseCount" + s."SharedChatUseCount",
+                     "Source" = CASE WHEN t."Source" = {(int)UsageStatSource.Live} OR s."Source" = {(int)UsageStatSource.Live}
+                                     THEN {(int)UsageStatSource.Live} ELSE t."Source" END
+                 FROM "UsageStats" s
+                 WHERE s."SlotId" = {rebind.FromSeedId} AND s."EmoteSetId" = {activeEmoteSetId}
+                   AND t."SlotId" = {rebind.ToSlotId} AND t."EmoteSetId" = {activeEmoteSetId}
+                   AND t."Date" = s."Date"
+                 RETURNING s."Id"
+             )
+             DELETE FROM "UsageStats" d
+             USING merged m
+             WHERE d."Id" = m."Id"
+             """,
+            cancellationToken);
+
+        var moved = await db.UsageStats
+            .Where(u => u.SlotId == rebind.FromSeedId && u.EmoteSetId == activeEmoteSetId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(u => u.SlotId, rebind.ToSlotId), cancellationToken);
+        return (moved, merged);
+    }
+
+    /// <summary>
+    /// The snapshot half of a settle onto an existing target (plan #373 E11a): every backfill snapshot
+    /// row that points at the seed now points at the target, with <c>CreatedSlot</c> false — the run
+    /// created the seed, not the target, and the rollback cleanup must never delete the target. The
+    /// next block of such a run writes on the target, and the seed, empty and archived without a date,
+    /// is referenced by no run any more. The snapshot key <c>(RunId, EmoteId)</c> is untouched: seed
+    /// and target belong to the same emote, so a run never has a second row this could collide with.
+    /// The backfill block takes the emote rows <c>FOR SHARE</c> before it reads a snapshot slot, so it
+    /// either reads the target after this commit or has committed its rows on the seed before, and
+    /// <see cref="MoveSeedUsageAsync"/> has just moved them. Returns the rows rebound.
+    /// </summary>
+    private Task<int> MoveSeedSnapshotEntriesAsync(SlotUsageRebind rebind, CancellationToken cancellationToken) =>
+        db.ChatLogBackfillRunEmotes
+            .Where(e => e.SlotId == rebind.FromSeedId)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(e => e.SlotId, rebind.ToSlotId)
+                    .SetProperty(e => e.CreatedSlot, false),
+                cancellationToken);
+
+    /// <summary>
     /// The ids of the channel's unsettled seeds that carry usage rows of the active set (plan 2.2 step
-    /// 6, spec §6.3) — one query over <c>UsageStats</c>, never derived from <c>IsArchived</c> (the
-    /// archive state of a seed is copied 1:1 from its emote by M1 and says nothing about its set).
+    /// 6, spec §6.3).
     /// </summary>
     private async Task<IReadOnlySet<string>> LoadActiveSetSeedIdsAsync(
         string channelId, string activeEmoteSetId, CancellationToken cancellationToken)
     {
-        var ids = await db.EmoteSlots
-            .Where(s => s.SeedUnsettled
-                && s.Emote.ChannelId == channelId
-                && db.UsageStats.Any(u => u.SlotId == s.Id && u.EmoteSetId == activeEmoteSetId))
+        var ids = await ActiveSetSeeds(channelId, activeEmoteSetId)
             .Select(s => s.Id)
             .ToListAsync(cancellationToken);
         return ids.ToHashSet(StringComparer.Ordinal);
     }
+
+    /// <summary>
+    /// The channel's unsettled seeds that carry usage rows of <paramref name="activeEmoteSetId"/> —
+    /// the settle's population (<see cref="LoadActiveSetSeedIdsAsync"/>) and the flag-on match map's
+    /// exclusion (plan #373, E7) in one query, so the two cannot drift apart. Derived from
+    /// <c>UsageStats</c>, never from <c>IsArchived</c> (the archive state of a seed is copied 1:1 from
+    /// its emote by M1 and says nothing about its set).
+    /// </summary>
+    private IQueryable<EmoteSlot> ActiveSetSeeds(string channelId, string activeEmoteSetId) =>
+        db.EmoteSlots.Where(s => s.SeedUnsettled
+                                 && s.Emote.ChannelId == channelId
+                                 && db.UsageStats.Any(u => u.SlotId == s.Id && u.EmoteSetId == activeEmoteSetId));
 
     /// <summary>
     /// Step 1 of spec §6.2 with the flag on: find, create or un-archive the emote row, image from the
@@ -1528,8 +1675,16 @@ public class SevenTvSyncService(
         if (summary.Created > 0 || summary.Updated > 0)
         {
             logger.LogInformation(
-                "{Channel}: slot reconcile created {Created} and updated {Updated} slots, settled {Settled} seeds and moved {ReboundRows} usage rows.",
-                channelName, summary.Created, summary.Updated, summary.Settled, summary.ReboundRows);
+                "{Channel}: slot reconcile created {Created} and updated {Updated} slots, settled {Settled} seeds and moved {ReboundRows} usage rows and {SnapshotEntries} backfill snapshot entries.",
+                channelName, summary.Created, summary.Updated, summary.Settled, summary.ReboundRows, summary.SnapshotEntries);
+        }
+
+        if (summary.MergedRows > 0)
+        {
+            // Plan #373 E10: no live path is known to collide, so a merge is worth a look.
+            logger.LogWarning(
+                "{Channel}: settle merged {MergedRows} usage rows into existing cells of their target slots.",
+                channelName, summary.MergedRows);
         }
     }
 
@@ -1782,17 +1937,26 @@ public class SevenTvSyncService(
     private readonly record struct ChannelCacheIdentity(string ChannelId, string CacheName);
 
     /// <summary>The per-channel counts of one slot reconcile pass, for the E19 log lines.</summary>
-    private readonly record struct SlotReconcileSummary(int Created, int Updated, int Settled, int ReboundRows, int Deferred);
+    private readonly record struct SlotReconcileSummary(
+        int Created, int Updated, int Settled, int ReboundRows, int MergedRows, int SnapshotEntries, int Deferred);
 
     private sealed class SlotReconcileCounter
     {
         public int Created { get; set; }
         public int Updated { get; set; }
         public int Settled { get; set; }
+
+        // Usage rows that left a settled seed — re-keyed and merged ones alike.
         public int ReboundRows { get; set; }
+
+        // The part of ReboundRows that was added onto an existing cell of the target (E10).
+        public int MergedRows { get; set; }
+
+        // Backfill snapshot rows rebound from a seed to its target (E11a).
+        public int SnapshotEntries { get; set; }
         public int Deferred { get; set; }
 
-        public SlotReconcileSummary ToSummary() => new(Created, Updated, Settled, ReboundRows, Deferred);
+        public SlotReconcileSummary ToSummary() => new(Created, Updated, Settled, ReboundRows, MergedRows, SnapshotEntries, Deferred);
     }
 
     /// <summary>

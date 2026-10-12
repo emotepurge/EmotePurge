@@ -46,6 +46,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
             ObservedFromUtc = DateTime.UtcNow.AddDays(-3),
         });
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = Today, UseCount = 7, EmoteSetId = OldSetId });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var tracker = new EmptySetConfirmationTracker(new EmptySetConfirmationOptions { EmptySetConfirmations = confirmations }, _clock);
@@ -98,7 +99,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         Assert.True(result.HasChanges);
         Assert.Equal(NewSetId, result.EmoteSetId);
         Assert.True(await IsArchivedAsync(db, channel));
-        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId);
         Assert.Equal(NewSetId, (await db.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id)).ActiveEmoteSetId);
     }
 
@@ -115,14 +116,14 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         Assert.False(first!.HasChanges);
         Assert.False(second!.HasChanges);
         Assert.False(await IsArchivedAsync(db, channel));
-        Assert.Single(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Keys, "stable");
+        Assert.Single(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.Keys, "stable");
 
         _clock.Advance(Tick);
         var third = await SyncAsync(db, channel, cache, tracker, OldSetId);
 
         Assert.True(third!.HasChanges);
         Assert.True(await IsArchivedAsync(db, channel));
-        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId);
     }
 
     [Fact]
@@ -320,7 +321,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         Assert.Equal(OldSetId, vetoed.EmoteSetId);
         Assert.Equal("7tv-user", vetoed.SevenTvUserId);
         Assert.False(await IsArchivedAsync(db, channel));
-        Assert.Single(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Keys, "stable");
+        Assert.Single(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.Keys, "stable");
         var row = await db.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id);
         Assert.Null(row.LastSyncFailureReason);
         Assert.Equal(OldSetId, row.ActiveEmoteSetId);
@@ -461,7 +462,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         // Chat counts from here on are keyed by the new, empty set — and there is nothing to count.
         var snapshot = cache.GetChannelSnapshot(channel.ChannelName);
         Assert.Equal(NewSetId, snapshot.EmoteSetId);
-        Assert.Empty(snapshot.NameToEmoteId);
+        Assert.Empty(snapshot.NameToSlotId);
 
         // The active-set view is empty; the old set's view is historical and still shows its
         // emote with the usage counted against it, archived like after any switch.
@@ -492,7 +493,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         Assert.Null(observation.ClosedBy);
         var snapshot = cache.GetChannelSnapshot(channel.ChannelName);
         Assert.Equal(OldSetId, snapshot.EmoteSetId);
-        Assert.Empty(snapshot.NameToEmoteId);
+        Assert.Empty(snapshot.NameToSlotId);
     }
 
     [Theory]
@@ -540,7 +541,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
         var observations = await ObservationsAsync(db, channel);
         Assert.Equal(2, observations.Count);
         Assert.Null(observations[1].ObservedToUtc);
-        Assert.Equal(["fresh"], cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Keys);
+        Assert.Equal(["fresh"], cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.Keys);
     }
 
     private static Task<SevenTvDeltaResult> ApplyAsync(

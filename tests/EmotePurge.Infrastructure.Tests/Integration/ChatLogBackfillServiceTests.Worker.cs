@@ -3,6 +3,7 @@ using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
+using EmotePurge.Infrastructure.Tests.Fixtures;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -32,6 +33,7 @@ public partial class ChatLogBackfillServiceTests
         var e3 = await SeedEmoteAsync(channel, "e3", "E3");
         var foreignEmote = await SeedEmoteAsync(other, "o1", "O1");
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, pauseCount: 2, blockAttempts: 1, windowFrom: BlockFrom);
+        var slots = await BindSnapshotAsync(run, e1, e2, e3);
         await using (var db = CreateDbContext())
         {
             await db.ChatLogBackfillRuns.Where(r => r.Id == run.Id)
@@ -41,6 +43,7 @@ public partial class ChatLogBackfillServiceTests
                 Imported(e2, SetC, new DateOnly(2026, 6, 12), 5),           // next block: kept
                 Imported(foreignEmote, SetC, new DateOnly(2026, 6, 4), 7),  // another channel: kept
                 new UsageStat { EmoteId = e1.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 2), UseCount = 11 }); // live
+            await db.AssignUsageSlotsAsync();
             await db.SaveChangesAsync();
         }
 
@@ -69,15 +72,18 @@ public partial class ChatLogBackfillServiceTests
         var imported = await verify.UsageStats.AsNoTracking()
             .Where(u => u.Source == UsageStatSource.ChatLogArchive && u.Emote.ChannelId == channel.Id)
             .OrderBy(u => u.Date)
-            .Select(u => new { u.EmoteId, u.EmoteSetId, u.Date, u.UseCount, u.BotUseCount, u.SharedChatUseCount })
+            .Select(u => new { u.EmoteId, u.EmoteSetId, u.Date, u.UseCount, u.BotUseCount, u.SharedChatUseCount, u.SlotId })
             .ToListAsync();
+        var e2SetCSlot = imported[^1].SlotId;
         Assert.Equal(
             [
-                new { EmoteId = e1.Id, EmoteSetId = SetB, Date = new DateOnly(2026, 6, 1), UseCount = 2, BotUseCount = 1, SharedChatUseCount = 0 },
-                new { EmoteId = e2.Id, EmoteSetId = SetB, Date = new DateOnly(2026, 6, 7), UseCount = 0, BotUseCount = 0, SharedChatUseCount = 4 },
-                new { EmoteId = e2.Id, EmoteSetId = SetC, Date = new DateOnly(2026, 6, 12), UseCount = 5, BotUseCount = 0, SharedChatUseCount = 0 },
+                new { EmoteId = e1.Id, EmoteSetId = SetB, Date = new DateOnly(2026, 6, 1), UseCount = 2, BotUseCount = 1, SharedChatUseCount = 0, SlotId = slots[e1.Id] },
+                new { EmoteId = e2.Id, EmoteSetId = SetB, Date = new DateOnly(2026, 6, 7), UseCount = 0, BotUseCount = 0, SharedChatUseCount = 4, SlotId = slots[e2.Id] },
+                new { EmoteId = e2.Id, EmoteSetId = SetC, Date = new DateOnly(2026, 6, 12), UseCount = 5, BotUseCount = 0, SharedChatUseCount = 0, SlotId = e2SetCSlot },
             ],
             imported);
+        // The block wrote the snapshot's slot, not the slot of the other set's kept row (a seed carries one set only).
+        Assert.NotEqual(slots[e2.Id], e2SetCSlot);
         Assert.Equal(7, (await verify.UsageStats.AsNoTracking().SingleAsync(u => u.EmoteId == foreignEmote.Id)).UseCount);
         Assert.Equal(liveBefore, await LiveFingerprintAsync(channel));
 
@@ -100,6 +106,7 @@ public partial class ChatLogBackfillServiceTests
         var channel = await SeedChannelAsync("bfrerun", createdAt: new DateTime(2026, 6, 8, 0, 0, 0, DateTimeKind.Utc));
         var e1 = await SeedEmoteAsync(channel, "e1", "E1");
         var first = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, emoteSetId: SetB, weeksTotal: 1, windowFrom: BlockFrom);
+        await BindSnapshotAsync(first, e1);
         var liveBefore = await LiveFingerprintAsync(channel);
 
         await using (var db = CreateDbContext())
@@ -110,6 +117,7 @@ public partial class ChatLogBackfillServiceTests
         }
 
         var second = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, emoteSetId: SetC, weeksTotal: 1, windowFrom: BlockFrom);
+        var secondSlots = await BindSnapshotAsync(second, e1);
         await using (var db = CreateDbContext())
         {
             await CreateService(db).ReplaceBlockAsync(
@@ -118,7 +126,7 @@ public partial class ChatLogBackfillServiceTests
 
         await using var verify = CreateDbContext();
         var row = await verify.UsageStats.AsNoTracking().SingleAsync(u => u.EmoteId == e1.Id && u.Source == UsageStatSource.ChatLogArchive);
-        Assert.Equal((SetC, 4), (row.EmoteSetId, row.UseCount));
+        Assert.Equal((SetC, 4, secondSlots[e1.Id]), (row.EmoteSetId, row.UseCount, row.SlotId));
         Assert.All(await verify.ChatLogBackfillCoverage.AsNoTracking().Where(d => d.ChannelId == channel.Id).ToListAsync(),
             d => Assert.Equal((SetC, (long?)second.Id), (d.EmoteSetId, d.RunId)));
         var firstAfter = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == first.Id);
@@ -134,9 +142,11 @@ public partial class ChatLogBackfillServiceTests
         var channel = await SeedChannelAsync("bfreplacecancel", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
         var e1 = await SeedEmoteAsync(channel, "e1", "E1");
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Cancelled, windowFrom: BlockFrom);
+        await BindSnapshotAsync(run, e1);
         await using (var db = CreateDbContext())
         {
             db.UsageStats.Add(Imported(e1, SetC, new DateOnly(2026, 6, 2), 9));
+            await db.AssignUsageSlotsAsync();
             await db.SaveChangesAsync();
         }
 
@@ -165,7 +175,16 @@ public partial class ChatLogBackfillServiceTests
             db.UsageStats.AddRange(
                 new UsageStat { EmoteId = e1.Id, EmoteSetId = SetB, Date = new DateOnly(2026, 6, 3), UseCount = 1 },
                 Imported(e1, SetC, new DateOnly(2026, 6, 2), 9));
+            await db.AssignUsageSlotsAsync();
             await db.SaveChangesAsync();
+        }
+
+        // The enqueue's rule binds the run to the slot that already carries rows of its set — the live
+        // row's — so the cell collides on the emote index before M2 and on the slot index after it.
+        var slots = await BindSnapshotAsync(run, e1);
+        await using (var check = CreateDbContext())
+        {
+            Assert.Equal(slots[e1.Id], (await check.UsageStats.AsNoTracking().SingleAsync(u => u.EmoteId == e1.Id && u.EmoteSetId == SetB)).SlotId);
         }
 
         var before = await UsageFingerprintAsync(channel);
@@ -180,6 +199,42 @@ public partial class ChatLogBackfillServiceTests
         Assert.False(await verify.ChatLogBackfillCoverage.AnyAsync(d => d.ChannelId == channel.Id));
         var after = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id);
         Assert.Equal((ChatLogBackfillRunStatus.Running, 0, 0L), (after.Status, after.WeeksDone, after.BytesReceived));
+    }
+
+    // Plan #373 §4, the boundary the M2 switch moves: the 23505 now comes from the slot index, so a live
+    // row of another slot of the same emote on the imported cell no longer conflicts — the import row
+    // lands next to it on the snapshot's slot. With the flag off this cannot arise (one slot per pair
+    // carries rows, E6a); with the flag on it is the known limit until child 5.
+    [Fact]
+    public async Task ReplaceBlock_WithALiveRowOfAnotherSlotOfTheSameEmote_WritesTheImportRowNextToIt()
+    {
+        var channel = await SeedChannelAsync("bfreplaceotherslot", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
+        var e1 = await SeedEmoteAsync(channel, "e1", "E1");
+        var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, windowFrom: BlockFrom);
+        var slots = await BindSnapshotAsync(run, e1);
+        string otherSlot;
+        await using (var db = CreateDbContext())
+        {
+            otherSlot = await db.SeedUsageSlotAsync(e1.Id, UsageSlotKind.Provisional);
+            db.UsageStats.Add(new UsageStat { EmoteId = e1.Id, SlotId = otherSlot, EmoteSetId = SetB, Date = new DateOnly(2026, 6, 3), UseCount = 1 });
+            await db.SaveChangesAsync();
+        }
+
+        await using (var db = CreateDbContext())
+        {
+            Assert.IsType<ChatLogBackfillBlockResult.Committed>(await CreateService(db).ReplaceBlockAsync(
+                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(e1.Id, new DateOnly(2026, 6, 3), 2, 0, 0)], 10, 1, isLastBlock: false));
+        }
+
+        await using var verify = CreateDbContext();
+        var cell = await verify.UsageStats.AsNoTracking()
+            .Where(u => u.EmoteId == e1.Id && u.EmoteSetId == SetB && u.Date == new DateOnly(2026, 6, 3))
+            .OrderBy(u => u.Source)
+            .Select(u => new { u.SlotId, u.Source, u.UseCount })
+            .ToListAsync();
+        Assert.Equal(
+            [new { SlotId = otherSlot, Source = UsageStatSource.Live, UseCount = 1 }, new { SlotId = slots[e1.Id], Source = UsageStatSource.ChatLogArchive, UseCount = 2 }],
+            cell);
     }
 
     [Fact]
@@ -217,6 +272,7 @@ public partial class ChatLogBackfillServiceTests
         var channel = await SeedChannelAsync("bfreplacetwice", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
         var e1 = await SeedEmoteAsync(channel, "e1", "E1");
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, windowFrom: BlockFrom);
+        await BindSnapshotAsync(run, e1);
 
         await using (var db = CreateDbContext())
         {
@@ -242,6 +298,7 @@ public partial class ChatLogBackfillServiceTests
         var e1 = await SeedEmoteAsync(channel, "e1", "E1");
         // Window Jun 1 – Jun 18 (17 days): blocks Jun 1–8, Jun 8–15, Jun 15–18.
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, windowFrom: BlockFrom);
+        await BindSnapshotAsync(run, e1);
         await using (var db = CreateDbContext())
         {
             await db.ChatLogBackfillRuns.Where(r => r.Id == run.Id).ExecuteUpdateAsync(s => s.SetProperty(r => r.WindowTo, new DateOnly(2026, 6, 18)));
@@ -294,6 +351,7 @@ public partial class ChatLogBackfillServiceTests
         var own = await SeedEmoteAsync(channel, "e1", "E1");
         var foreignEmote = await SeedEmoteAsync(other, "o1", "O1");
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, windowFrom: BlockFrom);
+        await BindSnapshotAsync(run, own);
         var logger = new RecordingLogger<ChatLogBackfillService>();
 
         await using (var db = CreateDbContext())
@@ -675,6 +733,37 @@ public partial class ChatLogBackfillServiceTests
                  """)
             .SingleAsync();
         Assert.Equal(1, terminated);
+    }
+
+    // The enqueue's binding for a hand-seeded run (slot plan #373, E11 rule (2)): every emote gets the
+    // base slot of (emote, run set) — the slot already carrying rows of that set, else the seed a run of
+    // the set points at, else a new unsettled seed — and a snapshot row naming it, in one transaction
+    // behind the channel and emote row locks, as the enqueue does. Returns the slot id per Emote.Id.
+    private async Task<IReadOnlyDictionary<string, string>> BindSnapshotAsync(ChatLogBackfillRun run, params Emote[] emotes)
+    {
+        await using var db = CreateDbContext();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await db.LockChannelsByIdsAsync([run.ChannelId], CancellationToken.None);
+        await db.LockEmotesByIdsAsync([.. emotes.Select(e => e.Id)], CancellationToken.None);
+        var pairs = emotes.Select(e => new BaseSlotPair(e.Id, run.EmoteSetId)).ToArray();
+        var bound = await BaseSlotRule.GetOrCreateAsync(db, pairs, NowUtc, CancellationToken.None);
+        foreach (var emote in emotes)
+        {
+            var pair = new BaseSlotPair(emote.Id, run.EmoteSetId);
+            db.ChatLogBackfillRunEmotes.Add(new ChatLogBackfillRunEmote
+            {
+                RunId = run.Id,
+                EmoteId = emote.Id,
+                SevenTvEmoteId = emote.SevenTvEmoteId,
+                Name = emote.Name,
+                SlotId = bound.SlotIds[pair],
+                CreatedSlot = bound.Created.Contains(pair),
+            });
+        }
+
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+        return emotes.ToDictionary(e => e.Id, e => bound.SlotIds[new BaseSlotPair(e.Id, run.EmoteSetId)], StringComparer.Ordinal);
     }
 
     private static UsageStat Imported(Emote emote, string emoteSetId, DateOnly date, int useCount) =>

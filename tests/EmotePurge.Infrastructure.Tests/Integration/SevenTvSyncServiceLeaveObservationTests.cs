@@ -316,7 +316,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         Assert.NotNull(await LatestAsync(channel, SetId, "loarch1"));
         Assert.NotNull(await LatestAsync(channel, SetId, "lonorow1"));
         // NoChange means no refresh: the sentinel a refresh would have replaced is still there.
-        Assert.Equal(["Sentinel"], cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.Keys);
+        Assert.Equal(["Sentinel"], cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.Keys);
     }
 
     [Fact]

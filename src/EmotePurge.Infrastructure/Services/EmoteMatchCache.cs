@@ -15,8 +15,8 @@ public class EmoteMatchCache : IEmoteMatchCache
     // concurrent reader never observes one swap's dictionary paired with another swap's set id.
     private readonly ConcurrentDictionary<string, EmoteMatchSnapshot> _byChannel = new();
 
-    public void ReplaceChannel(string channelName, string emoteSetId, IReadOnlyDictionary<string, string> nameToEmoteId)
-        => _byChannel[ChannelName.Normalize(channelName)] = new EmoteMatchSnapshot(nameToEmoteId, emoteSetId, DateTimeOffset.UtcNow);
+    public void ReplaceChannel(string channelName, string emoteSetId, IReadOnlyDictionary<string, string> nameToSlotId)
+        => _byChannel[ChannelName.Normalize(channelName)] = new EmoteMatchSnapshot(nameToSlotId, emoteSetId, DateTimeOffset.UtcNow);
 
     public void RemoveChannel(string channelName)
         => _byChannel.TryRemove(ChannelName.Normalize(channelName), out _);

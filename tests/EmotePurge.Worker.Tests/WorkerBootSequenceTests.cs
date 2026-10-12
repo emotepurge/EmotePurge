@@ -451,6 +451,9 @@ public class WorkerBootSequenceTests
             .Returns(new EmoteMatchSnapshot(new Dictionary<string, string>(), string.Empty, DateTimeOffset.UnixEpoch));
         cache.GetChannelSnapshot("alpha").Returns(new EmoteMatchSnapshot(warm, "set-alpha", DateTimeOffset.UnixEpoch));
         cache.GetChannelSnapshot("delta").Returns(new EmoteMatchSnapshot(warm, "set-delta", DateTimeOffset.UnixEpoch));
+        // bravo's warm-up succeeded but found nothing countable (with the slot flag on: every emote still
+        // has an unsettled seed of the active set, plan #373 AK 17) — an empty map with a set id is cold too.
+        cache.GetChannelSnapshot("bravo").Returns(new EmoteMatchSnapshot(new Dictionary<string, string>(), "set-bravo", DateTimeOffset.UnixEpoch));
 
         var subscriber = Substitute.For<IRedisSubscriber>();
         var worker = new WorkerService(

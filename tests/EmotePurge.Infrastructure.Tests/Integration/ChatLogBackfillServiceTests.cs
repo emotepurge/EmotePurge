@@ -149,6 +149,12 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
             },
             snapshot.ToDictionary(kv => kv.Key, kv => (kv.Value.EmoteId, kv.Value.Name, kv.Value.AddedToSetDay, kv.Value.CreatedRow)));
 
+        // Slot plan #373 E11: no member has a slot carrying rows of set B or an authoritative slot of its
+        // entry date, so each gets one new unsettled seed of its own, created by this enqueue.
+        var seeds = await verify.EmoteSlots.AsNoTracking().ToDictionaryAsync(s => s.Id);
+        Assert.Equal(5, seeds.Count);
+        Assert.All(snapshot.Values, e => Assert.Equal((e.EmoteId, true, true), (seeds[e.SlotId!].EmoteId, seeds[e.SlotId!].SeedUnsettled, e.CreatedSlot)));
+
         var audit = await verify.AuditLogEntries.AsNoTracking().SingleAsync();
         Assert.Equal((AuditActions.BackfillRequest, channel.ChannelName, "emoteSet", SetB), (audit.Action, audit.ChannelName, audit.TargetType, audit.TargetId));
         Assert.Equal(6, JsonDocument.Parse(audit.DetailsJson!).RootElement.GetProperty(AuditLogDetail.Kinds.BackfillMonths).GetInt32());

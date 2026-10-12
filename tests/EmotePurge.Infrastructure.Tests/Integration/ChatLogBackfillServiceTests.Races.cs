@@ -426,6 +426,7 @@ public partial class ChatLogBackfillServiceTests
         var channel = await SeedChannelAsync("bflockpurge", createdAt: new DateTime(2026, 6, 22, 0, 0, 0, DateTimeKind.Utc));
         var emote = await SeedEmoteAsync(channel, "e1", "E1");
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3);
+        await BindSnapshotAsync(run, emote);
 
         var atCoverage = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -10,13 +10,13 @@ namespace EmotePurge.Core.Services;
 /// dictionary with another swap's set id.
 /// </summary>
 public readonly record struct EmoteMatchSnapshot(
-    IReadOnlyDictionary<string, string> NameToEmoteId,
+    IReadOnlyDictionary<string, string> NameToSlotId,
     string EmoteSetId,
     DateTimeOffset GeneratedAtUtc);
 
 public interface IEmoteMatchCache
 {
-    void ReplaceChannel(string channelName, string emoteSetId, IReadOnlyDictionary<string, string> nameToEmoteId);
+    void ReplaceChannel(string channelName, string emoteSetId, IReadOnlyDictionary<string, string> nameToSlotId);
 
     void RemoveChannel(string channelName);
 

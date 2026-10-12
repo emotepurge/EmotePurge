@@ -19,8 +19,9 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 // The two collapse constants of the rollback procedure and the reusable seed constant have no input
 // on a pre-M2/M3 schema, so their cases simulate the target state with raw SQL after Up (plan E14):
 // the unique (EmoteId, EmoteSetId, Date) index is dropped for UsageStats, the (RunId, EmoteId) primary
-// key is swapped for (RunId, SlotId) for the snapshot. Children 3 and 5 repeat them against the real
-// M2/M3 Down.
+// key is swapped for (RunId, SlotId) for the snapshot. SwitchUsageStatsToSlotKeyMigrationTests (child 3)
+// repeats the UsageStats half against the real M2 Up/Down with the same fixtures
+// (EmoteSlotMigrationFixtures); child 5 does the snapshot half against M3.
 [Collection("Postgres")]
 public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
 {
@@ -424,15 +425,7 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
         await SeedThousandsOfPairsAsync(db);
         await MigrateAsync(db, current);
         await Exec(db, """ANALYZE "UsageStats";""");
-        await Exec(
-            db,
-            """
-            INSERT INTO "UsageStats" ("EmoteId", "EmoteSetId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount")
-            SELECT 'e' || i, s.set_id, date '2026-09-01' + d, (i + d) % 9 + 1, 0, 0
-            FROM generate_series(1, 6000) i
-            JOIN (VALUES ('SETA', 1), ('SETB', 3), ('SETC', 2)) s(set_id, every) ON i % s.every = 0
-            CROSS JOIN generate_series(0, 3) d;
-            """);
+        await Exec(db, EmoteSlotMigrationFixtures.LateNullRowsForThousandsOfPairsSql);
         var pairSumsBefore = await OneAsync(db, PairSumsDigestSql);
 
         var attached = await db.Database.ExecuteSqlRawAsync(EmoteSlotSeedSql.AttachUnslottedUsageRowsSql);
@@ -452,44 +445,15 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
     {
         var (databaseName, previous, current) = await CreateDatabaseAtPreviousMigrationAsync();
         await using var db = fixture.CreateDbContext(databaseName);
-        await Exec(
-            db,
-            """
-            INSERT INTO "Channels" ("Id", "TwitchChannelId", "ChannelName", "ActiveEmoteSetId", "IsBotActive", "CreatedAt", "TrackingResumedAt")
-            VALUES ('c1', '1', 'chan', 'SETA', true, now(), NULL);
-            INSERT INTO "Emotes" ("Id", "SevenTvEmoteId", "ChannelId", "Name", "ImageUrl", "IsArchived", "LastSyncedAt")
-            VALUES ('ex', '7x', 'c1', 'EmoteX', '', false, now()),
-                   ('ey', '7y', 'c1', 'EmoteY', '', false, now());
-            INSERT INTO "UsageStats" ("EmoteId", "EmoteSetId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount", "Source")
-            VALUES ('ex', 'SETA', '2026-09-01', 5, 1, 0, 0),
-                   ('ex', 'SETA', '2026-09-02', 2, 0, 0, 0),
-                   ('ex', 'SETA', '2026-09-04', 8, 0, 0, 0),
-                   ('ey', 'SETA', '2026-09-01', 9, 0, 0, 0);
-            """);
+        await Exec(db, EmoteSlotMigrationFixtures.CollapseBaseSql);
         await MigrateAsync(db, current);
 
-        // Simulated M2 state: the unique key is gone and a pair can carry several slots.
+        // Simulated M2 state: the unique key is gone and a pair can carry several slots (the real M2
+        // runs the same fixture in SwitchUsageStatsToSlotKeyMigrationTests).
         await Exec(db, $"""DROP INDEX "{UsageUniqueIndex}";""");
         await UseLinguisticNameCollationAsync(db);
         var seed = await OneAsync(db, """SELECT "SlotId" AS "Value" FROM "UsageStats" WHERE "EmoteId" = 'ex' AND "Date" = '2026-09-01';""");
-        await Exec(
-            db,
-            """
-            INSERT INTO "EmoteSlots" ("Id", "EmoteId", "Name", "AddedAt", "AddedAtFromRest", "LastSyncedAt")
-            VALUES ('x-dated', 'ex', 'Zeta',  '2026-03-01', true,  now()),
-                   ('x-null',  'ex', 'Alpha', NULL,         false, now()),
-                   ('x-upper', 'ex', 'Bravo', NULL,         false, now()),
-                   ('x-lower', 'ex', 'alpha', NULL,         false, now());
-            INSERT INTO "UsageStats" ("EmoteId", "EmoteSetId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount", "Source", "SlotId")
-            VALUES
-              -- dated beats the NULL-dated seed; Source 0 + 1 -> 0
-              ('ex', 'SETA', '2026-09-01', 7, 2, 3, 1, 'x-dated'),
-              -- two NULL-dated slots ('EmoteX' seed vs 'Alpha'): the ordinal smaller name wins
-              ('ex', 'SETA', '2026-09-02', 4, 1, 1, 0, 'x-null'),
-              -- ordinal order: 'Bravo' before 'alpha' (an uppercase letter sorts first under "C"); Source 1 + 1 -> 1
-              ('ex', 'SETA', '2026-09-03', 10, 1, 2, 1, 'x-lower'),
-              ('ex', 'SETA', '2026-09-03', 20, 2, 4, 1, 'x-upper');
-            """);
+        await Exec(db, EmoteSlotMigrationFixtures.CollapseExtraSlotsSql);
         var sumsBefore = await OneAsync(db, PairTotalsSql);
 
         var removed = await db.Database.ExecuteSqlRawAsync(EmoteSlotRollbackSql.CollapseUsageStatsSql);
@@ -792,26 +756,9 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
             SELECT "Id", 'ex' FROM "VoteSessions";
             """);
 
-    // Written as the old images wrote it: 6,000 emotes (every tenth archived), each in set A and every
-    // third also in set B, four days each — 8,000 pairs, 32,000 rows. ANALYZE as on a live database,
-    // where the old columns have statistics and only the new one has none.
+    // See EmoteSlotMigrationFixtures.ThousandsOfPairsSql (shared with the M2 tests).
     private static async Task SeedThousandsOfPairsAsync(AppDbContext db) =>
-        await Exec(
-            db,
-            """
-            INSERT INTO "Channels" ("Id", "TwitchChannelId", "ChannelName", "ActiveEmoteSetId", "IsBotActive", "CreatedAt", "TrackingResumedAt")
-            VALUES ('c1', '1', 'chan', 'SETA', true, now(), NULL);
-            INSERT INTO "Emotes" ("Id", "SevenTvEmoteId", "ChannelId", "Name", "ImageUrl", "IsArchived", "ArchivedAt", "FirstSeenAt", "LastSyncedAt")
-            SELECT 'e' || i, '7' || i, 'c1', 'Emote' || i, '', i % 10 = 0,
-                   CASE WHEN i % 10 = 0 THEN timestamptz '2026-09-01' END, NULL, now()
-            FROM generate_series(1, 6000) i;
-            INSERT INTO "UsageStats" ("EmoteId", "EmoteSetId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount", "Source")
-            SELECT 'e' || i, s.set_id, date '2026-08-01' + d, (i * 7 + d) % 50 + 1, d % 3, (i + d) % 2, 0
-            FROM generate_series(1, 6000) i
-            JOIN (VALUES ('SETA', 1), ('SETB', 3)) s(set_id, every) ON i % s.every = 0
-            CROSS JOIN generate_series(0, 3) d;
-            ANALYZE;
-            """);
+        await Exec(db, EmoteSlotMigrationFixtures.ThousandsOfPairsSql);
 
     private async Task<(string DatabaseName, string Previous, string Current)> CreateDatabaseAtPreviousMigrationAsync()
     {
@@ -889,7 +836,7 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
     // The Testcontainers image (alpine, musl) compares bytewise by default, which would let a missing
     // COLLATE "C" in the constants pass unnoticed. An ICU collation orders 'alpha' before 'Bravo'.
     private static async Task UseLinguisticNameCollationAsync(AppDbContext db) =>
-        await Exec(db, """ALTER TABLE "EmoteSlots" ALTER COLUMN "Name" TYPE text COLLATE "und-x-icu";""");
+        await Exec(db, EmoteSlotMigrationFixtures.LinguisticNameCollationSql);
 
     private static async Task Exec(AppDbContext db, string sql) =>
         await db.Database.ExecuteSqlRawAsync(sql);

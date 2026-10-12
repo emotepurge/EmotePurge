@@ -1089,7 +1089,7 @@ public class TwitchChatManager(
         }
 
         var snapshot = emoteMatchCache.GetChannelSnapshot(e.ChatMessage.Channel);
-        var channelEmotes = snapshot.NameToEmoteId;
+        var channelEmotes = snapshot.NameToSlotId;
         if (channelEmotes.Count == 0)
         {
             return Task.CompletedTask;
@@ -1117,9 +1117,9 @@ public class TwitchChatManager(
         // same as before this class existed.
         var matchedThisMessage = new HashSet<string>();
         EmoteNameMatching.MatchEmoteIds(e.ChatMessage.Message, channelEmotes, matchedThisMessage);
-        foreach (var emoteId in matchedThisMessage)
+        foreach (var slotId in matchedThisMessage)
         {
-            usageCounter.Increment(emoteId, snapshot.EmoteSetId, category);
+            usageCounter.Increment(slotId, snapshot.EmoteSetId, category);
         }
 
         return Task.CompletedTask;

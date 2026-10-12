@@ -45,6 +45,9 @@ public class RowLocksOrdinalOrderTests(PostgresFixture fixture)
 
         await AssertOrdinalAsync(databaseName, "Emotes", (db, ids) => db.LockEmotesByIdsAsync(ids, CancellationToken.None));
         await AssertOrdinalAsync(databaseName, "Channels", (db, ids) => db.LockChannelsByIdsAsync(ids, CancellationToken.None));
+        // The share entry (plan #373 E11a): waiting at 'a1', it holds 'B1' in share mode, which the
+        // NOWAIT probe's FOR NO KEY UPDATE conflicts with just the same.
+        await AssertOrdinalAsync(databaseName, "Emotes", (db, ids) => db.LockEmotesForShareByIdsAsync(ids, CancellationToken.None));
 
         // The reconcile entry sorts the same way.
         await using var reconcile = fixture.CreateDbContext(databaseName);

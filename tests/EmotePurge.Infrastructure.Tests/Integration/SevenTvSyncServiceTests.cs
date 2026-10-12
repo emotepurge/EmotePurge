@@ -165,7 +165,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
         await service.SyncChannelAsync(channel.ChannelName);
 
-        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId;
         Assert.Equal(2, cached.Count);
         Assert.True(cached.ContainsKey("Dup"));
         Assert.True(cached.ContainsKey("Solo"));
@@ -188,7 +188,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e2");
         Assert.Equal("catJAM", row.Name);
         Assert.False(row.IsArchived);
-        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.ContainsKey("catJAM"));
+        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.ContainsKey("catJAM"));
     }
 
     [Fact]
@@ -204,7 +204,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e2");
         Assert.True(row.IsArchived);
-        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId;
         Assert.True(cached.ContainsKey("keepme"));
         Assert.False(cached.ContainsKey("removeme"));
     }
@@ -223,7 +223,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1");
         Assert.False(row.IsArchived);
-        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.ContainsKey("phoenix"));
+        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.ContainsKey("phoenix"));
     }
 
     [Fact]
@@ -240,7 +240,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1");
         Assert.Equal("newname", row.Name);
-        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId;
         Assert.True(cached.ContainsKey("newname"));
         Assert.False(cached.ContainsKey("oldname"));
     }
@@ -262,7 +262,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
         Assert.Equal(SevenTvDeltaOutcome.ImplausibleSkipped, result.Outcome);
         Assert.Equal(0, await db.Emotes.CountAsync(e => e.ChannelId == channel.Id && e.IsArchived));
-        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.ContainsKey("one"));
+        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.ContainsKey("one"));
     }
 
     [Fact]
@@ -324,8 +324,8 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Equal(SevenTvDeltaOutcome.Applied, (await service.ApplyEmoteSetUpdateAsync(channelB.ChannelName, SetId, delta)).Outcome);
 
         Assert.Equal(2, await db.Emotes.CountAsync(e => e.SevenTvEmoteId == "e7"));
-        Assert.True(cache.GetChannelSnapshot(channelA.ChannelName).NameToEmoteId.ContainsKey("sharedjam"));
-        Assert.True(cache.GetChannelSnapshot(channelB.ChannelName).NameToEmoteId.ContainsKey("sharedjam"));
+        Assert.True(cache.GetChannelSnapshot(channelA.ChannelName).NameToSlotId.ContainsKey("sharedjam"));
+        Assert.True(cache.GetChannelSnapshot(channelB.ChannelName).NameToSlotId.ContainsKey("sharedjam"));
     }
 
     [Fact]
@@ -450,7 +450,8 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Null(reloadedChannel.LastSyncFailureReason);
         Assert.True(await verifyDb.ChannelEmoteSetObservations.AnyAsync(
             o => o.ChannelId == channel.Id && o.SevenTvEmoteSetId == SetId && o.ObservedToUtc == null));
-        Assert.Equal(row.Id, cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId["RaceX"]);
+        // Flag off and no usage row yet: the map hands out the pending key of the emote (plan #373, E8).
+        Assert.Equal(PendingSlotKey.For(row.Id), cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId["RaceX"]);
         Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
     }
 
@@ -962,8 +963,8 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Equal(SetId, row.ActiveEmoteSetId);
         Assert.Null(row.LastSyncedAtUtc);
         Assert.Equal(1, await db.Emotes.CountAsync(e => e.ChannelId == channel.Id));
-        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.ContainsKey("stable"));
-        Assert.False(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.ContainsKey("fresh"));
+        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.ContainsKey("stable"));
+        Assert.False(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.ContainsKey("fresh"));
     }
 
     [Fact]
@@ -1108,7 +1109,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
         Assert.Null(result);
         Assert.Empty(apiClient.ReceivedCalls());
-        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId);
         Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("wstest_excluded_known") || e.Message.Contains(channel.Id));
     }
 
@@ -1136,7 +1137,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
         Assert.Null(result);
         await apiClient.DidNotReceive().GetChannelStateForTwitchUserAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
-        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId);
         Assert.Null(await db.Channels.AsNoTracking().Where(c => c.Id == channel.Id).Select(c => c.TwitchChannelId).SingleAsync());
         Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("880001"));
         // The refusal itself stays below the default level: it follows lines of the same call that
@@ -1180,8 +1181,8 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         await service.WarmChannelAsync("WSTEST_WarmOnly");
 
         var snapshot = cache.GetChannelSnapshot(channel.ChannelName);
-        Assert.Single(snapshot.NameToEmoteId);
-        Assert.True(snapshot.NameToEmoteId.ContainsKey("active"));
+        Assert.Single(snapshot.NameToSlotId);
+        Assert.True(snapshot.NameToSlotId.ContainsKey("active"));
         // Same set-scoped warm-up as the sync's: the snapshot carries the row's active set id.
         Assert.Equal(SetId, snapshot.EmoteSetId);
         Assert.Empty(apiClient.ReceivedCalls());
@@ -1198,7 +1199,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
         await service.WarmChannelAsync(channel.ChannelName);
 
-        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId;
         Assert.Single(cached);
         Assert.True(cached.ContainsKey("markeronly"));
     }
@@ -1217,7 +1218,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         await service.WarmChannelAsync(channel.ChannelName);
         await service.WarmChannelAsync("wstest_warmonly_nosuchchannel");
 
-        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId);
         Assert.Empty(apiClient.ReceivedCalls());
     }
 
@@ -1235,7 +1236,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
         Assert.Null(result);
-        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId;
         Assert.Single(cached);
         Assert.True(cached.ContainsKey("active"));
         Assert.False(cached.ContainsKey("archived"));
@@ -1258,7 +1259,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
         Assert.Null(result);
-        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId);
     }
 
     [Fact]
@@ -1278,7 +1279,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
         Assert.Null(await service.SyncChannelAsync(channel.ChannelName));
 
-        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId.ContainsKey("active"));
+        Assert.True(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.ContainsKey("active"));
     }
 
     [Fact]
@@ -1293,7 +1294,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
         await service.WarmChannelAsync(channel.ChannelName);
 
-        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId);
         Assert.Empty(apiClient.ReceivedCalls());
     }
 
@@ -1310,7 +1311,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
         await service.WarmChannelAsync(channel.ChannelName);
 
-        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId);
         await DeactivateAsync(channel);
     }
 
@@ -1331,7 +1332,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
         Assert.Null(result);
         Assert.Empty(apiClient.ReceivedCalls());
-        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId);
         await using var verify = fixture.CreateDbContext();
         Assert.False(await verify.ChannelEmoteSetObservations.AnyAsync(o => o.ChannelId == channel.Id));
         Assert.Contains(logger.Entries, e => e.Level == LogLevel.Debug && e.Message.Contains("locked by its broadcaster"));
@@ -1358,7 +1359,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
         Assert.Null(result);
         await apiClient.DidNotReceive().GetChannelStateForTwitchUserAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
-        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId);
         await using var verify = fixture.CreateDbContext();
         var row = await verify.Channels.AsNoTracking().SingleAsync(c => c.Id == channel.Id);
         Assert.Null(row.TwitchChannelId);
@@ -1402,7 +1403,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
         Assert.Null(result);
-        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId;
         Assert.Single(cached);
         Assert.True(cached.ContainsKey("markeronly"));
         Assert.False(cached.ContainsKey("postgresonly"));
@@ -1420,7 +1421,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
         Assert.NotNull(result);
-        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId;
+        var cached = cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId;
         Assert.True(cached.ContainsKey("newname"));
         Assert.False(cached.ContainsKey("oldname"));
     }
@@ -1438,7 +1439,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
         Assert.Null(result);
-        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToEmoteId);
+        Assert.Empty(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId);
     }
 
     [Fact]
@@ -1488,7 +1489,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Null(await failing.SyncChannelAsync(channel.ChannelName));
         var warmed = cache.GetChannelSnapshot(channel.ChannelName);
         Assert.Equal(SetId, warmed.EmoteSetId);
-        Assert.True(warmed.NameToEmoteId.ContainsKey("beforeswitch"));
+        Assert.True(warmed.NameToSlotId.ContainsKey("beforeswitch"));
 
         // Sync: 7TV reports a different active set, and the snapshot follows it in lockstep with
         // the dictionary — the pair a chat message is counted under.
@@ -1496,8 +1497,8 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.NotNull(await service.SyncChannelAsync(channel.ChannelName));
         var synced = cache.GetChannelSnapshot(channel.ChannelName);
         Assert.Equal(SwitchedSetId, synced.EmoteSetId);
-        Assert.True(synced.NameToEmoteId.ContainsKey("afterswitch"));
-        Assert.False(synced.NameToEmoteId.ContainsKey("beforeswitch"));
+        Assert.True(synced.NameToSlotId.ContainsKey("afterswitch"));
+        Assert.False(synced.NameToSlotId.ContainsKey("beforeswitch"));
     }
 
     [Fact]
@@ -1540,14 +1541,14 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
     //
     // Both tests below drive the exact per-message algorithm TwitchChatManager runs
     // (TwitchChatManager.cs:1024-1055) — one GetChannelSnapshot call per message, a hit keyed by
-    // (resolved emote id, snapshot.EmoteSetId) — through the real cache and a real switch performed
+    // (resolved slot key, snapshot.EmoteSetId) — through the real cache and a real switch performed
     // by SyncChannelAsync against Postgres, not through TwitchLib (that stays live-verified, rule
     // 11/16). The counting dictionary is not EmoteUsageCounter: EmotePurge.Worker is not referenced
     // from this project, so the key (EmotePurge.Core.Services.UsageCounterKey) is used directly —
     // the same composite key the real counter buffers under.
     private static void CountHit(Dictionary<UsageCounterKey, int> counts, EmoteMatchSnapshot snapshot, string emoteName)
     {
-        var key = new UsageCounterKey(snapshot.NameToEmoteId[emoteName], snapshot.EmoteSetId);
+        var key = new UsageCounterKey(snapshot.NameToSlotId[emoteName], snapshot.EmoteSetId);
         counts[key] = counts.GetValueOrDefault(key) + 1;
     }
 
@@ -1576,8 +1577,9 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var emoteId = await db.Emotes.Where(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1")
             .Select(e => e.Id).SingleAsync();
         Assert.Equal(2, counts.Count);
-        Assert.Equal(1, counts[new UsageCounterKey(emoteId, SetId)]);
-        Assert.Equal(2, counts[new UsageCounterKey(emoteId, SwitchedSetId)]);
+        // Flag off, no usage rows: the key is the emote's pending key in both sets (plan #373, E8).
+        Assert.Equal(1, counts[new UsageCounterKey(PendingSlotKey.For(emoteId), SetId)]);
+        Assert.Equal(2, counts[new UsageCounterKey(PendingSlotKey.For(emoteId), SwitchedSetId)]);
     }
 
     [Fact]
@@ -1607,11 +1609,11 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
             .Select(e => e.Id).SingleAsync();
         Assert.NotEqual(rowAId, rowBId);
         Assert.Equal(2, counts.Count);
-        Assert.Equal(1, counts[new UsageCounterKey(rowAId, SetId)]);
-        Assert.Equal(2, counts[new UsageCounterKey(rowBId, SwitchedSetId)]);
-        // Never counted on both: neither row's id appears combined with the other switch state.
-        Assert.False(counts.ContainsKey(new UsageCounterKey(rowAId, SwitchedSetId)));
-        Assert.False(counts.ContainsKey(new UsageCounterKey(rowBId, SetId)));
+        Assert.Equal(1, counts[new UsageCounterKey(PendingSlotKey.For(rowAId), SetId)]);
+        Assert.Equal(2, counts[new UsageCounterKey(PendingSlotKey.For(rowBId), SwitchedSetId)]);
+        // Never counted on both: neither row's key appears combined with the other switch state.
+        Assert.False(counts.ContainsKey(new UsageCounterKey(PendingSlotKey.For(rowAId), SwitchedSetId)));
+        Assert.False(counts.ContainsKey(new UsageCounterKey(PendingSlotKey.For(rowBId), SetId)));
     }
 
     // A switch line is the only one that has to name both sets at once, which identifies it without

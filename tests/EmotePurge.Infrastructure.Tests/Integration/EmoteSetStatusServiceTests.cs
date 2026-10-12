@@ -245,6 +245,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emoteOne.Id, Date = new DateOnly(2026, 8, 1), UseCount = 10 },
             new UsageStat { EmoteId = emoteTwo.Id, Date = new DateOnly(2026, 8, 15), UseCount = 3, BotUseCount = 2 },
             new UsageStat { EmoteId = emoteOne.Id, Date = new DateOnly(2026, 8, 20), UseCount = 1, BotUseCount = 1 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
@@ -260,6 +261,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "slotstest10", capacity: 1000);
         var emote = await SeedEmoteAsync(db, channel.Id, "One");
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 8, 1), UseCount = 10, BotUseCount = 0 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
@@ -279,6 +281,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "slotstest11", capacity: null, activeEmoteSetId: "");
         var emote = await SeedEmoteAsync(db, channel.Id, "One");
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 8, 1), UseCount = 0, BotUseCount = 5 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
@@ -296,6 +299,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "slotstest12", capacity: 1000);
         var archived = await SeedEmoteAsync(db, channel.Id, "GoneEmote", isArchived: true);
         db.UsageStats.Add(new UsageStat { EmoteId = archived.Id, Date = new DateOnly(2026, 8, 5), UseCount = 0, BotUseCount = 4 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
@@ -317,6 +321,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emoteOne.Id, Date = new DateOnly(2026, 8, 1), UseCount = 10, BotUseCount = 2 },
             new UsageStat { EmoteId = emoteTwo.Id, Date = new DateOnly(2026, 8, 15), UseCount = 0, SharedChatUseCount = 3 },
             new UsageStat { EmoteId = emoteOne.Id, Date = new DateOnly(2026, 8, 20), UseCount = 1, SharedChatUseCount = 1 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
@@ -333,6 +338,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "slotstest14", capacity: 1000);
         var emote = await SeedEmoteAsync(db, channel.Id, "One");
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 8, 1), UseCount = 10, SharedChatUseCount = 0 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
@@ -352,6 +358,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "slotstest15", capacity: null, activeEmoteSetId: "");
         var emote = await SeedEmoteAsync(db, channel.Id, "One");
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = new DateOnly(2026, 8, 1), UseCount = 0, SharedChatUseCount = 5 });
+        await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
         var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);

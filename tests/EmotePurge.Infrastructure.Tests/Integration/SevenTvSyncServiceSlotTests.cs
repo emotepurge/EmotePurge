@@ -1,12 +1,9 @@
 using EmotePurge.Core.Entities;
-using EmotePurge.Core.Services;
-using EmotePurge.Infrastructure.Migrations;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using static EmotePurge.Infrastructure.Tests.Integration.SlotSyncKit;
 
@@ -21,6 +18,7 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
 {
     private const string SettleLine = "settle deferred: v4 dates missing for";
     private const string SummaryLine = "slot reconcile created";
+    private const string MergeLine = "settle merged";
 
     // 1 — AK 5: the active set's seed settles onto the oldest dated entry and keeps only its own rows.
     [Fact]
@@ -157,6 +155,7 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         await SeedUsageAsync(db, x, seed, SetA, 2, 3);
         await SeedUsageAsync(db, x, seedB, SetB, 6);
         var totalsBefore = await UsageTotalsAsync(db, x.Id, SetA);
+        var rowIdsBefore = await UsageRowIdsAsync(db, seed.Id);
         var logger = new RecordingLogger<SevenTvSyncService>();
 
         var result = await SyncAsync(db, channel, true, SetA, logger, Live("x", "A", T1));
@@ -173,6 +172,75 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         Assert.True((await SlotAsync(db, seedB.Id)).SeedUnsettled);
         Assert.False(result!.HasChanges);
         Assert.Contains("moved 2 usage rows", Assert.Single(Lines(logger, SummaryLine)), StringComparison.Ordinal);
+        // E10 without a colliding cell: the rows are re-keyed, not merged or re-inserted.
+        Assert.Equal(rowIdsBefore, await UsageRowIdsAsync(db, rest.Id));
+        Assert.Empty(Lines(logger, MergeLine));
+    }
+
+    // 5a — plan #373 E10: a seed settling onto an existing target whose (set, day) cell is taken. The
+    // colliding rows are added onto the target's (all three counters; Source live if either row is
+    // live, imported only if both are) and deleted, the free day is re-keyed with its row id, the
+    // target's own day and the seed's other set stay; no unique violation, the seed ends settled and
+    // archived without a date exactly as without the collision. Mutation probe: a plain re-key fails
+    // the save with 23505.
+    [Fact]
+    public async Task SeedNextToRestSlot_CollidingCells_AreMergedOntoTheRestSlot()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slot_seed_merge");
+        var x = await SeedEmoteAsync(db, channel, "x", "A", firstSeenAt: T1);
+        var rest = await SeedSlotAsync(db, x, "A", T1);
+        var seed = await SeedSeedAsync(db, x);
+        var seedB = await SeedSeedAsync(db, x);
+        var d1 = new DateOnly(2026, 8, 1);
+        const UsageStatSource live = UsageStatSource.Live;
+        const UsageStatSource imported = UsageStatSource.ChatLogArchive;
+        var freeDay = AddRow(db, x, seed, SetA, d1, (2, 1, 1), live);
+        AddRow(db, x, seed, SetA, d1.AddDays(1), (3, 1, 2), imported);
+        AddRow(db, x, rest, SetA, d1.AddDays(1), (10, 4, 5), live);
+        AddRow(db, x, seed, SetA, d1.AddDays(2), (5, 0, 1), live);
+        AddRow(db, x, rest, SetA, d1.AddDays(2), (7, 2, 0), imported);
+        AddRow(db, x, seed, SetA, d1.AddDays(3), (4, 1, 0), imported);
+        AddRow(db, x, rest, SetA, d1.AddDays(3), (6, 0, 3), imported);
+        AddRow(db, x, rest, SetA, d1.AddDays(4), (9, 9, 9), live);
+        AddRow(db, x, seedB, SetB, d1.AddDays(1), (8, 0, 0), live);
+        await db.SaveChangesAsync();
+        var totalsBefore = await UsageTotalsAsync(db, x.Id, SetA);
+        var logger = new RecordingLogger<SevenTvSyncService>();
+
+        var result = await SyncAsync(db, channel, true, SetA, logger, Live("x", "A", T1));
+
+        Assert.NotNull(result);
+        var settled = await SlotAsync(db, seed.Id);
+        Assert.Equal((false, true, (DateTime?)null), (settled.SeedUnsettled, settled.IsArchived, settled.ArchivedAt));
+        var rows = await db.UsageStats.AsNoTracking()
+            .Where(u => u.EmoteId == x.Id && u.EmoteSetId == SetA)
+            .OrderBy(u => u.Date)
+            .ToListAsync();
+        Assert.All(rows, r => Assert.Equal(rest.Id, r.SlotId));
+        Assert.Equal(
+            new (DateOnly, int, int, int, UsageStatSource)[]
+            {
+                (d1, 2, 1, 1, live),
+                (d1.AddDays(1), 13, 5, 7, live),
+                (d1.AddDays(2), 12, 2, 1, live),
+                (d1.AddDays(3), 10, 1, 3, imported),
+                (d1.AddDays(4), 9, 9, 9, live),
+            },
+            rows.Select(r => (r.Date, r.UseCount, r.BotUseCount, r.SharedChatUseCount, r.Source)));
+        Assert.Equal(freeDay.Id, rows[0].Id);
+        var totalsAfter = await UsageTotalsAsync(db, x.Id, SetA);
+        Assert.Equal((totalsBefore.Uses, totalsBefore.Bot, totalsBefore.Shared), (totalsAfter.Uses, totalsAfter.Bot, totalsAfter.Shared));
+        Assert.Equal((1, 8), (await UsageBySlotAsync(db, x.Id, SetB))[seedB.Id]);
+        Assert.True((await SlotAsync(db, seedB.Id)).SeedUnsettled);
+        Assert.Contains("moved 4 usage rows", Assert.Single(Lines(logger, SummaryLine)), StringComparison.Ordinal);
+        Assert.Contains("merged 3 usage rows", Assert.Single(Lines(logger, MergeLine)), StringComparison.Ordinal);
+
+        // The next tick finds nothing left to settle or merge.
+        var second = new RecordingLogger<SevenTvSyncService>();
+        await SyncAsync(db, channel, true, SetA, second, Live("x", "A", T1));
+        Assert.Empty(Lines(second, MergeLine));
+        Assert.Equal(5, await db.UsageStats.CountAsync(u => u.SlotId == rest.Id));
     }
 
     // 6 — AK 4 half: a foreign seed stays byte-identical; switching to its set settles it.
@@ -494,48 +562,6 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         Assert.Empty(Lines(logger, SettleLine));
     }
 
-    // 21 — production transition: rows written while the flag was off end up on the REST slot.
-    [Fact]
-    public async Task ProductionTransition_OffRunThenOnRunThenAttachThenOnRun_AllRowsOnTheRestSlot()
-    {
-        var databaseName = $"slot_transition_{Guid.NewGuid():N}";
-        await using (var admin = fixture.CreateDbContext())
-        {
-#pragma warning disable EF1002 // locally generated Guid, CREATE DATABASE cannot be parameterized
-            await admin.Database.ExecuteSqlRawAsync($"CREATE DATABASE {databaseName}");
-#pragma warning restore EF1002
-        }
-
-        await using var db = fixture.CreateDbContext(databaseName);
-        await db.Database.MigrateAsync();
-        var channel = await SeedChannelAsync(db, "slot_transition");
-
-        // Flag off: today's emote-wide reconcile creates the emote without a slot ...
-        await SyncAsync(db, channel, false, SetA, null, Live("x", "A", T1));
-        var x = await EmoteAsync(db, channel, "x");
-        Assert.Empty(await SlotsAsync(db, x.Id));
-        // ... and today's flush writes a row with SlotId NULL.
-        await new UsageStatFlushService(db, NullLogger<UsageStatFlushService>.Instance).FlushAsync(
-            new Dictionary<UsageCounterKey, EmoteUsageCounts> { [new UsageCounterKey(x.Id, SetA)] = new(7, 1, 2) });
-        var totals = await UsageTotalsAsync(db, x.Id, SetA);
-
-        // Flag on: the first own slot, the NULL row untouched.
-        var on = await SyncOnAsync(db, channel, Live("x", "A", T1));
-        var rest = Assert.Single(await SlotsAsync(db, x.Id));
-        Assert.False(on!.HasChanges);
-        Assert.Equal((1, 7), (await UsageBySlotAsync(db, x.Id, SetA))["<null>"]);
-
-        // M2's attach step seeds next to the REST slot; the next pass settles it onto the REST slot.
-        await db.Database.ExecuteSqlRawAsync(EmoteSlotSeedSql.AttachUnslottedUsageRowsSql);
-        Assert.Contains(await SlotsAsync(db, x.Id), s => s.SeedUnsettled);
-        await SyncOnAsync(db, channel, Live("x", "A", T1));
-
-        var usage = await UsageBySlotAsync(db, x.Id, SetA);
-        Assert.Equal(rest.Id, Assert.Single(usage).Key);
-        Assert.Equal(totals, await UsageTotalsAsync(db, x.Id, SetA));
-        Assert.DoesNotContain(await SlotsAsync(db, x.Id), s => s.SeedUnsettled);
-    }
-
     // 22 — on → off (rename in 7TV) → on: the date binds the same slot back and renames it.
     [Fact]
     public async Task OnOffOn_RenameWhileOff_SameSlotIsRenamed()
@@ -637,8 +663,29 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
     {
         var rows = await db.UsageStats.AsNoTracking()
             .Where(u => u.Emote.ChannelId == channel.Id)
-            .Select(u => u.Id + ":" + (u.SlotId ?? "null"))
+            .Select(u => u.Id + ":" + u.SlotId)
             .ToListAsync();
         return [.. rows.Order(StringComparer.Ordinal)];
     }
+
+    private static UsageStat AddRow(
+        AppDbContext db, Emote emote, EmoteSlot slot, string setId, DateOnly date, (int Uses, int Bot, int Shared) counts, UsageStatSource source)
+    {
+        var row = new UsageStat
+        {
+            EmoteId = emote.Id,
+            SlotId = slot.Id,
+            EmoteSetId = setId,
+            Date = date,
+            UseCount = counts.Uses,
+            BotUseCount = counts.Bot,
+            SharedChatUseCount = counts.Shared,
+            Source = source
+        };
+        db.UsageStats.Add(row);
+        return row;
+    }
+
+    private static async Task<List<long>> UsageRowIdsAsync(AppDbContext db, string slotId) =>
+        [.. (await db.UsageStats.AsNoTracking().Where(u => u.SlotId == slotId).Select(u => u.Id).ToListAsync()).Order()];
 }
