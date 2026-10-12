@@ -637,49 +637,23 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
     /// <summary>
     /// The rows of the usage grid for one channel and one requested set (plan #376 2.2/2.3): loads the
     /// snapshot <see cref="UsageViewRows.Build"/> reads — every slot of the channel's emotes with whether it
-    /// carries a row under the set, and the seeds of the set — and forms the rows. <c>/totals</c> and
+    /// carries a row under the set, and the seeds of the set, both from one query
+    /// (<see cref="UsageViewSlotSnapshot.LoadAsync"/>) — and forms the rows. <c>/totals</c> and
     /// <c>/series</c> both come through here, so they read the same snapshot shape.
     /// </summary>
     private async Task<UsageView> LoadUsageViewAsync(
         string channelId, string emoteSetId, bool isActiveSet, List<ChannelEmote> emotes, CancellationToken cancellationToken)
     {
-        // Own slots and unsettled seeds alike; the row formation tells them apart. "Has a row under the
-        // set" is the per-slot form of the pre-slot base-set test (spec E16): no date bound and whatever the
-        // row's UseCount. An EXISTS per slot, answered by one probe of the slot index — never a scan of a
-        // slot's rows. A plain filter with a navigation and no GroupBy, so rule 10 is not touched.
-        var slots = await db.EmoteSlots
-            .Where(s => s.Emote.ChannelId == channelId)
-            .Select(s => new
-            {
-                s.Id,
-                s.EmoteId,
-                s.Name,
-                s.AddedAt,
-                s.AddedAtFromRest,
-                s.IsArchived,
-                s.SeedUnsettled,
-                HasRowsInSet = db.UsageStats.Any(u => u.SlotId == s.Id && u.EmoteSetId == emoteSetId)
-            })
-            .ToListAsync(cancellationToken);
-
-        // The one definition of "seed of X" shared with the settle and the match-map exclusion (plan 2.1),
-        // so the grid can never call a seed settled that the sync still treats as open, or the reverse.
-        var seedIdsOfSet = (await db.SeedsOfSet(channelId, emoteSetId).Select(s => s.Id).ToListAsync(cancellationToken))
-            .ToHashSet(StringComparer.Ordinal);
-
-        var viewSlots = slots
-            .Select(s => new UsageViewSlot(s.Id, s.EmoteId, s.Name, s.AddedAt, s.AddedAtFromRest, s.IsArchived, s.SeedUnsettled))
-            .ToList();
-        var slotIdsWithRowsInSet = slots.Where(s => s.HasRowsInSet).Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
+        var snapshot = await UsageViewSlotSnapshot.LoadAsync(db, channelId, emoteSetId, cancellationToken);
 
         var rows = UsageViewRows.Build(
-            emotes.Select(e => new UsageViewEmote(e.Id, e.Name, e.FirstSeenAt, e.IsArchived)).ToList(),
-            viewSlots,
-            seedIdsOfSet,
-            slotIdsWithRowsInSet,
+            emotes.ConvertAll(e => new UsageViewEmote(e.Id, e.Name, e.FirstSeenAt, e.IsArchived)),
+            snapshot.Slots,
+            snapshot.SeedIdsOfSet,
+            snapshot.SlotIdsWithRowsInSet,
             isActiveSet,
             slotReconcileEnabled);
-        return new UsageView(rows, viewSlots);
+        return new UsageView(rows, snapshot.Slots);
     }
 
     /// <summary>
