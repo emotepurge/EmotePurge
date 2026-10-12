@@ -410,6 +410,7 @@ public class EmoteService(
             var changedCount = 0;
             var resolvedEntries = 0;
             var leftIds = new List<string>();
+            var onceLeaveCandidates = new List<Emote>();
             foreach (var emote in found)
             {
                 var entriesOfId = entriesById[emote.SevenTvEmoteId].ToList();
@@ -422,6 +423,22 @@ public class EmoteService(
                 {
                     leftIds.Add(emote.SevenTvEmoteId);
                 }
+                else if (applied.LeaveOnceUnobserved)
+                {
+                    onceLeaveCandidates.Add(emote);
+                }
+            }
+
+            // B2: the once-leave of a delete that found its slot archived by REST already, written only
+            // when no leave was observed for (channel, emote, set) since the emote last entered the set
+            // — the sync's b2 check. Read behind the channel lock that every other leave writer of the
+            // channel takes first, so the check is race-free; a retry finds the observation and neither
+            // writes a second one nor moves its timestamp.
+            if (onceLeaveCandidates.Count > 0)
+            {
+                var latest = await EmoteSetLeaveObservations.LoadLatestAsync(
+                    db, hit.Id, report.EmoteSetId, onceLeaveCandidates.ConvertAll(e => e.SevenTvEmoteId), cancellationToken);
+                leftIds.AddRange(onceLeaveCandidates.Where(e => !ObservedSinceEntry(e, latest)).Select(e => e.SevenTvEmoteId));
             }
 
             if (leftIds.Count > 0)
@@ -695,7 +712,7 @@ public class EmoteService(
             }
         }
 
-        return new EmoteApplication(emoteChanged || slotChanged, ResolvedEntries: 0, Leave: archive);
+        return new EmoteApplication(emoteChanged || slotChanged, ResolvedEntries: 0, Leave: archive, LeaveOnceUnobserved: false);
     }
 
     // An id with entries in one hit channel (plan 376 4.2). Entries without a slot id are skipped
@@ -751,15 +768,25 @@ public class EmoteService(
     }
 
     // Steps 2 and 4 of plan 376 4.2, delete. An active target is archived. The emote row goes, with
-    // its leave, only when this report removed its last active own slot; a target archived already is
-    // a no-op. An active own slot under an archived emote (a delta pull before the next tick) does not
-    // count as active: the readers ignore it too (plan 376 4.2a, invariant 4.1).
+    // its leave, only when this report removed its last active own slot. A target REST archived
+    // already is a no-op — except when the emote has no active own slot left, is archived and is no
+    // never-active placeholder: then this report is the confirmed leave REST did not record inside its
+    // credibility window (B2), written once if none was observed since the last entry. An active own
+    // slot under an archived emote (a delta pull before the next tick) does not count as active: the
+    // readers ignore it too (plan 376 4.2a, invariant 4.1).
     private static EmoteApplication DeleteSlots(Emote emote, List<EmoteSlot> targets, int resolvedEntries, DateTime now)
     {
         var activeBefore = HasActiveOwnSlot(emote);
         var slotChanged = false;
-        foreach (var slot in targets.Where(s => !s.IsArchived))
+        var targetArchivedBefore = false;
+        foreach (var slot in targets)
         {
+            if (slot.IsArchived)
+            {
+                targetArchivedBefore = true;
+                continue;
+            }
+
             ArchiveSlot(slot, now);
             slotChanged = true;
         }
@@ -773,12 +800,13 @@ public class EmoteService(
             leave = true;
         }
 
+        var leaveOnce = !activeBefore && targetArchivedBefore && emote.IsArchived && !IsNeverActivePlaceholder(emote);
         if (slotChanged)
         {
             ApplyDerivedNameAndDate(emote, now);
         }
 
-        return new EmoteApplication(emoteChanged || slotChanged, resolvedEntries, leave);
+        return new EmoteApplication(emoteChanged || slotChanged, resolvedEntries, leave, leaveOnce);
     }
 
     // Steps 3 and 4 of plan 376 4.2, restore. An archived target is reactivated with a provisional date
@@ -810,7 +838,7 @@ public class EmoteService(
             ApplyDerivedNameAndDate(emote, now);
         }
 
-        return new EmoteApplication(emoteChanged || slotChanged, resolvedEntries, Leave: false);
+        return new EmoteApplication(emoteChanged || slotChanged, resolvedEntries, Leave: false, LeaveOnceUnobserved: false);
     }
 
     // D13 through the reconcile's own derivation (plan 376 A11): name and date of the oldest active own
@@ -866,6 +894,16 @@ public class EmoteService(
     private static bool IsActiveOwnSlot(EmoteSlot slot) => !slot.SeedUnsettled && !slot.IsArchived;
 
     private static bool HasActiveOwnSlot(Emote emote) => !emote.IsArchived && emote.Slots.Any(IsActiveOwnSlot);
+
+    // The sync's placeholder rule for b2 (D37): an archived row never observed in the active set has
+    // nothing to leave.
+    private static bool IsNeverActivePlaceholder(Emote emote) => emote.IsPlaceholder && emote.ArchivedAt is null;
+
+    // The sync's b2 check: an observation counts when it is later than the last entry into the set, or
+    // when that entry is unknown.
+    private static bool ObservedSinceEntry(Emote emote, Dictionary<string, DateTime> latest) =>
+        latest.TryGetValue(emote.SevenTvEmoteId, out var observedAt)
+        && (emote.LastEnteredSetAtUtc is null || observedAt > emote.LastEnteredSetAtUtc);
 
     // Plan 376 4.1: the generation is compared in UTC to the microsecond — Postgres stores timestamptz at
     // that precision, 7TV reports milliseconds. A missing date on either side never matches.
@@ -978,8 +1016,8 @@ public class EmoteService(
 
     // What a report did to one emote row of one hit channel: whether the row or one of its slots
     // changed (NewlyChangedCount), how many of its entries found their slot here (audit entryCount), and
-    // whether it is a leave.
-    private readonly record struct EmoteApplication(bool Changed, int ResolvedEntries, bool Leave);
+    // its leave — always (Leave) or only when none was observed since the last entry (B2).
+    private readonly record struct EmoteApplication(bool Changed, int ResolvedEntries, bool Leave, bool LeaveOnceUnobserved);
 
     // Flag on: a hit channel of the report was deleted between its read and its channel lock (a purge
     // committed). Handled by MarkInSetAsync's one retry; propagates when it happens again.

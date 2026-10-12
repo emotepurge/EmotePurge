@@ -14,7 +14,7 @@ using static EmotePurge.Infrastructure.Tests.Integration.SlotSyncKit;
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
 // Emote slots plan 376, child 6 (section 4, 5.5): the set-centric reports with entries, the B1 slot
-// archive of a report without entries and the arbitration on B3 (the origin of an
+// archive of a report without entries, the B2 once-leave and the arbitration on B3 (the origin of an
 // entry is the channel its slot id belongs to). The flag is on unless a case says otherwise; every
 // case runs its report, sync and reads on fresh contexts, like the api and the worker do. Set and
 // emote ids are alphanumeric and unique per case: the observation upsert drops anything else, and a
@@ -95,7 +95,7 @@ public partial class EmoteServiceTests
         Assert.Equal(0, await LeaveRowsAsync(verify, channel, set));
     }
 
-    // ---------------------------------------------------------------- AK 52: a late report after D7
+    // ---------------------------------------------------------------- AK 52 and B2 (REST before the report)
 
     // AK 52: the slot was deleted, REST resumed it per D7 on t3 before the report arrived; the late
     // report with t1 is a stale no-op without a leave.
@@ -121,6 +121,65 @@ public partial class EmoteServiceTests
         var slot = await SlotAsync(verify, s1.Id);
         Assert.Equal((false, (DateTime?)T3), (slot.IsArchived, slot.AddedAt));
         Assert.False((await EmoteAsync(verify, channel, x)).IsArchived);
+        Assert.Equal(0, await LeaveRowsAsync(verify, channel, set));
+    }
+
+    // B2: inside the 30-minute credibility window REST archived the last slot and the emote without a
+    // leave; the report that arrives afterwards is the confirmed leave and records it once. A retry
+    // finds the observation and neither writes a second one nor moves its timestamp.
+    [Fact]
+    public async Task Entries_B2_RestArchivedTheLastSlotInsideTheWindow_TheReportRecordsTheLeaveOnce()
+    {
+        var set = NewSet();
+        var x = NewSevenTvId();
+        var channel = await SeedOnAsync("slotrpt_b2", set);
+        var s1 = await SeedSingleSlotEmoteAsync(channel, x, "aaa", T1, enteredMinutesAgo: 5);
+
+        await SyncOnSetAsync(channel, set, Live(NewSevenTvId(), "filler", T0));
+        await using (var check = fixture.CreateDbContext())
+        {
+            Assert.True((await SlotAsync(check, s1.Id)).IsArchived);
+            Assert.True((await EmoteAsync(check, channel, x)).IsArchived);
+            Assert.Equal(0, await LeaveRowsAsync(check, channel, set));
+        }
+
+        var before = DateTime.UtcNow;
+        var first = await DeleteAsync(set, [x], [Entry(x, "aaa", s1.Id, T1)]);
+
+        Assert.Equal((1, 0), (Assert.Single(first.Channels).Count, Assert.Single(first.Channels).NewlyChangedCount));
+        DateTime observedAt;
+        await using (var verify = fixture.CreateDbContext())
+        {
+            observedAt = Assert.Single(await LeaveRowListAsync(verify, channel, set)).LastObservedAtUtc;
+            Assert.True(observedAt >= before.AddMilliseconds(-1));
+        }
+
+        await DeleteAsync(set, [x], [Entry(x, "aaa", s1.Id, T1)]);
+        await using (var verify = fixture.CreateDbContext())
+        {
+            Assert.Equal(observedAt, Assert.Single(await LeaveRowListAsync(verify, channel, set)).LastObservedAtUtc);
+        }
+    }
+
+    // The known limit of B2 (plan 376 4.2a): a slot REST resumed per D7 before the report is another
+    // generation, so the report is stale (AK 52) and records no leave — inside the window the sync does
+    // not record one either.
+    [Fact]
+    public async Task Entries_B2_KnownLimit_ResumedByD7BeforeTheReport_IsANoOpWithoutALeave()
+    {
+        var set = NewSet();
+        var x = NewSevenTvId();
+        var channel = await SeedOnAsync("slotrpt_b2limit", set);
+        var s1 = await SeedSingleSlotEmoteAsync(channel, x, "aaa", T1, enteredMinutesAgo: 5);
+        var filler = Live(NewSevenTvId(), "filler", T0);
+        await SyncOnSetAsync(channel, set, filler);
+        await SyncOnSetAsync(channel, set, filler, Live(x, "aaa", T9));
+
+        await DeleteAsync(set, [x], [Entry(x, "aaa", s1.Id, T1)]);
+
+        await using var verify = fixture.CreateDbContext();
+        var slot = await SlotAsync(verify, s1.Id);
+        Assert.Equal((false, (DateTime?)T9), (slot.IsArchived, slot.AddedAt));
         Assert.Equal(0, await LeaveRowsAsync(verify, channel, set));
     }
 

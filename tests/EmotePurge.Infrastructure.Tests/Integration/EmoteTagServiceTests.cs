@@ -2862,6 +2862,45 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         Assert.True(await PlacedByThisTagAsync(channel, tag.Id));
     }
 
+    // B2: REST archived the emote's last slot inside the 30-minute credibility window without a leave,
+    // so the placement still held; the delete report that follows records the leave and ends it — and
+    // a return of the emote before the window is over does not bring the placement back.
+    [Fact]
+    public async Task SlotReport_TheOnceLeaveAfterRest_EndsThePlacement_AlsoWhenTheEmoteReturnsInsideTheWindow()
+    {
+        var set = NewSlotReportSet();
+        var x = NewSevenTvId();
+        Channel channel;
+        EmoteSlot slot;
+        await using (var db = fixture.CreateDbContext())
+        {
+            channel = await SlotSyncKit.SeedChannelAsync(db, "tagslotonceleave", set);
+            var emote = await SlotSyncKit.SeedEmoteAsync(db, channel, x, "aaa", firstSeenAt: SlotSyncKit.T1);
+            emote.LastEnteredSetAtUtc = DateTime.UtcNow.AddMinutes(-5);
+            await db.SaveChangesAsync();
+            slot = await SlotSyncKit.SeedSlotAsync(db, emote, "aaa", SlotSyncKit.T1);
+        }
+
+        var tag = await SeedTagAsync(channel.Id, "Mine");
+        await SeedEntryAsync(tag.Id, x, "aaa", T0);
+        await SeedPlayInAsync(tag.Id, set, T0, x);
+        var filler = SlotSyncKit.Live(NewSevenTvId(), "filler", SlotSyncKit.T0);
+
+        await SyncSlotsOnAsync(channel, set, filler);
+        Assert.True(await PlacedByThisTagAsync(channel, tag.Id));
+
+        await ReportSlotDeleteAsync(set, new SyncInSetEntryDto(x, "aaa", slot.Id, SlotSyncKit.T1));
+        Assert.False(await PlacedByThisTagAsync(channel, tag.Id));
+
+        await SyncSlotsOnAsync(channel, set, filler, SlotSyncKit.Live(x, "aaa", SlotSyncKit.T1));
+        await using (var verify = fixture.CreateDbContext())
+        {
+            Assert.False((await SlotSyncKit.EmoteAsync(verify, channel, x)).IsArchived);
+        }
+
+        Assert.False(await PlacedByThisTagAsync(channel, tag.Id));
+    }
+
     private static string NewSlotReportSet() => "01TAGRPT" + Guid.NewGuid().ToString("N")[..18].ToUpperInvariant();
 
     private async Task ReportSlotDeleteAsync(string set, SyncInSetEntryDto entry)
@@ -2872,6 +2911,12 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
             new SlotReconcileOptions { Enabled = true });
         var result = await service.MarkDeletedInSetAsync(set, "owner-7tv", "owner", "owner-tw-none", [entry.SevenTvEmoteId], null, Actor, [entry]);
         Assert.Null(result.Rejection);
+    }
+
+    private async Task SyncSlotsOnAsync(Channel channel, string set, params SevenTvEmote[] live)
+    {
+        await using var db = fixture.CreateDbContext();
+        Assert.NotNull(await SlotSyncKit.SyncAsync(db, channel, slotsEnabled: true, set, logger: null, live));
     }
 
     private async Task<bool> PlacedByThisTagAsync(Channel channel, long tagId)
