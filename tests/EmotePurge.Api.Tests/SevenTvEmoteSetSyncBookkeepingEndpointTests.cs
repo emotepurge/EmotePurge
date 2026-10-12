@@ -5,6 +5,8 @@ using EmotePurge.Api.Validation;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 using static EmotePurge.Api.Tests.OwnershipLadderArrangements;
 using Xunit;
@@ -445,6 +447,149 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
         await _factory.ResyncCooldown.Received(1).ReleaseAsync("ntpurged", Arg.Any<CancellationToken>());
     }
 
+    [Theory]
+    [InlineData(Deleted)]
+    [InlineData(Restored)]
+    public async Task SlotIdWithoutAddedAt_Gets400InvalidRequestBody_BeforeTheOwnerCheckRuns(string route)
+    {
+        var response = await SendAsync(
+            route, EmoteSetId, NewUserId(),
+            body: """{"sevenTvEmoteIds": ["7tv-x1"], "expectedChannelName": null, "entries": [{"sevenTvEmoteId": "7tv-x1", "slotId": "slot-1"}]}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidRequestBody, await ReadErrorCodeAsync(response));
+        await AssertOwnerCheckDidNotRunAsync();
+        await AssertNoReportAsync();
+    }
+
+    [Theory]
+    [InlineData(Deleted, """{"sevenTvEmoteId": "7tv-other", "slotId": "slot-1", "addedAt": "2026-10-01T10:00:00Z"}""")]
+    [InlineData(Restored, """{"sevenTvEmoteId": "7tv-other", "slotId": "slot-1", "addedAt": "2026-10-01T10:00:00Z"}""")]
+    [InlineData(Deleted, """{"sevenTvEmoteId": "", "alias": "a"}""")]
+    [InlineData(Restored, """{"alias": "a"}""")]
+    [InlineData(Deleted, "null")]
+    public async Task EntryWithoutAReportedEmoteId_Gets400InvalidRequestBody_BeforeTheOwnerCheckRuns(string route, string entry)
+    {
+        var response = await SendAsync(
+            route, EmoteSetId, NewUserId(),
+            body: $$"""{"sevenTvEmoteIds": ["7tv-x1"], "expectedChannelName": null, "entries": [{{entry}}]}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidRequestBody, await ReadErrorCodeAsync(response));
+        await AssertOwnerCheckDidNotRunAsync();
+        await AssertNoReportAsync();
+    }
+
+    [Theory]
+    [InlineData(Deleted)]
+    [InlineData(Restored)]
+    public async Task MalformedEntries_AreRejectedWithTheSlotReconcileFlagOff_TooBecauseTheShapeCheckIsFlagIndependent(string route)
+    {
+        // Plan 376 R3 (a): with the flag off the service ignores `entries` *after* the shape check —
+        // the endpoint does not read the flag at all. The factory runs on the appsettings default.
+        var flag = _factory.Services.GetRequiredService<IConfiguration>().GetValue<bool>("SevenTv:SlotReconcile:Enabled");
+        Assert.False(flag);
+
+        var response = await SendAsync(
+            route, EmoteSetId, NewUserId(),
+            body: """{"sevenTvEmoteIds": ["7tv-x1"], "expectedChannelName": null, "entries": [{"sevenTvEmoteId": "7tv-x1", "slotId": "slot-1"}]}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidRequestBody, await ReadErrorCodeAsync(response));
+        await AssertNoReportAsync();
+    }
+
+    [Theory]
+    [InlineData(Deleted)]
+    [InlineData(Restored)]
+    public async Task Entries_ReachTheService_WithAliasSlotAndTheInstantInUtc(string route)
+    {
+        var userId = NewUserId();
+        ArrangeConfirmedOwnership(userId);
+        ArrangeReport(route, new InSetOutcome(2, [], null));
+
+        var response = await SendAsync(
+            route, EmoteSetId, userId,
+            body: """
+            {"sevenTvEmoteIds": ["7tv-x1", "7tv-x2"], "expectedChannelName": null, "entries": [
+              {"sevenTvEmoteId": "7tv-x1", "alias": "hob44", "slotId": "slot-1", "addedAt": "2026-10-01T12:00:00.123456+02:00"},
+              {"sevenTvEmoteId": "7tv-x2"}]}
+            """);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        if (route == Deleted)
+        {
+            await _factory.Emotes.Received(1).MarkDeletedInSetAsync(
+                EmoteSetId, OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchId, Arg.Any<IReadOnlyList<string>>(),
+                null, Arg.Any<AuditActor>(), Arg.Is<IReadOnlyList<SyncInSetEntryDto>?>(entries => EntriesMatchTheBody(entries)), Arg.Any<CancellationToken>());
+        }
+        else
+        {
+            await _factory.Emotes.Received(1).MarkRestoredInSetAsync(
+                EmoteSetId, OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchId, Arg.Any<IReadOnlyList<string>>(),
+                null, Arg.Any<AuditActor>(), Arg.Is<IReadOnlyList<SyncInSetEntryDto>?>(entries => EntriesMatchTheBody(entries)), Arg.Any<CancellationToken>());
+        }
+    }
+
+    [Theory]
+    [InlineData(Deleted)]
+    [InlineData(Restored)]
+    public async Task RejectedEntries_Get400EmoteIdsInvalid_WithoutLiveEventOrResync(string route)
+    {
+        var userId = NewUserId();
+        ArrangeConfirmedOwnership(userId);
+        ArrangeReport(route, new InSetOutcome(1, [], null, SyncInSetRejection.SlotOfAnotherEmote));
+
+        var response = await SendAsync(
+            route, EmoteSetId, userId,
+            body: """{"sevenTvEmoteIds": ["7tv-x1"], "expectedChannelName": null, "entries": [{"sevenTvEmoteId": "7tv-x1", "slotId": "slot-1", "addedAt": "2026-10-01T10:00:00Z"}]}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.EmoteIdsInvalid, await ReadErrorCodeAsync(response));
+        await _factory.RedisPublisher.DidNotReceive().PublishAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await _factory.ResyncCooldown.DidNotReceive().TryBeginAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await _factory.Channels.DidNotReceive().TriggerResyncAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(Deleted, "archivedCount")]
+    [InlineData(Restored, "restoredCount")]
+    public async Task StaleEntriesReport_IsAnUnchangedNoOp_Gets200WithTheUsualShape_AndNoLiveEvent(string route, string countField)
+    {
+        // A stale generation changes nothing (NewlyChangedCount 0): same answer form as without
+        // entries, no channel.synced — the resync still runs, it is what heals a lying report.
+        var userId = NewUserId();
+        ArrangeConfirmedOwnership(userId);
+        ArrangeReport(route, new InSetOutcome(1, [new SyncInSetChannelResultDto("stalechan", 1, 0, [])], null));
+        ArrangeCooldown("stalechan", acquired: true);
+        _factory.Channels.TriggerResyncAsync("stalechan", Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(ChannelResyncResult.Triggered);
+
+        var response = await SendAsync(
+            route, EmoteSetId, userId,
+            body: """{"sevenTvEmoteIds": ["7tv-x1"], "expectedChannelName": null, "entries": [{"sevenTvEmoteId": "7tv-x1", "slotId": "slot-old", "addedAt": "2026-09-01T10:00:00Z"}]}""");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = json.RootElement;
+        Assert.Equal(1, root.GetProperty("reportedCount").GetInt32());
+        var channel = Assert.Single(root.GetProperty("channels").EnumerateArray());
+        Assert.Equal(1, channel.GetProperty(countField).GetInt32());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("unresolvedChannel").ValueKind);
+        Assert.Equal(["stalechan"], root.GetProperty("resyncTriggered").EnumerateArray().Select(c => c.GetString()));
+        await _factory.RedisPublisher.DidNotReceive().PublishAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    // Entries of the body in Entries_ReachTheService...: the first one's +02:00 instant arrives as UTC.
+    private static bool EntriesMatchTheBody(IReadOnlyList<SyncInSetEntryDto>? actual)
+    {
+        var addedAt = new DateTime(2026, 10, 1, 10, 0, 0, DateTimeKind.Utc).AddTicks(1234560);
+        return actual is { Count: 2 }
+            && actual[0] == new SyncInSetEntryDto("7tv-x1", "hob44", "slot-1", addedAt)
+            && actual[0].AddedAt!.Value.Kind == DateTimeKind.Utc
+            && actual[1] == new SyncInSetEntryDto("7tv-x2", null, null, null);
+    }
+
     // The ordinary case: the set sits in the list of an account the actor edits, owned by it.
     private void ArrangeConfirmedOwnership(string userId)
     {
@@ -466,14 +611,14 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
             _factory.Emotes.MarkDeletedInSetAsync(
                     Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(),
                     Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<IReadOnlyList<SyncInSetEntryDto>?>(), Arg.Any<CancellationToken>())
-                .Returns(new SyncDeletedInSetResultDto(outcome.ReportedCount, outcome.Channels, outcome.UnresolvedChannel));
+                .Returns(new SyncDeletedInSetResultDto(outcome.ReportedCount, outcome.Channels, outcome.UnresolvedChannel, outcome.Rejection));
         }
         else
         {
             _factory.Emotes.MarkRestoredInSetAsync(
                     Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IReadOnlyList<string>>(),
                     Arg.Any<string?>(), Arg.Any<AuditActor>(), Arg.Any<IReadOnlyList<SyncInSetEntryDto>?>(), Arg.Any<CancellationToken>())
-                .Returns(new SyncRestoredInSetResultDto(outcome.ReportedCount, outcome.Channels, outcome.UnresolvedChannel));
+                .Returns(new SyncRestoredInSetResultDto(outcome.ReportedCount, outcome.Channels, outcome.UnresolvedChannel, outcome.Rejection));
         }
     }
 
@@ -550,5 +695,7 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
         return JsonDocument.Parse(body).RootElement.GetProperty("errorCode").GetString();
     }
 
-    private sealed record InSetOutcome(int ReportedCount, IReadOnlyList<SyncInSetChannelResultDto> Channels, UnresolvedChannelDto? UnresolvedChannel);
+    private sealed record InSetOutcome(
+        int ReportedCount, IReadOnlyList<SyncInSetChannelResultDto> Channels, UnresolvedChannelDto? UnresolvedChannel,
+        SyncInSetRejection? Rejection = null);
 }

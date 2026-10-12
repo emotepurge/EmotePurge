@@ -309,7 +309,12 @@ public static class SevenTvEndpoints
             // Stage 5.
             var result = await emoteService.MarkDeletedInSetAsync(
                 emoteSetId, ladder.OwnerSevenTvUserId!, ladder.OwnerTwitchLogin!, ladder.OwnerTwitchUserId!, request.SevenTvEmoteIds!,
-                ladder.ExpectedChannelName, ladder.Actor!, cancellationToken: ct);
+                ladder.ExpectedChannelName, ladder.Actor!, entries: ladder.Entries, cancellationToken: ct);
+            if (result.Rejection is not null)
+            {
+                return RejectedEntriesResponse();
+            }
+
             var resyncTriggered = await PublishAndResyncAfterSyncInSetAsync(
                 result.Channels, result.UnresolvedChannel, ladder.Actor!, redisPublisher, resyncCooldown, channelService, logger);
 
@@ -341,7 +346,12 @@ public static class SevenTvEndpoints
             // Stage 5.
             var result = await emoteService.MarkRestoredInSetAsync(
                 emoteSetId, ladder.OwnerSevenTvUserId!, ladder.OwnerTwitchLogin!, ladder.OwnerTwitchUserId!, request.SevenTvEmoteIds!,
-                ladder.ExpectedChannelName, ladder.Actor!, cancellationToken: ct);
+                ladder.ExpectedChannelName, ladder.Actor!, entries: ladder.Entries, cancellationToken: ct);
+            if (result.Rejection is not null)
+            {
+                return RejectedEntriesResponse();
+            }
+
             var resyncTriggered = await PublishAndResyncAfterSyncInSetAsync(
                 result.Channels, result.UnresolvedChannel, ladder.Actor!, redisPublisher, resyncCooldown, channelService, logger);
 
@@ -613,6 +623,13 @@ public static class SevenTvEndpoints
             return SyncInSetLadder.Reject(Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidChannelName }));
         }
 
+        // The shape of the slot entries is checked in both flag states and before the owner check,
+        // like emote_ids_empty: a malformed entry says nothing about rights and costs no 7TV call.
+        if (!TryMapSyncInSetEntries(request, out var entries))
+        {
+            return SyncInSetLadder.Reject(Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidRequestBody }));
+        }
+
         var actor = httpContext.User.TryBuildAuditActor();
         if (actor is null)
         {
@@ -630,8 +647,48 @@ public static class SevenTvEndpoints
 
         var expectedChannelName = request.ExpectedChannelName is null ? null : ChannelName.Normalize(request.ExpectedChannelName);
         return new SyncInSetLadder(
-            null, actor, ownership.OwnerSevenTvUserId, ownership.OwnerTwitchLogin, ownership.OwnerTwitchUserId, expectedChannelName);
+            null, actor, ownership.OwnerSevenTvUserId, ownership.OwnerTwitchLogin, ownership.OwnerTwitchUserId, expectedChannelName, entries);
     }
+
+    /// <summary>
+    /// Form check and mapping of <see cref="SyncInSetRequest.Entries"/> (plan 376, 4.1): every entry
+    /// carries a non-blank <c>sevenTvEmoteId</c> that is one of the reported ids, and a given
+    /// <c>slotId</c> needs its <c>addedAt</c>. A missing or empty list maps to <c>null</c> — the path
+    /// without entries. <c>addedAt</c> is converted to UTC here, so the service only ever sees UTC.
+    /// </summary>
+    private static bool TryMapSyncInSetEntries(SyncInSetRequest request, out IReadOnlyList<SyncInSetEntryDto>? entries)
+    {
+        entries = null;
+        if (request.Entries is not { Count: > 0 })
+        {
+            return true;
+        }
+
+        var reportedIds = request.SevenTvEmoteIds is null
+            ? new HashSet<string>(StringComparer.Ordinal)
+            : request.SevenTvEmoteIds.Where(id => id is not null).ToHashSet(StringComparer.Ordinal);
+        var mapped = new List<SyncInSetEntryDto>(request.Entries.Count);
+        foreach (var entry in request.Entries)
+        {
+            if (entry is null
+                || string.IsNullOrWhiteSpace(entry.SevenTvEmoteId)
+                || !reportedIds.Contains(entry.SevenTvEmoteId)
+                || (entry.SlotId is not null && entry.AddedAt is null))
+            {
+                return false;
+            }
+
+            mapped.Add(new SyncInSetEntryDto(entry.SevenTvEmoteId, entry.Alias, entry.SlotId, entry.AddedAt?.UtcDateTime));
+        }
+
+        entries = mapped;
+        return true;
+    }
+
+    // The service refused the entries (a slotId that belongs to another emote): nothing was written,
+    // so there is no live event and no resync either.
+    private static IResult RejectedEntriesResponse() =>
+        Results.BadRequest(new { errorCode = ApiErrorCodes.EmoteIdsInvalid });
 
     /// <summary>
     /// Stages 6-7 of the set-centric report (restore-per-set spec 5.1, 5.4, E17): one
@@ -758,7 +815,8 @@ public static class SevenTvEndpoints
         string? OwnerSevenTvUserId,
         string? OwnerTwitchLogin,
         string? OwnerTwitchUserId,
-        string? ExpectedChannelName)
+        string? ExpectedChannelName,
+        IReadOnlyList<SyncInSetEntryDto>? Entries = null)
     {
         public static SyncInSetLadder Reject(IResult rejection) => new(rejection, null, null, null, null, null);
     }
@@ -906,7 +964,20 @@ internal sealed record SyncImportedToSetRequest(
 /// <c>ChannelNameValidation.IsValid</c> and normalized before it reaches the service (Regel 9).
 /// </param>
 /// <param name="TargetOwnerTwitchId">Same order for the owner check as <see cref="SyncImportedToSetRequest.TargetOwnerTwitchId"/>.</param>
-internal sealed record SyncInSetRequest(IReadOnlyList<string>? SevenTvEmoteIds, string? ExpectedChannelName, string? TargetOwnerTwitchId = null);
+/// <param name="Entries">
+/// Optional per-slot detail (plan 376, 4.1): one entry per reported id the client can pin to a slot.
+/// Missing or empty means the report without entries. Each entry's <c>sevenTvEmoteId</c> must be one
+/// of <paramref name="SevenTvEmoteIds"/>; a <c>slotId</c> requires <c>addedAt</c> (otherwise 400
+/// <c>invalid_request_body</c>).
+/// </param>
+internal sealed record SyncInSetRequest(
+    IReadOnlyList<string>? SevenTvEmoteIds,
+    string? ExpectedChannelName,
+    string? TargetOwnerTwitchId = null,
+    IReadOnlyList<SyncInSetEntryRequest>? Entries = null);
+
+/// <summary>One element of <see cref="SyncInSetRequest.Entries"/>; <c>AddedAt</c> is the <c>firstSeenAt</c> of the usage row the <c>SlotId</c> came from.</summary>
+internal sealed record SyncInSetEntryRequest(string? SevenTvEmoteId, string? Alias, string? SlotId, DateTimeOffset? AddedAt);
 
 /// <summary>
 /// Answer of <c>POST /api/seventv/emote-sets/{emoteSetId}/sync-deleted</c> (restore-per-set spec 5.3).
