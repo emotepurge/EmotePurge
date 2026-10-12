@@ -10,6 +10,39 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-12 — System-load rollup: recompute only changed hours and never erase stored CPU figures
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/SystemLoadRollupService.cs` ·
+`src/EmotePurge.Infrastructure/Services/SystemLoadRollupSelection.cs` ·
+`src/EmotePurge.Infrastructure/Services/SystemLoadRollupMath.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/SystemLoadRollupSelectionTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SystemLoadPersistenceTests.cs` ·
+`docs/Operations.md`
+
+The hourly rollup recomputed the three most recent closable hours on every run with the Worker's
+*current* `SystemLoad:IntervalSeconds`. After lowering the interval (30 s to 1 s), the restart rollup
+overwrote host and process CPU of already rolled-up hours with `null`, silently and permanently once the
+raw samples expire after 7 days.
+
+Decision:
+
+- **Dirty-hour rule.** Inside the window, an hour is recomputed only if it has no hourly row or its raw
+  sample count differs from the stored `SampleCount`. Per source, every hour from the earliest dirty hour
+  onwards is recomputed, because a late sample can be the predecessor of the next hour's first pair.
+  Raw samples are only inserted, never updated, so an unchanged count means an unchanged sample set. The
+  `>= recomputeFrom` branch of the candidate SQL is gone; the backfill of hours without a row stays.
+- **Null guard.** When an existing row is recomputed, each CPU figure group (process, cgroup, host)
+  whose new mean is `null` while the stored mean is not keeps its stored values; all other columns are
+  overwritten. One `Warning` per run reports the number of rows and groups kept, without values. A group
+  that still has some valid pairs is overwritten with the reduced result (accepted, would need a stored
+  pair count and a migration).
+- **Still not persisted:** the sampling cadence. No migration, and no median or other data-derived
+  cadence rule. Hours rolled up for the first time after an interval change remain a documented limit
+  (`docs/Operations.md`).
+
+This supersedes the "two known limits" paragraph of the 2026-10-11 #381 entry below, which claims that
+rolled-up hours keep their old values; that paragraph is left unedited as history.
+
 ### 2026-10-11 — Admin dashboard: activity series, rate-limit trend and server-bucketed load ranges (#381)
 
 **Betrifft:** `src/EmotePurge.Core/Services/IAdminDashboardQueryService.cs` ·
