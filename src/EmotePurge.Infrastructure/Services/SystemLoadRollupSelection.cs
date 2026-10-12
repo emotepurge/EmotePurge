@@ -25,6 +25,14 @@ public static class SystemLoadRollupSelection
     /// never selected, even when a row is stored for it (that happens only after a manual deletion, and a
     /// recompute would write an empty row).
     /// </summary>
+    /// <remarks>
+    /// Two limitations are accepted. First, propagation is per source: with several process instances of one
+    /// source and an interval long enough for an instance to skip an hour, a late sample in hour H can affect
+    /// that instance's first pair in a later hour that is not selected. Second, a late sample in the hour just
+    /// before the window is not detected, so the first pair of the first window hour that depends on it is not
+    /// refreshed. Both are accepted because the sampler inserts each sample in the tick that took it and drops
+    /// failed inserts (<c>SystemLoadSampler</c>), so samples more than seconds late only arise from manual inserts.
+    /// </remarks>
     /// <param name="windowHours">The closable window hours in ascending order.</param>
     /// <param name="rawCounts">Raw sample count per (source, hour); a missing key means 0.</param>
     /// <param name="storedCounts">Stored <see cref="SystemLoadHourly.SampleCount"/> per existing row.</param>

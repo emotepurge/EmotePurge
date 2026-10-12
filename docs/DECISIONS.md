@@ -80,6 +80,13 @@ Decision:
   overwritten. One `Warning` per run reports the number of rows and groups kept, without values. A group
   that still has some valid pairs is overwritten with the reduced result (accepted, would need a stored
   pair count and a migration).
+- **Accepted limitations of the dirty-hour rule.** (a) Propagation is per source: with several process
+  instances of one source and an interval long enough for an instance to skip an hour, a late sample in
+  hour H can affect that instance's first pair in a later hour that is not selected. (b) A late sample in
+  the hour just before the window is not detected, so the first pair of the first window hour that depends
+  on it is not refreshed. Both are accepted and only documented: the sampler inserts each
+  sample in the tick that took it and drops failed inserts, so samples more than seconds late only arise
+  from manual inserts.
 - **Still not persisted:** the sampling cadence. No migration, and no median or other data-derived
   cadence rule. Hours rolled up for the first time after an interval change remain a documented limit
   (`docs/Operations.md`).
