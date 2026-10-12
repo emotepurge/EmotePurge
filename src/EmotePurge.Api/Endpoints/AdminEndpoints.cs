@@ -209,6 +209,29 @@ public static class AdminEndpoints
             return Results.Ok(await dashboardReader.GetActivityAsync(parsed.Value, ct));
         });
 
+        // System load and workload series (#381 cut B), bucketed server-side. Missing or empty range
+        // selects 24h. A busy rebuild gate is a 503 with Retry-After and no body: the spec names no error
+        // code for it, and the client keeps its last answer.
+        group.MapGet("/dashboard/load", async (string? range, IAdminDashboardReader dashboardReader, HttpContext http, CancellationToken ct) =>
+        {
+            var parsed = string.IsNullOrEmpty(range)
+                ? AdminDashboardLoadRange.Hours24
+                : AdminDashboardLoadRanges.Parse(range);
+            if (parsed is null)
+            {
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidDashboardRange });
+            }
+
+            var read = await dashboardReader.GetLoadAsync(parsed.Value, ct);
+            if (read.Busy)
+            {
+                http.Response.Headers.RetryAfter = read.RetryAfterSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
+
+            return Results.Ok(read.Load);
+        });
+
         group.MapGet("/roster", async (
             IWorkerRosterReader rosterReader,
             IAdminChannelQueryService channelQueryService,

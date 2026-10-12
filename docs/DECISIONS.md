@@ -25,7 +25,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `src/EmotePurge.Core/Services/IAdminDashboardReader.cs` ·
 `src/EmotePurge.Infrastructure/Services/AdminDashboardReader.cs` ·
 `web/src/app/core/i18n/api-error.ts` · `web/public/i18n/{de,en}.json` ·
-`tests/EmotePurge.Api.Tests/{ApiFactory,AuthFilterMatrixTests,AdminDashboardActivityEndpointTests,AdminRateLimitsTrendEndpointTests}.cs` ·
+`tests/EmotePurge.Api.Tests/{ApiFactory,AuthFilterMatrixTests,AdminDashboardActivityEndpointTests,AdminDashboardLoadEndpointTests,AdminRateLimitsTrendEndpointTests}.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Unit/{AdminDashboardReaderTests,LiveEventTests}.cs` ·
 `web/src/app/shared/charts/{line-chart,chart-series}.ts` ·
 `web/src/app/core/live/poll-while-visible.ts` · `web/src/app/core/page-visibility/page-visibility.ts` ·
@@ -172,6 +172,27 @@ in time order into a pure accumulator (`AdminDashboardLoadBucketing`) that holds
 bucket's values and writes into column arrays pre-sized to the bucket count; no unbucketed list of
 samples is ever built. Whether this in-memory variant carries the 24-hour 1-second case is decided by
 the B performance gate; the response contract would not change if the bucketing moved into SQL.
+
+Load range, route and facade (cut B). `GET /api/admin/dashboard/load?range=` answers with the
+serialized `AdminDashboardLoad` (camelCase, column-oriented lists, `null` stays `null`, timestamps as
+ISO-8601 UTC). A missing or empty `range` selects `24h`; anything else must be exactly `1h`, `24h`, `7d`,
+`30d`, `90d` or `13mo` or the answer is `400 invalid_dashboard_range` (the activity route's code, no new
+one). There is no tail or `latest` route and no client-side merge: one request returns the complete
+range. The response is budgeted at 256 KiB and 400 buckets; the bucket cap lives in the service, the
+byte budget is pinned by a contract test with a fully populated 400-bucket response. No
+`ProcessInstanceId` and no raw row ever leaves the service; a contract test searches the JSON for it.
+
+`IAdminDashboardReader.GetLoadAsync(range)` caches per range: 30 s for `1h` and `24h`, 60 s for the
+longer ranges (their source changes at most hourly). Each key is single-flight: concurrent readers of
+one range share the running rebuild instead of waiting for a turn. Across all ranges only one rebuild
+runs at a time (one `SemaphoreSlim` in the facade), because a cold `24h` read is the memory-heavy one
+and six ranges rebuilding together would stack that peak. A reader that cannot get the turn within 5 s
+starts no rebuild and receives `Busy`; the route turns that into `503` with `Retry-After: 5` and no
+body, since neither the spec nor the error catalogue names a code for it and the client keeps its last
+answer. A failed or busy outcome is never cached, and the gate is released in every case. Every real
+rebuild writes two Debug lines (`Load dashboard cold rebuild started/finished range=... ms=...`), cache
+hits and joined waiters write none, so a measuring script can reconstruct the rebuild intervals from the
+log alone.
 
 ### 2026-10-11 — The "set observed" date preset is removed; a live day needs counts of the viewed set (#391)
 

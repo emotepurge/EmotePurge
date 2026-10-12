@@ -99,6 +99,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/admin/rate-limits")]
     [InlineData("GET", "/api/admin/rate-limits/trend")]
     [InlineData("GET", "/api/admin/dashboard/activity")]
+    [InlineData("GET", "/api/admin/dashboard/load")]
     [InlineData("DELETE", "/api/admin/users/12345")]
     [InlineData("GET", "/api/auth/me")]
     [InlineData("GET", "/api/channels/live-events")]
