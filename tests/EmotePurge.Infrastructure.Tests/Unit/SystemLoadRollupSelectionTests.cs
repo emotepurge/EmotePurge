@@ -18,25 +18,38 @@ public class SystemLoadRollupSelectionTests
         Assert.Empty(result);
     }
 
-    // protects: new hours get a row and later hours follow; fails_when: only the missing hour, or nothing, is returned.
+    // protects: a new hour gets a row and its successor with samples follows; fails_when: only the missing hour,
+    //   nothing, or every later hour is returned; no_claim: hours further on, which a late sample cannot change.
     [Fact]
-    public void MissingRowSelectsThatHourAndAllLaterOnes()
+    public void MissingRowSelectsThatHourAndTheNextHourWithSamplesOnly()
     {
         var result = Select(Raw((Worker(0), 10), (Worker(1), 20), (Worker(2), 30)), Stored((Worker(0), 10)));
 
         Assert.Equal([Worker(1), Worker(2)], result);
     }
 
-    // protects: forward propagation from the first window hour; fails_when: only the changed hour is returned.
+    // protects: narrowed propagation from the first window hour; fails_when: the whole window, or only the changed
+    //   hour, is returned; no_claim: how the service loads counts.
     [Fact]
-    public void ChangedCountInTheFirstWindowHourSelectsTheWholeWindow()
+    public void ChangedCountInTheFirstWindowHourSelectsOnlyItAndTheNextHour()
     {
         var result = Select(Raw((Worker(0), 11), (Worker(1), 20), (Worker(2), 30)), Stored((Worker(0), 10), (Worker(1), 20), (Worker(2), 30)));
 
-        Assert.Equal([Worker(0), Worker(1), Worker(2)], result);
+        Assert.Equal([Worker(0), Worker(1)], result);
     }
 
-    // protects: earlier hours stay untouched; fails_when: hours before the change are returned.
+    // protects: propagation skips hours without samples; fails_when: the empty hour consumes the propagation or the
+    //   hour with samples behind it is missed; no_claim: a stored row for the empty hour (see the next test).
+    [Fact]
+    public void DirtyHourFollowedByAnEmptyHourSelectsTheNextHourWithSamples()
+    {
+        var result = Select(Raw((Worker(0), 11), (Worker(2), 30)), Stored((Worker(0), 10), (Worker(2), 30)));
+
+        Assert.Equal([Worker(0), Worker(2)], result);
+    }
+
+    // protects: earlier hours stay untouched; fails_when: hours before the change are returned; no_claim: later
+    //   hours, there are none in this window.
     [Fact]
     public void ChangedCountInTheLastHourSelectsOnlyTheLastHour()
     {
@@ -45,7 +58,17 @@ public class SystemLoadRollupSelectionTests
         Assert.Equal([Worker(2)], result);
     }
 
-    // protects: source isolation; fails_when: a dirty Worker hour pulls in Api hours.
+    // protects: an hour selected only by propagation does not propagate further; fails_when: hour 2 is returned
+    //   although its samples and its predecessor are unchanged; no_claim: CPU figures.
+    [Fact]
+    public void PropagationStopsAfterTheNextHourWithSamples()
+    {
+        var result = Select(Raw((Worker(0), 11), (Worker(1), 20), (Worker(2), 30)), Stored((Worker(0), 10), (Worker(1), 20), (Worker(2), 30)));
+
+        Assert.DoesNotContain(Worker(2), result);
+    }
+
+    // protects: source isolation; fails_when: a dirty Worker hour pulls in Api hours; no_claim: cross-source order.
     [Fact]
     public void DirtyHourOfOneSourceDoesNotSelectTheOtherSource()
     {
@@ -56,7 +79,8 @@ public class SystemLoadRollupSelectionTests
         Assert.Equal([Worker(0)], result);
     }
 
-    // protects: no rows for empty hours; fails_when: an hour with neither samples nor a row is selected.
+    // protects: no rows for empty hours; fails_when: an hour with neither samples nor a row is selected;
+    //   no_claim: hours with a stored row but no samples (see the next test).
     [Fact]
     public void EmptyWindowAndHoursWithoutSamplesOrRowsSelectNothing()
     {
@@ -65,7 +89,18 @@ public class SystemLoadRollupSelectionTests
         Assert.Equal([Worker(2)], Select(Raw((Worker(2), 5)), Stored()));
     }
 
-    // protects: stored CPU survives a recompute without pairs; fails_when: a null overwrites it or other groups follow.
+    // protects: a stored row whose raw samples are gone stays as it is; fails_when: such an hour is recomputed
+    //   (that would write an empty row); no_claim: whether the row should be deleted.
+    [Fact]
+    public void StoredRowWithoutRawSamplesIsClean()
+    {
+        var result = Select(Raw((Worker(0), 10)), Stored((Worker(0), 10), (Worker(1), 20)));
+
+        Assert.Empty(result);
+    }
+
+    // protects: stored CPU survives a recompute without pairs; fails_when: a null overwrites it or other groups follow;
+    //   no_claim: which groups the recompute leaves null.
     [Fact]
     public void NewNullKeepsTheStoredGroupAndGroupsAreIndependent()
     {
@@ -83,7 +118,7 @@ public class SystemLoadRollupSelectionTests
         Assert.Equal(0.25, recomputed.HostCpuBusyMax);
     }
 
-    // protects: a real new value wins; fails_when: the stored value replaces a valid recompute.
+    // protects: a real new value wins; fails_when: the stored value replaces a valid recompute; no_claim: partial nulls.
     [Fact]
     public void NewValueOverwritesTheStoredGroup()
     {
@@ -95,7 +130,7 @@ public class SystemLoadRollupSelectionTests
         Assert.Equal(0.9, recomputed.ProcessCpuRateMean);
     }
 
-    // protects: no invention of values; fails_when: null/null produces a value or counts as kept.
+    // protects: no invention of values; fails_when: null/null produces a value or counts as kept; no_claim: valid values.
     [Fact]
     public void StoredNullAndNewNullStayNull()
     {
@@ -108,7 +143,8 @@ public class SystemLoadRollupSelectionTests
         Assert.Null(recomputed.HostCpuBusyP95);
     }
 
-    // protects: only CPU groups are guarded; fails_when: a non-CPU column of the recompute is replaced.
+    // protects: only CPU groups are guarded; fails_when: a non-CPU column of the recompute is replaced;
+    //   no_claim: columns other than SampleCount.
     [Fact]
     public void OtherColumnsOfTheRecomputeAreLeftAlone()
     {

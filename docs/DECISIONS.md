@@ -26,11 +26,16 @@ raw samples expire after 7 days.
 
 Decision:
 
-- **Dirty-hour rule.** Inside the window, an hour is recomputed only if it has no hourly row or its raw
-  sample count differs from the stored `SampleCount`. Per source, every hour from the earliest dirty hour
-  onwards is recomputed, because a late sample can be the predecessor of the next hour's first pair.
-  Raw samples are only inserted, never updated, so an unchanged count means an unchanged sample set. The
-  `>= recomputeFrom` branch of the candidate SQL is gone; the backfill of hours without a row stays.
+- **Dirty-hour rule.** Inside the window, an hour with raw samples is recomputed only if it has no
+  hourly row or its raw sample count differs from the stored `SampleCount`. Per source, a dirty hour H is
+  recomputed together with the next window hour after H that has raw samples, because only that hour's
+  first pair can have its predecessor in H; a late sample cannot change any later hour. This is narrower
+  than the "from the earliest dirty hour onwards" wording of the issue and deviates from it for
+  exactness. An hour with a stored row but no raw samples is clean (it only occurs after a manual
+  deletion, and a recompute would write an empty row). Raw samples are only inserted, never updated, so
+  an unchanged count means an unchanged sample set. The `>= recomputeFrom` branch of the candidate SQL is
+  gone; the backfill of hours without a row stays. The window count query is restricted to the known
+  sources so that `IX_SystemLoadSamples_Source_SampledAtUtc` can be used.
 - **Null guard.** When an existing row is recomputed, each CPU figure group (process, cgroup, host)
   whose new mean is `null` while the stored mean is not keeps its stored values; all other columns are
   overwritten. One `Warning` per run reports the number of rows and groups kept, without values. A group
@@ -40,8 +45,9 @@ Decision:
   cadence rule. Hours rolled up for the first time after an interval change remain a documented limit
   (`docs/Operations.md`).
 
-This supersedes the "two known limits" paragraph of the 2026-10-11 #381 entry below, which claims that
-rolled-up hours keep their old values; that paragraph is left unedited as history.
+This completes and corrects the "two known limits" paragraph of the 2026-10-11 #381 entry below, which
+omitted the in-window erasure (the rollup recomputing the three most recent hours under the current
+interval). Both limits named there still hold; that paragraph is left unedited as history.
 
 ### 2026-10-11 — Admin dashboard: activity series, rate-limit trend and server-bucketed load ranges (#381)
 

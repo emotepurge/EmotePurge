@@ -73,6 +73,9 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         Assert.Null(samples[1].EmoteMatches);
     }
 
+    // protects: the second run of an unchanged hour recomputes nothing and keeps one row.
+    // fails_when: the unchanged hour is recomputed again or duplicated.
+    // no_claim: row contents; two synthetic samples.
     [Fact]
     public async Task Rollup_IsIdempotentForTheSameHour()
     {
@@ -86,7 +89,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         }
 
         await using var rollupDb = CreateDbContext();
-        var service = new SystemLoadRollupService(rollupDb);
+        var service = new SystemLoadRollupService(rollupDb, NullLogger<SystemLoadRollupService>.Instance);
 
         Assert.Equal(1, await service.RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30));
         // Steady state: the second run finds no changed hour, so it recomputes nothing.
@@ -95,6 +98,10 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         Assert.Equal(1, await rollupDb.SystemLoadHourlies.CountAsync());
     }
 
+    // protects: an hour is closed exactly when the grace period has elapsed and then stays untouched.
+    // fails_when: the hour closes early or late, or the third run (closable and clean) reports work; the row
+    //   is checked after all runs, so a missing row or a changed SampleCount fails.
+    // no_claim: row contents beyond SampleCount; a single synthetic sample.
     [Fact]
     public async Task Rollup_ClosesAnHourExactlyAtTheGraceBoundary()
     {
@@ -103,7 +110,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         await using var db = CreateDbContext();
         db.SystemLoadSamples.Add(Sample(hourStartUtc.AddMinutes(30), Guid.NewGuid(), 0));
         await db.SaveChangesAsync();
-        var service = new SystemLoadRollupService(db);
+        var service = new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance);
         var grace = TimeSpan.FromMinutes(5);
 
         var beforeBoundary = await service.RecomputeClosableHoursAsync(hourEndUtc + grace - TimeSpan.FromSeconds(1), grace, 30);
@@ -113,6 +120,9 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         Assert.Equal(0, beforeBoundary);
         Assert.Equal(1, atBoundary);
         Assert.Equal(0, afterBoundary);
+        // "Closable and clean" must be told apart from "not closable": the row exists and is untouched.
+        var row = await db.SystemLoadHourlies.SingleAsync();
+        Assert.Equal(1, row.SampleCount);
     }
 
     [Fact]
@@ -122,7 +132,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         db.SystemLoadSamples.Add(Sample(NowUtc.AddHours(-2).AddMinutes(10), Guid.NewGuid(), 0));
         await db.SaveChangesAsync();
 
-        await new SystemLoadRollupService(db).RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30);
+        await new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance).RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30);
 
         var hourly = await db.SystemLoadHourlies.SingleAsync();
         Assert.Null(hourly.ChatLines);
@@ -139,7 +149,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
             Sample(NowUtc.AddHours(-12).AddMinutes(10), identity, 10_000_000_000));
         await db.SaveChangesAsync();
 
-        var service = new SystemLoadRollupService(db);
+        var service = new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance);
         await service.RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30);
 
         var hours = await db.SystemLoadHourlies.OrderBy(hourly => hourly.HourUtc).Select(hourly => hourly.HourUtc).ToListAsync();
@@ -155,7 +165,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
             Sample(NowUtc.AddHours(-2).AddMinutes(10), identity, 0, load: 0.2),
             Sample(NowUtc.AddHours(-2).AddMinutes(40), identity, 300_000_000, load: 0.4));
         await db.SaveChangesAsync();
-        var service = new SystemLoadRollupService(db);
+        var service = new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance);
 
         await service.RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30);
         db.SystemLoadSamples.Add(Sample(NowUtc.AddHours(-2).AddMinutes(25), identity, 150_000_000, load: 0.3));
@@ -185,7 +195,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         db.SystemLoadSamples.AddRange(CpuSamples(
             SystemLoadSource.Worker, newInstance, dayUtc.AddHours(12).AddMinutes(20), dayUtc.AddHours(12).AddMinutes(24), TimeSpan.FromSeconds(1)));
         await db.SaveChangesAsync();
-        var service = new SystemLoadRollupService(db);
+        var service = new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance);
         var grace = TimeSpan.FromMinutes(5);
 
         await service.RecomputeClosableHoursAsync(dayUtc.AddHours(12).AddMinutes(10), grace, 30);
@@ -216,7 +226,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         }
 
         await db.SaveChangesAsync();
-        var service = new SystemLoadRollupService(db);
+        var service = new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance);
         var grace = TimeSpan.FromMinutes(5);
 
         // 10:10 closes up to hour 09 (hours 08 and 09 are rolled up for the first time, per source).
@@ -229,6 +239,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
     // protects: forward propagation; a late sample in hour H also refreshes H+1, whose first pair uses it
     //   as predecessor.
     // fails_when: only hour H is recomputed and hour H+1 keeps the figures computed without the late sample.
+    //   Later hours are not refreshed (covered by the unit tests).
     // no_claim: late samples older than the recompute window; the samples are synthetic.
     [Fact]
     public async Task Rollup_RecomputesTheNextHourWhenALateSampleIsItsPredecessor()
@@ -243,7 +254,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
             Sample(hour10.AddSeconds(15), identity, 400_000_000),
             Sample(hour10.AddSeconds(45), identity, 550_000_000));
         await db.SaveChangesAsync();
-        var service = new SystemLoadRollupService(db);
+        var service = new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance);
         var grace = TimeSpan.FromMinutes(5);
         var nowUtc = dayUtc.AddHours(12).AddMinutes(10);
 
@@ -312,7 +323,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         Assert.Equal(1, firstPass.SystemLoadRawSamplesWithoutHourlyRow);
         Assert.Equal(1, await db.SystemLoadSamples.CountAsync());
 
-        await new SystemLoadRollupService(db)
+        await new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance)
             .RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30);
         var secondPass = await RunRetentionAsync(db, enforce: true);
 
@@ -327,7 +338,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         db.SystemLoadSamples.Add(Sample(NowUtc.AddDays(-8).AddMinutes(10), Guid.NewGuid(), 0));
         await db.SaveChangesAsync();
 
-        await new SystemLoadRollupService(db)
+        await new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance)
             .RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30);
         var summary = await RunRetentionAsync(db, enforce: true);
 
@@ -355,7 +366,7 @@ public class SystemLoadPersistenceTests(PostgresFixture fixture) : IAsyncLifetim
         Assert.Equal(0, firstPass.SystemLoadRawSamplesDeleted);
         Assert.Equal(2, await db.SystemLoadSamples.CountAsync());
 
-        await new SystemLoadRollupService(db)
+        await new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance)
             .RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), 30);
         var successorHour = await db.SystemLoadHourlies.SingleAsync(hourly => hourly.HourUtc == FloorHour(successorAtUtc));
         Assert.Equal(0.5, successorHour.ProcessCpuRateMean);

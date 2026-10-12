@@ -3,13 +3,11 @@ using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 
 namespace EmotePurge.Infrastructure.Services;
 
-public sealed class SystemLoadRollupService(AppDbContext db, ILogger<SystemLoadRollupService>? logger = null) : ISystemLoadRollupService
+public sealed class SystemLoadRollupService(AppDbContext db, ILogger<SystemLoadRollupService> logger) : ISystemLoadRollupService
 {
-
     // Backfill only: hours without an hourly row, however old. Window hours without a row are dirty anyway.
     private const string CandidateHoursSql = """
         SELECT DISTINCT
@@ -31,12 +29,11 @@ public sealed class SystemLoadRollupService(AppDbContext db, ILogger<SystemLoadR
             date_trunc('hour', sample."SampledAtUtc" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS "HourUtc",
             COUNT(*) AS "Count"
         FROM "SystemLoadSamples" AS sample
-        WHERE sample."SampledAtUtc" >= {0}
+        WHERE sample."Source" = ANY({2})
+          AND sample."SampledAtUtc" >= {0}
           AND sample."SampledAtUtc" < {1}
         GROUP BY 1, 2
         """;
-
-    private readonly ILogger<SystemLoadRollupService> _logger = logger ?? NullLogger<SystemLoadRollupService>.Instance;
 
     public async Task<int> RecomputeClosableHoursAsync(
         DateTime nowUtc,
@@ -52,7 +49,7 @@ public sealed class SystemLoadRollupService(AppDbContext db, ILogger<SystemLoadR
             .SqlQueryRaw<CandidateHourRow>(CandidateHoursSql, closeEndUtc)
             .ToListAsync(cancellationToken);
         var candidateKeys = backfillRows
-            .Select(static row => new HourKey(
+            .Select(static row => new SystemLoadHourKey(
                 Enum.Parse<SystemLoadSource>(row.Source),
                 DateTime.SpecifyKind(row.HourUtc, DateTimeKind.Utc)))
             .ToHashSet();
@@ -64,7 +61,11 @@ public sealed class SystemLoadRollupService(AppDbContext db, ILogger<SystemLoadR
         }
 
         var rawCountRows = await db.Database
-            .SqlQueryRaw<WindowCountRow>(WindowCountsSql, recomputeFromUtc, closeEndUtc)
+            .SqlQueryRaw<WindowCountRow>(
+                WindowCountsSql,
+                recomputeFromUtc,
+                closeEndUtc,
+                Enum.GetValues<SystemLoadSource>().Select(static source => source.ToString()).ToArray())
             .ToListAsync(cancellationToken);
         var rawCounts = rawCountRows.ToDictionary(
             static row => new SystemLoadHourKey(
@@ -79,10 +80,8 @@ public sealed class SystemLoadRollupService(AppDbContext db, ILogger<SystemLoadR
         var storedCounts = recentExisting.ToDictionary(
             static hourly => new SystemLoadHourKey(hourly.Source, hourly.HourUtc),
             static hourly => hourly.SampleCount);
-        var existingKeys = storedCounts.Keys.Select(static key => new HourKey(key.Source, key.HourUtc)).ToHashSet();
-        candidateKeys.UnionWith(SystemLoadRollupSelection
-            .SelectDirtyHours(windowHours, rawCounts, storedCounts)
-            .Select(static key => new HourKey(key.Source, key.HourUtc)));
+        var existingKeys = storedCounts.Keys.ToHashSet();
+        candidateKeys.UnionWith(SystemLoadRollupSelection.SelectDirtyHours(windowHours, rawCounts, storedCounts));
 
         var samples = await LoadCandidateSamplesAsync(candidateKeys, cancellationToken);
         var samplesBySource = samples
@@ -124,7 +123,7 @@ public sealed class SystemLoadRollupService(AppDbContext db, ILogger<SystemLoadR
 
         if (keptRows > 0)
         {
-            _logger.LogWarning(
+            logger.LogWarning(
                 "System-load rollup kept stored CPU figures for {Rows} hourly rows ({Groups} figure groups) because the recompute found no valid pairs.",
                 keptRows,
                 keptGroups);
@@ -134,7 +133,7 @@ public sealed class SystemLoadRollupService(AppDbContext db, ILogger<SystemLoadR
     }
 
     private async Task<List<SystemLoadSample>> LoadCandidateSamplesAsync(
-        IReadOnlyCollection<HourKey> candidateKeys,
+        IReadOnlyCollection<SystemLoadHourKey> candidateKeys,
         CancellationToken cancellationToken)
     {
         if (candidateKeys.Count == 0)
@@ -228,8 +227,6 @@ public sealed class SystemLoadRollupService(AppDbContext db, ILogger<SystemLoadR
 
     private static DateTime FloorToHour(DateTime timestampUtc) =>
         new(timestampUtc.Ticks - timestampUtc.Ticks % TimeSpan.TicksPerHour, DateTimeKind.Utc);
-
-    private readonly record struct HourKey(SystemLoadSource Source, DateTime HourUtc);
 
     private sealed class WindowCountRow
     {

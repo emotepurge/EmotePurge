@@ -17,11 +17,13 @@ public readonly record struct SystemLoadHourKey(SystemLoadSource Source, DateTim
 public static class SystemLoadRollupSelection
 {
     /// <summary>
-    /// Picks the window hours to recompute. An hour is dirty when it has no stored row or its raw sample
-    /// count differs from the stored <see cref="SystemLoadHourly.SampleCount"/>. Per source, every
-    /// considered hour from the earliest dirty hour onwards is recomputed, because a late sample in hour H
-    /// can be the predecessor that forms the first pair of hour H+1. Hours with neither a raw sample nor a
-    /// stored row are skipped.
+    /// Picks the window hours to recompute. An hour is dirty when it has raw samples and either no stored
+    /// row or a raw sample count that differs from the stored <see cref="SystemLoadHourly.SampleCount"/>.
+    /// Per source, every dirty hour H is recomputed together with the next window hour after H that has raw
+    /// samples: only that hour's first pair can have its predecessor in H, and a late sample cannot change
+    /// any later hour, whose samples and last preceding sample are unchanged. An hour without raw samples is
+    /// never selected, even when a row is stored for it (that happens only after a manual deletion, and a
+    /// recompute would write an empty row).
     /// </summary>
     /// <param name="windowHours">The closable window hours in ascending order.</param>
     /// <param name="rawCounts">Raw sample count per (source, hour); a missing key means 0.</param>
@@ -34,22 +36,22 @@ public static class SystemLoadRollupSelection
         var selected = new List<SystemLoadHourKey>();
         foreach (var source in Enum.GetValues<SystemLoadSource>())
         {
-            var dirtyFound = false;
+            var predecessorDirty = false;
             foreach (var hour in windowHours.Order())
             {
                 var key = new SystemLoadHourKey(source, hour);
-                var raw = rawCounts.GetValueOrDefault(key);
-                var hasRow = storedCounts.TryGetValue(key, out var stored);
-                if (raw == 0 && !hasRow)
+                if (rawCounts.GetValueOrDefault(key) == 0)
                 {
                     continue;
                 }
 
-                dirtyFound |= !hasRow || raw != stored;
-                if (dirtyFound)
+                var dirty = !storedCounts.TryGetValue(key, out var stored) || rawCounts[key] != stored;
+                if (dirty || predecessorDirty)
                 {
                     selected.Add(key);
                 }
+
+                predecessorDirty = dirty;
             }
         }
 

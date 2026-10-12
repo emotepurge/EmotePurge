@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Data.Common;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
@@ -217,7 +218,7 @@ public sealed class AdminDashboardLoadQueryTests(PostgresFixture fixture) : IAsy
         // Rolled shortly after the switch with the then-current 30 s, then again now with 1 s.
         await using (var rollupDb = CreateDbContext())
         {
-            var rollup = new SystemLoadRollupService(rollupDb);
+            var rollup = new SystemLoadRollupService(rollupDb, NullLogger<SystemLoadRollupService>.Instance);
             await rollup.RecomputeClosableHoursAsync(switchUtc.AddMinutes(10), TimeSpan.FromMinutes(5), samplingIntervalSeconds: 30);
             await rollup.RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), samplingIntervalSeconds: 1);
         }
