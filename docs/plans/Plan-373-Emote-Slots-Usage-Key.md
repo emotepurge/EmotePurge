@@ -1,7 +1,8 @@
 # Plan #373 — Emote-Slots, Kind 3: Zählschlüssel auf den Slot (M2) und alle UsageStats-Schreiber
 
 Erstellt am 2026-10-12 im Worktree `EmotePurge-slots` (Branch `feat/373-slot-usage-key`, Basis `origin/main` @ `5c9c5b2d`).
-**Status: Revision 1 (12.10.) nach dem adversarialen Review (Codex Sol) und den Antworten des Betreibers; keine offenen Rückfragen.**
+**Status: Revision 2 (12.10.) — Revision 1 nach dem adversarialen Review (Codex Sol) und den Antworten des Betreibers, dazu eine
+Schiedsentscheidung zu Regel (b); keine offenen Rückfragen.**
 Quelle und einzige Vertragsquelle: [die Spec](../superpowers/specs/2026-10-10-emote-slots-spec.md) (§6.1, §8, §11.1 M2, §11.2, §12,
 §13 AK 14–17, 44, 56, §15, §16 Kind 3; D12, D15, D18, D19, D28, D31), Issue #373 mit den beiden Übergabekommentaren aus #371 und #372
 (bindend), [Plan-372](Plan-372-Emote-Slots-Reconcile.md) §2.0, §2.4, §2.2a, §4, §11, DECISIONS #365 („Child 1", „Child 2").
@@ -13,6 +14,12 @@ Kein Code. D0–D33 und die Betreiberentscheidungen aus #371/#372 werden nicht w
 Abweichungen.
 
 **Lesehinweis:** **[E]** = Planer-Entscheidung, kein Spec-Text. **Betreiber 12.10.** = vom Betreiber entschieden.
+
+### Revision 2 (12.10.) — Schiedsentscheidung (Fable) zu E5 (b)
+
+| Änderung | beantwortet |
+|---|---|
+| **E5 (b) verallgemeinert:** statt „ein Seed, auf den ein Lauf **desselben** Sets zeigt" gilt „ein unsettled Seed, auf den **kein Lauf eines anderen Sets** zeigt und der keine Zeilen eines anderen Sets trägt". Grund: der Enqueue ist ein zweiter Seed-Erzeuger. Ein Seed, dessen Lauf Retention gelöscht hat (oder dessen Snapshot aus der Zeit vor #373 `SlotId NULL` trägt) und dessen einzige Importzeilen der Block eines anderen Sets kanalweit gelöscht hat, ist verwaist: die Map hat ihn per (a) noch als Schlüssel ausgegeben, gepufferte Zählwerte tragen ihn, aber das alte (b) sah ihn nicht — ein Enqueue desselben Sets legte binnen ~90 s per (c) einen zweiten Seed an, und Phase 1 des Flush schrieb danach auf den ersten (E6a bei Flag aus verletzt). Das neue (b) findet den verwaisten Seed; mehrere Kandidaten → D2. Hinter den Emote-Sperren aus E6 rennfrei | Schiedsentscheidung 12.10. (Opus-Review ↔ Codex Sol) |
 
 ### Revision 1 (12.10.) — was sich geändert hat
 
@@ -93,8 +100,10 @@ zweier Sets, genau der Fehler, den D12/R4 geschlossen hat; (3) **Waisen** — ei
     zuletzt, dann `Name` ordinal, dann `Id`. **Ordnung im Speicher mit `StringComparer.Ordinal`**, kein `ORDER BY "Name"` in SQL
     (Kollationsfalle, §6.4). Existenzprüfung über den Slot-Index `(SlotId, EmoteSetId, Date)` je Slot-Kandidat, kein Scan aller Zeilen
     des Paars (läuft jeden Resync-Tick je Kanal).
-  - **Holen-oder-Anlegen (Flush Phase 2, Enqueue):** (a); sonst (b) der älteste unsettled Seed von E, auf den eine Snapshot-Zeile eines
-    Backfill-Laufs **desselben Sets X** zeigt (so ist ein zeilenloser Enqueue-Seed set-gebunden); sonst (c) ein **neuer unsettled
+  - **Holen-oder-Anlegen (Flush Phase 2, Enqueue):** (a); sonst (b) **(Revision 2)** der älteste unsettled Seed von E, auf den
+    **keine** Snapshot-Zeile eines Backfill-Laufs **eines anderen Sets** zeigt und der keine Zeilen eines anderen Sets trägt (so ist ein
+    zeilenloser Enqueue-Seed set-gebunden, und ein verwaister Seed — Lauf gelöscht, Importzeilen weg — wird wiederverwendet statt
+    verdoppelt); sonst (c) ein **neuer unsettled
     Seed** mit M1-Semantik (`Name`, `IsArchived`, `ArchivedAt` 1:1 aus dem Emote, `AddedAt NULL`, `AddedAtFromRest false`,
     `SeedUnsettled true`, `LastSyncedAt` jetzt). Verlangt eine offene Transaktion und die Emote-Zeilen als vom Aufrufer gesperrt (E6);
     liest (a)/(b) **nach** der Sperre; mengenbasiert; Rückgabe Slot-Id je Paar und die Menge der angelegten.
@@ -109,7 +118,11 @@ zweier Sets, genau der Fehler, den D12/R4 geschlossen hat; (3) **Waisen** — ei
   Platzhalter, während gepufferte Zählwerte noch den alten Slot tragen) schließt die Phasenfolge des Flush (E9): der alte Schlüssel ist
   in Phase 1 geschrieben, bevor Phase 2 den Platzhalter auflöst, und (a) findet ihn. Ein gepufferter alter Schlüssel stammt immer aus der
   Zeit vor dem Refresh und liegt deshalb im selben gezogenen Batch oder in dessen Requeue; war er schon früher geschrieben, trägt der Slot
-  eine Live-Zeile, die kein Backfill-`DELETE` (nur `Source = 1`) entfernt. Nach einer An-Phase können zwei Slots eines Paars Zeilen tragen
+  eine Live-Zeile, die kein Backfill-`DELETE` (nur `Source = 1`) entfernt. **Revision 2:** der Enqueue ist ein zweiter Erzeuger und
+  braucht dafür (b) in der verallgemeinerten Form — in derselben Lage (Seed S nur mit Importzeilen, Lauf von Retention gelöscht, Zeilen
+  vom Block eines anderen Sets gelöscht, Zählwerte auf S gepuffert) fände ein Enqueue desselben Sets S sonst weder über (a) noch über das
+  alte (b) und legte einen zweiten Seed an, auf den der Lauf importiert, während Phase 1 S beschreibt; jetzt bindet er S. Dasselbe gilt
+  für Seeds abgeschlossener Läufe aus der Zeit vor #373 (Snapshot `SlotId NULL`). Nach einer An-Phase können zwei Slots eines Paars Zeilen tragen
   (zwei gesettelte Aliase); dann braucht ein Rollback das Kollaps-SQL (§8 R). M2 prüft die Seed-Teile der Invariante (§5.1).
 
 ### 2.3 Was mit den Seeds später passiert
@@ -302,7 +315,7 @@ gelöschter Slot → verworfen, Warnzeile, Rest geschrieben, Kanal nicht gemelde
 der Flush auf denselben Slot, der die Seed-Historie trägt; Seed-Zeilen anderer Sets bleiben. Platzhalter: ohne Paar-Slot → genau ein Seed
 mit genau der Zeile, M1-Felder · Paar-Slot inzwischen vorhanden → kein neuer Seed · **Phase-1-Zeile wird in Phase 2 gefunden** (alter
 Schlüssel und Platzhalter desselben Paars im Batch, der Slot hatte vorher keine Zeile) → ein Slot, Summe · zwei Sets desselben Emotes →
-zwei Seeds, je nur ihre Zeile · zeilenloser Enqueue-Seed desselben Sets (b), nicht eines anderen · gelöschtes Emote → verworfen ·
+zwei Seeds, je nur ihre Zeile · zeilenloser Enqueue-Seed desselben Sets (b), nicht eines anderen, verwaister Seed ohne Lauf (b) · gelöschtes Emote → verworfen ·
 **Phase 2 scheitert** (andere Sitzung hält die Emote-Sperre über den `lock_timeout`; zweite Variante: injizierter 40P01) → Phase-1-Zeilen
 committet, das Ergebnis nennt genau die zurückgestellten Platzhalter samt Zählwerten, kein Seed angelegt · Konkurrenz Flush-Platzhalter
 vs. Enqueue für dasselbe Paar, beide Startreihenfolgen (`PostgresLockProbe`) → genau ein Seed · zwei Slots eines Emotes am selben Tag
@@ -330,8 +343,11 @@ verletzen nichts.
 
 - `ChatLogBackfillServiceTests*`: **AK 56** wie §4 · bestehendes Emote mit Seed des Lauf-Sets → gebunden, `CreatedSlot false` · datierter
   Eintrag mit autoritativem Slot gleichen Datums → dort gebunden · Folge-Lauf desselben Sets nutzt den zeilenlosen Seed wieder ·
+  **(Revision 2)** verwaister Seed (Lauf von Retention gelöscht, Importzeilen vom Block eines anderen Sets gelöscht, Zählwerte noch auf
+  ihm gepuffert) → der nächste Enqueue desselben Sets bindet ihn, danach trägt genau ein Slot des Paars Zeilen ·
   Snapshot-Slot fehlt → Aggregat verworfen · `LiveRowConflict` über den Slot-Index · handgebaute Snapshots mit `SlotId` (~10 angepasst).
-- **Hilfsmodul E5:** D2-Ordnung inkl. Namens-Gleichstand ordinal; (b) nur gleiches Set; verlangt offene Transaktion. Falls die Umsetzung
+- **Hilfsmodul E5:** D2-Ordnung inkl. Namens-Gleichstand ordinal; (b) nie ein Seed, auf den ein Lauf eines anderen Sets zeigt, wohl
+  aber ein verwaister (Revision 2); verlangt offene Transaktion. Falls die Umsetzung
   doch in SQL nach `Name` ordnet: Spalte per `UseLinguisticNameCollationAsync` auf ICU, Test muss ohne `COLLATE "C"` rot sein
   (Alpine-Postgres sortiert sonst bytewise und zeigt den Fehler nie).
 - **`RowLocks`-`FOR SHARE`-Einstieg:** sortiert, ein Statement, blockiert einen `NO KEY UPDATE`-Sperrer, nicht einen FK-Insert.

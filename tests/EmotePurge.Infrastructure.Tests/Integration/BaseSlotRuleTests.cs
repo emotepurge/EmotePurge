@@ -74,7 +74,7 @@ public class BaseSlotRuleTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task GetOrCreate_RuleB_ReusesTheSeedOfARunOfTheSameSetOnly_AndNeverASettledSlot()
+    public async Task GetOrCreate_RuleB_ReusesTheSeedOfItsOwnSetOrAnOrphan_NeverOneAnotherSetsRunNames_NorASettledSlot()
     {
         var (channelId, emoteId) = await SeedEmoteAsync("baseslot_rule_b");
         var seedOfA = await SeedSlotAsync(emoteId, "Aaa", seedUnsettled: true);
@@ -93,12 +93,29 @@ public class BaseSlotRuleTests(PostgresFixture fixture)
         await transaction.CommitAsync();
 
         Assert.Equal(seedOfA, result.SlotIds[new(emoteId, SetA)]);
+        // SETB skips the D2-older seeds that runs of SETA name.
         Assert.Equal(seedOfB, result.SlotIds[new(emoteId, SetB)]);
         // (b) only binds unsettled seeds: SETC gets a new seed next to the settled slot its run names.
         var newSeed = result.SlotIds[new(emoteId, SetC)];
         Assert.NotEqual(settledOfC, newSeed);
         Assert.Equal([new BaseSlotPair(emoteId, SetC)], result.Created);
         Assert.True((await SlotAsync(newSeed)).SeedUnsettled);
+
+        // An orphan — a row-less unsettled seed no run names any more (retention deleted its run, a
+        // block of another set deleted its imported rows) — is reused, D2 ahead of the new SETC seed
+        // the call above left unbound; a settled slot no run names never is, though D2 would put its
+        // date first.
+        const string setD = "SETD";
+        var orphan = await SeedSlotAsync(emoteId, "Abc", seedUnsettled: true);
+        var settledUnnamed = await SeedSlotAsync(emoteId, "Zzz", addedAt: T1, fromRest: true);
+        await using var again = fixture.CreateDbContext();
+        await using var againTransaction = await again.Database.BeginTransactionAsync();
+        var reused = await BaseSlotRule.LockAndGetOrCreateAsync(again, [new(emoteId, setD)], Now, CancellationToken.None);
+        await againTransaction.CommitAsync();
+
+        Assert.Equal(orphan, reused.SlotIds[new(emoteId, setD)]);
+        Assert.NotEqual(settledUnnamed, reused.SlotIds[new(emoteId, setD)]);
+        Assert.Empty(reused.Created);
     }
 
     [Fact]

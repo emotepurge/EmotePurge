@@ -176,6 +176,82 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal(2, await verify.EmoteSlots.CountAsync());
     }
 
+    // Plan #373 revision 2 (arbiter decision 12.10.): the enqueue is a second seed creator, so rule (b)
+    // must find a seed that lost every binding while counts are still buffered under it. Seed S of
+    // (E, B) carries only imported rows; retention deletes its run with the snapshot; the map hands out
+    // S (rule (a)); a block of a run of set C deletes S's imported rows channel-wide; a new enqueue of B
+    // runs before the buffered S counts are flushed. It must bind S, not create S2 next to it — else
+    // flush phase 1 writes on S and the run imports on S2, and two slots of the pair carry rows (E6a).
+    [Fact]
+    public async Task Enqueue_ReusesAnOrphanedSeedWithCountsStillBufferedUnderIt_SoThePairKeepsOneSlot()
+    {
+        var channel = await SeedChannelAsync("bforphanseed", createdAt: NowUtc.AddDays(-20), activeSetId: SetB);
+        await SeedUserAsync();
+        var emote = await SeedEmoteAsync(channel, "e1", "E1");
+        var other = await SeedEmoteAsync(channel, "e2", "E2");
+
+        // 1. A run of B creates S and imports onto it (both blocks, so it completes); retention later
+        // deletes the finished run, and its snapshot rows go with it (cascade).
+        PreviewReturns(SetB, "Set B", Member("e1", "BE1", null));
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, SetB, months: 1)).Status);
+        var seed = (await SingleSnapshotEntryAsync()).SlotId!;
+        var firstRun = await ClaimAsync();
+        await ReplaceBlockOfAsync(firstRun, 0, new ChatLogBackfillAggregate(emote.Id, firstRun.WindowFrom, 3, 0, 0));
+        await ReplaceBlockOfAsync(firstRun, 1, new ChatLogBackfillAggregate(emote.Id, firstRun.WindowFrom.AddDays(8), 2, 0, 0));
+        await using (var db = CreateDbContext())
+        {
+            Assert.Equal(ChatLogBackfillRunStatus.Completed, (await db.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == firstRun.RunId)).Status);
+            Assert.Equal(1, await db.ChatLogBackfillRuns.Where(r => r.Id == firstRun.RunId).ExecuteDeleteAsync());
+            Assert.False(await db.ChatLogBackfillRunEmotes.AnyAsync());
+        }
+
+        // 2. The flag-off map finds S through rule (a); chat counts are buffered under the real key S.
+        var buffered = new UsageCounterKey(seed, SetB);
+        await using (var db = CreateDbContext())
+        {
+            Assert.Equal(seed, (await BaseSlotRule.FindAsync(db, [new(emote.Id, SetB)], CancellationToken.None))[new(emote.Id, SetB)]);
+        }
+
+        // 3. A run of C on the same channel deletes the channel's imported rows in its blocks, S's included.
+        PreviewReturns(SetC, "Set C", Member("e2", "CE2", null));
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, SetC, months: 1)).Status);
+        var runOfC = await ClaimAsync();
+        await ReplaceBlockOfAsync(runOfC, 0, new ChatLogBackfillAggregate(other.Id, runOfC.WindowFrom, 1, 0, 0));
+        await ReplaceBlockOfAsync(runOfC, 1, new ChatLogBackfillAggregate(other.Id, runOfC.WindowFrom.AddDays(8), 1, 0, 0));
+        await using (var db = CreateDbContext())
+        {
+            Assert.False(await db.UsageStats.AnyAsync(u => u.SlotId == seed));
+            Assert.Empty(await BaseSlotRule.FindAsync(db, [new(emote.Id, SetB)], CancellationToken.None));
+        }
+
+        // 4. Before the buffered S counts are flushed, a new run of B is enqueued.
+        PreviewReturns(SetB, "Set B", Member("e1", "BE1", null));
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, SetB, months: 1)).Status);
+        var entry = await SingleSnapshotEntryAsync(newest: true);
+        Assert.Equal(((string?)seed, false), (entry.SlotId, entry.CreatedSlot));
+
+        // 5. The flush writes the buffered counts onto S (phase 1), the run imports onto its snapshot slot.
+        await using (var db = CreateDbContext())
+        {
+            var result = await new UsageStatFlushService(db, NullLogger<UsageStatFlushService>.Instance).FlushAsync(
+                new Dictionary<UsageCounterKey, EmoteUsageCounts> { [buffered] = new(4, 0, 0) });
+            Assert.Empty(result.Requeued);
+        }
+
+        var secondRun = await ClaimAsync();
+        await ReplaceBlockOfAsync(secondRun, 0, new ChatLogBackfillAggregate(emote.Id, secondRun.WindowFrom, 5, 0, 0));
+
+        await using var verify = CreateDbContext();
+        var slotsWithRows = await verify.UsageStats
+            .Where(u => u.EmoteId == emote.Id && u.EmoteSetId == SetB)
+            .Select(u => u.SlotId)
+            .Distinct()
+            .ToListAsync();
+        Assert.Equal([seed], slotsWithRows);
+        Assert.Equal(2, await verify.UsageStats.CountAsync(u => u.SlotId == seed));
+        Assert.Equal(1, await verify.EmoteSlots.CountAsync(s => s.EmoteId == emote.Id));
+    }
+
     // E6 / plan 6.2: the enqueue and the real usage flush resolving a pending key (phase 2: its own
     // locks, then the pair's first usage row on the seed) for the same pair end with one seed, whichever
     // starts first. Flush first: the enqueue waits at the channel row, then binds the flush's seed

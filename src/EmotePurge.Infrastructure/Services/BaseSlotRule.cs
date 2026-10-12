@@ -14,8 +14,11 @@ namespace EmotePurge.Infrastructure.Services;
 /// <para>
 /// <b>The rule</b>, for the pair (E, X):
 /// (a) the oldest slot of E that carries <c>UsageStats</c> rows of X;
-/// (b) else the oldest unsettled seed of E that a snapshot row of a backfill run of the same set X
-/// points at and that carries no rows of another set (a row-less enqueue seed is set-bound this way);
+/// (b) else the oldest unsettled seed of E that no snapshot row of a backfill run of another set
+/// points at and that carries no rows of another set: a row-less seed a run of X bound (set-bound this
+/// way), or an orphan seed bound to nothing any more — its run deleted by retention, or its only
+/// (imported) rows deleted by a block of another set's run — which a flush may still hold buffered
+/// counts for, so creating a second seed next to it would split the pair;
 /// (c) else a new unsettled seed with the M1 field rules of <c>EmoteSlotSeedSql</c>: <c>Name</c>,
 /// <c>IsArchived</c> and <c>ArchivedAt</c> 1:1 from the emote, <c>AddedAt</c> null,
 /// <c>AddedAtFromRest</c> false, <c>SeedUnsettled</c> true, <c>LastSyncedAt</c> the caller's now.
@@ -40,8 +43,9 @@ namespace EmotePurge.Infrastructure.Services;
 /// no unique index for seeds (spec 4.1); the emote lock plus the re-read is the concurrency control
 /// between two creators of the same pair. That only works if the creator also binds its new seed
 /// <b>in the same transaction</b> — with the pair's first usage row (flush) or with a snapshot row of a
-/// run of the set (enqueue) — because a seed with neither is invisible to the next caller's (a)/(b),
-/// which would then create a second one.
+/// run of the set (enqueue) — because a seed with neither is bound to no set: a caller of another
+/// set could take it through (b) before this pair's rows reach it, and the seed would then carry two
+/// sets.
 /// </para>
 /// <para>
 /// Raw statements against the caller's transaction; nothing is tracked, nothing joins a later
@@ -78,18 +82,20 @@ internal static class BaseSlotRule
             WHERE u."SlotId" = s."Id" AND u."EmoteSetId" = input."EmoteSetId")
         """;
 
-    // (b): unsettled seeds of E that a snapshot row of a run of set X points at, any run status. The
-    // NOT EXISTS keeps a seed that (against E6a) already carries rows of another set from being bound
-    // to X; it deliberately tests "another set" and not "any row": a flush phase 1 may commit rows of X
-    // onto the seed between statement (a) and this one, and the seed is still the right answer then.
+    // (b): unsettled seeds of E that no snapshot row of a run of another set points at (any run
+    // status) and that carry no rows of another set — the seed a run of X bound, or an orphan bound to
+    // nothing any more. Both NOT EXISTS test "another set", never "any": a seed referenced by a run of
+    // X is X's by construction, and a flush phase 1 may commit rows of X onto the seed between
+    // statement (a) and this one, and the seed is still the right answer then. A settled slot
+    // (SeedUnsettled false, archived after a settle) is never a candidate.
     private const string ReferencedSeedsSql = """
         SELECT input."EmoteId", input."EmoteSetId", s."Id" AS "SlotId", s."Name", s."AddedAt"
         FROM UNNEST(@emoteIds, @setIds) AS input("EmoteId", "EmoteSetId")
         JOIN "EmoteSlots" s ON s."EmoteId" = input."EmoteId" AND s."SeedUnsettled"
-        WHERE EXISTS (
+        WHERE NOT EXISTS (
             SELECT 1 FROM "ChatLogBackfillRunEmotes" re
             JOIN "ChatLogBackfillRuns" r ON r."Id" = re."RunId"
-            WHERE re."EmoteId" = s."EmoteId" AND re."SlotId" = s."Id" AND r."EmoteSetId" = input."EmoteSetId")
+            WHERE re."EmoteId" = s."EmoteId" AND re."SlotId" = s."Id" AND r."EmoteSetId" <> input."EmoteSetId")
           AND NOT EXISTS (
             SELECT 1 FROM "UsageStats" u
             WHERE u."SlotId" = s."Id" AND u."EmoteSetId" <> input."EmoteSetId")
