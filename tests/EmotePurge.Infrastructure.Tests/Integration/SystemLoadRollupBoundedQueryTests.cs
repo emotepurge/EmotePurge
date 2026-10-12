@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Data.Common;
 using EmotePurge.Core.Entities;
 using EmotePurge.Infrastructure.Persistence;
@@ -71,7 +72,7 @@ public sealed class SystemLoadRollupBoundedQueryTests(PostgresFixture fixture) :
         }
 
         await using var db = CreateDbContext(capture);
-        var recomputed = await new SystemLoadRollupService(db)
+        var recomputed = await new SystemLoadRollupService(db, NullLogger<SystemLoadRollupService>.Instance)
             .RecomputeClosableHoursAsync(NowUtc, TimeSpan.FromMinutes(5), samplingIntervalSeconds: 30);
 
         Assert.Equal(1, recomputed);

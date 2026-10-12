@@ -299,10 +299,19 @@ further apart than 2.5 times the **currently configured** `SystemLoad:IntervalSe
   ranges (1 hour, 24 hours) can show fewer CPU pairs, or none, for samples taken under the old
   cadence for up to 24 hours; for example, going from 30 s to 1 s drops 30-second pairs because
   they now exceed 2.5 s. Going from 1 s to 30 s drops nothing, because 1-second pairs stay below
-  75 s. The Worker's rollup recomputes the three most recent hours on every run (at Worker start and
-  hourly) with its current interval, so after such a change the restart rollup permanently erases
-  host and process CPU for those hours (their 30-second pairs exceed 2.5 s). Older hours keep the
-  values computed under the old interval.
+  75 s. The Worker's rollup no longer recomputes hours that were already rolled up: it recomputes
+  a recent hour only when its raw sample count differs from the stored one (and the next hour with
+  samples), and it never replaces stored CPU figures with `null`. Hours already rolled up normally keep
+  the values computed under the old interval, and lowering the interval no longer erases them.
+  One partial-loss case remains: a late sample arriving after an interval decrease makes that hour
+  dirty, so it and the next hour with samples are recomputed under the new interval. The guard keeps a
+  CPU figure group only if its new result is entirely null; a group that still has some valid pairs is
+  overwritten with the reduced result.
+- The remaining limit: hours rolled up for the first time after a change are computed under the new
+  interval. This covers hours that closed after the old Worker's last hourly run and before the
+  restart, the hour that contains the restart, and hours after a long Worker outage. After a
+  decrease (for example 30 s to 1 s) their 30-second pairs are dropped, so those hours show no
+  process or host CPU. The interval used is not stored with the rows.
 - A cadence of 1 second is a stress setting: it multiplies the raw rows read for a 24-hour chart
   (86,400 instead of 2,880 rows per source over 24 hours at the default; 172,800 instead of 5,760 across both sources), so keep it for short experiments.
 - Memory, channel and workload series do not depend on pairs and are unaffected.

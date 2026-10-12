@@ -10,6 +10,91 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-12 — System-load rollup: loose index scan, per-hour loader and batched catch-up
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/SystemLoadRollupService.cs` ·
+`src/EmotePurge.Infrastructure/Services/SystemLoadRollupBatching.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/SystemLoadRollupBatchingTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SystemLoadPersistenceTests.cs`
+
+Measured cause (Devbox, `postgres:16-alpine`, default config): the backfill candidate query scanned every
+raw row (cost O(rows)); the sample loader joined candidate hours to the samples on `Source` alone, so its
+plan cost grew with keys x rows; and the in-memory slicing regrouped and re-sorted all samples once per key
+(O(keys x samples)). On a 1 s x 7 d set one run took 1.7 s, and a 30-day backlog of 30 s samples made the
+loader alone run 28.5 s, close to Npgsql's 30 s command timeout.
+
+Decision:
+
+- **Candidates by loose index scan.** A recursive CTE enumerates the sources with `min("Source")` jumps,
+  then per source jumps from hour to hour with one index probe on `(Source, SampledAtUtc)` each, and
+  anti-joins the hourly rows per (source, hour). The result set is identical to the former query, and there
+  is still no lower time bound, so no hour can be stranded (retention keeps raw samples whose hour has no
+  row). The issue's option (a), a `GROUP BY` plus anti-join, was rejected because it still reads every row:
+  it measured 459 ms on the 1 s x 7 d set against 22 ms for the loose scan.
+- **Loader per hour.** Each candidate hour is read through `CROSS JOIN LATERAL` with an `ORDER BY` inside
+  the subquery (without it Postgres flattens the subquery into a join on `Source` only). First samples per
+  (source, hour, instance) come from those rows; the predecessor lookup is unchanged, and a predecessor
+  whose own hour is a candidate of the same batch is not read twice.
+- **Indexed slicing.** Samples of a source are grouped by process instance and sorted once per batch;
+  each (source, hour) slice is two binary searches per instance (`SystemLoadSampleIndex`). The input order
+  of `SystemLoadRollupMath.Calculate` is unchanged.
+- **Batching.** Candidates are ordered by (hour, source). Keys before the dirty window go in chunks of 24
+  per transaction (memory: Worker limit 512 MB, measured peak 230 MB at 24 keys on 1 s samples over 7
+  days without hourly rows); all window keys travel together in one last batch, so a dirty hour and its
+  paired next hour are never split across a crash. One run loops through all batches, checks cancellation
+  between them, and clears the change tracker after each save. The null guard and its single warning per
+  run are unchanged and span all batches.
+
+Before and after (prototype, same machine; full run / longest statement): 30 s x 7 d, 193 to 93 ms;
+1 s x 7 d, 1,722 to 141 ms (longest statement 867 to 22 ms); 30 s x 7 d plus a 30-day backlog, 40.3 s to
+2.4 s (longest statement 26.5 s to 20 ms).
+
+### 2026-10-12 — System-load rollup: recompute only changed hours and never erase stored CPU figures
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/SystemLoadRollupService.cs` ·
+`src/EmotePurge.Infrastructure/Services/SystemLoadRollupSelection.cs` ·
+`src/EmotePurge.Infrastructure/Services/SystemLoadRollupMath.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/SystemLoadRollupSelectionTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/SystemLoadPersistenceTests.cs` ·
+`docs/Operations.md`
+
+The hourly rollup recomputed the three most recent closable hours on every run with the Worker's
+*current* `SystemLoad:IntervalSeconds`. After lowering the interval (30 s to 1 s), the restart rollup
+overwrote host and process CPU of already rolled-up hours with `null`, silently and permanently once the
+raw samples expire after 7 days.
+
+Decision:
+
+- **Dirty-hour rule.** Inside the window, an hour with raw samples is recomputed only if it has no
+  hourly row or its raw sample count differs from the stored `SampleCount`. Per source, a dirty hour H is
+  recomputed together with the next window hour after H that has raw samples, because only that hour's
+  first pair can have its predecessor in H; a late sample cannot change any later hour. This is narrower
+  than the "from the earliest dirty hour onwards" wording of the issue and deviates from it for
+  exactness. An hour with a stored row but no raw samples is clean (it only occurs after a manual
+  deletion, and a recompute would write an empty row). Raw samples are only inserted, never updated, so
+  an unchanged count means an unchanged sample set. The `>= recomputeFrom` branch of the candidate SQL is
+  gone; the backfill of hours without a row stays. The window count query is restricted to the known
+  sources so that `IX_SystemLoadSamples_Source_SampledAtUtc` can be used.
+- **Null guard.** When an existing row is recomputed, each CPU figure group (process, cgroup, host)
+  whose new mean is `null` while the stored mean is not keeps its stored values; all other columns are
+  overwritten. One `Warning` per run reports the number of rows and groups kept, without values. A group
+  that still has some valid pairs is overwritten with the reduced result (accepted, would need a stored
+  pair count and a migration).
+- **Accepted limitations of the dirty-hour rule.** (a) Propagation is per source: with several process
+  instances of one source and an interval long enough for an instance to skip an hour, a late sample in
+  hour H can affect that instance's first pair in a later hour that is not selected. (b) A late sample in
+  the hour just before the window is not detected, so the first pair of the first window hour that depends
+  on it is not refreshed. Both are accepted and only documented: the sampler inserts each
+  sample in the tick that took it and drops failed inserts, so samples more than seconds late only arise
+  from manual inserts.
+- **Still not persisted:** the sampling cadence. No migration, and no median or other data-derived
+  cadence rule. Hours rolled up for the first time after an interval change remain a documented limit
+  (`docs/Operations.md`).
+
+This completes and corrects the "two known limits" paragraph of the 2026-10-11 #381 entry below, which
+omitted the in-window erasure (the rollup recomputing the three most recent hours under the current
+interval). Both limits named there still hold; that paragraph is left unedited as history.
+
 ### 2026-10-11 — Admin dashboard: activity series, rate-limit trend and server-bucketed load ranges (#381)
 
 **Betrifft:** `src/EmotePurge.Core/Services/IAdminDashboardQueryService.cs` ·
