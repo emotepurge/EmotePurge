@@ -8720,6 +8720,72 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
       vi.advanceTimersByTime(60_000);
       expect(takeSeriesRequests()).toHaveLength(1);
     });
+
+    it('lets a load() overtake an unfinished drift refetch: the newer answer wins and nothing stays in flight', () => {
+      mount([emote('x', 'ome44', 40)], [seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]);
+      silentReload([ome(30), hob(10)]);
+      const [refetch] = takeSeriesRequests();
+
+      component['load']('a', '2026-01-01', '2026-09-08', true, null, false);
+      const [fresh, ...more] = takeSeriesRequests();
+      expect(more).toHaveLength(0);
+      expect(fresh).not.toBe(refetch);
+      if (!refetch.cancelled) {
+        refetch.flush(seriesBody([seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]));
+      }
+      fresh.flush(
+        seriesBody([
+          seriesEntry('7tv-x', 'slot-ome', 'ome44', [[0, 5]]),
+          seriesEntry('7tv-x', 'slot-hob', 'hob44', [[1, 7]]),
+        ]),
+      );
+
+      component['inspect'](card('slot-ome'));
+      expect(component['inspectedCurvePending']()).toBe(false);
+      expect(firstDays()).toEqual([5, 0, 0]);
+      expect(component['seriesInFlight']).toBe(false);
+      expect(takeSeriesRequests()).toHaveLength(0);
+    });
+
+    it('keeps the held series and does not retry the same signature after a failed refetch', () => {
+      mount([emote('x', 'ome44', 40)], [seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]);
+      silentReload([ome(30), hob(10)]);
+      takeSeriesRequests()[0].error(new ProgressEvent('error'));
+
+      silentReload([ome(31), hob(10)]);
+      vi.advanceTimersByTime(120_000);
+
+      expect(takeSeriesRequests()).toHaveLength(0);
+      expect(component['channelSeries']()).not.toBeNull();
+      component['inspect'](card('slot-hob'));
+      expect(component['inspectedCurvePending']()).toBe(true);
+    });
+
+    it('asks nothing once the page is destroyed while a deferred drift check is waiting', () => {
+      mount(
+        [emote('x', 'ome44', 40), other()],
+        [
+          seriesEntry('7tv-x', null, 'ome44', [[0, 40]]),
+          seriesEntry('7tv-y', null, 'Other', [[0, 20]]),
+        ],
+      );
+      silentReload([ome(30), hob(10), other()]);
+      // Still offset: the answer keeps the emote in emote mode.
+      takeSeriesRequests()[0].flush(
+        seriesBody([
+          seriesEntry('7tv-x', null, 'ome44', [[0, 40]]),
+          seriesEntry('7tv-y', null, 'Other', [[0, 20]]),
+        ]),
+      );
+      // A further drift inside the minimum spacing parks a timer.
+      silentReload([ome(30), hob(10), slotRow('y', 'slot-y', 'Other', 20)]);
+      expect(takeSeriesRequests()).toHaveLength(0);
+
+      fixture.destroy();
+      vi.advanceTimersByTime(120_000);
+
+      expect(takeSeriesRequests()).toHaveLength(0);
+    });
   });
 });
 
