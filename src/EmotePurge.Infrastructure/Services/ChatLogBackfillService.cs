@@ -1119,8 +1119,8 @@ public sealed class ChatLogBackfillService(
     /// snapshot holds that is not itself in the snapshot alike. The server does not guess where such an
     /// aggregate belongs — "the emote has one snapshot row" proves no seed-to-target origin. The last
     /// case was answered with a re-read of the snapshot while runs bound to seeds could still exist; a
-    /// run's snapshot is now fixed from its enqueue on, so such a block fails the run (plan 379 §2.1,
-    /// fail-closed). <b>Existence (D25):</b> of the rest, an aggregate is returned
+    /// snapshot of a run that a part-B image enqueues is fixed from then on; a flag-off run whose seed a
+    /// settle moves fails closed, so such a block fails the run (plan 379 §2.1). <b>Existence (D25):</b> of the rest, an aggregate is returned
     /// only when its emote is still the channel's and its slot still exists under that emote.
     /// </para>
     /// </summary>

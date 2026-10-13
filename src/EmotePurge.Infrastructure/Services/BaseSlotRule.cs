@@ -13,7 +13,7 @@ namespace EmotePurge.Infrastructure.Services;
 /// </summary>
 /// <remarks>
 /// The name is historical: the type also held the get-or-create rule of the base slot of an
-/// (emote, set) pair, which only the writers of the retired flag-off path used (plan 379, Teil B).
+/// (emote, set) pair, which only the writers of the retired flag-off path used (plan 379, part B).
 /// </remarks>
 internal static class BaseSlotRule
 {

@@ -67,8 +67,8 @@ internal static class SeedSettleWrites
     /// snapshot key is <c>(RunId, SlotId)</c> (M3), so the move is key-safe: a run that already has a
     /// row for the target keeps that row exactly as it is (its <c>CreatedSlot</c>, <c>EmoteId</c> and
     /// <c>Name</c>) and the seed's row of that run is deleted instead of moved. The surviving rows keep
-    /// their <c>(EmoteId, Name)</c>. Only a run enqueued before #379 can hold a seed (today's enqueue binds
-    /// no seed); its worker still counts on the seed, so its next block fails the run at the pair check
+    /// their <c>(EmoteId, Name)</c>. Only a run enqueued with the slot flag off (an image before part B) can hold a seed (today's
+    /// enqueue binds no seed); its worker still counts on the seed, so its next block fails the run at the pair check
     /// (plan 379 §2.1, fail-closed). The backfill block takes the emote rows <c>FOR SHARE</c> before it reads a snapshot
     /// slot, so it either reads the target after this commit or has committed its rows on the seed
     /// before, and <see cref="MoveSeedUsageAsync"/> has just moved them. Returns the rows moved and the

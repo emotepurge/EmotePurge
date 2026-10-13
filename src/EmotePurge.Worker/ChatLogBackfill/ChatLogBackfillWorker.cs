@@ -275,7 +275,8 @@ public sealed class ChatLogBackfillWorker(
                 return await FailOrAbandonAsync(service, claim, state, SnapshotMissingErrorCode, null, stoppingToken);
             }
 
-            // Counted per slot (slot plan #375): read once per run — a run's snapshot is fixed from its enqueue on.
+            // Counted per slot (slot plan #375): read once per run. The snapshot is fixed for every run a part-B
+            // image enqueues; a flag-off run whose seed a settle moves fails closed.
             var map = ChatLogBackfillSnapshotMap.From(snapshot.Emotes);
             if (map.AmbiguousNames.Count > 0)
             {
