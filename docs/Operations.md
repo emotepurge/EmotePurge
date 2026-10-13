@@ -945,7 +945,9 @@ If the link is ever removed from a place that shows imported numbers, the agreem
 2. The running api image already contains the caption and the live-day fix: its `/i18n/de.json` has
    the key `usageStats.liveDaysInRangeFromStart` (which implies `usageStats.trackedSinceWithImport`).
    The second key proves that live-day statements no longer cover imported months, which have no live
-   information. Never switch the flag on while an older image is running.
+   information. Never switch the flag on while an older image is running. The slot behaviour must be on as well:
+   from #379 part B it always is; with an image before part B, keep the backfill off while the slot flag is off (see
+   "Upgrade and rollback (#379, part B)").
 3. Set `CHAT_LOG_BACKFILL_ENABLED=true` and **recreate api and worker** (Portainer: update the stack
    with "Re-pull image and redeploy"). Both read the flag at startup; one without the other leaves the
    tab visible and the queue unprocessed, or the other way round.
@@ -1042,9 +1044,9 @@ matters:
    slot that live counting has used stays, and so does a seed that the enqueue merely settled — that one
    is not `CreatedSlot`. A placeholder removed in step 3 took its slots along already. Deleting a slot
    removes its imported rows with it, which step 4 would delete anyway. Skip it on a database without the
-   `EmoteSlots` table. Seeds that a flag-off enqueue created for active emotes are not archived and are not
-   removed here: they remain as unsettled seeds without rows, inert (no numbers, no cards, no permanent
-   409), and are swept after #379 removes the flag-off branches.
+   `EmoteSlots` table. Seeds that a flag-off enqueue (an image from before #379 part B) created for active emotes
+   are not archived and are not removed here: they remain as unsettled seeds without rows, inert (no numbers,
+   no cards, no permanent 409), and are removed by "Sweeping row-less unsettled seeds (#379, part B)" below.
 
    ```sql
    DELETE FROM "EmoteSlots" s
@@ -1085,29 +1087,79 @@ matters:
 After the cleanup, verify: `SELECT count(*) FROM "UsageStats" WHERE "Source" = 1;` is 0, the usage page
 shows the plain "counting since" sentence, and the vote rows you care about are still there.
 
-## Slot-aware 7TV reconcile (feature flag)
+## Slot-aware 7TV reconcile
 
-Epic #365 tracks every set entry of an emote as its own slot (one emote under two aliases is two slots). The
-reconcile, the v4 date overlay and the slot readers stay off until the flag is switched on. With the flag off the
-system behaves as before the slot work, with one difference since #373: usage rows carry the slot of their
-(emote, set) pair, and a pair counted for the first time gets an unsettled seed slot with that first row.
+Epic #365 tracks every set entry of an emote as its own slot (one emote under two aliases is two slots). **From #379
+part B on the slot behaviour is always on** and there is no switch: the slot reconcile, the EventAPI deltas that add,
+rename and archive single slots (an ambiguous dispatch writes no inventory and triggers a REST resync), the match map
+that counts per slot, the v4 date overlay, the slot readers, and a backfill enqueue that binds every entry of the
+previewed set to its own slot. An emote whose seed of the active set is still unsettled is not counted, and its card
+falls back to emote mode, until the reconcile settles it (the first tick per channel after an update). An enqueue
+answers 409 `backfill_slots_unsettled` without writing anything while an emote of the active set still has an unsettled
+seed or an entry lacks the 7TV date it needs.
 
-| Key | Default | Compose variable | Meaning |
-|---|---|---|---|
-| `SevenTv:SlotReconcile:Enabled` | `false` | `SEVENTV_SLOT_RECONCILE_ENABLED` | Read by **api and worker**; set both together. The value is read once at startup, so a change needs a restart. Off: emote-wide reconcile and readers; the match map keeps today's names (one per emote) and counts onto the slot of the (emote, active set) pair. No writes to `EmoteSlots` except unsettled base seeds, created together with a pair's first counted row (usage flush) or by a backfill enqueue; EventAPI deltas stay emote-wide and write no slot. On: the slot reconcile, and the match map counts per slot — an emote that still has an unsettled seed of the active set is not counted until the reconcile settles it; EventAPI deltas add, rename and archive single slots, and an ambiguous dispatch writes no inventory (only certain last-slot leaves) and triggers a REST resync; a backfill enqueue binds every entry of the previewed set to its own slot (new slots are archived and taken over by the next reconcile; the preview of a non-active set settles that set's seed) and answers 409 `backfill_slots_unsettled` without writing anything while an emote of the active set still has an unsettled seed or an entry lacks the 7TV date it needs — expected until the first reconcile tick per channel after switching, and for a non-active set until 7TV reports every entry's date. Off, the enqueue keeps one snapshot row per emote. In both states the chat-log backfill counts and writes per slot of its run's snapshot (from #375); with one snapshot row per emote that is the per-emote count of before. |
+Images from before part B read `SevenTv:SlotReconcile:Enabled` (compose variable `SEVENTV_SLOT_RECONCILE_ENABLED`,
+default `false`, read by api and worker at startup). With it off they ran the emote-wide reconcile and readers and
+counted onto the slot of the (emote, active set) pair; their EventAPI deltas stayed emote-wide. That behaviour is gone
+from the code; the next section says what it means for an update and a rollback.
 
-**Switch the slot flag only while no backfill run is queued, running or paused** (check with
-`SELECT count(*) FROM "ChatLogBackfillRuns" WHERE "Status" IN ('queued', 'running', 'paused');`, cancel
-or let them finish first). With the flag on, the reconcile settles seed slots and moves the snapshot rows
-of a run along; a block the worker counted against the old slot is then refused, and the worker re-reads
-the snapshot and hands that block in once more. Anything it cannot follow fails the run with
-`worker_error` — that path is the safety net, not the way to switch.
+### Upgrade and rollback (#379, part B)
 
-Seeds that a flag-off enqueue created for active emotes are not archived: they remain as unsettled
-seeds without rows after the switch. They are inert (no numbers, no cards, no permanent 409) and are
-swept after #379 removes the flag-off branches.
+**1. The variable is ignored.** `SEVENTV_SLOT_RECONCILE_ENABLED` and the key `SevenTv:SlotReconcile:Enabled` are read
+by no image from part B on. Leaving them set does nothing and does not stop the startup (no unknown-key check exists),
+so an old stack file or Portainer variable is harmless. The compose files still map the variable (default `true`),
+only for the rollback window in point 4.
+
+**2. Updating.** Sweep afterwards, always: "Sweeping row-less unsettled seeds (#379, part B)" below.
+
+*a. Operators who switched the flag on* (production did, in phase 1 of #379): an ordinary update of api and worker
+together, no migration (check `migrations list`: nothing pending). If the chat-log backfill is on, apply the admission
+order below first, so that no run is active when the images change.
+
+*b. Operators who never switched the flag on:* the update switches the slot behaviour on, from any flag-off state (the
+first tick settles the seeds of the active set). Do the admission order before you update, because a run enqueued by
+a flag-off image binds an unsettled seed, which part B can no longer follow:
+
+1. **Close the enqueue:** stop the api.
+2. **Drain:** let the worker finish its run or stop it; close runs that are still open with the statement of
+   "Rolling back" under "Chat-log backfill", step 5.
+3. **Count**, with api and worker both stopped:
+   `SELECT count(*) FROM "ChatLogBackfillRuns" WHERE "Status" IN ('queued', 'running', 'paused');` must be 0.
+4. **Update:** start the new images of api **and** worker together (never one of them against the old image of the
+   other), then run the sweep.
+
+*Fail-closed for an overlooked run.* A run that was enqueued by a flag-off image and is still open when the new
+worker picks it up cannot be followed any more. Its first block whose aggregates name a slot the snapshot does not hold under that emote any more (the
+reconcile settled the seed the run was bound to) fails the pair check in `ReplaceBlockAsync` with an
+`ArgumentException`, and the run ends `Failed` with `ErrorCode` `worker_error`. Nothing is
+miscounted, but the run is lost; enqueue it again after the sweep. You recognise it by the worker log line
+`Chat-log backfill run <id> (<channel>) failed with an unexpected error.` followed by the exception
+`System.ArgumentException: <n> aggregates name a slot and an emote that are not one snapshot row of run <id>.`, and by
+a run row with status `failed`, `worker_error`, created before the update. A run with that signature that was created
+after the update is a different problem.
+
+**3. Rolling back to an image from before part B** (the code of `3720f7cf`, or the later build `30759199` with the same
+application code; pick it by its sha tag, not `:latest`). No migration is involved and there is no `Down`; seeds the
+sweep has deleted do not matter to the old image. Apply the admission order above here too, then:
+
+1. Use a compose file that still carries the mapping `SEVENTV_SLOT_RECONCILE_ENABLED` (the one of `3720f7cf`, or the
+   current one with its default `true`) and set the variable to `true` in the stack environment.
+2. **Before you release the stack**, in both containers: `printenv SevenTv__SlotReconcile__Enabled` must print `true`.
+   `false`, or nothing at all, means: stop and fix it. Otherwise the old image silently runs with the flag off:
+   emote-wide counting and readers, and its api ignores `entries` in delete and restore reports.
+3. Stop api and worker, start both together, check `printenv` again, and check that `GET /api/health` answers 200.
+
+A rollback from a database in which two slots of one emote have counted on the same day also needs the collapse
+statements before any `Down` of M2 or M3 (see below); the plain image rollback above needs none.
+
+**4. When the mapping goes.** The compose mapping and the stack variable stay until the rollback window ends: the
+first deploy after #379 that brings a migration, and at least 14 days. After that a small follow-up commit removes the
+mapping from the compose files and this section's points 1 and 3, and the variable can be deleted from the stack.
 
 ### Switching the slot flag on (#379, phase 1)
+
+> Applies only to images from before part B, which still read the flag. It is kept as the record of how production
+> switched. With part B the switch-on happens by updating the images; see "Upgrade and rollback (#379, part B)".
 
 The images that contain the slot code already run with the flag off; this window only flips the flag, there is no
 migration and no new image. Plan one short window with api and worker stopped together, outside big streams. The SQL
@@ -1136,7 +1188,8 @@ closes the enqueue too, but takes the cancel route away; stopping the api closes
 A run that slips through anyway is not counted wrongly. In phase 1 the worker follows a settle that moved its
 snapshot rows: `SnapshotChanged` makes it re-read the snapshot, move the aggregates of the block to their rows' new
 slots and hand the block in once more (log line "the snapshot changed under block"). Only a block it cannot follow
-fails the run with `worker_error`; after the removal of the flag-off branches (part B) that is the whole safety net.
+fails the run with `worker_error`. Images from part B no longer have `SnapshotChanged`: there a block that cannot be
+followed fails the run at once, and that is the whole safety net (see "Upgrade and rollback").
 
 **Preconditions** for the switch-on: the running images contain the slot code (`migrations list` shows nothing
 pending, see M2 and M3 below; that proves the database state, not the running images, so check the image version
@@ -1333,7 +1386,8 @@ stay right: slots stay settled, the flag-off counting writes to the oldest slot 
 the readers sum per emote. The slot inventory goes stale while off and heals on the next run with the flag on, by the
 add date. One consequence: with the flag on, two slots of one emote can have a row on the same day, so the `Down` of
 the usage-key migration (M2) and of the snapshot-key migration (M3) need their collapse statements first, as described
-below; do not expect a lossless `Down` after a phase with the flag on.
+below; do not expect a lossless `Down` after a phase with the flag on. This rollback exists only while the running
+image still reads the flag; a rollback to such an image after part B is "Upgrade and rollback" point 3.
 
 **Known limits** (accepted for the switch-on; documented so they are not rediscovered as bugs):
 
@@ -1350,9 +1404,9 @@ below; do not expect a lossless `Down` after a phase with the flag on.
 
 ### Sweeping row-less unsettled seeds (#379, part B)
 
-Run this once, after the image without the slot flag runs (admission order above done). On production that is after
-phase 2, on any other database after its update. The flag-off path created unsettled seeds (`"SeedUnsettled"`) for
-active emotes; some of them never received a usage row and are inert now (no numbers, no cards, no 409). The sweep
+Run this once, after an image from part B runs (admission order above done). On production that is after
+phase 2, on any other database after its update. The flag-off path of the images before part B created unsettled seeds
+(`"SeedUnsettled"`) for active emotes; some of them never received a usage row and are inert now (no numbers, no cards, no 409). The sweep
 deletes exactly those, in every set and for every `Source`. Unsettled seeds that carry rows and settled empty seeds
 stay. The only foreign key on `"EmoteSlots"` is `"UsageStats"."SlotId"`, so nothing cascades; a snapshot row of a
 finished backfill run may keep pointing at a deleted slot, which is harmless. The expected count on production is 0.
@@ -1386,7 +1440,8 @@ rows of two sets, or a queued, running or paused backfill run with a snapshot ro
 
 Every image from #373 on needs M2 (api and worker refuse to start with a pending migration). **Never
 run an image from before #373 against a database with M2**: its flush targets the old unique key, which
-no longer exists, so every flush fails. The flag above is independent of M2 and stays off.
+no longer exists, so every flush fails. The slot flag of the images before part B is independent of M2; from part B on
+there is no flag.
 
 **Window**, short, with the first deploy that contains #373:
 
@@ -1426,8 +1481,10 @@ no longer exists, so every flush fails. The flag above is independent of M2 and 
    pairs first counted between `AddEmoteSlots` and M2 (the rows without a slot from step 4), and those
    are expected however many there are.
 
-**Rollback** while the flag is off: with the flag off at most one slot per (emote, set) carries rows,
-so M2's `Down` is lossless. Stop worker and api, back up, then
+**Rollback.** M2's `Down` is lossless only while at most one slot per (emote, set) carries rows, which holds on a
+database that never ran the slot behaviour. After a phase with the slot behaviour on (every database that runs an image
+from part B, and production since 2026-10-13) it is the normal case, not an edge case, that two slots of one emote
+counted on the same day: **run the collapse statement below before `Down`.** Stop worker and api, back up, then
 
 ```sh
 dotnet ef database update 20261011184206_AddEmoteSlots --project src/EmotePurge.Infrastructure \
@@ -1437,8 +1494,8 @@ dotnet ef database update 20261011184206_AddEmoteSlots --project src/EmotePurge.
 
 and bring up the images from before #373. Slot ids and the seeds created since stay; the rows the old
 images write without a slot are attached again by a later M2. `Down` refuses while an
-(emote, set, day) has more than one row — two slots of one emote counted on the same day, which only a
-phase with the flag on produces. Then run the collapse statement first, in one transaction, and repeat
+(emote, set, day) has more than one row — two slots of one emote counted on the same day, which the slot behaviour
+produces. Then run the collapse statement first, in one transaction, and repeat
 `Down`; it keeps the row of the oldest slot (earliest `AddedAt`, then name, ordinal) and sums the three
 counters onto it:
 
@@ -1528,7 +1585,7 @@ start with a pending migration).
    off) and flushes as before.
 
 **Rollback.** Going back to the images from before #375 needs no `Down` (see above) as long as every
-run has one snapshot row per emote, which holds while the slot flag was off at every enqueue. To revert
+run has one snapshot row per emote, which holds for runs that an image before part B enqueued with the flag off. To revert
 the migration itself, stop worker and api, back up, then
 
 ```sh
@@ -1538,7 +1595,7 @@ dotnet ef database update 20261012111509_SwitchUsageStatsToSlotKey --project src
 ```
 
 Rows that `Up` deleted do not come back. `Down` refuses while a run holds more than one row of an emote
-— one per slot, which only an enqueue with the slot flag on produces. Then run the collapse statement
+— one per slot, which every enqueue since the slot behaviour is on produces (all of them from part B). Then run the collapse statement
 first, in one transaction, and repeat `Down`; per run and emote it keeps the row of the oldest slot
 (earliest `AddedAt`, then name, ordinal) and sets `CreatedRow` on it if any row of the emote had it, so
 step 3 of the backfill rollback still finds the placeholders the run created:
