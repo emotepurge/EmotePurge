@@ -740,35 +740,59 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal(1, terminated);
     }
 
-    // The enqueue's binding for a hand-seeded run (slot plan #373, E11 rule (2)): every emote gets the
-    // base slot of (emote, run set) — the slot already carrying rows of that set, else the seed a run of
-    // the set points at, else a new unsettled seed — and a snapshot row naming it, in one transaction
-    // behind the channel and emote row locks, as the enqueue does. Returns the slot id per Emote.Id.
+    // A hand-seeded run's snapshot, one row per emote in the shape a run enqueued before #379 had (slot
+    // plan #373, E11): each emote is bound to the oldest slot (D2) already carrying rows of the run's set,
+    // else to a new unsettled seed this binding creates (CreatedSlot). The block tests only need one
+    // snapshot row per emote with a real slot; today's enqueue binds per preview entry (MultiSlot.cs).
+    // Returns the slot id per Emote.Id.
     private async Task<IReadOnlyDictionary<string, string>> BindSnapshotAsync(ChatLogBackfillRun run, params Emote[] emotes)
     {
         await using var db = CreateDbContext();
-        await using var transaction = await db.Database.BeginTransactionAsync();
-        await db.LockChannelsByIdsAsync([run.ChannelId], CancellationToken.None);
-        await db.LockEmotesByIdsAsync([.. emotes.Select(e => e.Id)], CancellationToken.None);
-        var pairs = emotes.Select(e => new BaseSlotPair(e.Id, run.EmoteSetId)).ToArray();
-        var bound = await BaseSlotRule.GetOrCreateAsync(db, pairs, NowUtc, CancellationToken.None);
+        var emoteIds = emotes.Select(e => e.Id).ToList();
+        var slotIdsWithRows = await db.UsageStats.AsNoTracking()
+            .Where(u => emoteIds.Contains(u.EmoteId) && u.EmoteSetId == run.EmoteSetId)
+            .Select(u => u.SlotId)
+            .Distinct()
+            .ToListAsync();
+        var withRows = (await db.EmoteSlots.AsNoTracking().Where(s => slotIdsWithRows.Contains(s.Id)).ToListAsync())
+            .ToLookup(s => s.EmoteId, StringComparer.Ordinal);
+
+        var bound = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var emote in emotes)
         {
-            var pair = new BaseSlotPair(emote.Id, run.EmoteSetId);
+            var existing = withRows[emote.Id]
+                .Select(s => new BaseSlotCandidate(s.Id, s.Name, s.AddedAt))
+                .Min(BaseSlotRule.D2Order);
+            var slotId = existing?.SlotId;
+            if (slotId is null)
+            {
+                var seed = new EmoteSlot
+                {
+                    EmoteId = emote.Id,
+                    Name = emote.Name,
+                    IsArchived = emote.IsArchived,
+                    ArchivedAt = emote.ArchivedAt,
+                    LastSyncedAt = NowUtc,
+                    SeedUnsettled = true,
+                };
+                db.EmoteSlots.Add(seed);
+                slotId = seed.Id;
+            }
+
+            bound[emote.Id] = slotId;
             db.ChatLogBackfillRunEmotes.Add(new ChatLogBackfillRunEmote
             {
                 RunId = run.Id,
                 EmoteId = emote.Id,
                 SevenTvEmoteId = emote.SevenTvEmoteId,
                 Name = emote.Name,
-                SlotId = bound.SlotIds[pair],
-                CreatedSlot = bound.Created.Contains(pair),
+                SlotId = slotId,
+                CreatedSlot = existing is null,
             });
         }
 
         await db.SaveChangesAsync();
-        await transaction.CommitAsync();
-        return emotes.ToDictionary(e => e.Id, e => bound.SlotIds[new BaseSlotPair(e.Id, run.EmoteSetId)], StringComparer.Ordinal);
+        return bound;
     }
 
     private static UsageStat Imported(Emote emote, string emoteSetId, DateOnly date, int useCount) =>

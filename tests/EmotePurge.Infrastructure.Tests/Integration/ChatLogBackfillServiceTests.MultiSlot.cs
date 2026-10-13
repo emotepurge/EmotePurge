@@ -15,10 +15,9 @@ using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
-// Slot plan #375 §2 (T5): the enqueue with SevenTv:SlotReconcile:Enabled on binds every preview entry to
-// its own slot (D28) — the active preview through REST's steps 3–5, any other set by exact date with its
-// own seed settle — or answers 409 backfill_slots_unsettled and writes nothing (2.4). AK 22, 26, 27, 53,
-// 56 and the Sol-P2-2 regression; the flag-off path stays child 3's (Oracle.cs, Slots.cs).
+// Slot plan #375 §2 (T5): the enqueue binds every preview entry to its own slot (D28) — the active preview
+// through REST's steps 3–5, any other set by exact date with its own seed settle — or answers 409
+// backfill_slots_unsettled and writes nothing (2.4). AK 22, 26, 27, 53, 56 and the Sol-P2-2 regression.
 public partial class ChatLogBackfillServiceTests
 {
     private static readonly DateTime EntryT1 = new(2026, 4, 20, 9, 0, 0, 123, DateTimeKind.Utc);
@@ -28,13 +27,13 @@ public partial class ChatLogBackfillServiceTests
 
     // ---------------------------------------------------------------- AK 22, AK 56, 2.5
 
-    // AK 22/56 with the flag on: an emote listed twice in the active set and unknown to the slots gets two
+    // AK 22/56: an emote listed twice in the active set and unknown to the slots gets two
     // authoritative slots, archived and never in the set, one snapshot row each with its own entry day;
     // an unknown emote gets its placeholder, and CreatedRow is the same on every row of an emote (2.5).
     // A seed of another set under the same emote, and its rows, stay as they are. The block then writes
     // both slots of the emote on the same day (AK 24).
     [Fact]
-    public async Task On_ActivePreviewWithoutHits_CreatesAnArchivedAuthoritativeSlotPerEntry_AndTheBlockWritesEach()
+    public async Task ActivePreviewWithoutHits_CreatesAnArchivedAuthoritativeSlotPerEntry_AndTheBlockWritesEach()
     {
         var channel = await SeedChannelAsync("bfmulti22");
         await SeedUserAsync();
@@ -44,7 +43,7 @@ public partial class ChatLogBackfillServiceTests
         var emoteRowBefore = await EmoteRowsJsonAsync(channel, "X");
         PreviewReturns(ActiveSetId, "Active", Member("X", "ome44", EntryT1), Member("X", "hob44", EntryT2), Member("Z", "zed", EntryT3));
 
-        var result = await EnqueueOnAsync(channel, ActiveSetId);
+        var result = await EnqueueAsync(channel, ActiveSetId, months: 6);
 
         Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, result.Status);
         Assert.Equal(3, result.Run!.EmoteCount);
@@ -95,7 +94,7 @@ public partial class ChatLogBackfillServiceTests
     // archived; a single slot of a date takes the entry's name (rename, AK 27). The binding changes the
     // identity only (E2): the archived slot stays archived, and nothing new is created.
     [Fact]
-    public async Task On_ActivePreview_BindsExistingAuthoritativeSlotsByDate_RenamesButKeepsTheirArchiveState()
+    public async Task ActivePreview_BindsExistingAuthoritativeSlotsByDate_RenamesButKeepsTheirArchiveState()
     {
         var channel = await SeedChannelAsync("bfmultidate");
         await SeedUserAsync();
@@ -104,7 +103,7 @@ public partial class ChatLogBackfillServiceTests
         var archived = await AddSlotAsync(emote.Id, "hob44", EntryT2, fromRest: true, archived: true, archivedAt: EarlierArchive);
         PreviewReturns(ActiveSetId, "Active", Member("X", "ome44", EntryT1), Member("X", "hob44", EntryT2));
 
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, ActiveSetId)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, ActiveSetId, months: 6)).Status);
 
         var entries = await NewestSnapshotAsync();
         Assert.Equal(
@@ -120,7 +119,7 @@ public partial class ChatLogBackfillServiceTests
     // The bind renamed a slot that is visible in the set: no later REST tick sees an inventory change, so the
     // enqueue itself announces channel.synced and an open usage view refetches the new alias.
     [Fact]
-    public async Task On_ActivePreviewRenamingAVisibleSlot_PublishesChannelSynced()
+    public async Task ActivePreviewRenamingAVisibleSlot_PublishesChannelSynced()
     {
         var channel = await SeedChannelAsync("bfmultisynced");
         await SeedUserAsync();
@@ -128,7 +127,7 @@ public partial class ChatLogBackfillServiceTests
         await AddSlotAsync(emote.Id, "A", EntryT1, fromRest: true);
         PreviewReturns(ActiveSetId, "Active", Member("X", "C", EntryT1));
 
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, ActiveSetId)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, ActiveSetId, months: 6)).Status);
 
         await _publisher.Received(1).PublishAsync(
             LiveEvents.Channel,
@@ -139,7 +138,7 @@ public partial class ChatLogBackfillServiceTests
     // AK 27 with an archived slot: it is not visible in the set, so renaming it changes nothing a usage view
     // shows by itself, and nothing is announced.
     [Fact]
-    public async Task On_ActivePreviewRenamingAnArchivedSlot_PublishesNoChannelSynced()
+    public async Task ActivePreviewRenamingAnArchivedSlot_PublishesNoChannelSynced()
     {
         var channel = await SeedChannelAsync("bfmultisilent");
         await SeedUserAsync();
@@ -147,7 +146,7 @@ public partial class ChatLogBackfillServiceTests
         var archived = await AddSlotAsync(emote.Id, "old", EntryT2, fromRest: true, archived: true, archivedAt: EarlierArchive);
         PreviewReturns(ActiveSetId, "Active", Member("X", "new", EntryT2));
 
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, ActiveSetId)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, ActiveSetId, months: 6)).Status);
 
         await using var verify = CreateDbContext();
         Assert.Equal("new", (await verify.EmoteSlots.AsNoTracking().SingleAsync(s => s.Id == archived.Id)).Name);
@@ -155,27 +154,10 @@ public partial class ChatLogBackfillServiceTests
             LiveEvents.Channel, Arg.Is<string>(m => m.Contains(LiveEvents.ChannelSynced, StringComparison.Ordinal)), Arg.Any<CancellationToken>());
     }
 
-    // Flag off is child 3's path: no slot is renamed and nothing but the backfill messages goes out.
-    [Fact]
-    public async Task Off_Enqueue_PublishesNoChannelSynced()
-    {
-        PinFlagOff();
-        var channel = await SeedChannelAsync("bfmultioffsync");
-        await SeedUserAsync();
-        var emote = await SeedEmoteAsync(channel, "X", "A");
-        await AddSlotAsync(emote.Id, "A", EntryT1, fromRest: true);
-        PreviewReturns(ActiveSetId, "Active", Member("X", "C", EntryT1));
-
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, ActiveSetId, months: 6)).Status);
-
-        await _publisher.DidNotReceive().PublishAsync(
-            LiveEvents.Channel, Arg.Is<string>(m => m.Contains(LiveEvents.ChannelSynced, StringComparison.Ordinal)), Arg.Any<CancellationToken>());
-    }
-
     // AK 22, another set: new slots are archived like in the active set; a seed of the active set does not
     // block the preview of another set and stays as it is.
     [Fact]
-    public async Task On_InactivePreview_CreatesArchivedSlots_AndLeavesTheActiveSetsSeedAlone()
+    public async Task InactivePreview_CreatesArchivedSlots_AndLeavesTheActiveSetsSeedAlone()
     {
         var channel = await SeedChannelAsync("bfmultiinactive");
         await SeedUserAsync();
@@ -184,7 +166,7 @@ public partial class ChatLogBackfillServiceTests
         await AddUsageAsync(emote.Id, activeSeed.Id, ActiveSetId, new DateOnly(2026, 9, 1), 4);
         PreviewReturns(SetB, "Set B", Member("X", "ome44", EntryT1), Member("X", "hob44", EntryT2));
 
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, SetB)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, SetB, months: 6)).Status);
 
         var entries = await NewestSnapshotAsync();
         Assert.Equal(2, entries.Count);
@@ -205,7 +187,7 @@ public partial class ChatLogBackfillServiceTests
     // seed becomes ome44 itself (authoritative, marker off), archived with the enqueue's time as its
     // archive date (R2: it was never archived), B's rows stay on it; hob44 is a new archived slot.
     [Fact]
-    public async Task On_InactivePreview_SettlesTheSetsSeedInPlace_OntoTheOldestEntry_Archived()
+    public async Task InactivePreview_SettlesTheSetsSeedInPlace_OntoTheOldestEntry_Archived()
     {
         var channel = await SeedChannelAsync("bfmulti26a");
         await SeedUserAsync();
@@ -214,7 +196,7 @@ public partial class ChatLogBackfillServiceTests
         await AddUsageAsync(emote.Id, seed.Id, SetB, new DateOnly(2026, 9, 1), 4);
         PreviewReturns(SetB, "Set B", Member("X", "hob44", EntryT2), Member("X", "ome44", EntryT1));
 
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, SetB)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, SetB, months: 6)).Status);
 
         var entries = (await NewestSnapshotAsync()).ToDictionary(e => e.Name);
         Assert.Equal((seed.Id, false), (entries["ome44"].SlotId, entries["ome44"].CreatedSlot));
@@ -233,7 +215,7 @@ public partial class ChatLogBackfillServiceTests
     // onto it (the colliding cell merged), the seed ends empty, settled, archived without date, and the
     // snapshot row of an earlier run on the seed follows onto the target with CreatedSlot false.
     [Fact]
-    public async Task On_InactivePreview_SettlesTheSetsSeedOntoAnExistingTarget_MovingRowsAndOlderSnapshots()
+    public async Task InactivePreview_SettlesTheSetsSeedOntoAnExistingTarget_MovingRowsAndOlderSnapshots()
     {
         var channel = await SeedChannelAsync("bfmulti26b");
         await SeedUserAsync();
@@ -262,7 +244,7 @@ public partial class ChatLogBackfillServiceTests
 
         PreviewReturns(SetB, "Set B", Member("X", "ome44", EntryT1), Member("X", "hob44", EntryT2));
 
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, SetB)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, SetB, months: 6)).Status);
 
         var entries = (await NewestSnapshotAsync()).ToDictionary(e => e.Name);
         Assert.Equal((target.Id, false), (entries["ome44"].SlotId, entries["ome44"].CreatedSlot));
@@ -284,7 +266,7 @@ public partial class ChatLogBackfillServiceTests
     // the unknown member, no slot change, the seed keeps its marker, no run, no snapshot, no audit — and
     // the worker is not nudged.
     [Fact]
-    public async Task On_InactivePreviewWithAnUndatedEntry_Is409_AndWritesNothing()
+    public async Task InactivePreviewWithAnUndatedEntry_Is409_AndWritesNothing()
     {
         var channel = await SeedChannelAsync("bfmulti409b");
         await SeedUserAsync();
@@ -294,7 +276,7 @@ public partial class ChatLogBackfillServiceTests
         PreviewReturns(SetB, "Set B", Member("X", "ome44", EntryT1), Member("X", "hob44", null), Member("Z", "zed", EntryT3));
         var before = await EverythingAsync();
 
-        var result = await EnqueueOnAsync(channel, SetB);
+        var result = await EnqueueAsync(channel, SetB, months: 6);
 
         Assert.Equal(ChatLogBackfillEnqueueStatus.SlotsUnsettled, result.Status);
         Assert.Null(result.Run);
@@ -305,7 +287,7 @@ public partial class ChatLogBackfillServiceTests
     // AK 26 / 2.4 (a): an unsettled seed of the active set rejects the active preview — settling it is
     // REST's. The information line names the channel, the reason and the count, never an alias.
     [Fact]
-    public async Task On_ActivePreviewWithAnUnsettledSeedOfTheActiveSet_Is409_AndLogsWithoutNames()
+    public async Task ActivePreviewWithAnUnsettledSeedOfTheActiveSet_Is409_AndLogsWithoutNames()
     {
         var channel = await SeedChannelAsync("bfmulti409a");
         await SeedUserAsync();
@@ -319,7 +301,7 @@ public partial class ChatLogBackfillServiceTests
         ChatLogBackfillEnqueueResult result;
         await using (var db = CreateDbContext())
         {
-            result = await CreateService(db, logger: logger, slotsEnabled: true).EnqueueAsync(channel.ChannelName, ActiveSetId, 6, Today, Actor);
+            result = await CreateService(db, logger: logger).EnqueueAsync(channel.ChannelName, ActiveSetId, 6, Today, Actor);
         }
 
         Assert.Equal(ChatLogBackfillEnqueueStatus.SlotsUnsettled, result.Status);
@@ -332,34 +314,12 @@ public partial class ChatLogBackfillServiceTests
         Assert.Contains(emote.SevenTvEmoteId, line.Message, StringComparison.Ordinal);
     }
 
-    // 2.6 / 7.3 "flag off": the same state with the flag off is child 3's path — no 409, the snapshot binds
-    // the pair's seed through the base slot rule and creates nothing.
-    [Fact]
-    public async Task Off_ActivePreviewWithAnUnsettledSeedOfTheActiveSet_IsNo409_AndBindsTheSeed()
-    {
-        PinFlagOff();
-        var channel = await SeedChannelAsync("bfmultioff");
-        await SeedUserAsync();
-        var emote = await SeedEmoteAsync(channel, "X", "XNow");
-        var seed = await AddSlotAsync(emote.Id, "XNow", addedAt: null, fromRest: false, seed: true);
-        await AddUsageAsync(emote.Id, seed.Id, ActiveSetId, new DateOnly(2026, 9, 1), 4);
-        PreviewReturns(ActiveSetId, "Active", Member("X", "A", EntryT1));
-
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, ActiveSetId, months: 6)).Status);
-
-        var entry = Assert.Single(await NewestSnapshotAsync());
-        Assert.Equal((seed.Id, false), (entry.SlotId, entry.CreatedSlot));
-        await using var verify = CreateDbContext();
-        Assert.Equal(Columns(seed), Columns(await verify.EmoteSlots.AsNoTracking().SingleAsync(s => s.Id == seed.Id)));
-        Assert.Equal(1, await verify.EmoteSlots.CountAsync());
-    }
-
     // 2.4 (c) and (b'), R4/R7 (a): an undated entry without a slot of its name in the active preview, and
     // any undated entry in another set's preview, reject the enqueue; nothing is written.
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task On_UndatedEntryWithoutBinding_Is409_AndWritesNothing(bool activePreview)
+    public async Task UndatedEntryWithoutBinding_Is409_AndWritesNothing(bool activePreview)
     {
         var channel = await SeedChannelAsync(activePreview ? "bfmulti409c" : "bfmulti409bb");
         await SeedUserAsync();
@@ -367,7 +327,7 @@ public partial class ChatLogBackfillServiceTests
         PreviewReturns(set, "Set", Member("Y", "dated", EntryT1), Member("Z", "undated", null));
         var before = await EverythingAsync();
 
-        Assert.Equal(ChatLogBackfillEnqueueStatus.SlotsUnsettled, (await EnqueueOnAsync(channel, set)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.SlotsUnsettled, (await EnqueueAsync(channel, set, months: 6)).Status);
 
         Assert.Equal(before, await EverythingAsync());
     }
@@ -375,7 +335,7 @@ public partial class ChatLogBackfillServiceTests
     // 2.2 step 5: an undated entry of the active preview binds an active slot of its name, authoritative
     // or not, and never touches its date.
     [Fact]
-    public async Task On_UndatedActiveEntry_BindsItsActiveNamesake_WithoutTouchingTheDate()
+    public async Task UndatedActiveEntry_BindsItsActiveNamesake_WithoutTouchingTheDate()
     {
         var channel = await SeedChannelAsync("bfmultiundated");
         await SeedUserAsync();
@@ -383,7 +343,7 @@ public partial class ChatLogBackfillServiceTests
         var slot = await AddSlotAsync(emote.Id, "A", EntryT1, fromRest: true);
         PreviewReturns(ActiveSetId, "Active", Member("X", "A", null));
 
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, ActiveSetId)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, ActiveSetId, months: 6)).Status);
 
         var entry = Assert.Single(await NewestSnapshotAsync());
         Assert.Equal((slot.Id, false, (DateOnly?)null), (entry.SlotId, entry.CreatedSlot, entry.AddedToSetDay));
@@ -396,7 +356,7 @@ public partial class ChatLogBackfillServiceTests
     // Hand-off #374: the provisional slot an EventAPI push created is bound by name in the active preview,
     // and the dated entry authorizes its date — no second slot next to it.
     [Fact]
-    public async Task On_ActivePreview_BindsThePushSlotByName_AndAuthorizesItsDate()
+    public async Task ActivePreview_BindsThePushSlotByName_AndAuthorizesItsDate()
     {
         var channel = await SeedChannelAsync("bfmultipush");
         await SeedUserAsync();
@@ -404,7 +364,7 @@ public partial class ChatLogBackfillServiceTests
         var push = await AddSlotAsync(emote.Id, "A", new DateTime(2026, 10, 1, 8, 0, 0, DateTimeKind.Utc), fromRest: false);
         PreviewReturns(ActiveSetId, "Active", Member("X", "A", EntryT3));
 
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, ActiveSetId)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, ActiveSetId, months: 6)).Status);
 
         var entry = Assert.Single(await NewestSnapshotAsync());
         Assert.Equal((push.Id, false), (entry.SlotId, entry.CreatedSlot));
@@ -415,10 +375,10 @@ public partial class ChatLogBackfillServiceTests
 
     // Sol-P2-2: the preview of set X settles X's seed by exact date only. A same-named provisional push slot
     // of the active set Y is no target: the seed is re-keyed in place and archived, Y's slot keeps its name,
-    // date, provisional state, activity and rows — and the next flag-on REST tick of Y binds it by name
+    // date, provisional state, activity and rows — and the next REST tick of Y binds it by name
     // and creates no slot.
     [Fact]
-    public async Task On_InactivePreview_NeverSettlesOntoAProvisionalSlotOfTheActiveSet()
+    public async Task InactivePreview_NeverSettlesOntoAProvisionalSlotOfTheActiveSet()
     {
         var channel = await SeedChannelAsync("bfmultisolp22");
         await SeedUserAsync();
@@ -429,7 +389,7 @@ public partial class ChatLogBackfillServiceTests
         await AddUsageAsync(emote.Id, seed.Id, SetB, new DateOnly(2026, 9, 1), 4);
         PreviewReturns(SetB, "Set B", Member("X", "A", EntryT1));
 
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, SetB)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, SetB, months: 6)).Status);
 
         var entry = Assert.Single(await NewestSnapshotAsync());
         Assert.Equal((seed.Id, false), (entry.SlotId, entry.CreatedSlot));
@@ -457,7 +417,7 @@ public partial class ChatLogBackfillServiceTests
     // row; the REST tick for the same entry, renamed to C meanwhile, waits at that row, then binds the slot
     // by its date and renames it. One slot, the snapshot and REST on it.
     [Fact]
-    public async Task On_EnqueueFirst_ThenRestWithTheRenamedEntry_EndWithOneRenamedSlot()
+    public async Task EnqueueFirst_ThenRestWithTheRenamedEntry_EndWithOneRenamedSlot()
     {
         var channel = await SeedChannelAsync("bfmulti27a");
         await SeedUserAsync();
@@ -482,7 +442,7 @@ public partial class ChatLogBackfillServiceTests
         await using (var enqueueDb = fixture.CreateTaggedDbContext("bfmulti27a-enq", [hook], databaseName: DatabaseName))
         {
             Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued,
-                (await CreateService(enqueueDb, slotsEnabled: true).EnqueueAsync(channel.ChannelName, ActiveSetId, 6, Today, Actor)).Status);
+                (await CreateService(enqueueDb).EnqueueAsync(channel.ChannelName, ActiveSetId, 6, Today, Actor)).Status);
         }
 
         Assert.NotNull(rest);
@@ -497,7 +457,7 @@ public partial class ChatLogBackfillServiceTests
     // AK 27, REST first: REST creates the active slot A(t) and holds the channel row; the enqueue of the
     // renamed entry C(t) waits, then binds that slot by date and renames it, keeping it active (E2).
     [Fact]
-    public async Task On_RestFirst_ThenTheEnqueueWithTheRenamedEntry_EndWithOneRenamedSlot()
+    public async Task RestFirst_ThenTheEnqueueWithTheRenamedEntry_EndWithOneRenamedSlot()
     {
         var channel = await SeedChannelAsync("bfmulti27b");
         await SeedUserAsync();
@@ -515,7 +475,7 @@ public partial class ChatLogBackfillServiceTests
                     return;
                 }
 
-                enqueue = Task.Run(() => CreateService(enqueueDb, slotsEnabled: true).EnqueueAsync(channel.ChannelName, ActiveSetId, 6, Today, Actor));
+                enqueue = Task.Run(() => CreateService(enqueueDb).EnqueueAsync(channel.ChannelName, ActiveSetId, 6, Today, Actor));
                 await fixture.WaitUntilBlockedOnLockAsync(tag, enqueue);
             });
         await using (var restDb = fixture.CreateTaggedDbContext("bfmulti27b-rest", [hook], databaseName: DatabaseName))
@@ -534,13 +494,13 @@ public partial class ChatLogBackfillServiceTests
 
     // AK 27, a real group: two entries of one emote with their own dates stay two slots.
     [Fact]
-    public async Task On_ARealGroupOfTwoDatedEntries_StaysTwoSlots_AlsoAfterRest()
+    public async Task ARealGroupOfTwoDatedEntries_StaysTwoSlots_AlsoAfterRest()
     {
         var channel = await SeedChannelAsync("bfmulti27c");
         await SeedUserAsync();
         PreviewReturns(ActiveSetId, "Active", Member("X", "A", EntryT1), Member("X", "C", EntryT2));
 
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, ActiveSetId)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, ActiveSetId, months: 6)).Status);
         await RestOnAsync(channel, ActiveSetId, Live("X", "A", EntryT1), Live("X", "C", EntryT2));
 
         var entries = await NewestSnapshotAsync();
@@ -555,12 +515,12 @@ public partial class ChatLogBackfillServiceTests
     // AK 53 (a): S1(A, t1) archived with history, no active A; the enqueue of A(t3) re-keys S1 onto t3 (D7)
     // and leaves it archived; the next REST tick binds S1 by its new date and un-archives it — no S2.
     [Fact]
-    public async Task On_Ak53a_TheEnqueueReKeysTheArchivedSlot_AndRestThenResumesIt()
+    public async Task Ak53a_TheEnqueueReKeysTheArchivedSlot_AndRestThenResumesIt()
     {
         var (channel, emote, s1) = await SeedReturningSlotAsync("bfmulti53a");
         PreviewReturns(ActiveSetId, "Active", Member("X", "A", EntryT3));
 
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, ActiveSetId)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, ActiveSetId, months: 6)).Status);
 
         var entry = Assert.Single(await NewestSnapshotAsync());
         Assert.Equal((s1.Id, false), (entry.SlotId, entry.CreatedSlot));
@@ -582,11 +542,11 @@ public partial class ChatLogBackfillServiceTests
     // AK 53 (b): after the enqueue's re-key, a restore report naming S1 with its old generation t1 is stale
     // and a no-op (#376); S1 stays archived on t3.
     [Fact]
-    public async Task On_Ak53b_ARestoreReportOfTheOldGenerationAfterTheEnqueue_IsANoOp()
+    public async Task Ak53b_ARestoreReportOfTheOldGenerationAfterTheEnqueue_IsANoOp()
     {
         var (channel, _, s1) = await SeedReturningSlotAsync("bfmulti53b");
         PreviewReturns(ActiveSetId, "Active", Member("X", "A", EntryT3));
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, ActiveSetId)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, ActiveSetId, months: 6)).Status);
         EmoteSlot rekeyed;
         await using (var read = CreateDbContext())
         {
@@ -602,7 +562,7 @@ public partial class ChatLogBackfillServiceTests
     // AK 53 (c): a restore report first reactivates S1 with a provisional date; the enqueue of A(t3) then
     // binds S1 by name and authorizes t3. Still one slot, the history on S1.
     [Fact]
-    public async Task On_Ak53c_ARestoreReportFirst_ThenTheEnqueueBindsS1ByName_AndAuthorizesTheDate()
+    public async Task Ak53c_ARestoreReportFirst_ThenTheEnqueueBindsS1ByName_AndAuthorizesTheDate()
     {
         var (channel, _, s1) = await SeedReturningSlotAsync("bfmulti53c");
         await RestoreReportAsync(channel, s1.Id, EntryT1);
@@ -613,7 +573,7 @@ public partial class ChatLogBackfillServiceTests
         }
 
         PreviewReturns(ActiveSetId, "Active", Member("X", "A", EntryT3));
-        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, ActiveSetId)).Status);
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, ActiveSetId, months: 6)).Status);
 
         var entry = Assert.Single(await NewestSnapshotAsync());
         Assert.Equal((s1.Id, false), (entry.SlotId, entry.CreatedSlot));
@@ -629,7 +589,7 @@ public partial class ChatLogBackfillServiceTests
     // slot the enqueue's rename would produce) rolls the attempt back; the second attempt reads the new
     // slot behind the locks and binds it by date and name.
     [Fact]
-    public async Task On_ASlotKeyConflictInTheFirstAttempt_IsRetried_AndTheSecondAttemptSucceeds()
+    public async Task ASlotKeyConflictInTheFirstAttempt_IsRetried_AndTheSecondAttemptSucceeds()
     {
         var channel = await SeedChannelAsync("bfmultiretry");
         await SeedUserAsync();
@@ -654,7 +614,7 @@ public partial class ChatLogBackfillServiceTests
         await using (var db = CreateDbContext(hook))
         {
             Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued,
-                (await CreateService(db, slotsEnabled: true).EnqueueAsync(channel.ChannelName, ActiveSetId, 6, Today, Actor)).Status);
+                (await CreateService(db).EnqueueAsync(channel.ChannelName, ActiveSetId, 6, Today, Actor)).Status);
         }
 
         Assert.Equal(2, hook.Calls);
@@ -666,12 +626,6 @@ public partial class ChatLogBackfillServiceTests
     }
 
     // ---------------------------------------------------------------- Helpers
-
-    private async Task<ChatLogBackfillEnqueueResult> EnqueueOnAsync(Channel channel, string emoteSetId, int months = 6)
-    {
-        await using var db = CreateDbContext();
-        return await CreateService(db, slotsEnabled: true).EnqueueAsync(channel.ChannelName, emoteSetId, months, Today, Actor);
-    }
 
     private async Task<EmoteSlot> AddSlotAsync(
         string emoteId, string name, DateTime? addedAt, bool fromRest, bool archived = false, DateTime? archivedAt = null, bool seed = false)
@@ -711,7 +665,7 @@ public partial class ChatLogBackfillServiceTests
             .ToList();
     }
 
-    // StateFingerprintAsync plus every slot and usage row: everything a flag-on enqueue may write.
+    // StateFingerprintAsync plus every slot and usage row: everything an enqueue may write.
     private async Task<string> EverythingAsync()
     {
         await using var db = CreateDbContext();
@@ -727,7 +681,7 @@ public partial class ChatLogBackfillServiceTests
     private static string Columns(EmoteSlot s) =>
         $"{s.Id}|{s.EmoteId}|{s.Name}|{s.AddedAt:O}|{s.AddedAtFromRest}|{s.IsArchived}|{s.ArchivedAt:O}|{s.SeedUnsettled}|{s.LastSyncedAt:O}";
 
-    // The flag-on REST reconcile of the channel against the given live set.
+    // The REST reconcile of the channel against the given live set.
     private async Task RestOnAsync(Channel channel, string emoteSetId, params SevenTvEmote[] live)
     {
         await using var db = CreateDbContext();

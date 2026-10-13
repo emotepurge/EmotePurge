@@ -81,11 +81,10 @@ public interface IChatLogBackfillService
     /// <see cref="ChatLogBackfillBlockResult.RunNotActive"/>.
     /// <para>
     /// Every aggregate must name a snapshot row of the run: its <c>(SlotId, EmoteId)</c> pair is checked
-    /// for the whole block before anything is written. A slot the snapshot holds under another emote, or
-    /// an emote without any snapshot row, throws <see cref="ArgumentException"/>; a slot the snapshot no
-    /// longer holds for an emote it still holds (a settle rebound the row) answers
-    /// <see cref="ChatLogBackfillBlockResult.SnapshotChanged"/>. Only then are aggregates of a deleted
-    /// emote or slot dropped (D25).
+    /// for the whole block before anything is written. A slot the snapshot holds under another emote, an
+    /// emote without any snapshot row, or a slot the snapshot does not hold for an emote it does hold
+    /// throws <see cref="ArgumentException"/> — the worker fails the run (fail-closed). Only then are
+    /// aggregates of a deleted emote or slot dropped (D25).
     /// </para>
     /// </summary>
     Task<ChatLogBackfillBlockResult> ReplaceBlockAsync(
@@ -157,9 +156,8 @@ public enum ChatLogBackfillEnqueueStatus
     SevenTvUnavailable,
 
     /// <summary>
-    /// Only with the slot flag on (slot plan #375 2.4, spec 5.6): a preview entry cannot be bound to a
-    /// slot yet — an emote has an unsettled seed of the active set, or an entry is undated where the
-    /// binding needs its date. Nothing is written; the next REST reconcile or v4 overlay resolves it.
+    /// Slot plan #375 2.4, spec 5.6: a preview entry cannot be bound to a slot yet — an emote has an
+    /// unsettled seed of the active set, or an entry is undated where the binding needs its date. Nothing is written; the next REST reconcile or v4 overlay resolves it.
     /// </summary>
     SlotsUnsettled
 }
@@ -323,7 +321,7 @@ public sealed record ChatLogBackfillAggregate(
 
 /// <summary>
 /// What <see cref="IChatLogBackfillService.ReplaceBlockAsync"/> did (D48) — a closed set: the private
-/// constructor admits only the five cases below.
+/// constructor admits only the four cases below.
 /// </summary>
 public abstract record ChatLogBackfillBlockResult
 {
@@ -342,13 +340,6 @@ public abstract record ChatLogBackfillBlockResult
 
     /// <summary>The channel (and with it the run) vanished between claim and commit; everything rolled back.</summary>
     public sealed record ChannelGone : ChatLogBackfillBlockResult;
-
-    /// <summary>
-    /// The snapshot no longer holds the slot of an aggregate whose emote it still holds — a settle
-    /// rebound that row (slot plan #375, E9). Nothing written; the worker re-reads the snapshot, moves
-    /// the block's aggregates to the rows' new slots and hands the same block in once more.
-    /// </summary>
-    public sealed record SnapshotChanged : ChatLogBackfillBlockResult;
 }
 
 /// <summary>The window arithmetic of spec 4.1, shared by the status read and the enqueue.</summary>

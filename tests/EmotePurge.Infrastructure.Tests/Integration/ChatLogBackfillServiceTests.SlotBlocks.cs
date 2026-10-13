@@ -8,10 +8,10 @@ using Xunit;
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
 // Plan #375 §3 and 7.4 (AK 24, 25, Sol-P2-1, E9): the block is keyed per slot. Every aggregate must be a
-// snapshot row (SlotId, EmoteId) of its run — checked for the whole block before anything is written —
-// and a slot the snapshot no longer holds for an emote it does hold answers SnapshotChanged. The
-// snapshots with two rows of one emote are seeded by hand here; the flag-on enqueue that writes them
-// comes later in this child.
+// snapshot row (SlotId, EmoteId) of its run — checked for the whole block before anything is written,
+// and anything else throws, also a slot of an emote the snapshot holds (plan 379 §2.1, fail-closed). The
+// snapshots with two rows of one emote are seeded by hand here; the enqueue that writes them is covered
+// in MultiSlot.cs.
 public partial class ChatLogBackfillServiceTests
 {
     private static readonly DateTime OlderEntry = new(2026, 4, 20, 9, 0, 0, DateTimeKind.Utc);
@@ -79,11 +79,12 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal(before, await BlockStateAsync(channel, run));
     }
 
-    // Sol-P2-1 (ii): a slot of the snapshot's emote that never was a row of the run is no foreign pair but
-    // a changed snapshot as far as the block can tell: SnapshotChanged, nothing written — the earlier
-    // run's imported row in the block and its coverage stay, WeeksDone and the bytes do not move.
+    // Sol-P2-1 (ii), plan 379 §2.1: a slot of the snapshot's emote that never was a row of the run is
+    // answered like a foreign pair — it throws, nothing written: the earlier run's imported row in the
+    // block and its coverage stay, WeeksDone and the bytes do not move. A run's snapshot is fixed from its
+    // enqueue on, so only a run enqueued before #379 can meet this, and its worker fails it (fail-closed).
     [Fact]
-    public async Task ReplaceBlock_WithASlotOfTheEmoteThatIsNotInTheSnapshot_IsSnapshotChanged_AndWritesNothing()
+    public async Task ReplaceBlock_WithASlotOfTheEmoteThatIsNotInTheSnapshot_Throws_AndWritesNothing()
     {
         var channel = await SeedChannelAsync("bfslotdrift", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
         var x = await SeedEmoteAsync(channel, "x", "X");
@@ -96,62 +97,13 @@ public partial class ChatLogBackfillServiceTests
 
         await using (var db = CreateDbContext())
         {
-            Assert.IsType<ChatLogBackfillBlockResult.SnapshotChanged>(await CreateService(db).ReplaceBlockAsync(
+            await Assert.ThrowsAsync<ArgumentException>(() => CreateService(db).ReplaceBlockAsync(
                 run.Id, BlockFrom, BlockTo,
                 [new ChatLogBackfillAggregate(slots[x.Id], x.Id, BlockFrom, 4, 0, 0), new ChatLogBackfillAggregate(neverInSnapshot, x.Id, BlockFrom, 1, 0, 0)],
                 10, 1, isLastBlock: false));
         }
 
         Assert.Equal(before, await BlockStateAsync(channel, run));
-    }
-
-    // Sol-P2-1 (iii) / E9 end to end: a run enqueued with the flag off writes block 1 on its seed S; the
-    // real flag-on settle finds the REST slot T ("target exists"), moves S's rows and rebinds the
-    // snapshot row to T. Block 2, counted on S, is refused as SnapshotChanged and changes nothing — the
-    // imported row of an earlier run in its days, the coverage, WeeksDone and the bytes stay. After the
-    // worker's re-read (the row (EmoteId, Name) now on T) the same block lands on T, and S keeps no row.
-    [Fact]
-    public async Task ReplaceBlock_AfterASettleReboundTheSnapshot_IsSnapshotChanged_AndTheReReadBlockLandsOnTheTarget()
-    {
-        PinFlagOff();
-        var (channel, emote, target, seed, claim) = await EnqueueNextToRestSlotAsync("bfslotsettle");
-        await ReplaceBlockOfAsync(claim, 0, new ChatLogBackfillAggregate(seed, emote.Id, claim.WindowFrom, 3, 0, 0));
-        await SettleAsync(channel, logger: null);
-
-        var secondDay = claim.WindowFrom.AddDays(8);
-        var bystander = await SeedEmoteAsync(channel, "z", "Z");
-        await using (var db = CreateDbContext())
-        {
-            db.UsageStats.Add(Imported(bystander, SetC, secondDay, 6));
-            await db.AssignUsageSlotsAsync();
-            await db.SaveChangesAsync();
-        }
-
-        var run = await RunOfAsync(claim);
-        var before = await BlockStateAsync(channel, run);
-        await using (var db = CreateDbContext())
-        {
-            Assert.IsType<ChatLogBackfillBlockResult.SnapshotChanged>(
-                await ReplaceBlockOfAsync(db, claim, 1, new ChatLogBackfillAggregate(seed, emote.Id, secondDay, 4, 0, 0)));
-        }
-
-        Assert.Equal(before, await BlockStateAsync(channel, run));
-
-        ChatLogBackfillSnapshotEmote reread;
-        await using (var db = CreateDbContext())
-        {
-            reread = Assert.Single((await CreateService(db).GetSnapshotAsync(claim.RunId)).Emotes);
-        }
-
-        Assert.Equal((target, emote.Id, "A"), (reread.SlotId, reread.EmoteId, reread.Name));
-        await ReplaceBlockOfAsync(claim, 1, new ChatLogBackfillAggregate(reread.SlotId, emote.Id, secondDay, 4, 0, 0));
-
-        await using var verify = CreateDbContext();
-        Assert.Equal(target, await SlotOfRowOnAsync(emote.Id, secondDay));
-        Assert.False(await verify.UsageStats.AnyAsync(u => u.SlotId == seed));
-        Assert.False(await verify.UsageStats.AnyAsync(u => u.EmoteId == bystander.Id), "the block's delete took the earlier run's imported row");
-        var after = await verify.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == claim.RunId);
-        Assert.Equal((ChatLogBackfillRunStatus.Completed, 2, 20L), (after.Status, after.WeeksDone, after.BytesReceived));
     }
 
     // AK 25 (OD-A per slot): an earlier run of set C left imported rows on both slots of one emote in the
@@ -243,7 +195,7 @@ public partial class ChatLogBackfillServiceTests
     // ---------------------------------------------------------------- Helpers
 
     // Two authoritative slots of one emote — ome44 (older entry) and hob44 (newer) — and one snapshot row
-    // each, the shape a flag-on enqueue writes for a set listing the emote twice.
+    // each, the shape the enqueue writes for a set listing the emote twice.
     private async Task<(string Ome, string Hob)> SeedTwoSlotSnapshotAsync(ChatLogBackfillRun run, Emote emote)
     {
         var ome = await SeedSlotAsync(emote.Id, "ome44", OlderEntry);

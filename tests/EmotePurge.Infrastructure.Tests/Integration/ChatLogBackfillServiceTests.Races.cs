@@ -259,11 +259,12 @@ public partial class ChatLogBackfillServiceTests
     }
 
     // A 7TV dispatch pushes an emote the chosen set also lists while the enqueue holds the channel. The
-    // dispatch takes the channel row first (plan #374 Z8, the slot work's lock order), so it waits for the
-    // enqueue instead of meeting it in a cycle: the enqueue creates the row, and the dispatch then pushes
-    // onto it. No 40P01 on either side.
+    // dispatch takes the channel row first (plan #374 Z8, the slot work's lock order), so it waits at the
+    // enqueue's FOR NO KEY UPDATE on the channel instead of meeting it in a cycle: the enqueue creates the
+    // archived placeholder row (CreatedRow), and the dispatch then pushes onto it and un-archives it. No
+    // 40P01 on either side.
     [Fact]
-    public async Task LockRace_DispatchInsertingTheSameEmoteWhileTheEnqueueHoldsTheChannel_DoesNotDeadlock()
+    public async Task LockRace_DispatchWaitsAtTheChannelTheEnqueueHolds_ThenPushesOntoTheEnqueuesRow()
     {
         var channel = await SeedChannelAsync("bflockdispatch");
         await SeedUserAsync();

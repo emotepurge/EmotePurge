@@ -275,7 +275,7 @@ public sealed class ChatLogBackfillWorker(
                 return await FailOrAbandonAsync(service, claim, state, SnapshotMissingErrorCode, null, stoppingToken);
             }
 
-            // Counted per slot (slot plan #375): read once per run, again only when a block finds it changed (E9).
+            // Counted per slot (slot plan #375): read once per run — a run's snapshot is fixed from its enqueue on.
             var map = ChatLogBackfillSnapshotMap.From(snapshot.Emotes);
             if (map.AmbiguousNames.Count > 0)
             {
@@ -431,44 +431,6 @@ public sealed class ChatLogBackfillWorker(
                     var rows = counter.Aggregates();
                     var outcome = await service.ReplaceBlockAsync(
                         claim.RunId, block.From, block.ToExclusive, rows, result.BytesReceived, result.MessageCount, isLastBlock, stoppingToken);
-                    if (outcome is ChatLogBackfillBlockResult.SnapshotChanged)
-                    {
-                        // E9 (slot plan #375): a settle rebound snapshot rows of this run — only reachable when
-                        // the slot flag went on during a run enqueued with it off. Re-read the snapshot, move the
-                        // aggregates to their rows' new slots and hand the same block in once more: no second
-                        // archive request, the bytes and messages as counted. The next blocks count on the new map.
-                        var current = ChatLogBackfillSnapshotMap.From((await service.GetSnapshotAsync(claim.RunId, stoppingToken)).Emotes);
-                        var rebound = ChatLogBackfillSnapshotMap.Rebind(rows, map, current);
-                        if (rebound.Rows is null)
-                        {
-                            logger.LogError(
-                                "Chat-log backfill run {RunId} ({Channel}): block {From:yyyy-MM-dd}..{To:yyyy-MM-dd} cannot follow its changed snapshot ({Reason}).",
-                                claim.RunId, claim.ChannelName, block.From, block.ToExclusive, rebound.Failure);
-                            return await FailOrAbandonAsync(service, claim, state, WorkerErrorCode, null, stoppingToken);
-                        }
-
-                        map = current;
-                        logger.LogWarning(
-                            "Chat-log backfill run {RunId} ({Channel}): the snapshot changed under block {From:yyyy-MM-dd}..{To:yyyy-MM-dd}; {Moved} aggregates moved to their rows' new slots, handing the block in again.",
-                            claim.RunId, claim.ChannelName, block.From, block.ToExclusive, rebound.Moved);
-                        if (!await service.HoldsLoopLockAsync(stoppingToken))
-                        {
-                            return await AbandonAsync(
-                                service, claim, state, "the loop lock was lost before handing a block in again", null, deferFailure: false, stoppingToken);
-                        }
-
-                        outcome = await service.ReplaceBlockAsync(
-                            claim.RunId, block.From, block.ToExclusive, rebound.Rows, result.BytesReceived, result.MessageCount, isLastBlock,
-                            stoppingToken);
-                        if (outcome is ChatLogBackfillBlockResult.SnapshotChanged)
-                        {
-                            logger.LogError(
-                                "Chat-log backfill run {RunId} ({Channel}): the snapshot changed again under block {From:yyyy-MM-dd}..{To:yyyy-MM-dd}.",
-                                claim.RunId, claim.ChannelName, block.From, block.ToExclusive);
-                            return await FailOrAbandonAsync(service, claim, state, WorkerErrorCode, null, stoppingToken);
-                        }
-                    }
-
                     if (outcome is ChatLogBackfillBlockResult.Committed committed)
                     {
                         state.UnbookedBytes = 0;
@@ -575,8 +537,7 @@ public sealed class ChatLogBackfillWorker(
         return RunOutcome.Finished;
     }
 
-    // D48: RunNotActive, LiveRowConflict and ChannelGone roll the block back (a SnapshotChanged that
-    // reaches here was already answered once in RunBlocksAsync, E9).
+    // D48: RunNotActive, LiveRowConflict and ChannelGone roll the block back.
     private async Task<RunOutcome> HandleUncommittedBlockAsync(
         IChatLogBackfillService service, ChatLogBackfillClaim claim, RunState state, ChatLogBackfillBlockResult outcome, CancellationToken stoppingToken)
     {

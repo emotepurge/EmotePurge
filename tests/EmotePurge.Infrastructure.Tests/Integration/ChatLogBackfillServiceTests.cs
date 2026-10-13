@@ -52,10 +52,6 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
     private readonly ITrackedEmoteSetMembershipService _membership = Substitute.For<ITrackedEmoteSetMembershipService>();
     private readonly IForeignEmoteSetService _foreign = Substitute.For<IForeignEmoteSetService>();
 
-    // xUnit builds one instance per case: a case that asserts the flag-off snapshot and binding behaviour
-    // calls PinFlagOff() first; CreateService reads this (the sync of CreateSyncService has no flag).
-    private bool _slotsEnabled = true;
-
     public async Task InitializeAsync()
     {
         await DatabaseGate.WaitAsync();
@@ -98,25 +94,28 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
 
     // Child 3 AC 3 (+ EPIC AC 31's second half): set B lists 5 members; 2 have rows (one active, one
     // archived), 3 have none. Five snapshot rows with B's aliases and entry days, exactly 3 placeholders,
-    // CreatedRow only on those, the 2 existing rows byte-identical, the run row and its audit entry.
+    // CreatedRow only on those, the 2 existing rows byte-identical, the run row and its audit entry. The
+    // members are dated: B is not the active set, and its preview binds by exact date (slot plan #375 2.3).
     [Fact]
     public async Task Enqueue_SnapshotsTheChosenSet_CreatesPlaceholdersForMissingMembers_AndLeavesExistingRowsAlone()
     {
-        PinFlagOff();
         var channel = await SeedChannelAsync("bfenqueue");
         await SeedUserAsync();
         var active = await SeedEmoteAsync(channel, "e-active", "ActiveName");
         var archived = await SeedEmoteAsync(channel, "e-archived", "ArchivedName", archived: true, archivedAt: NowUtc.AddDays(-40));
         var before = await EmoteRowsJsonAsync(channel, "e-active", "e-archived");
 
+        var addedActive = new DateTime(2026, 4, 20, 9, 0, 0, DateTimeKind.Utc);
+        var addedArchived = new DateTime(2026, 4, 25, 7, 15, 0, DateTimeKind.Utc);
         var addedN1 = new DateTime(2026, 5, 2, 18, 30, 0, DateTimeKind.Utc);
         var addedN2 = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+        var addedN3 = new DateTime(2026, 6, 15, 12, 0, 0, DateTimeKind.Utc);
         PreviewReturns(SetB, "Set B",
-            Member("e-active", "BActive", new DateTime(2026, 4, 20, 9, 0, 0, DateTimeKind.Utc)),
-            Member("e-archived", "BArchived", null),
+            Member("e-active", "BActive", addedActive),
+            Member("e-archived", "BArchived", addedArchived),
             Member("n1", "BNew1", addedN1),
             Member("n2", "BNew2", addedN2),
-            Member("n3", "BNew3", null));
+            Member("n3", "BNew3", addedN3));
 
         var result = await EnqueueAsync(channel, SetB, months: 6);
 
@@ -132,7 +131,7 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
 
         var emotes = await verify.Emotes.AsNoTracking().Where(e => e.ChannelId == channel.Id).ToDictionaryAsync(e => e.SevenTvEmoteId);
         Assert.Equal(5, emotes.Count);
-        foreach (var (id, alias, addedAt) in new[] { ("n1", "BNew1", (DateTime?)addedN1), ("n2", "BNew2", addedN2), ("n3", "BNew3", null) })
+        foreach (var (id, alias, addedAt) in new[] { ("n1", "BNew1", (DateTime?)addedN1), ("n2", "BNew2", addedN2), ("n3", "BNew3", addedN3) })
         {
             var row = emotes[id];
             Assert.Equal((true, true, (DateTime?)null), (row.IsArchived, row.IsPlaceholder, row.ArchivedAt));
@@ -147,18 +146,30 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
             new Dictionary<string, (string, string, DateOnly?, bool)>
             {
                 ["e-active"] = (active.Id, "BActive", new DateOnly(2026, 4, 20), false),
-                ["e-archived"] = (archived.Id, "BArchived", null, false),
+                ["e-archived"] = (archived.Id, "BArchived", new DateOnly(2026, 4, 25), false),
                 ["n1"] = (emotes["n1"].Id, "BNew1", new DateOnly(2026, 5, 2), true),
                 ["n2"] = (emotes["n2"].Id, "BNew2", new DateOnly(2026, 6, 1), true),
-                ["n3"] = (emotes["n3"].Id, "BNew3", null, true),
+                ["n3"] = (emotes["n3"].Id, "BNew3", new DateOnly(2026, 6, 15), true),
             },
             snapshot.ToDictionary(kv => kv.Key, kv => (kv.Value.EmoteId, kv.Value.Name, kv.Value.AddedToSetDay, kv.Value.CreatedRow)));
 
-        // Slot plan #373 E11: no member has a slot carrying rows of set B or an authoritative slot of its
-        // entry date, so each gets one new unsettled seed of its own, created by this enqueue.
-        var seeds = await verify.EmoteSlots.AsNoTracking().ToDictionaryAsync(s => s.Id);
-        Assert.Equal(5, seeds.Count);
-        Assert.All(snapshot.Values, e => Assert.Equal((e.EmoteId, true, true), (seeds[e.SlotId!].EmoteId, seeds[e.SlotId!].SeedUnsettled, e.CreatedSlot)));
+        // Slot plan #375 2.3, AK 22: no member has an authoritative slot of its entry date, so each entry
+        // gets a new archived authoritative slot of exactly that date and its alias, created by this
+        // enqueue — never a seed.
+        var addedAtByMember = new Dictionary<string, DateTime>
+        {
+            ["e-active"] = addedActive,
+            ["e-archived"] = addedArchived,
+            ["n1"] = addedN1,
+            ["n2"] = addedN2,
+            ["n3"] = addedN3,
+        };
+        var slots = await verify.EmoteSlots.AsNoTracking().ToDictionaryAsync(s => s.Id);
+        Assert.Equal(5, slots.Count);
+        Assert.All(snapshot.Values, e => Assert.Equal(
+            (e.EmoteId, e.Name, (DateTime?)addedAtByMember[e.SevenTvEmoteId], true, false, true, true),
+            (slots[e.SlotId!].EmoteId, slots[e.SlotId!].Name, slots[e.SlotId!].AddedAt, slots[e.SlotId!].AddedAtFromRest,
+                slots[e.SlotId!].SeedUnsettled, slots[e.SlotId!].IsArchived, e.CreatedSlot)));
 
         var audit = await verify.AuditLogEntries.AsNoTracking().SingleAsync();
         Assert.Equal((AuditActions.BackfillRequest, channel.ChannelName, "emoteSet", SetB), (audit.Action, audit.ChannelName, audit.TargetType, audit.TargetId));
@@ -177,11 +188,13 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
     [Fact]
     public async Task Snapshot_IsUnchanged_AfterTheChannelsEmotesAndActiveSetChange()
     {
-        PinFlagOff();
         var channel = await SeedChannelAsync("bfsnapshotfrozen");
         await SeedUserAsync();
         await SeedEmoteAsync(channel, "e-active", "ActiveName");
-        PreviewReturns(SetB, "Set B", Member("e-active", "BActive", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc)), Member("n1", "BNew1", null));
+        PreviewReturns(
+            SetB, "Set B",
+            Member("e-active", "BActive", new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc)),
+            Member("n1", "BNew1", new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc)));
         var runId = (await EnqueueAsync(channel, SetB, months: 6)).Run!.Id;
 
         ChatLogBackfillSnapshot before;
@@ -593,14 +606,11 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
 
     private AppDbContext CreateDbContext() => fixture.CreateDbContext(DatabaseName);
 
-    private void PinFlagOff() => _slotsEnabled = false;
-
     private ChatLogBackfillService CreateService(
         AppDbContext db,
         ChatLogArchiveOptions? archiveOptions = null,
         ILogger<ChatLogBackfillService>? logger = null,
-        ChatLogBackfillOptions? backfillOptions = null,
-        bool? slotsEnabled = null) =>
+        ChatLogBackfillOptions? backfillOptions = null) =>
         new(
             db,
             _publisher,
@@ -610,8 +620,7 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
             backfillOptions ?? new ChatLogBackfillOptions(),
             archiveOptions ?? new ChatLogArchiveOptions { BaseUrl = ArchiveUrl },
             _clock,
-            logger ?? NullLogger<ChatLogBackfillService>.Instance,
-            new SlotReconcileOptions { Enabled = slotsEnabled ?? _slotsEnabled });
+            logger ?? NullLogger<ChatLogBackfillService>.Instance);
 
     private async Task<ChatLogBackfillEnqueueResult> EnqueueAsync(Channel channel, string emoteSetId, int months)
     {
