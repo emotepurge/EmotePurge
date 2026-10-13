@@ -1035,7 +1035,9 @@ matters:
    slot that live counting has used stays, and so does a seed that the enqueue merely settled — that one
    is not `CreatedSlot`. A placeholder removed in step 3 took its slots along already. Deleting a slot
    removes its imported rows with it, which step 4 would delete anyway. Skip it on a database without the
-   `EmoteSlots` table.
+   `EmoteSlots` table. Seeds that a flag-off enqueue created for active emotes are not archived and are not
+   removed here: they remain as unsettled seeds without rows, inert (no numbers, no cards, no permanent
+   409), and are swept after #379 removes the flag-off branches.
 
    ```sql
    DELETE FROM "EmoteSlots" s
@@ -1058,7 +1060,9 @@ matters:
    DELETE FROM "ChatLogBackfillCoverage" WHERE "ChannelId" = '<channel-id>';
    ```
 
-   The caption disappears with the coverage rows.
+   The caption disappears with the coverage rows. The per-channel variant removes all imported rows and the
+   coverage of that channel from every run and every set; steps 3, 3b and 5 are global and are not scoped
+   to the channel.
 5. **Close the runs that are still open:**
 
    ```sql
@@ -1089,6 +1093,10 @@ or let them finish first). With the flag on, the reconcile settles seed slots an
 of a run along; a block the worker counted against the old slot is then refused, and the worker re-reads
 the snapshot and hands that block in once more. Anything it cannot follow fails the run with
 `worker_error` — that path is the safety net, not the way to switch.
+
+Seeds that a flag-off enqueue created for active emotes are not archived: they remain as unsettled
+seeds without rows after the switch. They are inert (no numbers, no cards, no permanent 409) and are
+swept after #379 removes the flag-off branches.
 
 ### Usage key switch (M2, #373)
 
