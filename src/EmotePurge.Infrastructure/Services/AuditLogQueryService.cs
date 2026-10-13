@@ -199,6 +199,12 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
             return new AuditLogDetail(AuditLogDetail.Kinds.BackfillMonths, backfillMonths, null);
         }
 
+        // backfill.removeImported (#384): the removed coverage days.
+        if (TryReadCount(root, AuditLogDetail.Kinds.BackfillRemovedDays, out var backfillRemovedDays))
+        {
+            return new AuditLogDetail(AuditLogDetail.Kinds.BackfillRemovedDays, backfillRemovedDays, null);
+        }
+
         return TryProjectTitleDetail(root, out var titleDetail) ? titleDetail : null;
     }
 
