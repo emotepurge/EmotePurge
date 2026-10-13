@@ -422,7 +422,10 @@ globalen Bucket — von D21 so gewollt; eine Ratenbegrenzung der Lesung endet al
 
 Neu unter `usageStats.delete`: `renamedSinceLoad`, `departedSinceLoad`, `noAlias`, `pendingSync` (Plural), `unexpectedRemoval` (Plural,
 `{{names}}`, mit „möglicherweise"), `restoreUnexpected` (Knopf), `postCheckUnavailable`. Kein neuer API-Fehlercode (Regel 7 unberührt). Die
-Übersprung-Texte erscheinen als Fehlertext der Lauf-Zeile (`run-progress-panel` zeigt ihn); `unexpectedRemoval`/`postCheckUnavailable` stehen in
+Übersprung-Texte erscheinen als Fehlertext der Lauf-Zeile (~~`run-progress-panel` zeigt ihn~~ — *Korrektur nach Review, 2026-10-13:* das Panel
+zeigt den Text einer `cancelled`-Zeile nicht und zählte sie als abgebrochen; `DeleteProgressSection` nennt die Gründe deshalb selbst bei den
+Lauf-Aktionen — der Satz der Prüfung je Zeile, Lesefehler gesammelt mit Namen in einer Zeile `usageStats.delete.skippedUnread` — und gibt dem
+Panel einen `tally`, der übersprungene Zeilen als erledigt statt als abgebrochen zählt, Muster Undo); `unexpectedRemoval`/`postCheckUnavailable` stehen in
 `DeleteProgressSection` bei den Lauf-Aktionen (Muster der `unknownRows`-Zeilen) — ob sie zusätzlich der `DockOutcomeAnnouncer` sprechen muss,
 entscheidet der Umsetzer nach §4.5 und gleicht es mit der Behandlung der `unknownRows`-Zeilen ab (beide entstehen beim Abschluss des Laufs im
 schon gemounteten Dock); weicht er ab, Nachtrag in §4.5. Keine neue Farbe, kein neuer Baustein.

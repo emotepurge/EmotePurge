@@ -1461,6 +1461,146 @@ describe('DeleteProgressSection — the slot restore waits for the removal repor
   });
 });
 
+// Plan-378 4.4, AK 38: a row the check before its removal skipped is `cancelled` for the engine with
+// the check's reason. The dock names that reason and counts the row as finished, never as a cancel
+// by the user — the undo's pattern.
+describe("DeleteProgressSection — a slot run's skipped rows", () => {
+  const READ_FAILED = 'Set nicht lesbar.';
+  const DE = {
+    ...DE_TRANSLATIONS,
+    restore: { button: 'Wiederherstellen' },
+    massDelete: {
+      ...DE_TRANSLATIONS.massDelete,
+      summary: {
+        counts: '{{done}} gelöscht · {{failed}} fehlgeschlagen · {{cancelled}} abgebrochen',
+      },
+      memberRead: { unavailable: READ_FAILED, truncated: 'Set nur teilweise lesbar.' },
+      errors: { beforeStepFailed: 'Prüfung fehlgeschlagen.' },
+    },
+    usageStats: { delete: { skippedUnread: '{{names}} nicht gelöscht: {{reason}}' } },
+  };
+  const row = (key: string, name: string, extra: Partial<RunQueueItem>): RunQueueItem => ({
+    key: `7tv-1#${key}`,
+    emoteId: 'e-1',
+    sevenTvEmoteId: '7tv-1',
+    name,
+    aliases: [name],
+    entry: { slotId: key, alias: name, addedAt: '2026-10-13T08:00:14.902Z' },
+    status: 'done',
+    completedSteps: 1,
+    failedStep: null,
+    ...extra,
+  });
+  const DONE = row('slot-ome', 'ome44', {});
+  const RENAMED = row('slot-hob', 'hob44', {
+    status: 'cancelled',
+    completedSteps: 0,
+    errorMessage: 'hob44 wurde in hob45 umbenannt — nicht gelöscht.',
+  });
+
+  let fixture: ComponentFixture<DeleteProgressSection>;
+  let httpMock: HttpTestingController;
+
+  async function mount(items: RunQueueItem[]): Promise<void> {
+    const deleteService = fakeDeleteService({
+      queue: signal(items),
+      syncReport: signal<SyncReportState>('succeeded'),
+      lastRun: signal({
+        setId: 'set-1',
+        channelName: 'sensitron',
+        targetOwnerTwitchId: null,
+        result: {
+          doneKeys: items.filter((item) => item.status === 'done').map((item) => item.key),
+          items,
+          startedAt: 0,
+          finishedAt: 1,
+        },
+      }),
+    });
+    await TestBed.configureTestingModule({
+      imports: [
+        DeleteProgressSection,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: sectionProviders({
+        deleteService,
+        restoreService: fakeRestoreService(),
+        dialogOpen: vi.fn(),
+        emoteAdminService: {},
+      }),
+    }).compileComponents();
+    await TestBed.inject(TranslocoService).load('de');
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture = TestBed.createComponent(DeleteProgressSection);
+    fixture.componentRef.setInput('hostSelectedSetId', 'set-1');
+    fixture.detectChanges();
+  }
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  const text = (): string => (fixture.nativeElement as HTMLElement).textContent ?? '';
+  const bar = (): HTMLElement =>
+    (fixture.nativeElement as HTMLElement).querySelector('[role="progressbar"]') as HTMLElement;
+
+  it('names the reason of a row skipped as renamed and counts it as finished, not as cancelled', async () => {
+    await mount([DONE, RENAMED]);
+
+    expect(text()).toContain('hob44 wurde in hob45 umbenannt — nicht gelöscht.');
+    expect(text()).toContain('2 / 2 verarbeitet');
+    expect(bar().getAttribute('aria-valuenow')).toBe('2');
+    expect(text()).toContain('1 gelöscht · 0 fehlgeschlagen · 0 abgebrochen');
+  });
+
+  it('names every row a failed set read skipped in one line with that reason', async () => {
+    const unread = { status: 'cancelled' as const, completedSteps: 0, errorMessage: READ_FAILED };
+    await mount([
+      DONE,
+      row('slot-hob', 'hob44', unread),
+      RENAMED,
+      row('slot-kek', 'kek44', unread),
+    ]);
+
+    expect(text()).toContain(`hob44, kek44 nicht gelöscht: ${READ_FAILED}`);
+    expect(text().split(READ_FAILED)).toHaveLength(2);
+    expect(text()).toContain('hob44 wurde in hob45 umbenannt — nicht gelöscht.');
+    expect(text()).toContain('4 / 4 verarbeitet');
+    expect(text()).toContain('1 gelöscht · 0 fehlgeschlagen · 0 abgebrochen');
+  });
+
+  // Flag off: a run of id rows never has a skipped row, so its dock counts as it always did.
+  it("keeps a user's cancel a cancellation: no reason line, not finished, counted as cancelled", async () => {
+    const idRow = (key: string, status: RunQueueItem['status']): RunQueueItem => ({
+      key,
+      emoteId: `e-${key}`,
+      sevenTvEmoteId: key,
+      name: key,
+      status,
+      completedSteps: status === 'done' ? 1 : 0,
+      failedStep: null,
+    });
+    await mount([idRow('7tv-2', 'done'), idRow('7tv-3', 'cancelled')]);
+
+    expect(text()).toContain('1 / 2 verarbeitet');
+    expect(bar().getAttribute('aria-valuenow')).toBe('1');
+    expect(text()).toContain('1 gelöscht · 0 fehlgeschlagen · 1 abgebrochen');
+    expect(text()).not.toContain('nicht gelöscht');
+  });
+
+  it('tells a skipped row and a cancelled one apart in the same run', async () => {
+    const cancelled = row('slot-kek', 'kek44', { status: 'cancelled', completedSteps: 0 });
+    await mount([DONE, RENAMED, cancelled]);
+
+    expect(text()).toContain('2 / 3 verarbeitet');
+    expect(text()).toContain('1 gelöscht · 0 fehlgeschlagen · 1 abgebrochen');
+    expect(text()).toContain('hob44 wurde in hob45 umbenannt — nicht gelöscht.');
+  });
+});
+
 // Plan-378 4.7, the #376 handover: the restore entry hands the delete row's entry target to the
 // real restore service unchanged — on a shared set too, where the restore's own target check
 // resolves the set owner's channel, not the channel the delete was viewed on.

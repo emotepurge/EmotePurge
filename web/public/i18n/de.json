@@ -1089,6 +1089,7 @@
       "renamedSinceLoad": "{{name}} wurde seit dem Laden der Seite in {{newName}} umbenannt — nicht gelöscht.",
       "departedSinceLoad": "{{name}} ist seit dem Laden der Seite nicht mehr in diesem Set — nicht gelöscht.",
       "noAlias": "{{name}} hat in 7TV keinen eigenen Namen mehr und lässt sich nicht einzeln löschen — nicht gelöscht.",
+      "skippedUnread": "{{names}} nicht gelöscht: {{reason}}",
       "pendingSync": {
         "one": "{{names}} wird gerade mit 7TV abgeglichen und ist deshalb nicht im Löschlauf — in einer Minute erneut versuchen.",
         "other": "{{names}} werden gerade mit 7TV abgeglichen und sind deshalb nicht im Löschlauf — in einer Minute erneut versuchen."

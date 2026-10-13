@@ -1869,6 +1869,31 @@ test.describe('emote slot delete runs (#378)', () => {
     await expect(lock).toHaveCount(0);
   });
 
+  test('a slot card renamed on 7TV since the page loaded is skipped: the dock names the rename and counts the row as done with, not as cancelled (AK 38)', async ({
+    page,
+  }) => {
+    await mockRunSurroundings(page, true);
+    const backend = await mockSevenTvSetBackend(page, slotLive);
+    const syncDeleted = await mockSyncDeletedInSet(page, ACTIVE_SET_ID);
+
+    await openAtlas(page, slotRows);
+    // Another editor renames the entry on 7TV after the page loaded; its add date stays the same.
+    backend.live = backend.live.map((entry) =>
+      entry.alias === 'hob44' ? { ...entry, alias: 'hob45' } : entry,
+    );
+    await cell(page, 'hob44').click();
+    await confirmDelete(page, 1);
+
+    await expect(
+      page.getByText('hob44 wurde seit dem Laden der Seite in hob45 umbenannt — nicht gelöscht.'),
+    ).toBeVisible();
+    await expect(page.getByText('1 / 1 verarbeitet')).toBeVisible();
+    await expect(page.getByText('0 gelöscht · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    expect(backend.mutations()).toHaveLength(0);
+    expect(syncDeleted).toHaveLength(0);
+    await expect(cell(page, 'hob44')).toBeVisible();
+  });
+
   test('an entry that vanished with the removal is named in the dock and restored on its own, reported by 7TV id only (4.5, 4.7)', async ({
     page,
   }) => {
