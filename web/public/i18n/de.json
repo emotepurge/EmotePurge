@@ -2262,7 +2262,9 @@
       "backfill_set_empty": "Dieses Emote-Set enthält keine Emotes, es gibt also nichts zu suchen.",
       "backfill_set_truncated": "Dieses Emote-Set ist zu groß, um es vollständig zu lesen, der Backfill kann dafür nicht gestartet werden.",
       "backfill_channel_identity_changed": "Der Channel hat sich während deiner Anfrage geändert. Bitte lade neu und versuche es erneut.",
-      "backfill_slots_unsettled": "Die Emote-Slots dieses Sets sind noch nicht vollständig abgeglichen. Das erledigt sich meist mit dem nächsten Sync. Bleibt es dabei, hat ein Emote im Set kein Hinzufügedatum."
+      "backfill_slots_unsettled": "Die Emote-Slots dieses Sets sind noch nicht vollständig abgeglichen. Das erledigt sich meist mit dem nächsten Sync. Bleibt es dabei, hat ein Emote im Set kein Hinzufügedatum.",
+      "backfill_remove_run_active": "Für diesen Channel wartet oder läuft gerade ein Backfill. Brich ihn zuerst ab, dann kannst du die importierten Daten entfernen.",
+      "backfill_remove_scope_changed": "Die importierten Daten haben sich inzwischen geändert. Sieh dir den neuen Stand an und bestätige erneut."
     }
   },
   "backfill": {

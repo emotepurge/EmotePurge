@@ -84,6 +84,8 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'backfill_set_truncated',
   'backfill_channel_identity_changed',
   'backfill_slots_unsettled',
+  'backfill_remove_run_active',
+  'backfill_remove_scope_changed',
 ]);
 
 /**
