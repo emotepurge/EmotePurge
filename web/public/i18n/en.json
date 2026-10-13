@@ -825,6 +825,7 @@
       "tagRemoved": "Tag removed from set",
       "backfillRequest": "Backfill requested",
       "backfillCancel": "Backfill cancelled",
+      "backfillRemoveImported": "Imported data removed",
       "userRevokeSessions": "User sessions revoked",
       "userInvalidateRoleCache": "Role cache cleared",
       "userDelete": "Account deleted"
@@ -858,6 +859,10 @@
       "backfillMonths": {
         "one": "{{count}} month",
         "other": "{{count}} months"
+      },
+      "backfillRemovedDays": {
+        "one": "{{count}} day",
+        "other": "{{count}} days"
       },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV trending today",

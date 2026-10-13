@@ -825,6 +825,7 @@
       "tagRemoved": "Tag aus dem Set entfernt",
       "backfillRequest": "Backfill angefordert",
       "backfillCancel": "Backfill abgebrochen",
+      "backfillRemoveImported": "Importierte Daten entfernt",
       "userRevokeSessions": "User-Sessions widerrufen",
       "userInvalidateRoleCache": "Rollen-Cache geleert",
       "userDelete": "Account gelöscht"
@@ -858,6 +859,10 @@
       "backfillMonths": {
         "one": "{{count}} Monat",
         "other": "{{count}} Monate"
+      },
+      "backfillRemovedDays": {
+        "one": "{{count}} Tag",
+        "other": "{{count}} Tage"
       },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV Trend heute",
