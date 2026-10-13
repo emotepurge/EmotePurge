@@ -237,6 +237,10 @@ ISO-Zeitpunkt ist nie leer; die Gleichstandsform hat stets einen Namensteil, die
 (einmal je Emote, nur beim Einschwingen). Persistiert wird kein Schlüssel: die URL trägt nur `emoteSetId` (`listQueryState`), weder
 `localStorage` noch `sessionStorage` halten Auswahl oder Inspector.
 
+**Bekannte Einschränkung (Review 13.10., gewollt nach D22/F2).** Der Modus der Antwort bestimmt die Schlüssel **aller** Klasse-3-Karten. Kippt `slotView`, weil
+irgendein anderes Emote der Antwort in den Slot-Modus wechselt, wechseln auch die Klasse-3-Karten anderer Emotes von `<id>` auf `live:<id>#…`; eine dort markierte
+Karte verliert ihre Markierung (Hinweis „Auswahl bereinigt“, #94). Kein Fehler, keine Codeänderung; wirkt nur mit Flag an und nur im Augenblick des Kippens.
+
 ### 2.4 `mergeSetView` (D22, F2) — reine Funktion, Signatur unverändert `(totals, live, isActiveSet)`
 
 **Modus der Antwort [E]:** `slotView` = mindestens eine Zeile in `totals` hat `slotId ≠ null`.
