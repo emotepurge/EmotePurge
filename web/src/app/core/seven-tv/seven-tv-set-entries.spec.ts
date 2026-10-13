@@ -9,7 +9,13 @@ import { loadSevenTvSetEntries } from './seven-tv-set-entries';
 const GQL_ENDPOINT = 'https://7tv.io/v4/gql';
 
 function page(
-  entries: { id: string; alias?: string; defaultName?: string; animated?: boolean }[],
+  entries: {
+    id: string;
+    alias?: string;
+    defaultName?: string;
+    animated?: boolean;
+    addedAt?: string | null;
+  }[],
   pageCount = 1,
   totalCount = entries.length,
 ) {
@@ -20,8 +26,9 @@ function page(
           emotes: {
             totalCount,
             pageCount,
-            items: entries.map(({ id, alias, defaultName, animated }) => ({
+            items: entries.map(({ id, alias, defaultName, animated, addedAt }) => ({
               alias,
+              ...(addedAt === undefined ? {} : { addedAt }),
               emote: {
                 id,
                 defaultName,
@@ -265,6 +272,118 @@ describe('loadSevenTvSetEntries', () => {
     httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'rate limited' }] });
 
     await expect(result$).rejects.toThrow();
+  });
+
+  // Plan-378 4.1 [E2]: the add date is read only when asked for, so every other reader (import,
+  // undo, the id-row delete run) keeps today's query and result.
+  describe('with the add date on request', () => {
+    const DATE_1 = '2026-10-13T08:00:14.902Z';
+    const DATE_2 = '2026-10-13T09:30:00Z';
+
+    it("sends today's query and returns no entry list without the option", async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      const request = httpMock.expectOne(GQL_ENDPOINT);
+      request.flush(page([{ id: '7tv-1', alias: 'A', addedAt: DATE_1 }]));
+
+      expect((request.request.body as { query: string }).query).not.toContain('addedAt');
+      expect((await result$).entriesById).toBeUndefined();
+    });
+
+    it('selects addedAt and lists every entry per id with alias and date, in 7TV order', async () => {
+      const result$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt: true }),
+      );
+      const request = httpMock.expectOne(GQL_ENDPOINT);
+      request.flush(
+        page([
+          { id: '7tv-1', alias: 'hob44', addedAt: DATE_1 },
+          { id: '7tv-2', alias: 'KEKW', addedAt: DATE_2 },
+          { id: '7tv-1', alias: 'ome44', addedAt: DATE_2 },
+          { id: '7tv-1', addedAt: DATE_2 },
+        ]),
+      );
+
+      expect((request.request.body as { query: string }).query).toContain('alias addedAt emote');
+      const result = await result$;
+      expect(result.entriesById?.get('7tv-1')).toEqual([
+        { alias: 'hob44', addedAt: DATE_1 },
+        { alias: 'ome44', addedAt: DATE_2 },
+        { alias: null, addedAt: DATE_2 },
+      ]);
+      expect(result.entriesById?.get('7tv-2')).toEqual([{ alias: 'KEKW', addedAt: DATE_2 }]);
+      // The existing fields keep their meaning.
+      expect(result.aliasesById.get('7tv-1')).toEqual(['hob44', 'ome44']);
+      expect(result.aliaslessIds).toEqual(new Set(['7tv-1']));
+    });
+
+    it('records a missing or null date as null', async () => {
+      const result$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt: true }),
+      );
+      httpMock.expectOne(GQL_ENDPOINT).flush(
+        page([
+          { id: '7tv-1', alias: 'A' },
+          { id: '7tv-1', alias: 'B', addedAt: null },
+        ]),
+      );
+
+      expect((await result$).entriesById?.get('7tv-1')).toEqual([
+        { alias: 'A', addedAt: null },
+        { alias: 'B', addedAt: null },
+      ]);
+    });
+
+    it('judges completeness by the same rules as without the option', async () => {
+      const mismatch$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt: true }),
+      );
+      httpMock
+        .expectOne(GQL_ENDPOINT)
+        .flush(page([{ id: '7tv-1', alias: 'A', addedAt: DATE_1 }], 1, 3));
+      expect((await mismatch$).complete).toBe(false);
+
+      const clean$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt: true }),
+      );
+      httpMock.expectOne(GQL_ENDPOINT).flush(page([{ id: '7tv-1', alias: 'A', addedAt: DATE_1 }]));
+      expect((await clean$).complete).toBe(true);
+    });
+
+    // S4: two entries of one id swap their aliases between the main pass and the re-read. The
+    // (id, alias) set is unchanged; only the generations moved.
+    describe('an alias swap between the main pass and the verification re-read', () => {
+      function swapped(withAddedAt: boolean) {
+        const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt }));
+        const answer = (first: string, second: string, pageNumber: number) => {
+          const request = httpMock.expectOne(GQL_ENDPOINT);
+          expect(request.request.body.variables.page).toBe(pageNumber);
+          request.flush(
+            pageNumber === 1
+              ? page(
+                  [
+                    { id: 'x', alias: 'A', addedAt: first },
+                    { id: 'x', alias: 'B', addedAt: second },
+                  ],
+                  2,
+                  3,
+                )
+              : page([{ id: 'y', alias: 'Y', addedAt: DATE_2 }], 2, 3),
+          );
+        };
+        answer(DATE_1, DATE_2, 1);
+        answer(DATE_1, DATE_2, 2);
+        answer(DATE_2, DATE_1, 1);
+        return result$;
+      }
+
+      it('makes a read with dates incomplete', async () => {
+        expect((await swapped(true)).complete).toBe(false);
+      });
+
+      it('leaves a read without dates complete, as before', async () => {
+        expect((await swapped(false)).complete).toBe(true);
+      });
+    });
   });
 
   // Another editor changing the set between two page requests shifts entries across the page
