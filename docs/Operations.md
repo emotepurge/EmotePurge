@@ -1134,9 +1134,9 @@ reconcile settled the seed the run was bound to) fails the pair check in `Replac
 `ArgumentException`, and the run ends `Failed` with `ErrorCode` `worker_error`. Nothing is
 miscounted, but the run is lost; enqueue it again after the sweep. You recognise it by the worker log line
 `Chat-log backfill run <id> (<channel>) failed with an unexpected error.` followed by the exception
-`System.ArgumentException: <n> aggregates name a slot and an emote that are not one snapshot row of run <id>.`, and by
-a run row with status `failed`, `worker_error`, created before the update. A run with that signature that was created
-after the update is a different problem.
+`System.ArgumentException: <n> aggregates name a slot and an emote that are not one snapshot row of run <id>. (Parameter 'rows')`,
+and by a run row with status `failed`, `worker_error`, created before the update. A run with that signature
+that was created after the update is a different problem.
 
 **3. Rolling back to an image from before part B** (the code of `3720f7cf`, or the later build `30759199` with the same
 application code; pick it by its sha tag, not `:latest`). No migration is involved and there is no `Down`; seeds the
