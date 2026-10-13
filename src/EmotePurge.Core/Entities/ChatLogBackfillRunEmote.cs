@@ -27,11 +27,15 @@ public class ChatLogBackfillRunEmote
     // UTC day of the set entry's addedAt from the same 7TV read; null when 7TV reported none = no gate.
     public DateOnly? AddedToSetDay { get; set; }
 
-    // True iff this enqueue created the Emote row (creation provenance for the rollback cleanup).
+    // True iff this enqueue created the Emote row (creation provenance for the rollback cleanup). It
+    // belongs to the emote, not to the slot: every snapshot row of one emote in a run carries the same
+    // value, so a rollback collapse that keeps only one of them loses nothing.
     public bool CreatedRow { get; set; }
 
-    // The slot this snapshot row counts for. No foreign key, for the same reason as EmoteId.
-    public string? SlotId { get; set; }
+    // The slot this snapshot row counts for; with RunId the primary key since M3
+    // (SwitchBackfillSnapshotToSlotKey, #375), so a run has one row per slot and may have several per
+    // emote. Required. No foreign key, for the same reason as EmoteId.
+    public string SlotId { get; set; } = string.Empty;
 
     // True iff this enqueue created the EmoteSlot (creation provenance for the rollback cleanup).
     public bool CreatedSlot { get; set; }

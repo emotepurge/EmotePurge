@@ -37,7 +37,9 @@ internal static class BackfillRunSeed
             {
                 EmoteId = Guid.NewGuid().ToString(),
                 SevenTvEmoteId = "7tv-seed",
-                Name = "SeedAlias"
+                Name = "SeedAlias",
+                // No foreign key on the snapshot's slot either; required since M3 (#375).
+                SlotId = Guid.NewGuid().ToString()
             });
         }
 

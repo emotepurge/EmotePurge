@@ -339,26 +339,27 @@ public partial class ChatLogBackfillServiceTests
 
     // ---------------------------------------------------------------- ReplaceBlockAsync with the snapshot's slot (§4, E11a)
 
-    // The snapshot's slot must exist and belong to the aggregate's emote: a deleted slot, a snapshot row
-    // with SlotId NULL (a run from before #373) and a slot of another emote all drop the aggregate with
-    // the existing warning, never a failure; the rest of the block is written.
+    // The snapshot's slot must exist and belong to the aggregate's emote: a deleted slot and a slot of
+    // another emote both drop the aggregate with the existing warning, never a failure; the rest of the
+    // block is written. Since M3 a snapshot row can neither lack a slot nor share one with another row
+    // of its run (the key is (RunId, SlotId)): the foreign slot is one of an emote outside the snapshot,
+    // and the NULL case of runs from before #373 is M3's (SwitchBackfillSnapshotToSlotKeyMigrationTests).
     [Fact]
-    public async Task ReplaceBlock_DropsAggregatesWhoseSnapshotSlotIsMissing_NullOrAnotherEmotes()
+    public async Task ReplaceBlock_DropsAggregatesWhoseSnapshotSlotIsMissingOrAnotherEmotes()
     {
         var channel = await SeedChannelAsync("bfreplaceslots", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
         var kept = await SeedEmoteAsync(channel, "e1", "E1");
         var slotDeleted = await SeedEmoteAsync(channel, "e2", "E2");
-        var slotNull = await SeedEmoteAsync(channel, "e3", "E3");
         var slotForeign = await SeedEmoteAsync(channel, "e4", "E4");
+        var outsider = await SeedEmoteAsync(channel, "e5", "E5");
+        var outsiderSlot = await SeedSlotAsync(outsider.Id, "E5", new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc));
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, windowFrom: BlockFrom);
-        var slots = await BindSnapshotAsync(run, kept, slotDeleted, slotNull, slotForeign);
+        var slots = await BindSnapshotAsync(run, kept, slotDeleted, slotForeign);
         await using (var db = CreateDbContext())
         {
             await db.EmoteSlots.Where(s => s.Id == slots[slotDeleted.Id]).ExecuteDeleteAsync();
-            await db.ChatLogBackfillRunEmotes.Where(e => e.RunId == run.Id && e.EmoteId == slotNull.Id)
-                .ExecuteUpdateAsync(s => s.SetProperty(e => e.SlotId, (string?)null));
             await db.ChatLogBackfillRunEmotes.Where(e => e.RunId == run.Id && e.EmoteId == slotForeign.Id)
-                .ExecuteUpdateAsync(s => s.SetProperty(e => e.SlotId, slots[kept.Id]));
+                .ExecuteUpdateAsync(s => s.SetProperty(e => e.SlotId, outsiderSlot));
         }
 
         var logger = new RecordingLogger<ChatLogBackfillService>();
@@ -366,11 +367,11 @@ public partial class ChatLogBackfillServiceTests
         {
             Assert.IsType<ChatLogBackfillBlockResult.Committed>(await CreateService(db, logger: logger).ReplaceBlockAsync(
                 run.Id, BlockFrom, BlockTo,
-                [.. new[] { kept, slotDeleted, slotNull, slotForeign }.Select(e => new ChatLogBackfillAggregate(e.Id, BlockFrom, 2, 0, 0))],
+                [.. new[] { kept, slotDeleted, slotForeign }.Select(e => new ChatLogBackfillAggregate(e.Id, BlockFrom, 2, 0, 0))],
                 10, 1, isLastBlock: false));
         }
 
-        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("3 aggregates", StringComparison.Ordinal));
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("2 aggregates", StringComparison.Ordinal));
         await using var verify = CreateDbContext();
         var row = await verify.UsageStats.AsNoTracking().SingleAsync();
         Assert.Equal((kept.Id, (string?)slots[kept.Id], 2), (row.EmoteId, row.SlotId, row.UseCount));

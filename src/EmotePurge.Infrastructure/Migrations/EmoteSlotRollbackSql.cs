@@ -53,18 +53,30 @@ public static class EmoteSlotRollbackSql
 
     /// <summary>
     /// Per (RunId, EmoteId) with more than one snapshot row: keeps the row of the oldest slot and
-    /// deletes the rest. SlotId has no foreign key here, so a missing slot sorts last.
+    /// deletes the rest. SlotId has no foreign key here, so a missing slot sorts last. The survivor
+    /// takes <c>CreatedRow</c> = true if any row of the group has it: that flag is the emote's creation
+    /// provenance, not the slot's, and the backfill rollback cleanup (docs/Operations.md, "Rolling
+    /// back", step 3) on the older image reads it from the one row left (hand-off #371 to #375).
+    /// Winners and flags come from one snapshot (CTE), so the delete does not depend on the update.
     /// </summary>
     public const string CollapseBackfillSnapshotSql =
         """
         WITH ranked AS (
             SELECT e.ctid AS row_id,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY e."RunId", e."EmoteId"
-                       ORDER BY s."AddedAt" ASC NULLS LAST, s."Name" COLLATE "C" ASC NULLS LAST,
-                                e."SlotId" ASC NULLS LAST) AS rn
+                   ROW_NUMBER() OVER w AS rn,
+                   BOOL_OR(e."CreatedRow") OVER g AS any_created_row
             FROM "ChatLogBackfillRunEmotes" e
             LEFT JOIN "EmoteSlots" s ON s."Id" = e."SlotId"
+            WINDOW g AS (PARTITION BY e."RunId", e."EmoteId"),
+                   w AS (g ORDER BY s."AddedAt" ASC NULLS LAST, s."Name" COLLATE "C" ASC NULLS LAST,
+                                    e."SlotId" ASC NULLS LAST)
+        ),
+        updated AS (
+            UPDATE "ChatLogBackfillRunEmotes" t
+            SET "CreatedRow" = true
+            FROM ranked r
+            WHERE t.ctid = r.row_id AND r.rn = 1 AND r.any_created_row AND NOT t."CreatedRow"
+            RETURNING t."RunId"
         )
         DELETE FROM "ChatLogBackfillRunEmotes" t
         USING ranked r

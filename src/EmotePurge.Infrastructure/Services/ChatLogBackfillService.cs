@@ -1015,8 +1015,8 @@ public sealed class ChatLogBackfillService(
     /// reads the run's snapshot, so a settle that moves the snapshot rows from a seed to its target
     /// (holding those emote rows <c>FOR NO KEY UPDATE</c>) is either committed before the read or waits
     /// for this block's commit. An emote is missing from the result when it is gone or not the
-    /// channel's, when the snapshot has no row or a null <c>SlotId</c> for it (runs from before #373),
-    /// or when that slot no longer exists or belongs to another emote.
+    /// channel's, when the snapshot has no row for it, or when that slot no longer exists or belongs to
+    /// another emote. (A null <c>SlotId</c> of a run from before #373 cannot reach here since M3.)
     /// </summary>
     private async Task<Dictionary<string, string>> LockAndResolveSnapshotSlotsAsync(
         long runId, string channelId, IReadOnlyCollection<string> emoteIds, CancellationToken cancellationToken)
@@ -1033,8 +1033,8 @@ public sealed class ChatLogBackfillService(
         var locked = (await db.LockEmotesForShareByIdsAsync(ofChannel, cancellationToken)).ToArray();
 
         var snapshot = await db.ChatLogBackfillRunEmotes.AsNoTracking()
-            .Where(e => e.RunId == runId && locked.Contains(e.EmoteId) && e.SlotId != null)
-            .Select(e => new { e.EmoteId, SlotId = e.SlotId! })
+            .Where(e => e.RunId == runId && locked.Contains(e.EmoteId))
+            .Select(e => new { e.EmoteId, e.SlotId })
             .ToListAsync(cancellationToken);
         var slotIds = snapshot.Select(e => e.SlotId).Distinct(StringComparer.Ordinal).ToList();
         var ownerOfSlot = await db.EmoteSlots.AsNoTracking()

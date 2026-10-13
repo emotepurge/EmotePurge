@@ -1169,6 +1169,100 @@ WHERE t."Id" = r."Id" AND r.rn > 1;
 
 The statement is `EmoteSlotRollbackSql.CollapseUsageStatsSql`; keep both texts identical.
 
+### Backfill snapshot key (M3, #375)
+
+From #375 on, the snapshot of a backfill run is keyed per slot: the migration
+`SwitchBackfillSnapshotToSlotKey` (M3) makes `ChatLogBackfillRunEmotes.SlotId` NOT NULL and swaps the
+primary key from `(RunId, EmoteId)` to `(RunId, SlotId)`, so a run can hold one snapshot row per set
+entry (two aliases of one emote are two rows). The index on `(RunId, SevenTvEmoteId)` stays. It runs in
+one transaction and takes `ACCESS EXCLUSIVE` on the snapshot table with a 5-second `lock_timeout`; an
+abort changes nothing.
+
+Rows without a slot only exist in runs enqueued before #373. M3 **refuses** while a queued, running or
+paused run has one (cancel those runs, then repeat). A finished run's row without a slot is attached to
+the slot of its emote that carries usage rows of the run's set — the oldest one (earliest `AddedAt`,
+then name, ordinal), which is where the run's imported rows are — and keeps `CreatedSlot` false. If no
+slot of the emote carries rows of that set, the run never wrote anything for the emote and the row is
+deleted; no seed is created for it. A deleted row's `CreatedRow` is lost with it, so a placeholder it
+marked stays behind in step 3 of "Rolling back" under "Chat-log backfill", like the placeholders of a
+run that retention already removed. The migration reports both counts as a notice.
+
+Images from before #375 keep working against a database with M3: they write one snapshot row per emote,
+always with a slot, which fits the new key. Every image from #375 on needs M3 (api and worker refuse to
+start with a pending migration).
+
+**Window**, short and of its own, with the first deploy that contains #375:
+
+1. Announce it. Stop **worker and api**; `pg_stat_activity` shows no `EmotePurge%` session any more.
+2. Back up with `scripts/backup-postgres.sh`.
+3. Precondition: `SELECT count(*) FROM "ChatLogBackfillRuns";` and
+   `SELECT count(*) FROM "ChatLogBackfillRunEmotes";` both return 0 on production (the backfill has never
+   been switched on there). If not, stop and look first: the rule above is meant for development
+   databases.
+4. Tunnel to the database as described under "Prod-Migration" in `CLAUDE.md`, then list:
+
+   ```sh
+   dotnet ef migrations list --project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api \
+     --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<DB-PASSWORD>;Command Timeout=600'
+   ```
+
+   Expect exactly `20261013092051_SwitchBackfillSnapshotToSlotKey` as `(Pending)`. More than that means the database
+   is behind by more than this release: review those migrations first.
+5. Apply it, naming the target:
+
+   ```sh
+   dotnet ef database update 20261013092051_SwitchBackfillSnapshotToSlotKey --project src/EmotePurge.Infrastructure \
+     --startup-project src/EmotePurge.Api \
+     --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<DB-PASSWORD>;Command Timeout=600'
+   ```
+
+   A lock timeout means a session is still open (step 1).
+6. `migrations list` again: nothing pending. Bring **both new images up together**; the slot flag and
+   the backfill stay as they were.
+7. Check: `GET /api/health` answers 200, the worker logs `Chat-log backfill disabled.` (with the backfill
+   off) and flushes as before.
+
+**Rollback.** Going back to the images from before #375 needs no `Down` (see above) as long as every
+run has one snapshot row per emote, which holds while the slot flag was off at every enqueue. To revert
+the migration itself, stop worker and api, back up, then
+
+```sh
+dotnet ef database update 20261012111509_SwitchUsageStatsToSlotKey --project src/EmotePurge.Infrastructure \
+  --startup-project src/EmotePurge.Api \
+  --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<DB-PASSWORD>;Command Timeout=600'
+```
+
+Rows that `Up` deleted do not come back. `Down` refuses while a run holds more than one row of an emote
+— one per slot, which only an enqueue with the slot flag on produces. Then run the collapse statement
+first, in one transaction, and repeat `Down`; per run and emote it keeps the row of the oldest slot
+(earliest `AddedAt`, then name, ordinal) and sets `CreatedRow` on it if any row of the emote had it, so
+step 3 of the backfill rollback still finds the placeholders the run created:
+
+```sql
+WITH ranked AS (
+    SELECT e.ctid AS row_id,
+           ROW_NUMBER() OVER w AS rn,
+           BOOL_OR(e."CreatedRow") OVER g AS any_created_row
+    FROM "ChatLogBackfillRunEmotes" e
+    LEFT JOIN "EmoteSlots" s ON s."Id" = e."SlotId"
+    WINDOW g AS (PARTITION BY e."RunId", e."EmoteId"),
+           w AS (g ORDER BY s."AddedAt" ASC NULLS LAST, s."Name" COLLATE "C" ASC NULLS LAST,
+                            e."SlotId" ASC NULLS LAST)
+),
+updated AS (
+    UPDATE "ChatLogBackfillRunEmotes" t
+    SET "CreatedRow" = true
+    FROM ranked r
+    WHERE t.ctid = r.row_id AND r.rn = 1 AND r.any_created_row AND NOT t."CreatedRow"
+    RETURNING t."RunId"
+)
+DELETE FROM "ChatLogBackfillRunEmotes" t
+USING ranked r
+WHERE t.ctid = r.row_id AND r.rn > 1;
+```
+
+The statement is `EmoteSlotRollbackSql.CollapseBackfillSnapshotSql`; keep both texts identical.
+
 ## Database backup and restore
 
 [`scripts/backup-postgres.sh`](../scripts/backup-postgres.sh) dumps the database and rotates
