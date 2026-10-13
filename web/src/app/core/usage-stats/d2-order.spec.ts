@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { compareD2, compareUtf8 } from './d2-order';
 
 const EMOJI = '\u{1F600}';
-const TILDE = '～';
+const TILDE = '\uFF5E';
 
 function byteOrder(a: string, b: string): number {
   const x = new TextEncoder().encode(a);
@@ -23,16 +23,20 @@ describe('compareUtf8', () => {
     const prefixed = 'a\u{1F600}';
     expect(prefixed.codePointAt(1)).toBe(0x1f600);
     expect(prefixed).toHaveLength(3);
+    expect(TILDE.codePointAt(0)).toBe(0xff5e);
+    expect('\uE000'.codePointAt(0)).toBe(0xe000);
+    expect('a\uFFFF'.codePointAt(1)).toBe(0xffff);
+    expect('\uFFFD'.codePointAt(0)).toBe(0xfffd);
   });
 
   const pairs: [string, string][] = [
     ['abc', 'abd'],
     ['ab', 'abc'],
     ['Zebra', 'apple'],
-    ['a\u{1F600}', 'a￿'],
-    ['é', ''],
+    ['a\u{1F600}', 'a\uFFFF'],
+    ['\u00E9', '\uE000'],
     [EMOJI, TILDE],
-    ['', EMOJI],
+    ['\uE000', EMOJI],
     ['same', 'same'],
   ];
 
@@ -44,8 +48,8 @@ describe('compareUtf8', () => {
   it('differs from the JS < order exactly where a supplementary character meets U+E000-U+FFFF', () => {
     for (const [supplementary, bmp] of [
       [EMOJI, TILDE],
-      ['a\u{1F600}', 'a￿'],
-      [EMOJI, ''],
+      ['a\u{1F600}', 'a\uFFFF'],
+      [EMOJI, '\uE000'],
     ]) {
       expect(supplementary < bmp).toBe(true);
       expect(compareUtf8(supplementary, bmp)).toBeGreaterThan(0);
@@ -54,10 +58,10 @@ describe('compareUtf8', () => {
 
   it('reads a lone surrogate as U+FFFD, then breaks a scalar tie by UTF-16 ordinal, like the server', () => {
     // U+FFFD sorts after U+E000 (JS < says the opposite), and before a supplementary character.
-    expect(compareUtf8('\uD800', '')).toBeGreaterThan(0);
+    expect(compareUtf8('\uD800', '\uE000')).toBeGreaterThan(0);
     expect(compareUtf8('\uD800', EMOJI)).toBeLessThan(0);
-    expect(compareUtf8('\uD800', '�')).toBeLessThan(0);
-    expect(compareUtf8('�', '\uD800')).toBeGreaterThan(0);
+    expect(compareUtf8('\uD800', '\uFFFD')).toBeLessThan(0);
+    expect(compareUtf8('\uFFFD', '\uD800')).toBeGreaterThan(0);
     expect(compareUtf8('\uD800', '\uD800')).toBe(0);
   });
 });

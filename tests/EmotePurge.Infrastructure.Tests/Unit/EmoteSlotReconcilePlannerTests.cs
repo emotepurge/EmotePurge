@@ -13,6 +13,17 @@ public class EmoteSlotReconcilePlannerTests
 {
     private static readonly DateTime Now = new(2026, 10, 12, 12, 0, 0, DateTimeKind.Utc);
 
+    // U+1F600 (a surrogate pair, UTF-16 0xD83D...) against U+FF5E / U+FFFF: UTF-16 puts the emoji first, UTF-8 last.
+    private static readonly string Emoji = "\U0001F600";
+    private static readonly string Tilde = "\uFF5E";
+
+    public static TheoryData<string, string> BoundaryPairs => new()
+    {
+        { Emoji, Tilde },
+        { "a" + Emoji, "a\uFFFF" },
+        { "\uE000", Emoji },
+    };
+
     // ---- Date identity (step 3, D4, D16, §6.5) ----
 
     [Fact]
@@ -748,17 +759,6 @@ public class EmoteSlotReconcilePlannerTests
     }
 
     // ---- One name order for D13 and D2 (#403): UTF-8 byte order, not UTF-16 ordinal ----
-
-    // U+1F600 (a surrogate pair, UTF-16 0xD83D...) against U+FF5E / U+FFFF: UTF-16 puts the emoji first, UTF-8 last.
-    private static readonly string Emoji = "\U0001F600";
-    private static readonly string Tilde = "\uFF5E";
-
-    public static TheoryData<string, string> BoundaryPairs => new()
-    {
-        { Emoji, Tilde },
-        { "a" + Emoji, "a\uFFFF" },
-        { "\uE000", Emoji },
-    };
 
     [Fact]
     public void BoundaryFixtures_AreTheCodePointsTheTestsClaim()
