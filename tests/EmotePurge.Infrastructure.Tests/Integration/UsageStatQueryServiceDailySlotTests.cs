@@ -126,8 +126,7 @@ public class UsageStatQueryServiceDailySlotTests(PostgresFixture fixture)
         Assert.Equal(7, all!.TotalUseCount);
     }
 
-    private static UsageStatQueryService Service(AppDbContext db) =>
-        new(db, new SlotReconcileOptions { Enabled = true });
+    private static UsageStatQueryService Service(AppDbContext db) => new(db);
 
     private static Task AddUsageAsync(AppDbContext db, Emote emote, EmoteSlot slot, params (DateOnly Date, int UseCount)[] days) =>
         AddUsageAsync(db, emote, slot, SetA, days);

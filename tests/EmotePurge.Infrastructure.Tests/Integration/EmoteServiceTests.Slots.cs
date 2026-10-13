@@ -700,15 +700,15 @@ public partial class EmoteServiceTests
         await db.SaveChangesAsync();
     }
 
-    // The slot is authoritative on t9 again, no second slot was created, and /totals (flag on) shows one
-    // card for it that carries all of its usage.
+    // The slot is authoritative on t9 again, no second slot was created, and /totals shows one card for it
+    // that carries all of its usage.
     private async Task AssertResumedOnTheSameSlotAsync(Channel channel, string set, string x, string slotId, int expectedUses)
     {
         await using var db = fixture.CreateDbContext();
         var emote = await EmoteAsync(db, channel, x);
         var slot = Assert.Single(await SlotsAsync(db, emote.Id), s => !s.SeedUnsettled);
         Assert.Equal((slotId, false, (DateTime?)T9, true), (slot.Id, slot.IsArchived, slot.AddedAt, slot.AddedAtFromRest));
-        var totals = await new UsageStatQueryService(db, new SlotReconcileOptions { Enabled = true })
+        var totals = await new UsageStatQueryService(db)
             .GetUsageContextAsync(channel.ChannelName, UsageFrom, UsageTo, set);
         var row = Assert.Single(totals, t => t.EmoteId == emote.Id);
         Assert.Equal((slotId, expectedUses), (row.SlotId, row.TotalUseCount));

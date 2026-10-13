@@ -34,10 +34,7 @@ public class SlotReconcileRegistrationTests
 
         Assert.Equal(expected, FlagOf(services.GetRequiredService<ISevenTvSyncService>(), "slotReconcileEnabled"));
         Assert.Equal(expected, FlagOf(services.GetRequiredService<IEmoteService>(), "slotReconcileEnabled"));
-        Assert.Equal(expected, FlagOf(services.GetRequiredService<IEmoteSetStatusService>(), "slotsEnabled"));
         Assert.Equal(expected, FlagOf(services.GetRequiredService<ISevenTvApiClient>(), "slotReconcileEnabled"));
-        Assert.Equal(expected, FlagOf(services.GetRequiredService<IUsageStatQueryService>(), "slotReconcileEnabled"));
-        Assert.Equal(expected, FlagOf(services.GetRequiredService<IVoteSessionQueryService>(), "slotReconcileEnabled"));
         Assert.Equal(expected, FlagOf(services.GetRequiredService<IChatLogBackfillService>(), "slotReconcileEnabled"));
     }
 

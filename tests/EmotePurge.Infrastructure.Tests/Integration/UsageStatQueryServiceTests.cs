@@ -43,7 +43,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 3));
 
         var result = Assert.Single(totals);
@@ -57,7 +57,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "totalstest2");
         await SeedEmoteAsync(db, channel.Id, "NeverUsed");
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(channel.ChannelName, new DateOnly(2026, 1, 1), new DateOnly(2026, 12, 31));
 
         var result = Assert.Single(totals);
@@ -77,7 +77,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(channel.ChannelName, new DateOnly(2026, 1, 1), new DateOnly(2026, 12, 31));
 
         Assert.Empty(totals);
@@ -89,7 +89,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "totalstest4");
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(channel.ChannelName, new DateOnly(2026, 1, 1), new DateOnly(2026, 12, 31));
 
         Assert.Empty(totals);
@@ -100,7 +100,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(
             "no-such-channel", new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -120,7 +120,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
         var result = Assert.Single(totals);
@@ -146,7 +146,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(channel.ChannelName, new DateOnly(2026, 7, 8), new DateOnly(2026, 7, 14));
 
         var result = Assert.Single(totals);
@@ -170,7 +170,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
 
         var result = Assert.Single(totals);
@@ -188,7 +188,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(channel.ChannelName, new DateOnly(2026, 1, 1), new DateOnly(2026, 12, 31));
 
         var result = Assert.Single(totals);
@@ -234,7 +234,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
 
         var context = await service.GetUsageContextAsync(channel.ChannelName, from, to);
         var sharedThenHumanContext = context.Single(c => c.EmoteId == sharedThenHuman.Id);
@@ -283,7 +283,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetTotalsByEmoteIdsAsync([sharedThenHuman.Id, mixed.Id], from, to, TotalsScope(acrossAllSets));
 
         // No UseCount > 0 filter here, only the date range — so the shared-only day still forms a
@@ -301,7 +301,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await SeedEmoteAsync(db, channel.Id, "Fresh", firstSeenAt: firstSeen);
         await SeedEmoteAsync(db, channel.Id, "Unknown");
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
 
         Assert.Equal(firstSeen, totals.Single(t => t.EmoteName == "Fresh").FirstSeenAt);
@@ -330,7 +330,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
 
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
 
         Assert.Equal(1200, totals.Count);
@@ -360,7 +360,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.Emotes.Add(neverActive);
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), emoteSetId: "halloween-set-1");
 
@@ -373,7 +373,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         // The guard runs before any DB access, so no seed is needed here.
         await using var db = fixture.CreateDbContext();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
 
         var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
             service.GetUsageContextAsync("irrelevant-channel", new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1)));
@@ -396,7 +396,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetTotalsByEmoteIdsAsync([onBallot.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), TotalsScope(acrossAllSets));
 
         Assert.Equal(9, Assert.Single(totals).Value);
@@ -418,7 +418,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, $"ballottest2_{(acrossAllSets ? "all" : "set")}", ActiveSetId);
         var unused = await SeedEmoteAsync(db, channel.Id, "Unused");
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetTotalsByEmoteIdsAsync([unused.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), TotalsScope(acrossAllSets));
 
         Assert.Empty(totals);
@@ -429,7 +429,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetTotalsByEmoteIdsAsync([], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.Set("irrelevant-set"));
 
         Assert.Empty(totals);
@@ -441,7 +441,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         // The guard runs before any DB access, so no seed is needed here.
         await using var db = fixture.CreateDbContext();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
 
         var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
             service.GetTotalsByEmoteIdsAsync(["irrelevant-id"], new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1), EmoteSetScope.Set("irrelevant-set")));
@@ -464,7 +464,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
             channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -489,7 +489,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
             channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -514,7 +514,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
             channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -536,7 +536,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
             channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -557,7 +557,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channelB = await SeedChannelAsync(db, "dailytest3b");
         var foreignEmote = await SeedEmoteAsync(db, channelB.Id, "Foreign");
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
             channelA.ChannelName, foreignEmote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -570,7 +570,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "dailytest4");
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
             channel.ChannelName, "no-such-id", new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -584,7 +584,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "dailytest5");
         var emote = await SeedEmoteAsync(db, channel.Id, "NeverUsed");
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
             channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -607,7 +607,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
             channel.ChannelName, archived.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -638,7 +638,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
             channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -656,7 +656,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         db.ChannelLiveDays.Add(new ChannelLiveDay { ChannelId = otherChannel.Id, Date = new DateOnly(2026, 7, 3), LiveMinutes = 60 });
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
             channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -670,7 +670,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         // The guard runs before any DB access, so no seed is needed here.
         await using var db = fixture.CreateDbContext();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
 
         var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
             service.GetDailySeriesAsync("irrelevant-channel", "irrelevant-id", new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1)));
@@ -694,7 +694,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetChannelSeriesAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -724,7 +724,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, SlotId = hob44, Date = new DateOnly(2026, 7, 3), UseCount = 1 });
         await db.SaveChangesAsync();
 
-        var series = await new UsageStatQueryService(db, slotReconcile: SlotFlag.On).GetChannelSeriesAsync(
+        var series = await new UsageStatQueryService(db).GetChannelSeriesAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
         Assert.Equal([[1, 7], [2, 1]], Assert.Single(series.Emotes).Days);
@@ -747,7 +747,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetChannelSeriesAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -767,7 +767,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetChannelSeriesAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -786,7 +786,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetChannelSeriesAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -808,7 +808,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetChannelSeriesAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -838,7 +838,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetChannelSeriesAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -850,7 +850,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetChannelSeriesAsync(
             "no-such-channel", new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
@@ -864,7 +864,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         // The guard runs before any DB access, so no seed is needed here.
         await using var db = fixture.CreateDbContext();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
 
         var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
             service.GetChannelSeriesAsync("irrelevant-channel", new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1)));
@@ -888,7 +888,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var earliestBotDate = await service.GetEarliestBotUsageDateAsync(channel.Id);
 
         Assert.Equal(new DateOnly(2026, 8, 15), earliestBotDate);
@@ -904,7 +904,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var earliestBotDate = await service.GetEarliestBotUsageDateAsync(channel.Id);
 
         Assert.Null(earliestBotDate);
@@ -922,7 +922,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var earliestBotDate = await service.GetEarliestBotUsageDateAsync(channel.Id);
 
         Assert.Equal(new DateOnly(2026, 8, 5), earliestBotDate);
@@ -939,7 +939,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var earliestBotDate = await service.GetEarliestBotUsageDateAsync(channel.Id);
 
         Assert.Null(earliestBotDate);
@@ -962,7 +962,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var earliestSharedChatDate = await service.GetEarliestSharedChatUsageDateAsync(channel.Id);
 
         Assert.Equal(new DateOnly(2026, 8, 15), earliestSharedChatDate);
@@ -980,7 +980,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var earliestSharedChatDate = await service.GetEarliestSharedChatUsageDateAsync(channel.Id);
 
         Assert.Null(earliestSharedChatDate);
@@ -998,7 +998,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var earliestSharedChatDate = await service.GetEarliestSharedChatUsageDateAsync(channel.Id);
 
         Assert.Equal(new DateOnly(2026, 8, 5), earliestSharedChatDate);
@@ -1015,7 +1015,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var earliestSharedChatDate = await service.GetEarliestSharedChatUsageDateAsync(channel.Id);
 
         Assert.Null(earliestSharedChatDate);
@@ -1033,7 +1033,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var archived = await SeedEmoteAsync(
             db, channel.Id, "Archived", isArchived: true, archivedAt: archivedAt, lastSyncedAt: lastSynced);
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var lifetimes = await service.GetEmoteLifetimesAsync(channel.Id);
 
         Assert.Equal(2, lifetimes.Count);
@@ -1059,7 +1059,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "lifetimetest2");
         await SeedEmoteAsync(db, channel.Id, "Unknown");
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var lifetimes = await service.GetEmoteLifetimesAsync(channel.Id);
 
         Assert.Null(Assert.Single(lifetimes).FirstSeenAt);
@@ -1073,7 +1073,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var otherChannel = await SeedChannelAsync(db, "lifetimetest3_other");
         await SeedEmoteAsync(db, otherChannel.Id, "Foreign");
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var lifetimes = await service.GetEmoteLifetimesAsync(channel.Id);
 
         Assert.Empty(lifetimes);
@@ -1090,7 +1090,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var two = await SeedEmoteAsync(db, channel.Id, "Two");
         var three = await SeedEmoteAsync(db, channel.Id, "Three");
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var lifetimes = await service.GetEmoteLifetimesAsync(channel.Id);
 
         var expectedOrder = new[] { one.Id, two.Id, three.Id }.OrderBy(id => id, StringComparer.Ordinal).ToArray();
@@ -1113,7 +1113,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var rows = await service.GetRowsAsync([emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
         Assert.Equal(
@@ -1135,7 +1135,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var rows = await service.GetRowsAsync([emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
         var row = Assert.Single(rows);
@@ -1156,7 +1156,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var rows = await service.GetRowsAsync([emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
         var row = Assert.Single(rows);
@@ -1170,7 +1170,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var rows = await service.GetRowsAsync([], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
         Assert.Empty(rows);
@@ -1191,7 +1191,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var rows = await service.GetRowsAsync([emote.Id], new DateOnly(2026, 7, 3), new DateOnly(2026, 7, 3));
 
         var row = Assert.Single(rows);
@@ -1214,7 +1214,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var rows = await service.GetRowsAsync([first.Id, second.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
         Assert.Equal(
@@ -1227,7 +1227,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
             service.GetRowsAsync(["irrelevant-id"], new DateOnly(2026, 7, 7), new DateOnly(2026, 7, 1)));
@@ -1248,7 +1248,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), PreviousSetId);
 
@@ -1273,7 +1273,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
 
@@ -1296,7 +1296,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
             channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.Set(PreviousSetId));
 
@@ -1322,7 +1322,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetChannelSeriesAsync(channel.ChannelName, from, new DateOnly(2026, 7, 31), PreviousSetId);
 
         var entry = Assert.Single(series.Emotes);
@@ -1349,7 +1349,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var series = await new UsageStatQueryService(db, slotReconcile: SlotFlag.On).GetChannelSeriesAsync(channel.ChannelName, from, new DateOnly(2026, 7, 7));
+        var series = await new UsageStatQueryService(db).GetChannelSeriesAsync(channel.ChannelName, from, new DateOnly(2026, 7, 7));
 
         Assert.Equal([1], series.LiveDays);
     }
@@ -1367,7 +1367,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var series = await new UsageStatQueryService(db, slotReconcile: SlotFlag.On).GetChannelSeriesAsync(
+        var series = await new UsageStatQueryService(db).GetChannelSeriesAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
         Assert.Empty(series.LiveDays);
@@ -1391,7 +1391,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 5), LiveMinutes = 60 });
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var from = new DateOnly(2026, 7, 1);
         var to = new DateOnly(2026, 7, 7);
 
@@ -1424,10 +1424,10 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         var from = new DateOnly(2026, 7, 1);
         var to = new DateOnly(2026, 7, 7);
 
-        var before = await new UsageStatQueryService(db, slotReconcile: SlotFlag.On).GetChannelSeriesAsync(channel.ChannelName, from, to);
+        var before = await new UsageStatQueryService(db).GetChannelSeriesAsync(channel.ChannelName, from, to);
         leaving.IsArchived = true;
         await db.SaveChangesAsync();
-        var after = await new UsageStatQueryService(db, slotReconcile: SlotFlag.On).GetChannelSeriesAsync(channel.ChannelName, from, to);
+        var after = await new UsageStatQueryService(db).GetChannelSeriesAsync(channel.ChannelName, from, to);
 
         Assert.Equal([1, 4], before.LiveDays);
         Assert.Equal(before.LiveDays, after.LiveDays);
@@ -1454,7 +1454,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 8, 1), UseCount = 1 });
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
 
         var inRange = await service.GetChannelSeriesAsync(channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
         var empty = await service.GetChannelSeriesAsync(channel.ChannelName, new DateOnly(2026, 9, 1), new DateOnly(2026, 9, 7));
@@ -1481,7 +1481,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new UsageStat { EmoteId = emote.Id, EmoteSetId = ActiveSetId, Date = new DateOnly(2026, 7, 5), UseCount = 1 });
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var from = new DateOnly(2026, 7, 1);
         var to = new DateOnly(2026, 7, 31);
 
@@ -1516,7 +1516,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var series = await new UsageStatQueryService(db, slotReconcile: SlotFlag.On).GetChannelSeriesAsync(
+        var series = await new UsageStatQueryService(db).GetChannelSeriesAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
         Assert.Equal([4], series.LiveDays);
@@ -1546,7 +1546,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
             new ChannelLiveDay { ChannelId = channel.Id, Date = new DateOnly(2026, 7, 4), LiveMinutes = 60 });
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var from = new DateOnly(2026, 7, 1);
         var to = new DateOnly(2026, 7, 7);
 
@@ -1577,7 +1577,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var daily = await new UsageStatQueryService(db, slotReconcile: SlotFlag.On).GetDailySeriesAsync(
+        var daily = await new UsageStatQueryService(db).GetDailySeriesAsync(
             channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7), EmoteSetScope.Set(PreviousSetId));
 
         Assert.NotNull(daily);
@@ -1603,7 +1603,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var daily = await new UsageStatQueryService(db, slotReconcile: SlotFlag.On).GetDailySeriesAsync(
+        var daily = await new UsageStatQueryService(db).GetDailySeriesAsync(
             channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7), EmoteSetScope.AllSets);
 
         Assert.NotNull(daily);
@@ -1622,7 +1622,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetTotalsByEmoteIdsAsync(
             [emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.Set(PreviousSetId));
 
@@ -1642,7 +1642,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetTotalsByEmoteIdsAsync(
             [emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
 
@@ -1659,7 +1659,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetTotalsByEmoteIdsAsync(
             [emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
 
@@ -1670,7 +1670,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
     public async Task GetTotalsByEmoteIdsAsync_ActiveSetScope_Throws()
     {
         await using var db = fixture.CreateDbContext();
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
 
         await Assert.ThrowsAsync<ArgumentException>(() => service.GetTotalsByEmoteIdsAsync(
             ["some-id"], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.ActiveSet));
@@ -1697,7 +1697,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetDailySeriesAsync(
             channel.ChannelName, emote.Id, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), EmoteSetScope.AllSets);
 
@@ -1727,7 +1727,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var rows = await service.GetRowsAsync([emote.Id], new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 7));
 
         Assert.Equal(2, rows.Count);
@@ -1759,7 +1759,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var series = await service.GetChannelSeriesAsync(channel.ChannelName, from, new DateOnly(2026, 7, 31), PreviousSetId);
 
         Assert.Equal(2, series.Emotes.Count);
@@ -1791,7 +1791,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
 
@@ -1814,7 +1814,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var totals = await service.GetUsageContextAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31));
 
@@ -1839,7 +1839,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var underPrevious = await service.GetUsageContextAsync(
             channel.ChannelName, new DateOnly(2026, 7, 1), new DateOnly(2026, 7, 31), PreviousSetId);
 
@@ -1884,7 +1884,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         var from = new DateOnly(2026, 7, 1);
         var to = new DateOnly(2026, 7, 7);
 
@@ -1936,7 +1936,7 @@ public class UsageStatQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var service = new UsageStatQueryService(db);
         Assert.Equal(liveDay, await service.GetEarliestBotUsageDateAsync(channel.Id));
         Assert.Equal(liveDay, await service.GetEarliestSharedChatUsageDateAsync(channel.Id));
     }

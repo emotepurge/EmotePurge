@@ -467,7 +467,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
 
         // The active-set view is empty; the old set's view is historical and still shows its
         // emote with the usage counted against it, archived like after any switch.
-        var usage = new UsageStatQueryService(db, slotReconcile: SlotFlag.On);
+        var usage = new UsageStatQueryService(db);
         Assert.Empty(await usage.GetUsageContextAsync(channel.ChannelName, Today.AddDays(-6), Today));
         var oldSet = Assert.Single(await usage.GetUsageContextAsync(channel.ChannelName, Today.AddDays(-6), Today, OldSetId));
         Assert.Equal("stable", oldSet.EmoteName);
