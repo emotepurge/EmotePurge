@@ -1097,6 +1097,7 @@
         "one": "{{names}} fehlt jetzt im Set, ohne dass der Lauf es gelöscht hat — möglicherweise hat eine Löschung diesen Eintrag mit entfernt.",
         "other": "{{names}} fehlen jetzt im Set, ohne dass der Lauf sie gelöscht hat — möglicherweise hat eine Löschung diese Einträge mit entfernt."
       },
+      "restoreUnexpected": "Diese Einträge wiederherstellen",
       "postCheckUnavailable": "Konnte nicht prüfen, ob weitere Einträge betroffen sind — das Set in 7TV ansehen.",
       "restoreAfterReport": "Wiederherstellen geht erst, wenn der Lösch-Bericht angekommen ist."
     }

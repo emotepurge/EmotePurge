@@ -1618,3 +1618,192 @@ describe('DeleteProgressSection — a slot restore carries the removed entry int
     });
   });
 });
+
+// Plan-378 4.5/4.7 (last point), 4.10: the line for an entry a slot removal took unexpectedly, its
+// own restore button, and the line for a post-check that could not run.
+describe('DeleteProgressSection — an entry a slot removal took unexpectedly', () => {
+  const GQL = 'https://7tv.io/v4/gql';
+  const DE = {
+    ...DE_TRANSLATIONS,
+    restore: { button: 'Wiederherstellen' },
+    massDelete: { ...DE_TRANSLATIONS.massDelete, syncRetry: 'Bericht erneut senden' },
+    usageStats: {
+      delete: {
+        restoreAfterReport: 'Erst nach dem Lösch-Bericht.',
+        unexpectedRemoval: {
+          one: '{{names}} fehlt möglicherweise wegen der Löschung.',
+          other: '{{names}} fehlen möglicherweise wegen der Löschung.',
+        },
+        restoreUnexpected: 'Diese Einträge wiederherstellen',
+        postCheckUnavailable: 'Nachprüfung nicht möglich.',
+      },
+    },
+  };
+  const ENTRY_DONE: RunQueueItem = {
+    key: '7tv-1#slot-hob',
+    emoteId: 'e-1',
+    sevenTvEmoteId: '7tv-1',
+    name: 'hob44',
+    aliases: ['hob44'],
+    entry: { slotId: 'slot-hob', alias: 'hob44', addedAt: '2026-10-13T08:00:14.902Z' },
+    status: 'done',
+    completedSteps: 1,
+    failedStep: null,
+  };
+  const LOST = { sevenTvEmoteId: '7tv-1', alias: 'ome44', addedAt: '2026-10-13T08:00:14.902Z' };
+
+  let fixture: ComponentFixture<DeleteProgressSection>;
+  let httpMock: HttpTestingController;
+  let closed: Subject<boolean | undefined>;
+  let syncReport: WritableSignal<SyncReportState>;
+
+  async function mount(
+    extra: Partial<DeleteRunInfo>,
+    report: SyncReportState = 'succeeded',
+  ): Promise<void> {
+    sessionStorage.clear();
+    vi.useFakeTimers();
+    closed = new Subject<boolean | undefined>();
+    syncReport = signal(report);
+    const items = [ENTRY_DONE];
+    const result: RunResult = { doneKeys: [ENTRY_DONE.key], items, startedAt: 0, finishedAt: 1 };
+    const run = {
+      setId: 'set-1',
+      channelName: 'sensitron',
+      targetOwnerTwitchId: null,
+      result,
+      ...extra,
+    } as DeleteRunInfo;
+    await TestBed.configureTestingModule({
+      imports: [
+        DeleteProgressSection,
+        TranslocoTestingModule.forRoot({
+          langs: { de: DE },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: EmoteAdminService,
+          useValue: {
+            getSetStatus: vi.fn().mockReturnValue(of({ occupiedSlots: 1, capacity: 100 })),
+          } as unknown as EmoteAdminService,
+        },
+        {
+          provide: SevenTvDeleteService,
+          useValue: fakeDeleteService({
+            queue: signal(items),
+            run: signal(run),
+            syncReport,
+            lastRun: signal({
+              setId: run.setId,
+              channelName: run.channelName,
+              targetOwnerTwitchId: null,
+              result,
+            }),
+          }) as unknown as SevenTvDeleteService,
+        },
+        { provide: Dialog, useValue: { open: vi.fn().mockReturnValue({ closed }) } },
+      ],
+    }).compileComponents();
+    await TestBed.inject(TranslocoService).load('de');
+    TestBed.inject(SevenTvTokenService).setToken('write-token');
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture = TestBed.createComponent(DeleteProgressSection);
+    fixture.componentRef.setInput('hostSelectedSetId', 'set-1');
+    fixture.detectChanges();
+  }
+
+  afterEach(() => {
+    httpMock.verify();
+    vi.useRealTimers();
+  });
+
+  const text = (): string => (fixture.nativeElement as HTMLElement).textContent ?? '';
+  const button = (label: string): HTMLButtonElement | undefined =>
+    Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('button')).find(
+      (candidate) => candidate.textContent?.trim() === label,
+    );
+
+  function setRead(entries: { id: string; alias: string }[]) {
+    return {
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: entries.length,
+              pageCount: 1,
+              items: entries.map(({ id, alias }) => ({ alias, emote: { id } })),
+            },
+          },
+        },
+      },
+    };
+  }
+
+  it('names the entry, with a fallback for one without an alias, and offers its own restore', async () => {
+    await mount({
+      unexpectedRemovals: [LOST, { sevenTvEmoteId: '7tv-9', alias: null, addedAt: null }],
+    });
+
+    expect(text()).toContain('ome44, 7tv-9');
+    expect(text()).toContain('fehlen möglicherweise');
+    expect(button('Diese Einträge wiederherstellen')).toBeDefined();
+    expect(text()).not.toContain('Nachprüfung nicht möglich.');
+  });
+
+  it('says nothing about unexpected removals for a run without any', async () => {
+    await mount({ unexpectedRemovals: [] });
+
+    expect(text()).not.toContain('möglicherweise');
+    expect(button('Diese Einträge wiederherstellen')).toBeUndefined();
+  });
+
+  it('restores only the named entries, checked next to the surviving sibling, reported by id', async () => {
+    await mount({ unexpectedRemovals: [LOST] });
+
+    button('Diese Einträge wiederherstellen')?.click();
+    httpMock
+      .expectOne((request) => request.url === preCheckUrl('set-1'))
+      .flush(preCheckEditableBody('set-1', 'sensitron'));
+    // The id's other entry is still in the set; the entry the run deleted on purpose (hob44) is
+    // not part of this offer.
+    httpMock.expectOne(GQL).flush(setRead([{ id: '7tv-1', alias: 'kept' }]));
+    closed.next(true);
+    httpMock.expectOne(GQL).flush(setRead([{ id: '7tv-1', alias: 'kept' }]));
+
+    const add = httpMock.expectOne(GQL);
+    expect(add.request.body.variables).toEqual({
+      setId: 'set-1',
+      emoteId: '7tv-1',
+      alias: 'ome44',
+    });
+    flushApplied(add);
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    const report = httpMock.expectOne('/api/seventv/emote-sets/set-1/sync-restored');
+    expect(report.request.body.sevenTvEmoteIds).toEqual(['7tv-1']);
+    expect(report.request.body.entries).toBeUndefined();
+    report.flush({ reportedCount: 1, channels: [], unresolvedChannel: null, resyncTriggered: [] });
+  });
+
+  it('holds the restore button back while the removal report is owed, keeping the line', async () => {
+    await mount({ unexpectedRemovals: [LOST] }, 'failed');
+
+    expect(text()).toContain('fehlt möglicherweise');
+    expect(button('Diese Einträge wiederherstellen')).toBeUndefined();
+
+    syncReport.set('succeeded');
+    fixture.detectChanges();
+    expect(button('Diese Einträge wiederherstellen')).toBeDefined();
+  });
+
+  it('says the post-check could not run, with nothing to restore', async () => {
+    await mount({ postCheckUnavailable: true });
+
+    expect(text()).toContain('Nachprüfung nicht möglich.');
+    expect(button('Diese Einträge wiederherstellen')).toBeUndefined();
+  });
+});

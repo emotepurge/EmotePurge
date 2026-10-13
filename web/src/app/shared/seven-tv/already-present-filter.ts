@@ -107,6 +107,12 @@ export interface RestoreFilterRow {
    *  checks it in **entry mode** — see `filterAlreadyPresentForRestore`. Only its presence matters
    *  here; what it carries is the run's and the report's business. */
   entry?: SevenTvEntryGeneration;
+  /** Set (to `true`) on a row that brings back one entry of an id without knowing its generation —
+   *  the dock's offer for an entry a slot removal took unexpectedly (Plan-378 4.7, last point): no
+   *  slot and no add date are known, but the id's surviving siblings must not block it either, so
+   *  the filter checks it in entry mode all the same. Unlike `entry` it carries nothing for the
+   *  restore report: the run reports such a row by its id only. */
+  perEntry?: true;
 }
 
 /** `filterAlreadyPresentForRestore`'s result: the shared filter outcome plus the aliases dropped
@@ -182,7 +188,9 @@ export interface RestoreAlreadyPresentFilterResult<T> extends AlreadyPresentFilt
  * keeps several entries of one id, and an `ADD` under this alias cannot touch any of them. A
  * partial retry falls out of the same rule: of two entry rows of one id, the one already back is
  * dropped, the other goes out. The `uncertain` rules below apply unchanged. Rows without a target
- * keep rules 1–4 exactly as they are.
+ * keep rules 1–4 exactly as they are — except a row marked `perEntry`, the dock's offer for an
+ * entry a slot removal took unexpectedly: it has no target (the restore reports it by id only) but
+ * stands next to surviving siblings of the same id just the same, so it takes entry mode too.
  *
  * `skipped` and `skippedNameTaken` count **aliases**, i.e. `ADD`s not sent, not rows (a `null`
  * alias is one): the restore confirmation already speaks in `ADD`s
@@ -249,7 +257,7 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
         const rowAliases: readonly (string | null)[] =
           row.aliases && row.aliases.length > 0 ? row.aliases : [row.name];
         const missing =
-          row.entry === undefined
+          row.entry === undefined && row.perEntry !== true
             ? missingAliases(row.sevenTvEmoteId, rowAliases, aliasesById, aliaslessIds)
             : missingEntryAliases(row.sevenTvEmoteId, rowAliases, aliasesById, aliaslessIds);
         skipped += rowAliases.length - missing.length;

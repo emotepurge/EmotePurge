@@ -16,7 +16,7 @@ import { catchError, finalize, of, timeout } from 'rxjs';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { pluralKey } from '../../core/i18n/plural';
-import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { DeleteRunInfo, SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import {
   RestoreQueueEmote,
@@ -79,7 +79,7 @@ function restoreTargetCheckReasonKey(reason: TargetCheckBlockReason): string {
  *  row's entry target included (Plan-378 4.7) — plus the `uncertain` marker (#275) set from an
  *  `unknown` delete row — only the checks read it (`RestoreFilterRow.uncertain`), the run never
  *  does. */
-type RestoreCandidate = RestoreQueueEmote & Pick<RestoreFilterRow, 'uncertain'>;
+type RestoreCandidate = RestoreQueueEmote & Pick<RestoreFilterRow, 'uncertain' | 'perEntry'>;
 
 /** The finished delete run's rows the restore entry offers (#275, plan Festlegung 16): every `done`
  *  row — the emote provably left the set — and every `unknown` row, whose delete may or may not
@@ -89,6 +89,54 @@ type RestoreCandidate = RestoreQueueEmote & Pick<RestoreFilterRow, 'uncertain'>;
  *  function's. */
 function restorableItems(items: readonly RunQueueItem[]): RunQueueItem[] {
   return items.filter((item) => item.status === 'done' || item.status === 'unknown');
+}
+
+/** The candidates the restore entry offers for the finished run's rows: an entry row's target goes
+ *  along unchanged (Plan-378 4.7) — its slot and the **original** add date of the removed
+ *  generation, which the restore's report hands back to the server — and an `unknown` row carries
+ *  the `uncertain` marker into both duplicate checks (#275), which drop it whenever their read
+ *  cannot vouch for it. */
+function restoreCandidatesOf(items: readonly RunQueueItem[]): RestoreCandidate[] {
+  return items.map((item) => ({
+    emoteId: item.emoteId,
+    sevenTvEmoteId: item.sevenTvEmoteId,
+    name: item.name,
+    aliases: item.aliases,
+    ...(item.entry === undefined ? {} : { entry: item.entry }),
+    ...(item.status === 'unknown' ? { uncertain: true as const } : {}),
+  }));
+}
+
+/** One entry the run's post-check found missing although none of its removals accounts for it
+ *  (Plan-378 4.5, D33), as the dock shows and offers it. */
+interface UnexpectedRemovalOffer {
+  /** What the dock calls the entry: its alias, else the name the run knew the emote by, else the
+   *  7TV id — a removal read without an alias (an aliasless entry) has no name of its own. */
+  label: string;
+  candidate: RestoreCandidate;
+}
+
+/** The restore candidates for the run's unexpected removals (Plan-378 4.7, last point): one per
+ *  entry, **without** an entry target — the sibling's slot is unknown to the dock, and its
+ *  generation cannot be told to still be the reported one, so the restore reports the id only —
+ *  but marked `perEntry`, because the filter must check each next to the surviving siblings of its
+ *  id. */
+function unexpectedRemovalOffers(run: DeleteRunInfo): UnexpectedRemovalOffer[] {
+  return (run.unexpectedRemovals ?? []).map((removal) => {
+    const known = run.result?.items.find((item) => item.sevenTvEmoteId === removal.sevenTvEmoteId);
+    const label = removal.alias ?? (known?.name || removal.sevenTvEmoteId);
+    return {
+      label,
+      candidate: {
+        ...(known?.emoteId === undefined ? {} : { emoteId: known.emoteId }),
+        sevenTvEmoteId: removal.sevenTvEmoteId,
+        name: label,
+        aliases: [removal.alias],
+        defaultName: label,
+        perEntry: true as const,
+      },
+    };
+  });
 }
 
 /** Whether a settled delete run removed at least one set entry by its slot (a `done` entry row,
@@ -197,6 +245,35 @@ function removedAnEntry(items: readonly RunQueueItem[]): boolean {
                    stands in for the restore button next to the report's own retry button. -->
               <span class="text-xs text-fg-muted">
                 {{ 'usageStats.delete.restoreAfterReport' | transloco }}
+              </span>
+            }
+            @if (unexpectedOffers().length > 0) {
+              <!-- Plan-378 4.5/4.7: entries gone from the set that no removal of the run accounts
+                   for — a hedged line ("possibly"), as a second editor's rename may have sent a
+                   removal to a sibling. Its restore is its own button, not the run's general one:
+                   that would also bring back the entries the run deleted on purpose. Held back
+                   like the general one while the removal report is owed (fail-closed). -->
+              <span class="text-xs text-fg-muted">
+                {{
+                  unexpectedRemovalKey()
+                    | transloco: { count: unexpectedOffers().length, names: unexpectedNames() }
+                }}
+              </span>
+              @if (!restoreAwaitsReport() && arbiter.activeRun() === null) {
+                <button
+                  type="button"
+                  appButton="outline"
+                  class="disabled:cursor-not-allowed"
+                  [disabled]="restoreConfirmPending() || arbiter.startPending()"
+                  (click)="openRestoreConfirm('unexpected')"
+                >
+                  {{ 'usageStats.delete.restoreUnexpected' | transloco }}
+                </button>
+              }
+            }
+            @if (postCheckUnavailable()) {
+              <span class="text-xs text-fg-muted">
+                {{ 'usageStats.delete.postCheckUnavailable' | transloco }}
               </span>
             }
             @if (restoreOffered() && !restoreAwaitsReport() && arbiter.activeRun() === null) {
@@ -345,6 +422,33 @@ export class DeleteProgressSection {
     return report !== 'succeeded' && report !== 'partial';
   });
 
+  /** The entries the finished run's post-check found missing unexpectedly, with the restore row
+   *  each would go out as — empty for a run without any (and for every run of id rows only). */
+  protected readonly unexpectedOffers = computed(() => {
+    // `lastRun()` is the projection the rest of the section reads; it does not carry the post-check
+    // fields, which live on the shown run record itself — and only once the run has settled.
+    const run = this.deleteService.run();
+    return this.deleteService.lastRun() === null || run === null
+      ? []
+      : unexpectedRemovalOffers(run);
+  });
+
+  protected readonly unexpectedRemovalKey = computed(() =>
+    pluralKey(this.unexpectedOffers().length, 'usageStats.delete.unexpectedRemoval'),
+  );
+
+  protected readonly unexpectedNames = computed(() =>
+    [...new Set(this.unexpectedOffers().map((offer) => offer.label))].join(', '),
+  );
+
+  /** The run owed a post-check and could not make it (Plan-378 4.5) — nobody can tell whether other
+   *  entries were taken, so the line says to look at the set; there is nothing to offer. */
+  protected readonly postCheckUnavailable = computed(
+    () =>
+      this.deleteService.lastRun() !== null &&
+      this.deleteService.run()?.postCheckUnavailable === true,
+  );
+
   /** How many of the settled run's rows 7TV's answer never clarified (#275) — `0` before the run has
    *  settled (`lastRun()` is `null` while running or settling), same source `restoreOffered` reads. */
   protected readonly unknownRowCount = computed(() => {
@@ -432,7 +536,7 @@ export class DeleteProgressSection {
    *  a failed request (429, 503, no connection — spec F3) surfaced nothing and silently left the
    *  restore entry inert; a hung one left it inert forever; and a late answer after this section
    *  was torn down could still have opened a confirmation nobody could see or answer. */
-  protected openRestoreConfirm(): void {
+  protected openRestoreConfirm(source: 'run' | 'unexpected' = 'run'): void {
     // #255 P2a: refuses a second click while the pre-check chain below (this method's own
     // `resolveEditableSet`, or `openRestoreConfirmDialog`'s open-time duplicate check) is still
     // out — belt and suspenders next to the button's own `[disabled]="restoreConfirmPending()"`.
@@ -449,10 +553,14 @@ export class DeleteProgressSection {
     if (!run || this.arbiter.activeRun() !== null) {
       return;
     }
-    // Every done and unknown row (#275), with or without a local emote — see `restorableItems`.
-    const restoreItems = restorableItems(run.result.items);
+    // Every done and unknown row (#275), with or without a local emote — see `restorableItems`; or,
+    // for the unexpected-removal button, exactly the entries the post-check named and nothing else.
+    const candidates =
+      source === 'unexpected'
+        ? this.unexpectedOffers().map((offer) => offer.candidate)
+        : restoreCandidatesOf(restorableItems(run.result.items));
     // Belt and suspenders next to the template, which shows no button while the report is owed.
-    if (restoreItems.length === 0 || this.restoreAwaitsReport()) {
+    if (candidates.length === 0 || this.restoreAwaitsReport()) {
       return;
     }
     // #256 P3-3 (Plan-256 review): the delete service is a root singleton, so its finished run can
@@ -534,13 +642,13 @@ export class DeleteProgressSection {
             openSevenTvTokenPromptDialog(this.dialog).closed.subscribe((saved) => {
               if (saved) {
                 this.restoreConfirmPending.set(true);
-                this.openRestoreConfirmDialog(target, restoreItems);
+                this.openRestoreConfirmDialog(target, candidates);
               }
             });
             return;
           }
           handedOff = true;
-          this.openRestoreConfirmDialog(target, restoreItems);
+          this.openRestoreConfirmDialog(target, candidates);
         },
         // 429, 503, no connection, or a timeout: "cannot be checked right now", never "not
         // allowed" (F3) — the same distinction the delete's own pre-check makes.
@@ -559,21 +667,8 @@ export class DeleteProgressSection {
    *  (it only locks while the run is still writing). */
   private openRestoreConfirmDialog(
     target: ResolvedRestoreTarget,
-    restoreItems: readonly RunQueueItem[],
+    emotes: readonly RestoreCandidate[],
   ): void {
-    // #275: an `unknown` row carries the `uncertain` marker into both duplicate checks, which drop
-    // it whenever their read cannot vouch for it — the rule lives in the filter, not here.
-    // An entry row's target goes along unchanged (Plan-378 4.7): its slot and the **original** add
-    // date of the removed generation, which the restore's report hands back to the server.
-    const emotes: RestoreCandidate[] = restoreItems.map((item) => ({
-      emoteId: item.emoteId,
-      sevenTvEmoteId: item.sevenTvEmoteId,
-      name: item.name,
-      aliases: item.aliases,
-      ...(item.entry === undefined ? {} : { entry: item.entry }),
-      ...(item.status === 'unknown' ? { uncertain: true as const } : {}),
-    }));
-
     // Operator decision 2026-09-25 (#255, "Slot-Zahl nach dem Skip-Filter") — same open-time
     // check as `startRestoreFlow` (`restore-flow.ts`), reused here rather than duplicated: see
     // `loadRestoreConfirmPreview`'s doc for why this is not a second 7TV read next to the slot
@@ -609,8 +704,8 @@ export class DeleteProgressSection {
       });
   }
 
-  /** `emotes` is always the full, unfiltered list `openRestoreConfirmDialog` built from
-   *  `restoreItems` — never `preview.rows` — because the confirm-time re-check below (`closed`'s
+  /** `emotes` is always the full, unfiltered list `openRestoreConfirm` built from
+   *  restore candidates — never `preview.rows` — because the confirm-time re-check below (`closed`'s
    *  handler) has to run against the *complete* row set again, fresh, not against this open-time
    *  answer's already-filtered subset (see the comment on that re-check). Its *result*, though, is
    *  clipped back down to `preview.rows` before it ever reaches `startRestore` (#255 P1, Codex

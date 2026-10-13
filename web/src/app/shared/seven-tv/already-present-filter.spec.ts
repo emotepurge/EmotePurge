@@ -296,6 +296,7 @@ interface RestoreRow {
   aliases?: (string | null)[];
   uncertain?: true;
   entry?: { slotId?: string; alias: string; addedAt: string };
+  perEntry?: true;
 }
 
 /** Same shape as `entriesPage`, but 7TV's `totalCount` promises one entry more than this single,
@@ -903,6 +904,35 @@ describe('filterAlreadyPresentForRestore — entry mode', () => {
 
     expect(result.rows).toEqual([]);
     expect(result.skipped).toBe(1);
+  });
+
+  // The dock's offer for an unexpectedly removed entry has no target but stands next to its
+  // surviving siblings all the same (Plan-378 4.7, last point).
+  it('checks a perEntry row without a target in entry mode, next to a surviving sibling', async () => {
+    const lost: RestoreRow = {
+      sevenTvEmoteId: '7tv-1',
+      name: 'hob44',
+      aliases: ['hob44'],
+      perEntry: true,
+    };
+
+    expect((await run([lost], [{ id: '7tv-1', alias: 'ome44' }])).rows).toEqual([lost]);
+  });
+
+  it('still drops a perEntry row whose own alias is back, or whose name another emote holds', async () => {
+    const lost: RestoreRow = {
+      sevenTvEmoteId: '7tv-1',
+      name: 'hob44',
+      aliases: ['hob44'],
+      perEntry: true,
+    };
+
+    const back = await run([lost], [{ id: '7tv-1', alias: 'hob44' }]);
+    expect(back.rows).toEqual([]);
+    expect(back.skipped).toBe(1);
+    const taken = await run([lost], [{ id: '7tv-other', alias: 'hob44' }]);
+    expect(taken.rows).toEqual([]);
+    expect(taken.skippedNameTaken).toBe(1);
   });
 
   it('counts entry rows in the restore confirmation like the run sends them', async () => {
