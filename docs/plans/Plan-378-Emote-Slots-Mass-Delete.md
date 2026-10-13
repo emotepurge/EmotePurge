@@ -219,7 +219,9 @@ Wire-Zeichenkette, aus der gebunden und gemeldet wird: bei Slot-Karten `firstSee
 - **`toDeleteQueueEmotes` (`delete-flow.ts`):** reicht das Ziel durch und erweitert die Aliase nur für Id-Zeilen aus der Vor-Lauf-Lesung (heute).
 - **Strenge Datumsprüfung jedes Eintragsziels (T-6)** — eine reine Hilfsfunktion in `core/seven-tv/`: gültig nur ISO 8601 mit Datum, Uhrzeit und
   ausdrücklicher Zone (`Z` oder `±hh:mm`), Kalenderfelder im gültigen Bereich (Monatslängen, Schaltjahre), Uhrzeitfelder im gültigen Bereich,
-  Nachkommastellen in beliebiger Zahl. Die Zeichenkette wird nie umgeformt, sondern wörtlich weitergegeben. Angewendet beim Bilden der
+  Nachkommastellen in beliebiger Zahl. *Korrektur nach Review, 2026-10-13:* „beliebig" war zu weit — gültig ist nur, was System.Text.Json
+  liest (gemessen): höchstens 16 Nachkommastellen, Zone höchstens ±14:00, UTC-Zeitpunkt im Bereich von `DateTimeOffset`. Die Zeichenkette wird
+  nie umgeformt, sondern wörtlich weitergegeben. Angewendet beim Bilden der
   Eintrags-Zeilen auf der Seite (4.9), beim Lesen einer Protokolldatei (4.8) und noch einmal beim Bau des Restore-Queues, **bevor** ein `ADD`
   hinausgeht — damit kein Lauf 7TV ändert und dann an einem Bericht scheitert, den die Api als `400 invalid_request_body` abweist.
 - **Vor-Lauf-Lesung (`readLiveAliasesThenDelete`) unverändert:** bleibt bei der bisherigen Abfrage und der Sperre „Id ganz aus dem Set → ganzer
