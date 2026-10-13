@@ -974,7 +974,40 @@ SELECT "Id", "ChannelId", "Status", "WeeksDone", "WeeksTotal", "ErrorCode", "Pau
 FROM "ChatLogBackfillRuns" ORDER BY "Id" DESC LIMIT 20;
 ```
 
+### Removing imported data (channel managers)
+
+A channel manager (admin, broadcaster or live moderator; not a 7TV editor) can remove everything the
+backfill imported for **one channel** in the Settings tab, section "Imported data". The section shows
+one line per covered range and set, and the button asks for confirmation with exactly those ranges.
+It exists only while the flag is on (the tab is hidden and the route answers 404 `backfill_disabled`
+otherwise).
+
+- **Route:** `POST /api/channels/{channelName}/backfill/imported/remove`. The body carries the ranges
+  the dialog showed (`expectedCoverage`); the server compares them day by day with the current
+  coverage under the channel lock. A mismatch answers 409 `backfill_remove_scope_changed` and removes
+  nothing, so a run that finished behind the dialog is never deleted unseen.
+- **Blocked while a run is queued, running or paused:** 409 `backfill_remove_run_active`. Cancel the
+  run first, then remove.
+- **Removed:** the channel's `UsageStats` rows with `Source = 1`, the `ChatLogBackfillCoverage` rows,
+  and every `EmoteSlots` seed that is still unsettled and lost its last row to this removal. That
+  includes `CreatedSlot` seeds left by imports from the time the slot flag was off.
+- **Kept:** live rows (`Source = 0`), the run history (the "Last run" line still reads as before),
+  snapshots, emotes including placeholders, settled slots, votes, ballots and tags. The usage page
+  loses the "from the chat archive" caption because the coverage is gone.
+- **Nothing to remove** is a plain 200 with zeros and writes no audit entry.
+- **Audit:** action `backfill.removeImported` with the number of removed days; the activity tab shows
+  it as "Imported data removed".
+- **No migration.** A new backfill for the same window reads the archive again; its numbers may
+  differ from the removed ones.
+
+This is the per-channel path for managers. The operator procedure below stays the global rollback and
+the only way to do steps 3, 3b and 5, with the flag off, or for several channels at once.
+
 ### Rolling back
+
+For a single channel, a manager can remove the imported rows and the coverage from the Settings tab
+(#384, see "Removing imported data (channel managers)"); that replaces the per-channel variant of
+step 4 but not steps 3, 3b and 5.
 
 **Switching it off is cheap, but cancel first.** `ChatLogBackfill:Enabled=false` on api **and** worker,
 recreate both: the routes answer 404 `backfill_disabled` (including the cancel route), the tab
