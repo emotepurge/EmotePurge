@@ -25,7 +25,7 @@ internal static class SeedSettleWrites
     /// of the channel. No live path is known to produce the collision (the match map counts no emote
     /// with an open seed, E7); the merge is the belt, and the snapshot rebind (E11a) relies on it for
     /// imported rows. Runs behind the settle's locks (channel, then the emote rows), so the backfill
-    /// block and flush phase 2 cannot write these slots meanwhile. Returns the rows re-keyed and the
+    /// block cannot write these slots meanwhile. Returns the rows re-keyed and the
     /// rows merged away.
     /// </summary>
     public static async Task<(int Moved, int Merged)> MoveSeedUsageAsync(

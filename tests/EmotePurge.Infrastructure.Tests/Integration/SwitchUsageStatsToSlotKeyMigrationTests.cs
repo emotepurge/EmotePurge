@@ -472,13 +472,6 @@ public class SwitchUsageStatsToSlotKeyMigrationTests(PostgresFixture fixture)
         return failure;
     }
 
-    private static async Task FlushAsync(AppDbContext db, params (string SlotKey, int Uses)[] counts)
-    {
-        var result = await new UsageStatFlushService(db, NullLogger<UsageStatFlushService>.Instance).FlushAsync(
-            counts.ToDictionary(c => new UsageCounterKey(c.SlotKey, SetA), c => new EmoteUsageCounts(c.Uses, 0, 0)));
-        Assert.Empty(result.Requeued);
-    }
-
     private static string CellSql(string date) =>
         $"""
         SELECT "UseCount" || '|' || "BotUseCount" || '|' || "SharedChatUseCount" || '|' || "Source" || '|' || "SlotId" AS "Value"

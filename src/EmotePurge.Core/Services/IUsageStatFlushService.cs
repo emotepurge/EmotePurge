@@ -31,44 +31,34 @@ public readonly record struct EmoteUsageCounts(int Human, int Bot, int SharedCha
 /// emote slots spec 6.1). Shared by <c>EmotePurge.Worker</c> (buffering) and
 /// <c>EmotePurge.Infrastructure</c> (flush), so it lives here rather than in either project alone.
 /// <para>
-/// <c>SlotId</c> is whatever the match map handed out for the matched name: an <c>EmoteSlots.Id</c>,
-/// or — with the slot reconcile flag off, for an emote whose (emote, set) pair has no slot yet — an
-/// opaque pending key that only the flush can resolve (plan #373, E4). Everything outside
-/// Infrastructure treats both the same: an opaque string.
+/// <c>SlotId</c> is what the match map handed out for the matched name: an <c>EmoteSlots.Id</c>.
+/// Everything outside Infrastructure treats it as an opaque string.
 /// </para>
 /// </summary>
 public readonly record struct UsageCounterKey(string SlotId, string EmoteSetId);
 
 /// <summary>
 /// What one flush did (plan #373, E9). <paramref name="WrittenChannels"/> are the distinct normalized
-/// names of the channels whose usage was actually written, by either phase — the input alone cannot
-/// answer that, since keys of meanwhile-deleted slots or emotes are dropped; callers announce them,
-/// it is not an error signal. <paramref name="Requeued"/> are the keys the flush could not resolve
-/// this time, with their counts, to be put back and tried again by the caller; empty when everything
-/// landed or was dropped. A key is in exactly one of three states: written, dropped (gone, never
-/// requeued) or requeued.
+/// names of the channels whose usage was actually written — the input alone cannot answer that, since
+/// keys of meanwhile-deleted slots are dropped; callers announce them, it is not an error signal. A key
+/// of a returned flush is in exactly one of two states: written or dropped (gone, never requeued).
 /// </summary>
-public sealed record UsageFlushResult(
-    IReadOnlyCollection<string> WrittenChannels,
-    IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts> Requeued)
+public sealed record UsageFlushResult(IReadOnlyCollection<string> WrittenChannels)
 {
-    /// <summary>Nothing written, nothing requeued.</summary>
-    public static UsageFlushResult Empty { get; } = new([], new Dictionary<UsageCounterKey, EmoteUsageCounts>());
+    /// <summary>Nothing written.</summary>
+    public static UsageFlushResult Empty { get; } = new([]);
 }
 
 public interface IUsageStatFlushService
 {
     /// <summary>
     /// Upserts a drained snapshot of in-memory usage counts (keyed by slot and the observed set →
-    /// (human, bot, shared chat)) into today's UTC UsageStat rows, in two phases: first every key that
-    /// names an existing slot, then — in a transaction of its own — every pending key, resolved to the
-    /// base slot of its (emote, set) pair.
+    /// (human, bot, shared chat)) into today's UTC UsageStat rows: every key that names an existing slot,
+    /// in one statement; the others are dropped.
     /// </summary>
     /// <returns>
-    /// The written channels and the keys to requeue (see <see cref="UsageFlushResult"/>). Throws only
-    /// when the first phase fails, and then nothing was written: the caller puts the whole batch back.
-    /// A failure of the second phase never throws, because the first phase is committed by then —
-    /// its keys come back in <see cref="UsageFlushResult.Requeued"/> instead.
+    /// The written channels (see <see cref="UsageFlushResult"/>). Throws when the write fails, and then
+    /// nothing was written: the caller puts the whole batch back.
     /// </returns>
     Task<UsageFlushResult> FlushAsync(IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts> usageCounts, CancellationToken cancellationToken = default);
 }

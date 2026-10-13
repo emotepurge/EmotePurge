@@ -19,21 +19,13 @@ public class UsageFlushWorker(
     private const int MaxConsecutiveFailuresToRequeue = 5;
 
     // Plan #373, E9a: the final flush gets this many attempts in total (the first plus two retries).
-    // A retry follows only an attempt that put counts back (a thrown phase 1, or keys phase 2 handed
-    // back). Budget: the host's shutdown timeout is not set in this repo, so the .NET default of 30 s
-    // applies (Docker holds 60 s, see docker-compose.prod.yml). Nothing in an attempt has a timeout of
-    // its own that adds up to that bound — the 5-s lock_timeout of phase 2 caps each single lock wait,
-    // phase 1 and the reads have none. What bounds the final flush is the shutdown token: it is passed
-    // to every statement and cancels the one in flight when the timeout expires, and once it has fired
-    // no further attempt starts. The lock_timeout is therefore left as it is.
+    // A retry follows only an attempt that put counts back (a thrown flush). Budget: the host's
+    // shutdown timeout is not set in this repo, so the .NET default of 30 s applies (Docker holds 60 s,
+    // see docker-compose.prod.yml). Nothing in an attempt has a timeout of its own that adds up to that
+    // bound — the write and the reads have none. What bounds the final flush is the shutdown token: it
+    // is passed to every statement and cancels the one in flight when the timeout expires, and once it
+    // has fired no further attempt starts.
     private const int FinalFlushMaxAttempts = 3;
-
-    // Plan #373, E9: how many flushes in a row handed keys back without throwing (flush phase 2, the
-    // pending keys of the flag-off map). Its own streak, so the overall failure streak and the admin
-    // health keep meaning "the flush itself fails"; same bound and same reason (the day a count is
-    // booked on). Only the flush loop and the final flush touch it, and those never run concurrently
-    // (see StopAsync).
-    private int _consecutivePartialFlushes;
 
     // Upper bound of the random pause between two final-flush attempts (the lower bound is a fifth of
     // it). Settable for tests only.
@@ -61,9 +53,8 @@ public class UsageFlushWorker(
 
     /// <summary>
     /// One flush cycle. Returns how many counter keys it put back into the counter — the whole batch
-    /// after a throw, the handed-back keys after a partial result (plan #373, E9) — and 0 when nothing
-    /// went back: the counter was empty, everything was written, or the streak bound dropped the rest.
-    /// Only the final flush reads it (E9a).
+    /// after a throw — and 0 when nothing went back: the counter was empty, everything was written or
+    /// dropped, or the streak bound dropped the batch. Only the final flush reads it (E9a).
     /// </summary>
     internal async Task<int> FlushOnceAsync(CancellationToken ct)
     {
@@ -104,13 +95,12 @@ public class UsageFlushWorker(
             using var scope = scopeFactory.CreateScope();
             var flushService = scope.ServiceProvider.GetRequiredService<IUsageStatFlushService>();
             result = await flushService.FlushAsync(counts, ct);
-            // Bookkeeping moved to the shared WorkerStats so GET /api/admin/health can report it. A
-            // result with handed-back keys is still a success for what it wrote (plan #373, E9).
-            stats.RecordFlushSuccess(counts.Count - result.Requeued.Count, DateTime.UtcNow);
+            // Bookkeeping moved to the shared WorkerStats so GET /api/admin/health can report it.
+            stats.RecordFlushSuccess(counts.Count, DateTime.UtcNow);
         }
         catch (Exception ex)
         {
-            // A throw means nothing was written (flush phase 1 failed), so the whole batch goes back.
+            // A throw means nothing was written, so the whole batch goes back.
             // An unhandled exception here would (StopHost default) kill the whole Worker process, not
             // just this flush cycle — so it never propagates.
             var consecutiveFailures = stats.RecordFlushFailure();
@@ -130,8 +120,6 @@ public class UsageFlushWorker(
                 consecutiveFailures, counts.Count);
             return 0;
         }
-
-        var putBack = RequeueHandedBack(result.Requeued);
 
         // Deliberately its own try/catch, and deliberately *after* RecordFlushSuccess: at this point
         // the flush is committed. If a Redis outage were allowed to fall into the catch above, a
@@ -155,13 +143,12 @@ public class UsageFlushWorker(
             logger.LogWarning(ex, "Live-Event '{Type}' konnte nicht veröffentlicht werden.", LiveEvents.UsageFlushed);
         }
 
-        return putBack;
+        return 0;
     }
 
     // Plan #373, E9a. The first attempt always runs; up to two more follow, after a short random pause,
-    // only while the previous attempt put counts back (a thrown phase 1 or handed-back keys) and the
-    // shutdown token has not fired. What is still in the counter after attempts that kept failing is
-    // dropped with an error line.
+    // only while the previous attempt put counts back (a thrown flush) and the shutdown token has not
+    // fired. What is still in the counter after attempts that kept failing is dropped with an error line.
     //
     // The counter does not stand still meanwhile: hosted services stop in reverse registration order,
     // so Worker — which owns the Twitch client — stops only after this service and keeps counting
@@ -243,31 +230,4 @@ public class UsageFlushWorker(
             ? TimeSpan.Zero
             : TimeSpan.FromMilliseconds(Random.Shared.NextDouble() * FinalFlushMaxPause.TotalMilliseconds * 0.8
                 + FinalFlushMaxPause.TotalMilliseconds * 0.2);
-
-    // The keys a flush wrote nothing for and handed back (they are pending keys and go back as such,
-    // to be resolved afresh). Dropped keys — of deleted slots or emotes — never come back here.
-    // Returns how many keys went back into the counter.
-    private int RequeueHandedBack(IReadOnlyDictionary<UsageCounterKey, EmoteUsageCounts> requeued)
-    {
-        if (requeued.Count == 0)
-        {
-            _consecutivePartialFlushes = 0;
-            return 0;
-        }
-
-        _consecutivePartialFlushes++;
-        if (_consecutivePartialFlushes <= MaxConsecutiveFailuresToRequeue)
-        {
-            usageCounter.Merge(requeued);
-            logger.LogWarning(
-                "Usage flush handed back {Count} counts without a slot yet ({Attempt}. time in a row); they are put back for the next run.",
-                requeued.Count, _consecutivePartialFlushes);
-            return requeued.Count;
-        }
-
-        logger.LogError(
-            "Usage flush has handed back counts without a slot yet for {Attempt} runs in a row, {Count} counts dropped.",
-            _consecutivePartialFlushes, requeued.Count);
-        return 0;
-    }
 }
