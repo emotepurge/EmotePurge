@@ -1800,6 +1800,37 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
     expect(dialogData.emotesUncapped?.() ?? false).toBe(false);
   });
 
+  // Operator decision B-1 (plan 378, A9): an entry row removes one set entry, so the confirmation
+  // lists exactly its one alias — a marked slot card next to an unmarked sibling reads "1 … löschen?",
+  // and the title still counts the names it lists.
+  it('lists only the alias of an entry row, so one marked slot card next to a sibling counts 1 (B-1)', () => {
+    dialogData = captureDialogData([
+      {
+        emoteId: 'x',
+        sevenTvEmoteId: '7tv-x',
+        name: 'hob44',
+        aliases: ['hob44'],
+        hidden: false,
+        entry: {
+          slotId: 'slot-hob',
+          alias: 'hob44',
+          addedAt: '2026-10-13T08:00:14.902Z',
+          cardKey: 'slot-hob',
+        },
+      },
+    ]);
+
+    expect(dialogData.emotes()).toEqual(['hob44']);
+    expect(dialogData.hiddenEmotes()).toEqual([]);
+    expect(dialogData.emotesUncapped?.() ?? false).toBe(false);
+
+    const dialogFixture = TestBed.createComponent(DeleteConfirmDialog);
+    dialogFixture.detectChanges();
+    const host: HTMLElement = dialogFixture.nativeElement;
+    expect(host.textContent).toContain('1 Emote von 7TV löschen?');
+    expect(host.textContent).not.toContain('ome44');
+  });
+
   it('shows a co-deleted sibling that becomes the 51st visible name, uncapped (R2-2)', () => {
     const ordinary: DeletableEmote[] = Array.from({ length: 49 }, (_, index) => ({
       emoteId: `v${index}`,

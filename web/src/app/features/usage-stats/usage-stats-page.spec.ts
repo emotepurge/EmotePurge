@@ -8628,6 +8628,15 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     });
   });
 
+  it('names only its own alias for the confirmation, never its unmarked sibling (B-1)', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-hob');
+
+    const [row] = component['selectedForDelete']();
+    expect(row.name).toBe('hob44');
+    expect('confirmationNames' in row).toBe(false);
+  });
+
   it('keeps an entry row visible when only its unmarked sibling is filtered out', () => {
     mount([ome(), hob(), other()]);
     click('slot-hob');

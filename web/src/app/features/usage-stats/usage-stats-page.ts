@@ -369,44 +369,6 @@ function selectedSevenTvIds(emotes: readonly EmoteUsageTotal[]): string[] {
   return [...new Set(emotes.map((emote) => emote.sevenTvEmoteId))];
 }
 
-/** A card that stands for one set entry next to its siblings: a slot card, or a live member keyed
- *  per entry in a slot response (plan 377, 2.3) — never an emote-mode row or a grouped member. */
-function isPerEntryCard(emote: EmoteUsageTotal): boolean {
-  return emote.slotId !== null || emote.slotKey.startsWith('live:');
-}
-
-/**
- * The names the delete confirmation lists for one 7TV id shown as slot cards (plan 377, 2.6, F3):
- * the first marked card's name, then the names of every `'live'` card of the id in D2 order (add
- * date ascending, unknown last, then name ordinal), then any further alias the run records — so the
- * confirmation names every entry the run's one `REMOVE` takes. Ordinal distinct.
- */
-function confirmationNamesFor(
-  markedName: string,
-  cards: readonly EmoteUsageTotal[],
-  aliases: readonly string[],
-): string[] {
-  const instantOf = (iso: string | null): number | null => {
-    const ms = iso ? Date.parse(iso) : Number.NaN;
-    return Number.isNaN(ms) ? null : ms;
-  };
-  const byD2 = cards
-    .flatMap((emote) =>
-      emote.aliases.map((name) => ({ name, instant: instantOf(emote.firstSeenAt) })),
-    )
-    .sort((a, b) => {
-      if (a.instant !== b.instant) {
-        if (a.instant === null) {
-          return 1;
-        }
-        return b.instant === null ? -1 : a.instant - b.instant;
-      }
-      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
-    })
-    .map((entry) => entry.name);
-  return [...new Set([markedName, ...byD2, ...aliases])];
-}
-
 /**
  * How one marked `'live'` card enters a delete run (plan 378, section 3). An **entry row** removes
  * exactly the card's one set entry, by its alias, and is reported with its generation; an **id
@@ -2220,6 +2182,14 @@ export class UsageStatsPage {
   // and a restore must not bring them back either. A held card (provisional, undated or with a date
   // the strict check refuses) is not in the run at all.
   //
+  // No row sets `confirmationNames` (plan 378, A9; operator decision B-1, 2026-10-13): the
+  // confirmation lists each row's `name` — an entry row its one alias, so one marked slot card
+  // next to a sibling reads "1 Emote löschen?"; an id row its first marked card's name, as before
+  // slots (an emote-mode duplicate cell `×2` included). The title still counts the listed names.
+  // Plan 377's per-id transition named every alias of the id there, because its one `REMOVE` took
+  // them all; an entry row's `REMOVE` takes only its own. The panel keeps the field for any host
+  // whose row does take more than it shows.
+  //
   // One row per 7TV id for every other card (an **id row**, as before slots): a `REMOVE` without an
   // alias takes every entry of the id, so `aliases` is the union over every `'live'` card of the id
   // in `emotes()`, marked or not. A row without `Emote.Id` goes in like any other since K5 (spec
@@ -2276,12 +2246,6 @@ export class UsageStatsPage {
         sevenTvEmoteId,
         name: marked[0].emoteName,
         aliases,
-        // Every name the run takes, for the confirmation (plan 377, 2.6, F3) — only for an id
-        // shown as slot cards, so with the flag off the confirmation lists exactly what it did,
-        // and an emote-mode duplicate cell (`×2`) still names only its own name there.
-        ...(idCards.some(isPerEntryCard)
-          ? { confirmationNames: confirmationNamesFor(marked[0].emoteName, idCards, aliases) }
-          : {}),
         // As for an entry row above; an id counts as hidden only when every marked card of it is.
         hidden: marked.every((emote) => !this.selection.isVisible(emote)),
       };

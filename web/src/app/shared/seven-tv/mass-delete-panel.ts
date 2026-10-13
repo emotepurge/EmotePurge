@@ -51,13 +51,14 @@ export interface DeletableEmote {
    *  limitation this comment used to describe as open). */
   aliases?: readonly string[];
   /**
-   * The names the delete confirmation lists for this entry — omitted means `[name]`, which is what
-   * every host passed before (plan 377, 2.6, operator decision F3). The usage page sets it only for
-   * a 7TV id it shows as slot cards: until #378 the run deletes per id, so one marked card takes
-   * every other name of the emote with it, marked or not, visible or filtered out, and the last
-   * screen before the irreversible write must name each one. The names land in the list the entry
-   * falls into by `hidden`. As soon as one entry carries this field, the visible list is shown
-   * without its 50-name cap, so a co-deleted alias can never hide behind "n more".
+   * The names the delete confirmation lists for this entry — omitted means `[name]` (plan 377, 2.6,
+   * operator decision F3). For a row whose one `REMOVE` takes entries the host does not show as
+   * marked: the last screen before the irreversible write must name each one, visible or filtered
+   * out. The names land in the list the entry falls into by `hidden`. As soon as one entry carries
+   * this field, the visible list is shown without its 50-name cap, so a co-deleted alias can never
+   * hide behind "n more". No host sets it at present: the usage page did during plan 377's per-id
+   * transition and stopped with the delete per set entry (plan 378, A9, operator decision B-1) — an
+   * entry row takes only the alias it lists.
    */
   confirmationNames?: readonly string[];
   /** Whether the host page's current filter hides this emote right now (`!selection.isVisible`).
