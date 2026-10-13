@@ -33,6 +33,7 @@ import {
   SevenTvMutation,
   SevenTvRunEngine,
   StepGate,
+  SkipReasonKey,
 } from './seven-tv-run-engine';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
@@ -760,11 +761,15 @@ export class SevenTvDeleteService {
   private skipEntry(
     context: EntryRunContext,
     emote: RunQueueEmote,
-    translationKey: string,
+    translationKey: SkipReasonKey,
     params: Record<string, string>,
   ): StepGate {
     context.attempted.delete(emote.key);
-    return { kind: 'skip', errorMessage: this.translocoService.translate(translationKey, params) };
+    return {
+      kind: 'skip',
+      errorMessage: this.translocoService.translate(translationKey, params),
+      reason: { key: translationKey, params },
+    };
   }
 
   /**
@@ -1286,8 +1291,10 @@ function failBindingRead(context: EntryRunContext, reason: 'unavailable' | 'trun
   return null;
 }
 
-function readFailureKey(reason: 'unavailable' | 'truncated'): string {
-  return `massDelete.memberRead.${reason}`;
+function readFailureKey(reason: 'unavailable' | 'truncated'): SkipReasonKey {
+  return reason === 'unavailable'
+    ? 'massDelete.memberRead.unavailable'
+    : 'massDelete.memberRead.truncated';
 }
 
 /**

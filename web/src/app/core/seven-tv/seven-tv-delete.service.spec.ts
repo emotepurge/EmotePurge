@@ -2311,6 +2311,10 @@ describe('SevenTvDeleteService', () => {
       expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
         status: 'cancelled',
         errorMessage: 'aaa wurde in ccc umbenannt — nicht gelöscht.',
+        skipReason: {
+          key: 'usageStats.delete.renamedSinceLoad',
+          params: { name: 'aaa', newName: 'ccc' },
+        },
       });
     });
 
@@ -2440,6 +2444,7 @@ describe('SevenTvDeleteService', () => {
       expect(rowOf('7tv-a4#slot-a4')).toMatchObject({
         status: 'cancelled',
         errorMessage: 'Die Einträge dieses Sets konnten nur teilweise gelesen werden.',
+        skipReason: { key: 'massDelete.memberRead.truncated', params: {} },
       });
       vi.advanceTimersByTime(DELETE_DELAY_MS);
       expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-2' });

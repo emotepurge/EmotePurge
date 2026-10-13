@@ -22,7 +22,12 @@ import {
   RestoreQueueEmote,
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
-import { RunItemStatus, RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import {
+  RunItemStatus,
+  RunQueueItem,
+  SkipReason,
+  SkipReasonKey,
+} from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { unknownCount } from '../../core/seven-tv/seven-tv-run-settlement';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
@@ -141,26 +146,27 @@ function unexpectedRemovalOffers(run: DeleteRunInfo): UnexpectedRemovalOffer[] {
 }
 
 /** A row a slot run's check before its removal skipped (Plan-378 4.4): `cancelled` for the engine,
- *  which sent nothing, but carrying the reason the check gave. A row the user's cancel stopped is
- *  `cancelled` without one — the engine never gives a pending row a message. */
+ *  which sent nothing, but carrying the reason code the check gave. A row the user's cancel stopped
+ *  is `cancelled` without one — the engine never gives a pending row a reason. */
 function isSkippedRow(item: RunQueueItem): boolean {
-  return item.status === 'cancelled' && !!item.errorMessage;
+  return item.status === 'cancelled' && item.skipReason !== undefined;
 }
 
 /** The skip reasons that do not name their row — a read of the set that failed, ran out or came
  *  back incomplete, and the engine's own fallback for a check that broke. Rows skipped for one of
  *  these share one dock line that names them; every other reason (renamed, departed, no alias) is a
- *  sentence about its row already and stands as it is. */
-const UNNAMED_SKIP_REASON_KEYS = [
+ *  sentence about its row already and stands as it is. Recognised by the row's reason code, never
+ *  by its message, which is fixed in the language it was written in. */
+const UNNAMED_SKIP_REASON_KEYS: ReadonlySet<SkipReasonKey> = new Set<SkipReasonKey>([
   'massDelete.memberRead.unavailable',
   'massDelete.memberRead.truncated',
   'massDelete.errors.beforeStepFailed',
-] as const;
+]);
 
-/** One dock line for the run's skipped rows: the reason as the check wrote it, and — for a reason
- *  that does not name its row — the names of every row skipped for it, comma-joined. */
+/** One dock line for the run's skipped rows: the reason (translated when the line renders) and —
+ *  for a reason that does not name its row — the names of every row skipped for it, comma-joined. */
 interface SkippedLine {
-  reason: string;
+  reason: SkipReason;
   names: string | null;
 }
 
@@ -249,10 +255,12 @@ function removedAnEntry(items: readonly RunQueueItem[]): boolean {
               <span class="text-xs text-fg-muted">
                 @if (line.names; as names) {
                   {{
-                    'usageStats.delete.skippedUnread' | transloco: { names, reason: line.reason }
+                    'usageStats.delete.skippedUnread'
+                      | transloco
+                        : { names, reason: (line.reason.key | transloco: line.reason.params) }
                   }}
                 } @else {
-                  {{ line.reason }}
+                  {{ line.reason.key | transloco: line.reason.params }}
                 }
               </span>
             }
@@ -387,9 +395,8 @@ export class DeleteProgressSection {
   private readonly httpClient = inject(HttpClient);
   private readonly dialog = inject(Dialog);
   private readonly destroyRef = inject(DestroyRef);
-  /** Only for the refused-start notice's kind noun and for recognising the skip reasons that do not
-   *  name their row (`skippedLines`) — every other string in this component goes through the
-   *  template's own `TranslocoPipe`. */
+  /** Only for the refused-start notice's kind noun — every other string in this component goes
+   *  through the template's own `TranslocoPipe`. */
   private readonly translocoService = inject(TranslocoService);
 
   /** Whether the current run's protocol was downloaded at least once — drives the reminder next
@@ -468,26 +475,21 @@ export class DeleteProgressSection {
     if (run === null) {
       return [];
     }
-    // The texts the check wrote, in the language it wrote them in — the row's own message is fixed
-    // the same way.
-    const unnamed = new Set<string>(
-      UNNAMED_SKIP_REASON_KEYS.map((key) => this.translocoService.translate(key)),
-    );
-    const lines: { reason: string; names: string[] | null }[] = [];
-    const byReason = new Map<string, string[]>();
+    const lines: { reason: SkipReason; names: string[] | null }[] = [];
+    const byReason = new Map<SkipReasonKey, string[]>();
     for (const item of run.result.items) {
-      const reason = item.errorMessage;
+      const reason = item.skipReason;
       if (!isSkippedRow(item) || reason === undefined) {
         continue;
       }
-      if (!unnamed.has(reason)) {
+      if (!UNNAMED_SKIP_REASON_KEYS.has(reason.key)) {
         lines.push({ reason, names: null });
         continue;
       }
-      const names = byReason.get(reason);
+      const names = byReason.get(reason.key);
       if (names === undefined) {
         const fresh = [item.name];
-        byReason.set(reason, fresh);
+        byReason.set(reason.key, fresh);
         lines.push({ reason, names: fresh });
       } else {
         names.push(item.name);

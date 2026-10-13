@@ -11,7 +11,7 @@ import {
 } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { Subject, of } from 'rxjs';
+import { Subject, firstValueFrom, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
@@ -1477,8 +1477,27 @@ describe("DeleteProgressSection — a slot run's skipped rows", () => {
       memberRead: { unavailable: READ_FAILED, truncated: 'Set nur teilweise lesbar.' },
       errors: { beforeStepFailed: 'Prüfung fehlgeschlagen.' },
     },
-    usageStats: { delete: { skippedUnread: '{{names}} nicht gelöscht: {{reason}}' } },
+    usageStats: {
+      delete: {
+        skippedUnread: '{{names}} nicht gelöscht: {{reason}}',
+        renamedSinceLoad: '{{name}} wurde in {{newName}} umbenannt — nicht gelöscht.',
+      },
+    },
   };
+  const EN = {
+    ...DE,
+    massDelete: {
+      ...DE.massDelete,
+      memberRead: { unavailable: 'Set unreadable.', truncated: 'Set only partly readable.' },
+    },
+    usageStats: {
+      delete: {
+        skippedUnread: '{{names}} not deleted: {{reason}}',
+        renamedSinceLoad: '{{name}} was renamed to {{newName}} — not deleted.',
+      },
+    },
+  };
+  const UNREAD = { key: 'massDelete.memberRead.unavailable' } as const;
   const row = (key: string, name: string, extra: Partial<RunQueueItem>): RunQueueItem => ({
     key: `7tv-1#${key}`,
     emoteId: 'e-1',
@@ -1496,6 +1515,10 @@ describe("DeleteProgressSection — a slot run's skipped rows", () => {
     status: 'cancelled',
     completedSteps: 0,
     errorMessage: 'hob44 wurde in hob45 umbenannt — nicht gelöscht.',
+    skipReason: {
+      key: 'usageStats.delete.renamedSinceLoad',
+      params: { name: 'hob44', newName: 'hob45' },
+    },
   });
 
   let fixture: ComponentFixture<DeleteProgressSection>;
@@ -1521,8 +1544,12 @@ describe("DeleteProgressSection — a slot run's skipped rows", () => {
       imports: [
         DeleteProgressSection,
         TranslocoTestingModule.forRoot({
-          langs: { de: DE },
-          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+          langs: { de: DE, en: EN },
+          translocoConfig: {
+            availableLangs: ['de', 'en'],
+            defaultLang: 'de',
+            reRenderOnLangChange: true,
+          },
         }),
       ],
       providers: sectionProviders({
@@ -1533,6 +1560,7 @@ describe("DeleteProgressSection — a slot run's skipped rows", () => {
       }),
     }).compileComponents();
     await TestBed.inject(TranslocoService).load('de');
+    await firstValueFrom(TestBed.inject(TranslocoService).load('en'));
     httpMock = TestBed.inject(HttpTestingController);
     fixture = TestBed.createComponent(DeleteProgressSection);
     fixture.componentRef.setInput('hostSelectedSetId', 'set-1');
@@ -1557,7 +1585,12 @@ describe("DeleteProgressSection — a slot run's skipped rows", () => {
   });
 
   it('names every row a failed set read skipped in one line with that reason', async () => {
-    const unread = { status: 'cancelled' as const, completedSteps: 0, errorMessage: READ_FAILED };
+    const unread = {
+      status: 'cancelled' as const,
+      completedSteps: 0,
+      errorMessage: READ_FAILED,
+      skipReason: UNREAD,
+    };
     await mount([
       DONE,
       row('slot-hob', 'hob44', unread),
@@ -1570,6 +1603,29 @@ describe("DeleteProgressSection — a slot run's skipped rows", () => {
     expect(text()).toContain('hob44 wurde in hob45 umbenannt — nicht gelöscht.');
     expect(text()).toContain('4 / 4 verarbeitet');
     expect(text()).toContain('1 gelöscht · 0 fehlgeschlagen · 0 abgebrochen');
+  });
+
+  it('keeps grouping the read-failure rows with their names and speaks the new language after a switch', async () => {
+    const unread = {
+      status: 'cancelled' as const,
+      completedSteps: 0,
+      errorMessage: READ_FAILED,
+      skipReason: UNREAD,
+    };
+    await mount([
+      DONE,
+      row('slot-hob', 'hob44', unread),
+      RENAMED,
+      row('slot-kek', 'kek44', unread),
+    ]);
+
+    TestBed.inject(TranslocoService).setActiveLang('en');
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    expect(text()).toContain('hob44, kek44 not deleted: Set unreadable.');
+    expect(text()).not.toContain(READ_FAILED);
+    expect(text()).toContain('hob44 was renamed to hob45 — not deleted.');
   });
 
   // Flag off: a run of id rows never has a skipped row, so its dock counts as it always did.
