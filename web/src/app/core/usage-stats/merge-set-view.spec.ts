@@ -449,6 +449,21 @@ describe('mergeSetView per slot (plan 377)', () => {
     expect(byName(result, 'a').siblingNames).toEqual([tilde, emoji]);
   });
 
+  it('R1 a: keeps the raw add date of an uncounted entry on its card, and none on an undated one or a counted card', () => {
+    const micro = '2026-10-13T08:00:14.902123+02:00';
+    const result = mergeSetView(
+      [slotDto('slot-ome', 'ome44', { totalUseCount: 12 })],
+      [slotEntry('ome44', T), slotEntry('hob44', micro), slotEntry('undated', null)],
+      false,
+    );
+
+    // Verbatim, not normalised: the slot delete reports this very string.
+    expect(byName(result, 'hob44').liveAddedAt).toBe(micro);
+    expect(byName(result, 'hob44').firstSeenAt).toBeNull();
+    expect('liveAddedAt' in byName(result, 'undated')).toBe(false);
+    expect('liveAddedAt' in byName(result, 'ome44')).toBe(false);
+  });
+
   it('S1: gives two uncounted entries sharing one instant distinct, name-qualified keys', () => {
     const result = mergeSetView(
       [

@@ -159,6 +159,9 @@ export function startRestoreFlow(
       name: row.name,
       aliases: row.aliases,
       defaultName: row.defaultName,
+      // A version 4 protocol's entry row (Plan-378 4.8): its slot and the original add date go to
+      // the restore unchanged, and both duplicate checks read the row in entry mode.
+      ...(row.entry === undefined ? {} : { entry: row.entry }),
       ...(row.uncertain ? { uncertain: true as const } : {}),
     }));
 

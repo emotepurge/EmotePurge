@@ -11,7 +11,14 @@ import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.s
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter, SevenTvRunKind } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
-import { PurgeRunRow, RestoreRow } from '../export/purge-run-export';
+import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import {
+  PurgeRunRow,
+  RestoreRow,
+  buildPurgeRunProtocol,
+  parsePurgeRunProtocol,
+  purgeRunJson,
+} from '../export/purge-run-export';
 import {
   buildTransferUndoProtocol,
   parseTransferUndoForRestore,
@@ -1444,5 +1451,84 @@ describe('startRestoreFlow — unclear protocol rows (#275)', () => {
 
     expect(sentIds(startRestore)).toEqual(['7tv-1']);
     expect(startRestore.mock.calls[0][3]).toBe(true);
+  });
+});
+
+// Plan-378 4.7/4.8: a version 4 protocol's entry rows, read through the real parser the way the file
+// step reads them, reach the run with their target — next to a sibling of the same id that the slot
+// delete left in the set (S1).
+describe('startRestoreFlow — entry rows of a version 4 protocol', () => {
+  const ORIGINAL = '2026-10-13T08:00:14.902Z';
+
+  function entryItem(alias: string, addedAt: string): RunQueueItem {
+    return {
+      key: `7tv-x#slot-${alias}`,
+      sevenTvEmoteId: '7tv-x',
+      name: alias,
+      aliases: [alias],
+      entry: { slotId: `slot-${alias}`, alias, addedAt, cardKey: `slot-${alias}` },
+      status: 'done',
+      completedSteps: 1,
+      failedStep: null,
+    };
+  }
+
+  function fileRows(items: RunQueueItem[]): RestoreRow[] {
+    const parsed = parsePurgeRunProtocol(
+      purgeRunJson(
+        buildPurgeRunProtocol({
+          channelName: CHANNEL,
+          emoteSetId: SET_ID,
+          startedAt: 0,
+          finishedAt: 1,
+          targetOwnerTwitchId: null,
+          items,
+        }),
+      ),
+    );
+    if (!parsed.ok) {
+      throw new Error(`entry protocol fixture did not parse: ${parsed.errorKey}`);
+    }
+    return parsed.rows;
+  }
+
+  it('restores a removed entry next to its surviving sibling, with slot and original add date', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: '7tv-x', alias: 'ome44' }])));
+
+    startRestoreFlow(deps, target(), fileRows([entryItem('hob44', ORIGINAL)]));
+
+    expect(confirmData(dialogOpen).names).toEqual(['hob44']);
+    firstClosed<boolean>(dialogOpen).next(true);
+    expect(startRestore).toHaveBeenCalledWith(
+      expect.objectContaining({ setId: SET_ID }),
+      [
+        expect.objectContaining({
+          sevenTvEmoteId: '7tv-x',
+          aliases: ['hob44'],
+          entry: { slotId: 'slot-hob44', alias: 'hob44', addedAt: ORIGINAL },
+        }),
+      ],
+      0,
+      true,
+      0,
+    );
+  });
+
+  it('sends only the entry still missing when the file is restored a second time', () => {
+    const { deps, dialogOpen, httpPost, startRestore } = setup();
+    httpPost.mockReturnValue(of(emoteSetEntriesPage([{ id: '7tv-x', alias: 'ome44' }])));
+
+    startRestoreFlow(
+      deps,
+      target(),
+      fileRows([entryItem('hob44', ORIGINAL), entryItem('ome44', '2026-10-12T19:30:00Z')]),
+    );
+
+    expect(confirmData(dialogOpen).names).toEqual(['hob44']);
+    firstClosed<boolean>(dialogOpen).next(true);
+    const sent = startRestore.mock.calls[0][1] as RestoreRow[];
+    expect(sent.map((row) => row.entry?.alias)).toEqual(['hob44']);
+    expect(startRestore.mock.calls[0][2]).toBe(1);
   });
 });

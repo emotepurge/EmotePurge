@@ -1167,6 +1167,7 @@
   [withImport]="true"
   [markedCount]="dockMarkedCount()"
   [hiddenSelectedCount]="dockHiddenSelectedCount()"
+  [pendingSyncNames]="dockPendingSyncNames()"
 />
 
 <!-- The action bar. It exists only while there is something to act on, which is what allows the
@@ -1235,6 +1236,22 @@
               {{ 'usageStats.resetFilters' | transloco }}
             </button>
           </div>
+        }
+        <!-- Marked cards the delete run holds out (plan 378, 4.9, A10): a slot card 7TV has not
+             dated yet, or an uncounted entry without a date — the run deletes per set entry and
+             cannot bind them. Named here, right below the hidden-by-filter line, so a marked card
+             never drops out of the delete unexplained; the delete button counts only what the run
+             takes. Created by its own @if like the line above, so it is spoken by the permanently
+             mounted app-dock-outcome-announcer (docs/UI-Designsprache.md §4.5) and aria-hidden
+             here. -->
+        @if (pendingSyncNames().length > 0) {
+          <p aria-hidden="true" class="text-xs text-fg-muted">
+            {{
+              pendingSyncKey()
+                | transloco
+                  : { count: pendingSyncNames().length, names: pendingSyncNames().join(', ') }
+            }}
+          </p>
         }
         <app-mass-delete-panel
           #massDeletePanel

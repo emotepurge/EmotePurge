@@ -1,6 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Observable, catchError, map, of } from 'rxjs';
 
+import { SevenTvEntryGeneration } from '../../core/seven-tv/seven-tv-entry-target';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { ReplaceOrAdoptTransferRow, TransferPlan } from '../../core/seven-tv/transfer-plan';
 
@@ -102,6 +103,16 @@ export interface RestoreFilterRow {
    *  treats such a row fail-closed: it is only ever kept by a read that succeeded *and* saw the whole
    *  set (see there, and `uncertainDropped`). */
   uncertain?: true;
+  /** Set on a row that brings back one removed set entry (slot delete, Plan-378 4.7): the filter
+   *  checks it in **entry mode** — see `filterAlreadyPresentForRestore`. Only its presence matters
+   *  here; what it carries is the run's and the report's business. */
+  entry?: SevenTvEntryGeneration;
+  /** Set (to `true`) on a row that brings back one entry of an id without knowing its generation —
+   *  the dock's offer for an entry a slot removal took unexpectedly (Plan-378 4.7, last point): no
+   *  slot and no add date are known, but the id's surviving siblings must not block it either, so
+   *  the filter checks it in entry mode all the same. Unlike `entry` it carries nothing for the
+   *  restore report: the run reports such a row by its id only. */
+  perEntry?: true;
 }
 
 /** `filterAlreadyPresentForRestore`'s result: the shared filter outcome plus the aliases dropped
@@ -164,7 +175,22 @@ export interface RestoreAlreadyPresentFilterResult<T> extends AlreadyPresentFilt
  *    only named aliases are compared — a `null` alias names nothing yet.
  *
  * A row none of whose aliases is left drops out entirely. Every row, whichever source it came from
- * (purge-run protocol, transfer-run file, finished delete run), goes through all four rules.
+ * (purge-run protocol, transfer-run file, finished delete run), goes through all four rules —
+ * except a row in entry mode.
+ *
+ * **Entry mode** (Plan-378 4.7 a, S1) — a row with an entry target, which brings back one removed
+ * set entry of an id whose other entries may well still be there (a slot delete removes one entry
+ * and leaves its siblings). Rule 2 would read every such surviving sibling as a foreign entry and
+ * drop the row, so the entry could never come back next to it. Instead, per alias: **(1)** the id
+ * already holds this alias in the set → dropped as present (`skipped`); **(2)** another emote holds
+ * it → dropped as name taken (rule 4, `skippedNameTaken`); **(3)** otherwise it goes out, whatever
+ * other entries the id has — siblings and an aliasless entry of the same id are no obstacle: 7TV
+ * keeps several entries of one id, and an `ADD` under this alias cannot touch any of them. A
+ * partial retry falls out of the same rule: of two entry rows of one id, the one already back is
+ * dropped, the other goes out. The `uncertain` rules below apply unchanged. Rows without a target
+ * keep rules 1–4 exactly as they are — except a row marked `perEntry`, the dock's offer for an
+ * entry a slot removal took unexpectedly: it has no target (the restore reports it by id only) but
+ * stands next to surviving siblings of the same id just the same, so it takes entry mode too.
  *
  * `skipped` and `skippedNameTaken` count **aliases**, i.e. `ADD`s not sent, not rows (a `null`
  * alias is one): the restore confirmation already speaks in `ADD`s
@@ -230,7 +256,10 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
       for (const row of vouched) {
         const rowAliases: readonly (string | null)[] =
           row.aliases && row.aliases.length > 0 ? row.aliases : [row.name];
-        const missing = missingAliases(row.sevenTvEmoteId, rowAliases, aliasesById, aliaslessIds);
+        const missing =
+          row.entry === undefined && row.perEntry !== true
+            ? missingAliases(row.sevenTvEmoteId, rowAliases, aliasesById, aliaslessIds)
+            : missingEntryAliases(row.sevenTvEmoteId, rowAliases, aliasesById, aliaslessIds);
         skipped += rowAliases.length - missing.length;
         // A missing alias is never held by the row's own id (that would make it present), so any
         // holder is another emote.
@@ -280,12 +309,22 @@ export function filterAlreadyPresentForRestore<T extends RestoreFilterRow>(
  *
  * Named for what it does to `rows`, not for when it runs: this is a pure intersection, no request
  * of its own.
+ *
+ * The aliases `shown` names for an id are the union over every shown row of that id: entry rows
+ * (Plan-378 4.7) put several rows of one id side by side — one per removed entry — and each must
+ * keep the alias the confirmation showed for it. Rows per id are one per id, so for them the union
+ * is that one row's aliases, as before.
  */
 export function clipToShown<T extends RestoreFilterRow>(
   rows: readonly T[],
   shown: readonly RestoreFilterRow[],
 ): T[] {
-  const shownAliasesById = new Map(shown.map((row) => [row.sevenTvEmoteId, clipAliasSet(row)]));
+  const shownAliasesById = new Map<string, Set<string | null>>();
+  for (const row of shown) {
+    const aliases = shownAliasesById.get(row.sevenTvEmoteId) ?? new Set<string | null>();
+    clipRowAliases(row).forEach((alias) => aliases.add(alias));
+    shownAliasesById.set(row.sevenTvEmoteId, aliases);
+  }
   const clipped: T[] = [];
   for (const row of rows) {
     const allowed = shownAliasesById.get(row.sevenTvEmoteId);
@@ -306,10 +345,6 @@ export function clipToShown<T extends RestoreFilterRow>(
  *  `clipToShown` is the only caller. */
 function clipRowAliases(row: RestoreFilterRow): (string | null)[] {
   return row.aliases && row.aliases.length > 0 ? [...row.aliases] : [row.name];
-}
-
-function clipAliasSet(row: RestoreFilterRow): ReadonlySet<string | null> {
-  return new Set(clipRowAliases(row));
 }
 
 /** `loadRestoreConfirmPreview`'s result: `filterAlreadyPresentForRestore`'s own outcome, plus the
@@ -464,6 +499,21 @@ function missingAliases(
   }
   return rowAliases.filter((alias) =>
     alias === null ? !hasAliaslessLive : !present.includes(alias),
+  );
+}
+
+/** Entry mode of `filterAlreadyPresentForRestore` for one row (Plan-378 4.7 a): the aliases of
+ *  `rowAliases` the id does not hold in the set yet — whatever other entries, siblings or an
+ *  aliasless one, the id has there. A `null` alias is missing while the id has no aliasless entry. */
+function missingEntryAliases(
+  id: string,
+  rowAliases: readonly (string | null)[],
+  aliasesById: ReadonlyMap<string, readonly string[]>,
+  aliaslessIds: ReadonlySet<string>,
+): (string | null)[] {
+  const present = aliasesById.get(id) ?? [];
+  return rowAliases.filter((alias) =>
+    alias === null ? !aliaslessIds.has(id) : !present.includes(alias),
   );
 }
 

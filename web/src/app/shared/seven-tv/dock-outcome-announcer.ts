@@ -223,6 +223,14 @@ export function hiddenByFilterNoticeKey(count: number): string {
   return pluralKey(count, 'usageStats.dock.hiddenByFilter');
 }
 
+/** Translation key for the dock's "these marked cards are held out of the delete" line (plan 378,
+ *  4.9, A10): marked slot cards 7TV has not dated yet, which a delete run per set entry cannot bind
+ *  (spec D11). Shared by this announcer and the visible line it speaks for (`usage-stats-page.html`),
+ *  same reason as `hiddenByFilterNoticeKey`. `{{names}}` takes the cards' names, comma-joined. */
+export function pendingSyncNoticeKey(count: number): string {
+  return pluralKey(count, 'usageStats.delete.pendingSync');
+}
+
 /** Translation key for announcing the outcome of a bulk-mark gesture ("mark all" in the toolbar, the
  *  per-band one) — the row it names (`usageStats.dock.marked`) is created by the same `@if` that
  *  fills it (docs/UI-Designsprache.md §4.5), which such a gesture can take from unmounted to a
@@ -262,12 +270,13 @@ export function markedCountNoticeKey(count: number): string {
  *
  * Several messages at once: one paragraph each, in the dock's own reading order — the marked-count
  * row first (it sits at the very top of the marking half), then the hidden-by-filter line (it sits
- * just below), then the delete's pre-run wait (#280, the marking half's own), then restore before
- * import, then the undo (#254). Within each of those three groups the pre-run wait of that kind
+ * just below), then the pending-sync line (plan 378, A10: marked cards held out of the delete
+ * run, right below that), then the delete's pre-run wait (#280, the marking half's own), then
+ * restore before import, then the undo (#254). Within each of those three groups the pre-run wait of that kind
  * comes first (#280), then the skipped count (for restore followed by its name-taken count, for the
  * undo one line per skip reason), the check-unavailable notice, then the resync acknowledgement —
- * in full: marked → hidden → delete wait → restore wait → restore outcomes → import wait → import
- * outcomes → undo wait → undo outcomes. `role="status"` is implicitly
+ * in full: marked → hidden → pending sync → delete wait → restore wait → restore outcomes → import
+ * wait → import outcomes → undo wait → undo outcomes. `role="status"` is implicitly
  * `aria-atomic="true"` (WAI-ARIA 1.2, §status), and Blink/WebKit apply that default — so without an
  * explicit override, a new or changed paragraph would make the whole region, standing ones
  * included, be read again. This multi-message region therefore sets `aria-atomic="false"` on its
@@ -313,6 +322,16 @@ export function markedCountNoticeKey(count: number): string {
     }
     @if (hiddenSelectedCount(); as hidden) {
       <p>{{ hiddenByFilterKey() | transloco: { count: hidden } }}</p>
+    }
+    <!-- Marked cards held out of the delete run (plan 378, A10) — the dock line right below the
+         hidden-by-filter one, created by its own @if, so this region is its voice. -->
+    @if (pendingSyncNames().length > 0) {
+      <p>
+        {{
+          pendingSyncKey()
+            | transloco: { count: pendingSyncNames().length, names: pendingSyncNames().join(', ') }
+        }}
+      </p>
     }
     <!-- #280: a confirmed delete whose live alias read is still out — the marking half's own wait,
          so after the two marking lines and before the restore group; spoken on both pages, since
@@ -441,6 +460,10 @@ export class DockOutcomeAnnouncer {
   /** How many marked rows the host page's filter currently hides, or 0 when the dock does not show
    *  that line at all — the host mirrors its own template gates into this number. */
   readonly hiddenSelectedCount = input(0);
+  /** The names of the marked cards the dock's pending-sync line says are held out of the delete
+   *  run (plan 378, A10), or empty when that line is not on screen — the host mirrors the line's own
+   *  gates into this list, as for `hiddenSelectedCount`. */
+  readonly pendingSyncNames = input<readonly string[]>([]);
 
   protected readonly restoreService = inject(SevenTvRestoreService);
   protected readonly importService = inject(SevenTvImportService);
@@ -450,6 +473,9 @@ export class DockOutcomeAnnouncer {
   protected readonly markedKey = computed(() => markedCountNoticeKey(this.markedCount()));
   protected readonly hiddenByFilterKey = computed(() =>
     hiddenByFilterNoticeKey(this.hiddenSelectedCount()),
+  );
+  protected readonly pendingSyncKey = computed(() =>
+    pendingSyncNoticeKey(this.pendingSyncNames().length),
   );
   protected readonly restoreSkippedKey = computed(() =>
     pluralKey(this.restoreService.skippedDuplicates(), 'restore.skippedDuplicates'),

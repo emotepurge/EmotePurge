@@ -1996,4 +1996,145 @@ describe('SevenTvRestoreService', () => {
       httpMock.expectOne(RESYNC_ENDPOINT).flush(null, { status: 202, statusText: 'Accepted' });
     });
   });
+
+  // Plan-378 4.7 (AK 42, 46, 55): a row that brings back one removed set entry carries its target —
+  // slot and the add date of the generation that was removed — from the queue into the report.
+  describe('entry targets (slot restore)', () => {
+    const ORIGINAL = '2026-10-13T08:00:14.902123Z';
+    const HOB = {
+      sevenTvEmoteId: '7tv-1',
+      name: 'hob44',
+      aliases: ['hob44'],
+      entry: { slotId: 'slot-hob', alias: 'hob44', addedAt: ORIGINAL },
+    };
+    const OME = {
+      sevenTvEmoteId: '7tv-1',
+      name: 'ome44',
+      aliases: ['ome44'],
+      entry: { slotId: 'slot-ome', alias: 'ome44', addedAt: '2026-10-12T19:30:00Z' },
+    };
+
+    /** Answers every `ADD` of a run of `count` rows, leaving its report out. */
+    function applyAll(count: number): void {
+      for (let index = 0; index < count; index++) {
+        flushApplied(httpMock.expectOne(GQL_ENDPOINT));
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+      }
+    }
+
+    it('keeps the target on the queue row of its alias', () => {
+      service.startRestore(target(), [HOB]);
+
+      expect(service.queue().map((item) => [item.key, item.entry])).toEqual([
+        ['7tv-1#hob44', HOB.entry],
+      ]);
+      applyAll(1);
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+    });
+
+    it('reports every restored entry with its slot and the original add date, two entries of one id under one id', () => {
+      service.startRestore(target(), [HOB, OME]);
+
+      const add = httpMock.expectOne(GQL_ENDPOINT);
+      // The ADD itself is the one it always was: the alias, nothing about slots.
+      expect(add.request.body.variables).toEqual({
+        setId: 'set-1',
+        emoteId: '7tv-1',
+        alias: 'hob44',
+      });
+      flushApplied(add);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      applyAll(1);
+
+      const report = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      expect(report.request.body).toEqual({
+        sevenTvEmoteIds: ['7tv-1'],
+        expectedChannelName: 'sensitron',
+        targetOwnerTwitchId: null,
+        entries: [
+          { sevenTvEmoteId: '7tv-1', alias: 'hob44', slotId: 'slot-hob', addedAt: ORIGINAL },
+          {
+            sevenTvEmoteId: '7tv-1',
+            alias: 'ome44',
+            slotId: 'slot-ome',
+            addedAt: '2026-10-12T19:30:00Z',
+          },
+        ],
+      });
+      report.flush(restoredAnswer({ resyncTriggered: ['sensitron'] }));
+    });
+
+    it('names only the done entries, an entry without a slot without one, and ids without a target by id alone', () => {
+      service.startRestore(target(), [
+        HOB,
+        { sevenTvEmoteId: '7tv-2', name: 'KEKW' },
+        {
+          sevenTvEmoteId: '7tv-3',
+          name: 'zaza',
+          aliases: ['zaza'],
+          entry: { alias: 'zaza', addedAt: '2026-10-01T00:00:00Z' },
+        },
+        OME,
+      ]);
+
+      applyAll(3);
+      // The last ADD is refused: its row ends `failed` and is no part of the report.
+      httpMock.expectOne(GQL_ENDPOINT).flush(null, { status: 400, statusText: 'Bad Request' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      const report = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      expect(report.request.body.sevenTvEmoteIds).toEqual(['7tv-1', '7tv-2', '7tv-3']);
+      expect(report.request.body.entries).toEqual([
+        { sevenTvEmoteId: '7tv-1', alias: 'hob44', slotId: 'slot-hob', addedAt: ORIGINAL },
+        { sevenTvEmoteId: '7tv-3', alias: 'zaza', addedAt: '2026-10-01T00:00:00Z' },
+      ]);
+      report.flush(restoredAnswer({ resyncTriggered: ['sensitron'] }));
+    });
+
+    it('sends the identical body again on a retry', () => {
+      service.startRestore(target({ active: false }), [HOB]);
+      applyAll(1);
+      const first = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      const firstBody = first.request.body;
+      first.flush(null, { status: 401, statusText: 'Unauthorized' });
+
+      service.retrySyncReport();
+
+      const retry = httpMock.expectOne(SYNC_RESTORED_ENDPOINT);
+      expect(retry.request.body).toEqual(firstBody);
+      expect(retry.request.body.entries).toEqual([
+        { sevenTvEmoteId: '7tv-1', alias: 'hob44', slotId: 'slot-hob', addedAt: ORIGINAL },
+      ]);
+      retry.flush(restoredAnswer());
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    // T-6: the Api binds the add date as a DateTimeOffset — a date it refuses would fail the report
+    // after 7TV was already changed, so such a row never becomes an ADD at all.
+    it('queues no ADD for a target whose add date the report endpoint would refuse', () => {
+      service.startRestore(target(), [
+        { ...HOB, entry: { ...HOB.entry, addedAt: '2026-02-31T00:00:00Z' } },
+        OME,
+      ]);
+
+      expect(service.queue().map((item) => item.key)).toEqual(['7tv-1#ome44']);
+      applyAll(1);
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+    });
+
+    it('starts nothing when the only row has an invalid target', () => {
+      service.startRestore(target(), [{ ...HOB, entry: { ...HOB.entry, addedAt: '0' } }]);
+
+      expect(service.run()).toBeNull();
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('restores no other alias than its own entry', () => {
+      service.startRestore(target(), [{ ...HOB, aliases: ['hob44', 'ome44'] }]);
+
+      expect(service.queue().map((item) => item.key)).toEqual(['7tv-1#hob44']);
+      applyAll(1);
+      httpMock.expectOne(SYNC_RESTORED_ENDPOINT).flush(restoredAnswer());
+    });
+  });
 });

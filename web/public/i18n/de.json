@@ -1084,6 +1084,23 @@
       },
       "loadFailedTitle": "Das gewählte Set konnte nicht geladen werden",
       "retry": "Erneut versuchen"
+    },
+    "delete": {
+      "renamedSinceLoad": "{{name}} wurde seit dem Laden der Seite in {{newName}} umbenannt — nicht gelöscht.",
+      "departedSinceLoad": "{{name}} ist seit dem Laden der Seite nicht mehr in diesem Set — nicht gelöscht.",
+      "noAlias": "{{name}} hat in 7TV keinen eigenen Namen mehr und lässt sich nicht einzeln löschen — nicht gelöscht.",
+      "skippedUnread": "{{names}} nicht gelöscht: {{reason}}",
+      "pendingSync": {
+        "one": "{{names}} wird gerade mit 7TV abgeglichen und ist deshalb nicht im Löschlauf — in einer Minute erneut versuchen.",
+        "other": "{{names}} werden gerade mit 7TV abgeglichen und sind deshalb nicht im Löschlauf — in einer Minute erneut versuchen."
+      },
+      "unexpectedRemoval": {
+        "one": "{{names}} fehlt jetzt im Set, ohne dass der Lauf es gelöscht hat — möglicherweise hat eine Löschung diesen Eintrag mit entfernt.",
+        "other": "{{names}} fehlen jetzt im Set, ohne dass der Lauf sie gelöscht hat — möglicherweise hat eine Löschung diese Einträge mit entfernt."
+      },
+      "restoreUnexpected": "Diese Einträge wiederherstellen",
+      "postCheckUnavailable": "Konnte nicht prüfen, ob weitere Einträge betroffen sind — das Set in 7TV ansehen.",
+      "restoreAfterReport": "Wiederherstellen geht erst, wenn der Lösch-Bericht angekommen ist."
     }
   },
   "sevenTvSync": {
@@ -1307,6 +1324,7 @@
         "votingExport": "Das ist ein Export einer Abstimmung, kein Purge-Protokoll. Ein importierbares Protokoll entsteht erst bei einem Löschlauf und wird direkt danach zum Download angeboten.",
         "transferRun": "Das ist das Protokoll eines Übertragungslaufs (Rückweg-Datei oder Ergebnisprotokoll), keine Emote-Liste zum Kopieren — solche Dateien dienen nur der Wiederherstellung entfernter Emotes.",
         "wrongVersion": "Die Datei stammt aus einer neueren EmotePurge-Version.",
+        "invalidEntryTarget": "Das Protokoll enthält einen Eintrag mit fehlendem oder ungültigem Namen, Hinzufügedatum oder Slot — so lässt es sich nicht sicher wiederherstellen.",
         "noRows": "Die Datei enthält keine importierbaren Emotes.",
         "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.",
         "transferRunNoRows": "Diese Übertragungsdatei enthält keine entfernten Emotes.",

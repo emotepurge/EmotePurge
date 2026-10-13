@@ -21,6 +21,7 @@ import {
   timer,
 } from 'rxjs';
 
+import { SevenTvEntryGeneration, SevenTvEntryTarget } from './seven-tv-entry-target';
 import { SevenTvTokenService } from './seven-tv-token.service';
 
 const SEVEN_TV_GQL_ENDPOINT = 'https://7tv.io/v4/gql';
@@ -50,8 +51,9 @@ const RATE_LIMIT_PACING_MARGIN = 1.1;
 export interface RunQueueEmote {
   /** Identity of this row within one run's queue — what `updateRow` matches on and what
    *  `RunResult.doneKeys` reports. Set by the calling service (spec #200, 7.2): a delete run keys
-   *  by `sevenTvEmoteId` (one row per set-view cell, a #74 duplicate included — one `REMOVE` takes
-   *  every entry), a restore run by `${sevenTvEmoteId}#${alias}` (one `ADD` per alias), an import
+   *  by `sevenTvEmoteId` for an id row (one row per set-view cell, a #74 duplicate included — one
+   *  `REMOVE` takes every entry) and by `${sevenTvEmoteId}#${cardKey}` for an entry row (one row
+   *  per set entry, `entry` set), a restore run by `${sevenTvEmoteId}#${alias}` (one `ADD` per alias), an import
    *  run (K2) by `sevenTvEmoteId` too. Must be unique within a run; the engine never deduplicates
    *  (the calling service does). */
   key: string;
@@ -66,6 +68,12 @@ export interface RunQueueEmote {
    *  one `REMOVE` takes both entries. Written into the purge protocol, which is the only place a
    *  later restore can learn them from. Absent means `[name]`. */
   aliases?: readonly string[];
+  /** Set on an **entry row**: a delete row removes exactly this one set entry (by its alias)
+   *  instead of every entry of the id; a restore row re-adds it and reports the generation it
+   *  removed (Plan-378 4.7). A delete row carries the full target, card key included; a restore
+   *  row only the generation. Carried through to results, protocol, restore input and retry; the
+   *  engine itself never reads it. Absent on an id row. */
+  entry?: SevenTvEntryTarget | SevenTvEntryGeneration;
 }
 
 /** `unknown` is the outcome of a step whose answer never came out of 7TV's GraphQL layer — no
@@ -78,6 +86,12 @@ export type RunItemStatus = 'pending' | 'in-progress' | 'done' | 'failed' | 'can
 export interface RunQueueItem extends RunQueueEmote {
   status: RunItemStatus;
   errorMessage?: string;
+  /** Why a `beforeStep` hook skipped this row, language-independent: the translation key and its
+   *  parameters, so a reader can group and re-translate the reason after a language switch instead
+   *  of matching `errorMessage`, which is fixed in the language it was written in. Set together
+   *  with `errorMessage` on a skipped row and nowhere else — a row the user's cancel stopped, and
+   *  every row of an operation without a `beforeStep` hook, has none. */
+  skipReason?: SkipReason;
   /** How many of this row's steps 7TV confirmed with a success answer, whatever the row's final
    *  status — a two-step row that ends `failed` or `unknown` with `completedSteps >= 1` had its first
    *  mutation applied. `0` until the first answer. A row a `beforeStep` hook skips at step >= 1 ends
@@ -122,9 +136,25 @@ export interface RunRequest {
   variables: Record<string, unknown>;
 }
 
+/** The translation keys a `beforeStep` hook can skip a row for, with the parameters the sentence
+ *  needs — the stable, language-independent form of a skip's `errorMessage`. */
+export type SkipReasonKey =
+  | 'massDelete.memberRead.unavailable'
+  | 'massDelete.memberRead.truncated'
+  | 'massDelete.errors.beforeStepFailed'
+  | 'usageStats.delete.renamedSinceLoad'
+  | 'usageStats.delete.noAlias'
+  | 'usageStats.delete.departedSinceLoad';
+
+export interface SkipReason {
+  key: SkipReasonKey;
+  params?: Record<string, string>;
+}
+
 /** What a `beforeStep` hook returns for one attempt of a step — see the hook's own documentation
  *  on `RunOperation` for what each outcome does. */
-export type StepGate = { kind: 'proceed' } | { kind: 'skip'; errorMessage: string };
+export type StepGate =
+  { kind: 'proceed' } | { kind: 'skip'; errorMessage: string; reason?: SkipReason };
 
 /** What a run does per emote. The engine owns pacing, retries, token handling and the queue; the
  *  operation owns only the mutations — REMOVE for the delete, ADD for the restore and the import.
@@ -175,7 +205,9 @@ export interface RunOperation {
    * in flight does — the hook's own answer, however it resolves, is simply never observed.
    *
    * Omitted means every attempt proceeds straight away, with no detour through this hook at all —
-   * delete, restore and import, none of which set it, are unaffected byte-for-byte.
+   * restore, import and a delete run of id rows only, none of which set it, are unaffected
+   * byte-for-byte. A delete run with an entry row sets it to bind every attempt to a read of the set
+   * (Plan-378 4.4).
    */
   beforeStep?(setId: string, emote: RunQueueEmote, step: number): Observable<StepGate>;
 
@@ -259,13 +291,15 @@ interface RunStepFailure {
   gqlStatus: number | null;
 }
 
+const BEFORE_STEP_FAILED: SkipReason = { key: 'massDelete.errors.beforeStepFailed' };
+
 /** The outcome of one step, after any rate-limit retries. `skip` is never seen by `retry` — it is
  *  an ordinary emitted value, not an error — so a `beforeStep` hook that skips one attempt does not
  *  prevent the engine from asking it again before the next. */
 type RunOneResult =
   | { outcome: 'done' }
   | ({ outcome: 'failed' | 'unknown' } & RunStepFailure)
-  | { outcome: 'skip'; errorMessage: string };
+  | { outcome: 'skip'; errorMessage: string; reason?: SkipReason };
 
 /** The rate-limit numbers 7TV mirrors into a rejected mutation's `extensions.headers`. All values
  *  arrive as strings; `reset` is in seconds. Any of them can be missing. */
@@ -527,7 +561,11 @@ export class SevenTvRunEngine {
           // confirmed changes — completedSteps and failedStep are left exactly as they were. A
           // multi-step row skipped past its first step keeps whatever it already confirmed, a
           // named gap rather than a loss (Plan #254 §T3). abortOn is never consulted here.
-          this.updateRow(emote.key, { status: 'cancelled', errorMessage: result.errorMessage });
+          this.updateRow(emote.key, {
+            status: 'cancelled',
+            errorMessage: result.errorMessage,
+            skipReason: result.reason,
+          });
           return of(undefined);
         }
         // A step that fails or stays unknown ends the row: a later step would build on a state 7TV
@@ -592,7 +630,9 @@ export class SevenTvRunEngine {
    *  observed (a second, synchronous one is dropped, so a double emission cannot send the request
    *  twice), and unsubscribing right after means a hook that never completes on its own does not
    *  keep this chain alive. Without a hook this *is* `runOne`, with no detour, so an operation that
-   *  never sets `beforeStep` runs exactly as it did before this method existed. */
+   *  never sets `beforeStep` runs exactly as it did before this method existed. The undo's recheck
+   *  and the slot delete's binding (Plan-378 4.4) rely on every retry passing through here: a retry
+   *  path that bypassed this method would send a request no hook had let through. */
   private runGatedOne(
     setId: string,
     emote: RunQueueEmote,
@@ -611,7 +651,11 @@ export class SevenTvRunEngine {
         gate$ = operation.beforeStep!(setId, emote, step);
       } catch (error) {
         console.error('[EmotePurge] 7TV run beforeStep hook threw — skipping the step', error);
-        return of<RunOneResult>({ outcome: 'skip', errorMessage: this.beforeStepFailedMessage() });
+        return of<RunOneResult>({
+          outcome: 'skip',
+          errorMessage: this.beforeStepFailedMessage(),
+          reason: BEFORE_STEP_FAILED,
+        });
       }
       return gate$.pipe(
         take(1),
@@ -620,14 +664,23 @@ export class SevenTvRunEngine {
         defaultIfEmpty<StepGate, StepGate>({
           kind: 'skip',
           errorMessage: this.beforeStepFailedMessage(),
+          reason: BEFORE_STEP_FAILED,
         }),
         catchError((error) => {
           console.error('[EmotePurge] 7TV run beforeStep hook errored — skipping the step', error);
-          return of<StepGate>({ kind: 'skip', errorMessage: this.beforeStepFailedMessage() });
+          return of<StepGate>({
+            kind: 'skip',
+            errorMessage: this.beforeStepFailedMessage(),
+            reason: BEFORE_STEP_FAILED,
+          });
         }),
         concatMap((gate) =>
           gate.kind === 'skip'
-            ? of<RunOneResult>({ outcome: 'skip', errorMessage: gate.errorMessage })
+            ? of<RunOneResult>({
+                outcome: 'skip',
+                errorMessage: gate.errorMessage,
+                reason: gate.reason,
+              })
             : this.runOne(setId, emote, step, operation, token),
         ),
       );

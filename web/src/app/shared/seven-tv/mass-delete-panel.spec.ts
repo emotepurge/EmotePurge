@@ -1800,6 +1800,37 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
     expect(dialogData.emotesUncapped?.() ?? false).toBe(false);
   });
 
+  // Operator decision B-1 (plan 378, A9): an entry row removes one set entry, so the confirmation
+  // lists exactly its one alias — a marked slot card next to an unmarked sibling reads "1 … löschen?",
+  // and the title still counts the names it lists.
+  it('lists only the alias of an entry row, so one marked slot card next to a sibling counts 1 (B-1)', () => {
+    dialogData = captureDialogData([
+      {
+        emoteId: 'x',
+        sevenTvEmoteId: '7tv-x',
+        name: 'hob44',
+        aliases: ['hob44'],
+        hidden: false,
+        entry: {
+          slotId: 'slot-hob',
+          alias: 'hob44',
+          addedAt: '2026-10-13T08:00:14.902Z',
+          cardKey: 'slot-hob',
+        },
+      },
+    ]);
+
+    expect(dialogData.emotes()).toEqual(['hob44']);
+    expect(dialogData.hiddenEmotes()).toEqual([]);
+    expect(dialogData.emotesUncapped?.() ?? false).toBe(false);
+
+    const dialogFixture = TestBed.createComponent(DeleteConfirmDialog);
+    dialogFixture.detectChanges();
+    const host: HTMLElement = dialogFixture.nativeElement;
+    expect(host.textContent).toContain('1 Emote von 7TV löschen?');
+    expect(host.textContent).not.toContain('ome44');
+  });
+
   it('shows a co-deleted sibling that becomes the 51st visible name, uncapped (R2-2)', () => {
     const ordinary: DeletableEmote[] = Array.from({ length: 49 }, (_, index) => ({
       emoteId: `v${index}`,
@@ -2150,6 +2181,77 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
       );
 
     expect(startDelete.mock.calls[0][2][0].aliases).toEqual(['PogU']);
+  });
+
+  // --- entry rows (slot delete, plan 378, 4.3) ---------------------------------------------------
+
+  const HOB_TARGET = {
+    slotId: 'slot-hob',
+    alias: 'hob44',
+    addedAt: '2026-10-13T08:00:14.902Z',
+    cardKey: 'slot-hob',
+  };
+
+  function selectEntryRow(): void {
+    fixture.componentRef.setInput('selectedEmotes', [
+      {
+        emoteId: 'e1',
+        sevenTvEmoteId: '7tv-1',
+        name: 'hob44',
+        aliases: ['hob44'],
+        hidden: false,
+        entry: HOB_TARGET,
+      },
+    ]);
+    fixture.detectChanges();
+  }
+
+  it('hands an entry row to the service with its target unchanged and only its own alias, whatever else the id holds', () => {
+    selectEntryRow();
+    confirm();
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'ome44' },
+        { id: '7tv-1', alias: 'hob44' },
+      ]),
+    );
+
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        {
+          emoteId: 'e1',
+          sevenTvEmoteId: '7tv-1',
+          name: 'hob44',
+          aliases: ['hob44'],
+          entry: HOB_TARGET,
+        },
+      ],
+      'somechannel',
+      'tw-owner',
+    );
+  });
+
+  // The pre-run block stays per id (#229, "gezeigt = gelöscht"): an entry that alone has gone or
+  // been renamed is the run's own per-row skip (plan 378, 4.4), not a reason to delete nothing.
+  it('lets an entry row through when only its own alias is gone but its id is still in the set', () => {
+    selectEntryRow();
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'ome44' }]));
+
+    expect(startDelete).toHaveBeenCalledTimes(1);
+    expect(startDelete.mock.calls[0][2][0].entry).toBe(HOB_TARGET);
+  });
+
+  it('blocks the whole run when the id of an entry row has left the set', () => {
+    selectEntryRow();
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-2', alias: 'KEKW' }]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
   });
 
   it('falls back to the name for a cell that is entirely aliasless in the live set', () => {

@@ -27,6 +27,7 @@ import {
   copiedNotActiveNotice,
   hiddenByFilterNoticeKey,
   markedCountNoticeKey,
+  pendingSyncNoticeKey,
   renamedNotActiveNotice,
   resyncNoticeKey,
 } from './dock-outcome-announcer';
@@ -50,6 +51,12 @@ const DE_TRANSLATIONS = {
       hiddenByFilter: {
         one: '1 davon durch den Filter ausgeblendet',
         other: '{{ count }} davon durch den Filter ausgeblendet',
+      },
+    },
+    delete: {
+      pendingSync: {
+        one: '{{ names }} wird abgeglichen, nicht im Löschlauf.',
+        other: '{{ names }} werden abgeglichen, nicht im Löschlauf.',
       },
     },
   },
@@ -196,12 +203,14 @@ function createFakeUndoSource(): FakeUndoSource {
     [withImport]="withImport()"
     [markedCount]="markedCount()"
     [hiddenSelectedCount]="hiddenSelectedCount()"
+    [pendingSyncNames]="pendingSyncNames()"
   />`,
 })
 class HostPage {
   readonly withImport = signal(true);
   readonly markedCount = signal(0);
   readonly hiddenSelectedCount = signal(0);
+  readonly pendingSyncNames = signal<readonly string[]>([]);
 }
 
 // Keyed by the type rather than hand-listed, so a new ResyncTriggerState member (other than
@@ -233,6 +242,13 @@ describe('hiddenByFilterNoticeKey', () => {
   it('picks the plural form the dock line and its announcement share', () => {
     expect(hiddenByFilterNoticeKey(1)).toBe('usageStats.dock.hiddenByFilter.one');
     expect(hiddenByFilterNoticeKey(4)).toBe('usageStats.dock.hiddenByFilter.other');
+  });
+});
+
+describe('pendingSyncNoticeKey', () => {
+  it('picks the plural form the dock line and its announcement share', () => {
+    expect(pendingSyncNoticeKey(1)).toBe('usageStats.delete.pendingSync.one');
+    expect(pendingSyncNoticeKey(2)).toBe('usageStats.delete.pendingSync.other');
   });
 });
 
@@ -669,6 +685,37 @@ describe('DockOutcomeAnnouncer', () => {
         'Abgleich des Zielkanals wird angestoßen…',
       ]);
     });
+  });
+
+  /**
+   * The dock's pending-sync line (plan 378, A10): marked cards the delete run holds out. Created by
+   * its own `@if` in the mounted dock, so this region is its voice, right after the hidden-by-filter
+   * line.
+   */
+  it('speaks the pending-sync line with its names into the standing region, after the hidden-by-filter line and before the run outcomes', () => {
+    const regionAtRest = regions()[0];
+    fixture.componentInstance.hiddenSelectedCount.set(2);
+    fixture.componentInstance.pendingSyncNames.set(['hob44', 'PumpA']);
+    restoreService.resyncTrigger.set('succeeded');
+    fixture.detectChanges();
+
+    expect(regions()).toEqual([regionAtRest]);
+    expect(spoken()).toEqual([
+      '2 davon durch den Filter ausgeblendet',
+      'hob44, PumpA werden abgeglichen, nicht im Löschlauf.',
+      'Synchronisierung angestoßen.',
+    ]);
+
+    fixture.componentInstance.pendingSyncNames.set(['hob44']);
+    fixture.detectChanges();
+    expect(spoken()[1]).toBe('hob44 wird abgeglichen, nicht im Löschlauf.');
+
+    fixture.componentInstance.pendingSyncNames.set([]);
+    fixture.detectChanges();
+    expect(spoken()).toEqual([
+      '2 davon durch den Filter ausgeblendet',
+      'Synchronisierung angestoßen.',
+    ]);
   });
 
   // #201 T-C: a tag play-in's placement report — its end state only, never the pending line.

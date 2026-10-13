@@ -5,6 +5,7 @@ import {
   MonoTypeOperatorFunction,
   Observable,
   catchError,
+  defer,
   map,
   of,
   retry,
@@ -16,7 +17,12 @@ import {
 
 import { ChannelService } from '../channels/channel.service';
 import { EmoteTagService } from '../tags/emote-tag.service';
-import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
+import { SevenTvEntryGeneration, SevenTvEntryTarget } from './seven-tv-entry-target';
+import {
+  SyncDeletedInSetResponse,
+  SyncInSetBody,
+  SyncInSetEntry,
+} from './seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import {
   RunItemStatus,
@@ -26,16 +32,27 @@ import {
   RunResult,
   SevenTvMutation,
   SevenTvRunEngine,
+  StepGate,
+  SkipReasonKey,
 } from './seven-tv-run-engine';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
 import {
   CANCEL_SETTLE_GRACE_MS,
+  EntryBaseline,
   SET_ENTRIES_READ_TIMEOUT_MS,
+  UnexpectedEntryRemoval,
+  entryPostCheckOwed,
+  entryTimeKey,
+  findUnexpectedRemovals,
+  freezeBaselineGroup,
+  mergeIntoBaseline,
+  mergeUnexpectedRemovals,
   settleDeleteResult,
+  settleEntryDeleteRun,
   unknownCount,
 } from './seven-tv-run-settlement';
-import { SevenTvSetEntries, loadSevenTvSetEntries } from './seven-tv-set-entries';
+import { SevenTvSetEntries, SevenTvSetEntry, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
   SyncReportOutcome,
@@ -91,16 +108,57 @@ export function timeoutReportAttempt<T>(): MonoTypeOperatorFunction<T> {
  *  attach to. */
 export const ABORTED_DELETE_NOTICE_MS = 8000;
 
+/** How long a slot delete run reuses its last read of the set before an entry row's attempt
+ *  (Plan-378 4.4 rule 2 b, D21) — measured from the read's request start, which is conservative.
+ *  Only for an emote the read shows with a single entry; one with two or more is read afresh before
+ *  every attempt, whatever the age (rule 2 c, D33, AK 51). */
+export const ENTRY_READ_REUSE_MS = 5000;
+
+/** Time budget of the read in front of an entry row's attempt (Plan-378 4.4 rule 3). The engine
+ *  gives a `beforeStep` hook no deadline, so the read brings its own — the same 20 s as the undo's
+ *  recheck (`RECHECK_READ_TIMEOUT_MS`), and like that one its own constant: a gate in front of a
+ *  mutation, not a settlement after the run. A read that runs out is a read failure (fail-closed). */
+export const ENTRY_BINDING_READ_TIMEOUT_MS = 20_000;
+
+/** After this many failed or incomplete binding reads in a row, every remaining entry row is
+ *  skipped without another read (Plan-378 4.4 rule 1, the mirror of the undo's
+ *  `MAX_CONSECUTIVE_RECHECK_FAILURES`); id rows keep running. */
+export const MAX_CONSECUTIVE_ENTRY_READ_FAILURES = 3;
+
+const PROCEED: StepGate = { kind: 'proceed' };
+
 /** v4 dropped the `action` enum in favour of one field per operation; the emote travels inside the
  *  `EmoteSetEmoteId` input object rather than as a sibling argument, and variable types are `Id!`
  *  instead of `ObjectID!`. Removal has no alias, unlike `addEmote` in the import/restore services.
- *  One `removeEmote` takes every entry of the id. Shared with the import run's replace rows. */
+ *  One `removeEmote` takes every entry of the id. Shared with the import run's replace rows, the
+ *  undo, the vote page's removals and the delete run's id rows; an entry row of a slot delete run
+ *  uses {@link REMOVE_SLOT_ENTRY_MUTATION} instead. */
 export const REMOVE_EMOTE_MUTATION: SevenTvMutation = {
   query: `
   mutation RemoveEmote($setId: Id!, $emoteId: Id!) {
     emoteSets {
       emoteSet(id: $setId) {
         removeEmote(id: { emoteId: $emoteId }) {
+          id
+        }
+      }
+    }
+  }
+`,
+  resultPath: ['emoteSets', 'emoteSet', 'removeEmote'],
+};
+
+/** The slot-delete counterpart of {@link REMOVE_EMOTE_MUTATION} (Plan-378 [E1]): removes only the
+ *  entry of the id that sits under `alias`. Its own constant — not an optional `$alias` on the one
+ *  above — so every other caller keeps sending today's bytes, and `$alias` is **required**
+ *  (`String!`): a request for one entry can never leave without an alias, which 7TV would read as
+ *  "every entry of the id". */
+export const REMOVE_SLOT_ENTRY_MUTATION: SevenTvMutation = {
+  query: `
+  mutation RemoveSlotEntry($setId: Id!, $emoteId: Id!, $alias: String!) {
+    emoteSets {
+      emoteSet(id: $setId) {
+        removeEmote(id: { emoteId: $emoteId, alias: $alias }) {
           id
         }
       }
@@ -120,12 +178,53 @@ export const REMOVE_EMOTE_MUTATION: SevenTvMutation = {
  *  `cancelled`. */
 const REMOVE_OPERATION: RunOperation = {
   label: 'mass delete',
-  buildRequest: (setId, emote) => ({
-    mutation: REMOVE_EMOTE_MUTATION,
-    variables: { setId, emoteId: emote.sevenTvEmoteId },
-  }),
+  // By row type: an entry row removes its one entry by alias, an id row takes every entry of the id.
+  buildRequest: (setId, emote) =>
+    emote.entry
+      ? {
+          mutation: REMOVE_SLOT_ENTRY_MUTATION,
+          variables: { setId, emoteId: emote.sevenTvEmoteId, alias: emote.entry.alias },
+        }
+      : {
+          mutation: REMOVE_EMOTE_MUTATION,
+          variables: { setId, emoteId: emote.sevenTvEmoteId },
+        },
   transportLossIsUnknown: true,
 };
+
+/**
+ * What one slot delete run keeps between the attempts of its entry rows (Plan-378 4.4) — in the
+ * run's own closure, never on the engine or a record (the pattern of `SevenTvUndoService`'s
+ * `createOperation`). Exists only for a run with at least one entry row.
+ */
+interface EntryRunContext {
+  /** The 7TV ids of the run's entry rows — the only emotes the baseline follows. */
+  readonly entryEmoteIds: ReadonlySet<string>;
+  /** The comparison baseline per emote (4.4 step 5) — see `mergeIntoBaseline`. */
+  readonly baseline: EntryBaseline;
+  /** Row key → the entry an attempt of that row was let through for. Dropped again when a later
+   *  attempt of the same row (after a rate-limit pause) is skipped. */
+  readonly attempted: Map<string, { sevenTvEmoteId: string; timeKey: string; alias: string }>;
+  /** Unexpected removals a binding read already noticed (4.4 step 6) — kept even when the re-read
+   *  after the run fails, merged with what that re-read finds. */
+  earlyUnexpected: UnexpectedEntryRemoval[];
+  /** Per 7TV id of an entry row, the emote's default name as the last read that listed one gave it
+   *  — what an unexpectedly removed entry without an alias is called by (the read that notices it
+   *  gone may no longer list the emote at all). */
+  readonly defaultNames: Map<string, string>;
+  /** The last complete read and when its request started; `null` before the first one. */
+  held: { read: SevenTvSetEntries; startedAt: number } | null;
+  consecutiveReadFailures: number;
+  /** What the last failed read was — the reason every row skipped after three in a row carries. */
+  lastReadFailure: 'unavailable' | 'truncated';
+}
+
+/** How an entry row's live entries at its add date decide its attempt (Plan-378 4.4 step 4). */
+type EntryBinding =
+  | { kind: 'proceed' }
+  | { kind: 'departed' }
+  | { kind: 'renamed'; newName: string }
+  | { kind: 'noAlias' };
 
 /** The public input contract for a delete/restore run — deliberately its own interface, not an
  *  alias of the engine's `RunQueueEmote`: a caller here never has to think about a queue `key`.
@@ -140,6 +239,9 @@ export interface DeleteQueueEmote {
   /** Every alias the emote sits under in the set — two for a #74 duplicate cell. The delete
    *  records them in the protocol; the restore sends one `ADD` per alias. Omitted means `[name]`. */
   aliases?: readonly string[];
+  /** Set on an entry row: removes exactly this one set entry (see `SevenTvEntryTarget`), keyed
+   *  `${sevenTvEmoteId}#${entry.cardKey}`. Absent: an id row, one per 7TV id, as always. */
+  entry?: SevenTvEntryTarget;
 }
 /** Historical aliases — the panel and both host pages import these names. */
 export type DeleteItemStatus = RunItemStatus;
@@ -197,6 +299,17 @@ export interface DeleteRunInfo extends RunRecordBase {
   tagRemovalReport?: SyncReportState;
   /** Projected by `tagRemovalReportReason`. */
   tagRemovalReportReason?: SyncReportReason | null;
+  /** Slot delete runs only (Plan-378 4.5, D33, AK 40): entries of an emote the run removed from
+   *  that are gone from the set although none of the run's own removals accounts for them —
+   *  possibly taken by one of its requests (another editor renamed between the read and the
+   *  request), possibly by someone else. Set in the same update as `result` (empty when there are
+   *  none), never reported to the server: the run did not confirm them, and REST or an EventAPI pull
+   *  reconciles them. Absent on a run without entry rows. */
+  unexpectedRemovals?: readonly UnexpectedEntryRemoval[];
+  /** Slot delete runs only: the run owed the post-check, but its re-read failed, ran out or came
+   *  back incomplete — nobody can tell whether other entries were affected. Set with `result`, no
+   *  second attempt. Absent on a run without entry rows. */
+  postCheckUnavailable?: boolean;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -205,6 +318,7 @@ export class SevenTvDeleteService {
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   private readonly emoteTagService = inject(EmoteTagService);
   private readonly httpClient = inject(HttpClient);
+  private readonly translocoService = inject(TranslocoService);
 
   /** Own engine instance (not a shared singleton), so `isRunning` can never mean "the *other*
    *  service is busy". All pacing/backoff/token mechanics live there — see SevenTvRunEngine. */
@@ -430,11 +544,15 @@ export class SevenTvDeleteService {
     // `onComplete` — however unlikely — always finds its record already registered, rather than
     // updating a run the lifecycle does not know about yet, which would then never close.
     this.lifecycle.open(started);
+    const queue = toDeleteQueue(emotes);
+    // A run of id rows only (every run with the flag off) gets no hook at all — the operation, its
+    // requests and its reads are byte for byte what they were (Plan-378 1).
+    const context = createEntryRunContext(queue);
     const engineStarted = this.engine.start(
       setId,
-      toDeleteQueue(emotes),
-      REMOVE_OPERATION,
-      (result) => this.onRunComplete(runId, result),
+      queue,
+      context === null ? REMOVE_OPERATION : this.createEntryOperation(context),
+      (result) => this.onRunComplete(runId, result, context),
     );
     if (!engineStarted) {
       // Refused (already running, empty list, no token) — take the just-opened record back and
@@ -504,7 +622,8 @@ export class SevenTvDeleteService {
       return;
     }
 
-    this.reportDeleted(current.runId, current.result.doneKeys);
+    // Derived from the result on the record, never from the page: the body is the first one's.
+    this.reportDeleted(current.runId, deletedReportOf(current.result));
   }
 
   /** Manual retry for the removal report of the shown run (#201 T-C) — sends the same body again,
@@ -526,15 +645,146 @@ export class SevenTvDeleteService {
   }
 
   /**
+   * The operation of a run with at least one entry row: the removal itself is `REMOVE_OPERATION`'s,
+   * plus a `beforeStep` hook that binds every attempt of an entry row to a read of the set
+   * (Plan-378 4.4, D21). The engine asks the hook again before every rate-limit retry, so a retry is
+   * bound afresh too (A4); should a future transport retry ever bypass `runGatedOne`, the binding
+   * would go with it. Id rows pass straight through, without a read.
+   */
+  private createEntryOperation(context: EntryRunContext): RunOperation {
+    return {
+      ...REMOVE_OPERATION,
+      beforeStep: (setId, emote) =>
+        emote.entry ? this.bindBeforeRemove(context, setId, emote, emote.entry) : of(PROCEED),
+    };
+  }
+
+  /**
+   * The gate in front of one attempt of an entry row (Plan-378 4.4, rules 1 to 4). Reads the set
+   * afresh when nothing is held yet, when the held read started more than `ENTRY_READ_REUSE_MS` ago,
+   * or when it shows the row's emote with two or more entries (AK 51); otherwise binds against the
+   * held read. Never throws and never errors: every failure is a skip with its reason, so no
+   * request ever goes out unbound.
+   */
+  private bindBeforeRemove(
+    context: EntryRunContext,
+    setId: string,
+    emote: RunQueueEmote,
+    entry: SevenTvEntryGeneration,
+  ): Observable<StepGate> {
+    if (context.consecutiveReadFailures >= MAX_CONSECUTIVE_ENTRY_READ_FAILURES) {
+      return of(this.skipEntry(context, emote, readFailureKey(context.lastReadFailure), {}));
+    }
+    const held = context.held;
+    const fresh =
+      held === null ||
+      Date.now() - held.startedAt > ENTRY_READ_REUSE_MS ||
+      (held.read.entriesById?.get(emote.sevenTvEmoteId)?.length ?? 0) >= 2;
+    const read$ = fresh ? this.readForBinding(context, setId) : of(held.read);
+    return read$.pipe(
+      map((read) =>
+        read === null
+          ? this.skipEntry(context, emote, readFailureKey(context.lastReadFailure), {})
+          : this.gateEntry(context, emote, entry, read),
+      ),
+    );
+  }
+
+  /** One read of the set with add dates, bounded by `ENTRY_BINDING_READ_TIMEOUT_MS`. A complete
+   *  read resets the failure count, is checked against the baseline for entries gone without an own
+   *  removal (4.4 step 6), joins the baseline and becomes the held read; a failed, timed-out or
+   *  incomplete one counts as a failure and answers `null`. */
+  private readForBinding(
+    context: EntryRunContext,
+    setId: string,
+  ): Observable<SevenTvSetEntries | null> {
+    return defer(() => {
+      const startedAt = Date.now();
+      return loadSevenTvSetEntries(this.httpClient, setId, { withAddedAt: true }).pipe(
+        timeout(ENTRY_BINDING_READ_TIMEOUT_MS),
+        map((read) => {
+          if (!read.complete) {
+            return failBindingRead(context, 'truncated');
+          }
+          context.consecutiveReadFailures = 0;
+          noteDefaultNames(context, read);
+          noteEarlyUnexpectedRemovals(context, read);
+          for (const sevenTvEmoteId of context.entryEmoteIds) {
+            mergeIntoBaseline(
+              context.baseline,
+              sevenTvEmoteId,
+              read.entriesById?.get(sevenTvEmoteId) ?? [],
+            );
+          }
+          context.held = { read, startedAt };
+          return read;
+        }),
+        catchError(() => of(failBindingRead(context, 'unavailable'))),
+      );
+    });
+  }
+
+  /** Classifies the row against `read` (4.4 step 4) and answers the engine. A row let through is
+   *  recorded as attempted and freezes its baseline date; a skipped one is no longer attempted. */
+  private gateEntry(
+    context: EntryRunContext,
+    emote: RunQueueEmote,
+    entry: SevenTvEntryGeneration,
+    read: SevenTvSetEntries,
+  ): StepGate {
+    const binding = bindEntry(entry, read.entriesById?.get(emote.sevenTvEmoteId) ?? []);
+    switch (binding.kind) {
+      case 'proceed': {
+        const timeKey = entryTimeKey(entry.addedAt);
+        context.attempted.set(emote.key, {
+          sevenTvEmoteId: emote.sevenTvEmoteId,
+          timeKey,
+          alias: entry.alias,
+        });
+        freezeBaselineGroup(context.baseline, emote.sevenTvEmoteId, timeKey);
+        return PROCEED;
+      }
+      case 'renamed':
+        return this.skipEntry(context, emote, 'usageStats.delete.renamedSinceLoad', {
+          name: entry.alias,
+          newName: binding.newName,
+        });
+      case 'noAlias':
+        return this.skipEntry(context, emote, 'usageStats.delete.noAlias', { name: entry.alias });
+      case 'departed':
+        return this.skipEntry(context, emote, 'usageStats.delete.departedSinceLoad', {
+          name: entry.alias,
+        });
+    }
+  }
+
+  private skipEntry(
+    context: EntryRunContext,
+    emote: RunQueueEmote,
+    translationKey: SkipReasonKey,
+    params: Record<string, string>,
+  ): StepGate {
+    context.attempted.delete(emote.key);
+    return {
+      kind: 'skip',
+      errorMessage: this.translocoService.translate(translationKey, params),
+      reason: { key: translationKey, params },
+    };
+  }
+
+  /**
    * Turns the engine's snapshot into the run's outcome, always on the run's own record (#256:
    * there is no early return for a run that is no longer shown; its confirmed removals are
    * reported all the same).
    *
-   * Without an `unknown` row the snapshot settles at once, exactly as before #275. With one, the
-   * run is `settling` (Plan-275 Festlegung 2) and its `result` stays `null` (Festlegung 10) while
-   * the set is read once, tokenless (Festlegung 6): after `CANCEL_SETTLE_GRACE_MS` when the run
-   * ended through this service's own `cancel()` (Festlegung 5 — 7TV may still be finishing the
-   * aborted `REMOVE`), at once after a plain transport loss. A read that fails or runs out of
+   * Without an `unknown` row and without an owed post-check the snapshot settles at once, exactly
+   * as before #275. Otherwise the run is `settling` (Plan-275 Festlegung 2) and its `result` stays
+   * `null` (Festlegung 10) while the set is read once, tokenless (Festlegung 6): after
+   * `CANCEL_SETTLE_GRACE_MS` when the run ended through this service's own `cancel()` (Festlegung 5
+   * — 7TV may still be finishing the aborted `REMOVE`), at once otherwise. A slot delete run
+   * (`context`) owes that read also when a removal of an entry row went out and its emote's
+   * baseline holds more entries than such removals (Plan-378 4.5, T-4), and reads with add dates; a
+   * run of id rows reads as it always did. A read that fails or runs out of
    * `SET_ENTRIES_READ_TIMEOUT_MS` is `null`; an incomplete one confirms nothing
    * (`settleDeleteResult`). Every path ends in `settleRun`, so the run always
    * leaves `settling` (Festlegung 19, P6). The snapshot waits in this closure, not on the engine: the
@@ -544,18 +794,20 @@ export class SevenTvDeleteService {
    * `finish()` builds this very result from it; nothing shows that queue any more, so it is
    * cleared here.
    */
-  private onRunComplete(runId: string, result: RunResult): void {
+  private onRunComplete(runId: string, result: RunResult, context: EntryRunContext | null): void {
     const afterCancel = this.cancelInProgress;
-    const hasUnknown = unknownCount(result.items) > 0;
-    const settling = hasUnknown
+    const needsRead =
+      unknownCount(result.items) > 0 ||
+      (context !== null && entryPostCheckOwed(result, context.baseline));
+    const settling = needsRead
       ? this.lifecycle.update(runId, (run) => ({ ...run, phase: 'settling' }))
       : null;
     if (!this.lifecycle.isShown(runId)) {
       this.engine.reset();
     }
 
-    if (!hasUnknown) {
-      this.settleRun(runId, result, null);
+    if (!needsRead) {
+      this.settleRun(runId, result, null, context);
       return;
     }
     if (settling === null) {
@@ -563,12 +815,16 @@ export class SevenTvDeleteService {
       return;
     }
 
-    const read = loadSevenTvSetEntries(this.httpClient, settling.setId).pipe(
+    const read = (
+      context === null
+        ? loadSevenTvSetEntries(this.httpClient, settling.setId)
+        : loadSevenTvSetEntries(this.httpClient, settling.setId, { withAddedAt: true })
+    ).pipe(
       timeout(SET_ENTRIES_READ_TIMEOUT_MS),
       catchError(() => of(null)),
     );
     (afterCancel ? timer(CANCEL_SETTLE_GRACE_MS).pipe(switchMap(() => read)) : read).subscribe(
-      (entries) => this.settleRun(runId, result, entries),
+      (entries) => this.settleRun(runId, result, entries, context),
     );
   }
 
@@ -578,7 +834,9 @@ export class SevenTvDeleteService {
    * as it was — and publishes that outcome. `result`, `phase: 'reporting'` and the report state
    * move together in one update, so the lifecycle's auto-close guard never sees a `reporting`
    * record whose report has not been marked `pending` yet: a run with nothing to report goes
-   * straight to `closed`.
+   * straight to `closed`. A slot delete run settles its entry rows per entry and adds its
+   * unexpected removals and `postCheckUnavailable` in that same update (Plan-378 4.5) — no reader
+   * ever sees a result without them.
    *
    * The report names the settled `doneKeys` only; a row still `unknown` is never reported
    * (Festlegung 12). What becomes of such a row (Festlegung 13, D6): next to a report, nothing
@@ -587,8 +845,14 @@ export class SevenTvDeleteService {
    * Without a report, `fallbackResync` asks for that resync directly, for `expectedChannelName`
    * only.
    */
-  private settleRun(runId: string, snapshot: RunResult, entries: SevenTvSetEntries | null): void {
-    const result = settleDeleteResult(snapshot, entries);
+  private settleRun(
+    runId: string,
+    snapshot: RunResult,
+    entries: SevenTvSetEntries | null,
+    context: EntryRunContext | null,
+  ): void {
+    const entrySettlement = context === null ? null : settleEntryRun(snapshot, entries, context);
+    const result = entrySettlement?.result ?? settleDeleteResult(snapshot, entries);
     const reportsDeleted = result.doneKeys.length > 0;
     const settled = this.lifecycle.update(runId, (run) => ({
       ...run,
@@ -601,6 +865,12 @@ export class SevenTvDeleteService {
       ...(run.tag === undefined
         ? {}
         : { tagRemovalReport: 'pending', tagRemovalReportReason: null }),
+      ...(entrySettlement === null
+        ? {}
+        : {
+            unexpectedRemovals: entrySettlement.unexpectedRemovals,
+            postCheckUnavailable: entrySettlement.postCheckUnavailable,
+          }),
     }));
     if (settled === null) {
       // Unreachable: a run is only ever dropped once it is closed, and it cannot close before this.
@@ -608,7 +878,7 @@ export class SevenTvDeleteService {
     }
 
     if (reportsDeleted) {
-      this.reportDeleted(runId, result.doneKeys, () => this.fallbackResync(settled));
+      this.reportDeleted(runId, deletedReportOf(result), () => this.fallbackResync(settled));
     } else if (unknownCount(result.items) > 0) {
       this.fallbackResync(settled);
     }
@@ -619,7 +889,10 @@ export class SevenTvDeleteService {
     }
   }
 
-  /** No resync of its own on an answer (spec 6.5): the backend resyncs every channel the report
+  /** Sends `sync-deleted` with `report` — see {@link deletedReportOf}; the first report and every
+   *  retry derive it from the same settled result, so a retry sends the identical body (AK 41).
+   *
+   *  No resync of its own on an answer (spec 6.5): the backend resyncs every channel the report
    *  touched (E17), and the page lives off the resulting `channel.synced`. `afterFailure` runs once
    *  the report has failed for good — only the first report of a run passes one, never a manual
    *  retry (addendum N1).
@@ -637,7 +910,7 @@ export class SevenTvDeleteService {
    *  lifecycle's one-way door leaves the phase alone, and `reportsPending` (`syncReport ===
    *  'pending'`) is what keeps a `closed`-but-pending record in the map until this new attempt
    *  also reaches an end state. */
-  private reportDeleted(runId: string, sevenTvEmoteIds: string[], afterFailure?: () => void): void {
+  private reportDeleted(runId: string, report: DeletedReport, afterFailure?: () => void): void {
     const run = this.patchRun(runId, { syncReport: 'pending', syncReportReason: null });
     if (run === null) {
       // Unreachable in practice: called right after the update that put the run into `reporting`,
@@ -647,9 +920,10 @@ export class SevenTvDeleteService {
 
     this.emoteSetService
       .reportDeletedInSet(run.setId, {
-        sevenTvEmoteIds,
+        sevenTvEmoteIds: report.sevenTvEmoteIds,
         expectedChannelName: run.expectedChannelName,
         targetOwnerTwitchId: run.targetOwnerTwitchId,
+        ...(report.entries === undefined ? {} : { entries: report.entries }),
       })
       .pipe(
         timeoutReportAttempt(),
@@ -661,7 +935,7 @@ export class SevenTvDeleteService {
         // its `status` reads `undefined`, so neither branch of the 401/403 check matches):
         // uncritical, because a retried `sync-deleted` call is idempotent either way.
         map((answer: SyncDeletedInSetResponse) =>
-          classifySyncInSetResponse(answer, sevenTvEmoteIds.length),
+          classifySyncInSetResponse(answer, report.sevenTvEmoteIds.length),
         ),
         // A 429 is the realistic case: sync-deleted shares a rate-limit budget with other calls, and
         // a swallowed 429 used to look exactly like success. A 401 (session expired during a long
@@ -692,7 +966,8 @@ export class SevenTvDeleteService {
   /**
    * The removal report of a tag removal (#201 T-C, spec 7.2/8): `POST …/tags/{tagId}/placements/
    * removed` with the registered `operationId`, the run's own set and owner, the activation and
-   * snapshot from the preview, `removedIds` = the run's `doneKeys` and `keptIds` derived from the
+   * snapshot from the preview, `removedIds` = the run's `doneKeys` of id rows (a tag removal has no
+   * other rows; an entry key is never a 7TV id) and `keptIds` derived from the
    * **run result** (`deriveTagKeptIds`): the unticked own placements plus every ticked one without a
    * `done` row — a removal 7TV did not confirm is still in the set, and the server must not forget
    * it. Same transport rules as `sync-deleted`: one `timeoutReportAttempt` per attempt, automatic
@@ -722,7 +997,7 @@ export class SevenTvDeleteService {
         targetOwnerTwitchId: run.targetOwnerTwitchId,
         activationOperationId: tag.activationOperationId,
         snapshot: tag.snapshot,
-        removedIds: run.result.doneKeys,
+        removedIds: doneIdRowKeys(run.result),
         keptIds: deriveTagKeptIds(tag, run.result),
       })
       .pipe(
@@ -816,14 +1091,46 @@ export class SevenTvDeleteService {
   }
 }
 
-/** One queue row per 7TV id, keyed by it (spec #200, 7.2, Sonde 5 branch A): a #74 duplicate cell
- *  is one row, and its one `REMOVE` takes every entry. Should a caller hand in the same id twice,
- *  the rows merge — two rows with one key would make the engine's per-key status updates hit
- *  both, and the second `REMOVE` could only fail — keeping every alias for the protocol. */
+/** The aliases a delete row removes: an entry row exactly its own, an id row its known aliases, or
+ *  the emote's name when it has none. */
+function deleteRowAliases(emote: DeleteQueueEmote): readonly string[] {
+  if (emote.entry) {
+    return [emote.entry.alias];
+  }
+  return emote.aliases && emote.aliases.length > 0 ? emote.aliases : [emote.name];
+}
+
+/** The delete queue. **Id rows** are one per 7TV id, keyed by it (spec #200, 7.2, Sonde 5 branch A):
+ *  a #74 duplicate cell is one row, and its one `REMOVE` takes every entry. Should a caller hand in
+ *  the same id twice, the rows merge — two rows with one key would make the engine's per-key status
+ *  updates hit both, and the second `REMOVE` could only fail — keeping every alias for the protocol.
+ *
+ *  **Entry rows** (slot delete, Plan-378 4.3) are one per card, keyed `${id}#${cardKey}`, and record
+ *  exactly their own alias — never enriched with the aliases the id has elsewhere in the set, or the
+ *  protocol and a restore would bring back siblings that were never deleted. A second row with the
+ *  same card key is dropped. An entry row whose id also has an id row in the same call (the page
+ *  never builds that) goes up in the id row, whose alias-less `REMOVE` takes the entry anyway. */
 function toDeleteQueue(emotes: readonly DeleteQueueEmote[]): RunQueueEmote[] {
+  const idRowIds = new Set(
+    emotes.filter((emote) => !emote.entry).map((emote) => emote.sevenTvEmoteId),
+  );
   const rows = new Map<string, RunQueueEmote & { aliases: string[] }>();
   for (const emote of emotes) {
-    const aliases = emote.aliases && emote.aliases.length > 0 ? emote.aliases : [emote.name];
+    const aliases = deleteRowAliases(emote);
+    if (emote.entry && !idRowIds.has(emote.sevenTvEmoteId)) {
+      const key = `${emote.sevenTvEmoteId}#${emote.entry.cardKey}`;
+      if (!rows.has(key)) {
+        rows.set(key, {
+          key,
+          emoteId: emote.emoteId,
+          sevenTvEmoteId: emote.sevenTvEmoteId,
+          name: emote.name,
+          aliases: [...aliases],
+          entry: emote.entry,
+        });
+      }
+      continue;
+    }
     const existing = rows.get(emote.sevenTvEmoteId);
     if (existing) {
       existing.aliases.push(...aliases.filter((alias) => !existing.aliases.includes(alias)));
@@ -839,4 +1146,185 @@ function toDeleteQueue(emotes: readonly DeleteQueueEmote[]): RunQueueEmote[] {
     });
   }
   return [...rows.values()];
+}
+
+/** The part of a `sync-deleted` body a run's result decides. */
+type DeletedReport = Pick<SyncInSetBody, 'sevenTvEmoteIds' | 'entries'>;
+
+/**
+ * The `sync-deleted` body of a settled result (Plan-378 4.6, D32, AK 37): `sevenTvEmoteIds` are the
+ * distinct 7TV ids of the `done` rows in queue order — id rows and entry rows mixed, an entry row by
+ * its row's id, never by its `${id}#${cardKey}` key — so the server still counts `archivedCount`
+ * against reported ids. `entries` names every `done` entry row with its alias, its slot (absent for
+ * an entry without one) and its add date verbatim; it is omitted when there is none, so a run of id
+ * rows sends exactly what it always sent.
+ */
+function deletedReportOf(result: RunResult): DeletedReport {
+  const rowsByKey = new Map(result.items.map((item) => [item.key, item]));
+  const sevenTvEmoteIds: string[] = [];
+  const entries: SyncInSetEntry[] = [];
+  for (const key of result.doneKeys) {
+    const row = rowsByKey.get(key);
+    // A key without its row cannot come from this service; it is reported as today, as an id.
+    const sevenTvEmoteId = row?.sevenTvEmoteId ?? key;
+    if (!sevenTvEmoteIds.includes(sevenTvEmoteId)) {
+      sevenTvEmoteIds.push(sevenTvEmoteId);
+    }
+    if (row?.entry) {
+      entries.push({
+        sevenTvEmoteId,
+        alias: row.entry.alias,
+        ...(row.entry.slotId === undefined ? {} : { slotId: row.entry.slotId }),
+        addedAt: row.entry.addedAt,
+      });
+    }
+  }
+  return entries.length > 0 ? { sevenTvEmoteIds, entries } : { sevenTvEmoteIds };
+}
+
+/** The `doneKeys` of id rows only — a 7TV id each. A tag removal runs id rows only, so for it this
+ *  is its `doneKeys` unchanged; an entry row's key would never be a 7TV id. */
+function doneIdRowKeys(result: RunResult): string[] {
+  const entryKeys = new Set(
+    result.items.filter((item) => item.entry !== undefined).map((item) => item.key),
+  );
+  return result.doneKeys.filter((key) => !entryKeys.has(key));
+}
+
+/** The per-run state of a slot delete run, or `null` for a run without an entry row. */
+function createEntryRunContext(queue: readonly RunQueueEmote[]): EntryRunContext | null {
+  const entryEmoteIds = new Set(
+    queue.filter((row) => row.entry !== undefined).map((row) => row.sevenTvEmoteId),
+  );
+  if (entryEmoteIds.size === 0) {
+    return null;
+  }
+  return {
+    entryEmoteIds,
+    baseline: new Map(),
+    attempted: new Map(),
+    earlyUnexpected: [],
+    defaultNames: new Map(),
+    held: null,
+    consecutiveReadFailures: 0,
+    lastReadFailure: 'unavailable',
+  };
+}
+
+/**
+ * Early collateral detection (Plan-378 4.4 step 6, S2): before a binding read joins the baseline,
+ * every emote the run has already let a removal through for is checked against it — an entry of the
+ * baseline gone from the read that no attempted own removal accounts for is noted at once, so it
+ * cannot be forgotten later, whatever the re-read after the run finds or fails to find. An attempt
+ * counts as own here even before its answer is in; the re-read after the run then judges by the
+ * rows' final states.
+ */
+function noteEarlyUnexpectedRemovals(context: EntryRunContext, read: SevenTvSetEntries): void {
+  for (const sevenTvEmoteId of context.entryEmoteIds) {
+    const groups = context.baseline.get(sevenTvEmoteId);
+    if (groups === undefined || ![...groups.values()].some((group) => group.frozen)) {
+      continue;
+    }
+    const own = new Map<string, string[]>();
+    for (const attempt of context.attempted.values()) {
+      if (attempt.sevenTvEmoteId === sevenTvEmoteId) {
+        own.set(attempt.timeKey, [...(own.get(attempt.timeKey) ?? []), attempt.alias]);
+      }
+    }
+    context.earlyUnexpected = mergeUnexpectedRemovals(
+      context.earlyUnexpected,
+      findUnexpectedRemovals(
+        sevenTvEmoteId,
+        groups,
+        read.entriesById?.get(sevenTvEmoteId) ?? [],
+        own,
+      ),
+    );
+  }
+}
+
+/** The settled outcome of a slot delete run: its rows per entry, the unexpected removals noticed
+ *  early and by the re-read, and whether an owed post-check could not run (Plan-378 4.5). */
+function settleEntryRun(
+  snapshot: RunResult,
+  entries: SevenTvSetEntries | null,
+  context: EntryRunContext,
+): {
+  result: RunResult;
+  unexpectedRemovals: UnexpectedEntryRemoval[];
+  postCheckUnavailable: boolean;
+} {
+  const settled = settleEntryDeleteRun(snapshot, entries, context.baseline);
+  if (entries !== null) {
+    noteDefaultNames(context, entries);
+  }
+  return {
+    result: settled.result,
+    unexpectedRemovals: mergeUnexpectedRemovals(
+      context.earlyUnexpected,
+      settled.unexpectedRemovals ?? [],
+    ).map((removal) => withDefaultName(removal, context.defaultNames)),
+    postCheckUnavailable:
+      settled.unexpectedRemovals === null && entryPostCheckOwed(snapshot, context.baseline),
+  };
+}
+
+/** Keeps the default name `read` lists for each emote of the run's entry rows (an empty one is no
+ *  name, see `SevenTvSetEntries.defaultNameById`). */
+function noteDefaultNames(context: EntryRunContext, read: SevenTvSetEntries): void {
+  for (const sevenTvEmoteId of context.entryEmoteIds) {
+    const defaultName = read.defaultNameById.get(sevenTvEmoteId);
+    if (defaultName) {
+      context.defaultNames.set(sevenTvEmoteId, defaultName);
+    }
+  }
+}
+
+/** `removal` with its emote's default name when it has no alias of its own and a read named the
+ *  emote; every other removal unchanged. */
+function withDefaultName(
+  removal: UnexpectedEntryRemoval,
+  defaultNames: ReadonlyMap<string, string>,
+): UnexpectedEntryRemoval {
+  const defaultName = defaultNames.get(removal.sevenTvEmoteId);
+  return removal.alias || defaultName === undefined ? removal : { ...removal, defaultName };
+}
+
+function failBindingRead(context: EntryRunContext, reason: 'unavailable' | 'truncated'): null {
+  context.consecutiveReadFailures += 1;
+  context.lastReadFailure = reason;
+  return null;
+}
+
+function readFailureKey(reason: 'unavailable' | 'truncated'): SkipReasonKey {
+  return reason === 'unavailable'
+    ? 'massDelete.memberRead.unavailable'
+    : 'massDelete.memberRead.truncated';
+}
+
+/**
+ * The binding table of Plan-378 4.4 step 4: the row's emote's live entries at the row's add date
+ * (compared in milliseconds) decide. One entry under the row's alias, or a D4 tie with one entry
+ * under it, lets the attempt through — and it then sends exactly that alias, just verified (D21).
+ * One entry under another alias is a rename; one without an alias is skipped fail-closed, because a
+ * removal without an alias would take every entry of the id and whether one with the default name
+ * hits an aliasless entry is not established. No entry, or a tie without the alias (D4: a rename
+ * inside a tie reads as remove plus add), means the entry has left.
+ */
+function bindEntry(entry: SevenTvEntryGeneration, live: readonly SevenTvSetEntry[]): EntryBinding {
+  if (!entry.alias) {
+    // Never reached from the page (a card always has a name) — but a request for one entry must
+    // never go out without an alias, which 7TV would read as "every entry of the id".
+    return { kind: 'noAlias' };
+  }
+  const timeKey = entryTimeKey(entry.addedAt);
+  const atTime = live.filter((candidate) => entryTimeKey(candidate.addedAt) === timeKey);
+  if (atTime.some((candidate) => candidate.alias === entry.alias)) {
+    return { kind: 'proceed' };
+  }
+  if (atTime.length !== 1) {
+    return { kind: 'departed' };
+  }
+  const alias = atTime[0].alias;
+  return alias ? { kind: 'renamed', newName: alias } : { kind: 'noAlias' };
 }

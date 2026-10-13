@@ -10,7 +10,12 @@ import {
   SYNC_RETRY_DELAY_MS,
   timeoutReportAttempt,
 } from './seven-tv-delete.service';
-import { SyncRestoredInSetResponse } from './seven-tv-emote-set.model';
+import { SevenTvEntryGeneration, isValidEntryGeneration } from './seven-tv-entry-target';
+import {
+  SyncInSetBody,
+  SyncInSetEntry,
+  SyncRestoredInSetResponse,
+} from './seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import {
   RunOperation,
@@ -88,9 +93,14 @@ function addOperation(aliasByKey: ReadonlyMap<string, string | null>): RunOperat
 /** One row a restore run re-adds: a `DeleteQueueEmote` whose aliases may include `null` — an entry
  *  without an alias, which only a transfer-run file records (`RestoreRow` in `purge-run-export.ts`).
  *  `defaultName` is what the queue shows for that entry; without it, the 7TV id. */
-export interface RestoreQueueEmote extends Omit<DeleteQueueEmote, 'aliases'> {
+export interface RestoreQueueEmote extends Omit<DeleteQueueEmote, 'aliases' | 'entry'> {
   aliases?: readonly (string | null)[];
   defaultName?: string | null;
+  /** Set on a row that brings back one removed set entry (slot delete, Plan-378 4.7): the run
+   *  re-adds exactly `entry.alias`, and the report names the entry with its slot and the
+   *  **original** add date of the generation that was removed, so the server reactivates that
+   *  very slot (AK 42, 46). Absent: a row restored per id, as always. */
+  entry?: SevenTvEntryGeneration;
 }
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startRestore`
@@ -623,13 +633,16 @@ export class SevenTvRestoreService {
       // or from a manual retry that just read the record — kept as a guard, not a silent no-op.
       return;
     }
-    const sevenTvEmoteIds = doneSevenTvEmoteIds(result);
+    // Derived from the result on the record, never from the page — the first report and every
+    // retry send the identical body (AK 55).
+    const { sevenTvEmoteIds, entries } = restoredReportOf(result);
 
     this.emoteSetService
       .reportRestoredInSet(run.targetSetId, {
         sevenTvEmoteIds,
         expectedChannelName: run.expectedChannelName,
         targetOwnerTwitchId: run.targetOwnerTwitchId,
+        ...(entries === undefined ? {} : { entries }),
       })
       .pipe(
         timeoutReportAttempt(),
@@ -788,6 +801,15 @@ export class SevenTvRestoreService {
   }
 }
 
+/** The aliases a restore row brings back: its known aliases (or its name when it has none), and for
+ *  an entry target only the one alias that entry names. */
+function restoreRowAliases(emote: RestoreQueueEmote): readonly (string | null)[] {
+  const named: readonly (string | null)[] =
+    emote.aliases && emote.aliases.length > 0 ? emote.aliases : [emote.name];
+  const entry = emote.entry;
+  return entry === undefined ? named : named.filter((alias) => alias === entry.alias);
+}
+
 /** One queue row per alias (spec #200, 7.2, Sonde 5 branch A): 7TV accepts the same emote twice
  *  under two aliases, and restoring a #74 duplicate cell takes one `ADD` each, so the restore is
  *  the one run keyed `${sevenTvEmoteId}#${alias}`. `name` carries the alias the `ADD` sends. A row
@@ -798,7 +820,14 @@ export class SevenTvRestoreService {
  *  A `null` alias — an entry without one — is keyed `${sevenTvEmoteId}#` (empty suffix): still
  *  unique, because 7TV holds at most one aliasless entry per id and no named alias is empty. Its
  *  `ADD` sends `alias: null` (`aliasByKey`), and its queue row shows the emote's default name, or
- *  its 7TV id while that is unknown. */
+ *  its 7TV id while that is unknown.
+ *
+ *  A row with an entry target (Plan-378 4.7) restores exactly `entry.alias` — and only while its
+ *  `aliases` (after the duplicate check) still name it — and its queue row carries the target, so
+ *  the report and every retry read it off the settled result. A target that fails
+ *  `isValidEntryGeneration` drops the whole row before any `ADD` (T-6): the report would be refused,
+ *  after 7TV had already been changed. It is never downgraded to a restore per id — that would
+ *  bring the entry back without the generation that leads the server to its slot. */
 function toRestoreQueue(emotes: readonly RestoreQueueEmote[]): {
   queue: RunQueueEmote[];
   aliasByKey: Map<string, string | null>;
@@ -811,7 +840,11 @@ function toRestoreQueue(emotes: readonly RestoreQueueEmote[]): {
   const aliasByKey = new Map<string, string | null>();
   const defaultNameByKey = new Map<string, string | null>();
   for (const emote of emotes) {
-    const aliases = emote.aliases && emote.aliases.length > 0 ? emote.aliases : [emote.name];
+    if (emote.entry !== undefined && !isValidEntryGeneration(emote.entry)) {
+      continue;
+    }
+    const entry = emote.entry;
+    const aliases = restoreRowAliases(emote);
     for (const alias of aliases) {
       const key = `${emote.sevenTvEmoteId}#${alias ?? ''}`;
       if (!rows.has(key)) {
@@ -820,6 +853,7 @@ function toRestoreQueue(emotes: readonly RestoreQueueEmote[]): {
           emoteId: emote.emoteId,
           sevenTvEmoteId: emote.sevenTvEmoteId,
           name: alias ?? (emote.defaultName || emote.sevenTvEmoteId),
+          ...(entry === undefined ? {} : { entry }),
         });
         aliasByKey.set(key, alias);
         defaultNameByKey.set(key, emote.defaultName ?? null);
@@ -836,10 +870,31 @@ function includesChannel(channels: readonly string[], channelName: string): bool
   return channels.some((channel) => channel.toLowerCase() === normalized);
 }
 
-/** The 7TV ids a restore run finished, read off its `doneKeys` — once each, even when two aliases
- *  of one emote came back (spec #200, AK 69: two `ADD`s, one id in the report). */
-function doneSevenTvEmoteIds(result: RunResult): string[] {
+/** The part of a `sync-restored` body a run's result decides. */
+type RestoredReport = Pick<SyncInSetBody, 'sevenTvEmoteIds' | 'entries'>;
+
+/** The `sync-restored` body of a settled result. `sevenTvEmoteIds` are the 7TV ids the run finished,
+ *  read off its `doneKeys` — once each, even when two aliases of one emote came back (spec #200,
+ *  AK 69: two `ADD`s, one id in the report). `entries` (Plan-378 4.7, AK 42, 46) names every `done`
+ *  row with an entry target — its alias, its slot (absent for an entry without one) and the
+ *  **original** add date verbatim, so the server reactivates the archived slot of exactly that
+ *  generation; a row without a target adds nothing. Omitted when there is none, so a run of rows
+ *  restored per id sends exactly what it always sent. */
+function restoredReportOf(result: RunResult): RestoredReport {
   const done = new Set(result.doneKeys);
-  const ids = result.items.filter((item) => done.has(item.key)).map((item) => item.sevenTvEmoteId);
-  return [...new Set(ids)];
+  const doneItems = result.items.filter((item) => done.has(item.key));
+  const sevenTvEmoteIds = [...new Set(doneItems.map((item) => item.sevenTvEmoteId))];
+  const entries: SyncInSetEntry[] = doneItems.flatMap((item) =>
+    item.entry === undefined
+      ? []
+      : [
+          {
+            sevenTvEmoteId: item.sevenTvEmoteId,
+            alias: item.entry.alias,
+            ...(item.entry.slotId === undefined ? {} : { slotId: item.entry.slotId }),
+            addedAt: item.entry.addedAt,
+          },
+        ],
+  );
+  return entries.length > 0 ? { sevenTvEmoteIds, entries } : { sevenTvEmoteIds };
 }

@@ -128,6 +128,14 @@ export interface EmoteUsageTotal {
   firstSeenAtFromRest: boolean;
 
   /**
+   * The add date of the one live entry a per-entry Klasse-3 card stands for, exactly as 7TV sent it
+   * (the same string its `live:` key carries) — what a slot delete binds and reports such a card
+   * by (plan 378, R1 a). `firstSeenAt` stays `null` there: the date is 7TV's, not a counted one.
+   * Absent on every other card, and when 7TV named no date.
+   */
+  liveAddedAt?: string;
+
+  /**
    * `'left'` = a counted row that is no longer in the set's live membership (E23) — in the active
    * set's view this is always `'live'`, because that view never fetches a live list at all (E16).
    */

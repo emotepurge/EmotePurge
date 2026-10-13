@@ -24,6 +24,14 @@ const MAX_SET_ENTRY_PAGES = 10;
 const GQL_EMOTE_SET_ENTRIES_QUERY =
   'query($id: Id!, $page: Int!, $perPage: Int!) { emoteSets { emoteSet(id: $id) { emotes(page: $page, perPage: $perPage) { totalCount pageCount items { alias emote { id defaultName flags { animated } } } } } } }';
 
+/** The same query with each entry's add date (`addedAt`, measured on v4 — slot mass delete,
+ *  Plan-378 S1). Only a read that asks for it sends this text; every other reader keeps the query
+ *  above, byte for byte. */
+const GQL_EMOTE_SET_ENTRIES_WITH_DATE_QUERY = GQL_EMOTE_SET_ENTRIES_QUERY.replace(
+  'items { alias emote',
+  'items { alias addedAt emote',
+);
+
 interface SevenTvGqlEmoteSetEntriesResponse {
   data?: {
     emoteSets?: {
@@ -33,6 +41,7 @@ interface SevenTvGqlEmoteSetEntriesResponse {
           pageCount: number;
           items: {
             alias?: string | null;
+            addedAt?: string | null;
             emote: {
               id: string;
               defaultName?: string | null;
@@ -51,6 +60,24 @@ interface SevenTvGqlEmoteSetEntriesResponse {
 type EmotesPayload = NonNullable<
   NonNullable<NonNullable<SevenTvGqlEmoteSetEntriesResponse['data']>['emoteSets']>['emoteSet']
 >['emotes'];
+
+/** One item of a page of set entries. */
+type SetEntryItem = NonNullable<EmotesPayload>['items'][number];
+
+/** One entry of a set as a read with {@link SevenTvSetEntriesOptions.withAddedAt} found it. */
+export interface SevenTvSetEntry {
+  /** The alias as 7TV listed it — `null` or empty for an aliasless entry, kept as read. */
+  alias: string | null;
+  /** The add date as the wire carried it, `null` when 7TV sent none. Compare in milliseconds via
+   *  `Date.parse`, never as a string: the wire paths print a different number of fraction digits. */
+  addedAt: string | null;
+}
+
+export interface SevenTvSetEntriesOptions {
+  /** Also read each entry's add date. Off (the default), the query and the result are exactly what
+   *  they were before the option existed — the slot delete run is its only user. */
+  withAddedAt?: boolean;
+}
 
 /** What one full read of a set's entries found. */
 export interface SevenTvSetEntries {
@@ -99,10 +126,24 @@ export interface SevenTvSetEntries {
    *  A caller for which "part" is not good enough (the delete run's alias read, spec #200 8.3: a
    *  list that only knows half must not delete) checks this. */
   complete: boolean;
+  /** Only with `withAddedAt`: every entry per 7TV emote id, in the order 7TV lists them — two
+   *  entries of one id stay two, each with its own alias and add date. Absent without the option. */
+  entriesById?: Map<string, SevenTvSetEntry[]>;
 }
 
-function memberKey(item: { alias?: string | null; emote: { id: string } }): string {
-  return `${item.emote.id}\u0000${item.alias ?? ''}`;
+function memberKey(
+  item: { alias?: string | null; addedAt?: string | null; emote: { id: string } },
+  withAddedAt: boolean,
+): string {
+  const base = `${item.emote.id}\u0000${item.alias ?? ''}`;
+  if (!withAddedAt) {
+    return base;
+  }
+  // With dates the generation is part of the member (Plan-378 S4): swapping the aliases of two
+  // entries of one id between two passes leaves the (id, alias) set equal but moves the dates. A
+  // missing or unparsable date is its own value.
+  const time = item.addedAt ? Date.parse(item.addedAt) : Number.NaN;
+  return `${base}\u0000${Number.isNaN(time) ? 'null' : time}`;
 }
 
 /** Code-unit order: deterministic and locale-independent, which is all a membership comparison needs. */
@@ -114,9 +155,10 @@ function fetchEmoteSetEntriesPage(
   httpClient: HttpClient,
   setId: string,
   page: number,
+  withAddedAt: boolean,
 ): Observable<SevenTvGqlEmoteSetEntriesResponse> {
   return httpClient.post<SevenTvGqlEmoteSetEntriesResponse>(SEVEN_TV_GQL_ENDPOINT, {
-    query: GQL_EMOTE_SET_ENTRIES_QUERY,
+    query: withAddedAt ? GQL_EMOTE_SET_ENTRIES_WITH_DATE_QUERY : GQL_EMOTE_SET_ENTRIES_QUERY,
     variables: { id: setId, page, perPage: SET_ENTRIES_PER_PAGE },
   });
 }
@@ -148,17 +190,24 @@ function fetchEmoteSetEntriesPage(
  * unnoticed. A remove-and-re-add sequence fully contained between a page's first read and its
  * re-read cannot be detected by any finite re-read (it needs 7TV to order entries other than by
  * insertion, plus several edits within about a second). The returned maps come from the first pass only; single-page sets cost no extra request.
+ *
+ * With `options.withAddedAt` each entry's add date is read too (`entriesById`), and the dates join
+ * the membership key of every consistency check (Plan-378 S4), so an alias swap between two passes
+ * ends `complete: false` instead of passing as the same set.
  */
 export function loadSevenTvSetEntries(
   httpClient: HttpClient,
   setId: string,
+  options: SevenTvSetEntriesOptions = {},
 ): Observable<SevenTvSetEntries> {
+  const withAddedAt = options.withAddedAt === true;
   // Deferred so every subscription accumulates into its own state.
   return defer(() => {
     const aliasesById = new Map<string, string[]>();
     const aliaslessIds = new Set<string>();
     const defaultNameById = new Map<string, string>();
     const animatedById = new Map<string, boolean>();
+    const entriesById = new Map<string, SevenTvSetEntry[]>();
     let collected = 0;
     // Consistency bookkeeping for `complete` (see its doc): totalCount per response, the members of
     // every main-pass page, and whether a pair already seen on an earlier page came back again.
@@ -168,7 +217,7 @@ export function loadSevenTvSetEntries(
     let repeatedAcrossPages = false;
 
     function readPage(page: number): Observable<NonNullable<EmotesPayload>> {
-      return fetchEmoteSetEntriesPage(httpClient, setId, page).pipe(
+      return fetchEmoteSetEntriesPage(httpClient, setId, page, withAddedAt).pipe(
         switchMap((response) => {
           const emotes = response.data?.emoteSets?.emoteSet?.emotes;
           if ((response.errors?.length ?? 0) > 0 || !emotes) {
@@ -187,7 +236,7 @@ export function loadSevenTvSetEntries(
           if (totalCounts.size > 1) {
             return of(false);
           }
-          const again = emotes.items.map(memberKey).sort(compareKeys);
+          const again = emotes.items.map((item) => memberKey(item, withAddedAt)).sort(compareKeys);
           const first = [...pageMembers[page - 1]].sort(compareKeys);
           if (again.length !== first.length || again.some((key, index) => key !== first[index])) {
             return of(false);
@@ -197,29 +246,39 @@ export function loadSevenTvSetEntries(
       );
     }
 
+    function collectItem(item: SetEntryItem): void {
+      const aliases = aliasesById.get(item.emote.id) ?? [];
+      if (item.alias) {
+        if (!aliases.includes(item.alias)) {
+          aliases.push(item.alias);
+        }
+      } else {
+        aliaslessIds.add(item.emote.id);
+      }
+      aliasesById.set(item.emote.id, aliases);
+      defaultNameById.set(item.emote.id, item.emote.defaultName ?? '');
+      animatedById.set(item.emote.id, item.emote.flags?.animated ?? false);
+      if (withAddedAt) {
+        const entries = entriesById.get(item.emote.id) ?? [];
+        entries.push({
+          alias: item.alias ?? null,
+          addedAt: typeof item.addedAt === 'string' ? item.addedAt : null,
+        });
+        entriesById.set(item.emote.id, entries);
+      }
+    }
+
     function loadPage(page: number): Observable<SevenTvSetEntries> {
       return readPage(page).pipe(
         switchMap((emotes) => {
-          const members = emotes.items.map(memberKey);
+          const members = emotes.items.map((item) => memberKey(item, withAddedAt));
           pageMembers.push(members);
           // Checked against earlier pages only — a repeat within one page is not a shift.
           if (members.some((key) => seenMembers.has(key))) {
             repeatedAcrossPages = true;
           }
           members.forEach((key) => seenMembers.add(key));
-          for (const item of emotes.items) {
-            const aliases = aliasesById.get(item.emote.id) ?? [];
-            if (item.alias) {
-              if (!aliases.includes(item.alias)) {
-                aliases.push(item.alias);
-              }
-            } else {
-              aliaslessIds.add(item.emote.id);
-            }
-            aliasesById.set(item.emote.id, aliases);
-            defaultNameById.set(item.emote.id, item.emote.defaultName ?? '');
-            animatedById.set(item.emote.id, item.emote.flags?.animated ?? false);
-          }
+          emotes.items.forEach(collectItem);
           collected += emotes.items.length;
           const result = (complete: boolean): SevenTvSetEntries => ({
             aliasesById,
@@ -228,6 +287,7 @@ export function loadSevenTvSetEntries(
             animatedById,
             occupiedSlots: emotes.totalCount,
             complete,
+            ...(withAddedAt ? { entriesById } : {}),
           });
           if (page >= emotes.pageCount) {
             const consistent =

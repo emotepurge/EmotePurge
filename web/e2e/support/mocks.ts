@@ -1436,6 +1436,9 @@ export async function mockSyncImportedToSet(page: Page, emoteSetId: string): Pro
 export interface MockSyncInSetBody {
   sevenTvEmoteIds: string[];
   expectedChannelName: string | null;
+  /** Present only on a slot run's report (#378): one entry per removed or restored set entry,
+   *  verbatim as the client sent it (`sevenTvEmoteId`, `slotId`, `alias`, `addedAt`). */
+  entries?: Record<string, unknown>[];
 }
 
 /** How {@link mockSyncDeletedInSet}/{@link mockSyncRestoredInSet} answer (spec 5.3). The default
@@ -2553,6 +2556,98 @@ export async function emitLive(page: Page, event: LiveEventFrame): Promise<void>
     (frame) => (window as unknown as { __emitLive: (e: unknown) => void }).__emitLive(frame),
     event,
   );
+}
+
+/** One entry of the stateful 7TV set {@link mockSevenTvSetBackend} serves. */
+export interface MockSevenTvSetEntry {
+  id: string;
+  alias: string;
+  addedAt: string;
+}
+
+/** One request {@link mockSevenTvSetBackend} saw: its kind, its query text and its variables. */
+export interface MockSevenTvRecordedRequest {
+  kind: SevenTvGqlRequestKind;
+  query: string;
+  variables: Record<string, unknown>;
+}
+
+/** What {@link mockSevenTvSetBackend} hands back: the set's live state and every request seen. */
+export interface MockSevenTvSetBackend {
+  /** The entries 7TV "holds" right now; a REMOVE/ADD changes it, a test may change it directly. */
+  live: MockSevenTvSetEntry[];
+  requests: MockSevenTvRecordedRequest[];
+  /** The mutations only, in order. */
+  mutations(): MockSevenTvRecordedRequest[];
+  /** The set reads only, in order. */
+  reads(): MockSevenTvRecordedRequest[];
+}
+
+/**
+ * A stateful stand-in for one 7TV emote set behind `https://7tv.io/v4/gql` that also records what
+ * the page sent, so a spec can assert the exact request shape (slot delete, #378): the set read
+ * carries `addedAt` per entry only when its query asks for it, a REMOVE with an `alias` variable
+ * takes only that entry while one without takes every entry of the id, an ADD appends an entry
+ * dated `addedAtOnAdd`. `onRemove` runs after the standard effect and may change `live` further,
+ * to play a second editor or 7TV removing more than asked. Call before `page.goto`, like
+ * {@link mockSevenTvGql}, which it uses.
+ */
+export async function mockSevenTvSetBackend(
+  page: Page,
+  live: MockSevenTvSetEntry[],
+  options: {
+    addedAtOnAdd?: string;
+    onRemove?: (backend: MockSevenTvSetBackend, variables: Record<string, unknown>) => void;
+  } = {},
+): Promise<MockSevenTvSetBackend> {
+  const requests: MockSevenTvRecordedRequest[] = [];
+  const backend: MockSevenTvSetBackend = {
+    live: [...live],
+    requests,
+    mutations: () => requests.filter((r) => r.kind === 'addEmote' || r.kind === 'removeEmote'),
+    reads: () => requests.filter((r) => r.kind === 'setRead'),
+  };
+  await mockSevenTvGql(page, (request) => {
+    const kind = sevenTvGqlRequestKind(request);
+    requests.push({ kind, query: request.query, variables: request.variables });
+    const emoteId = request.variables['emoteId'] as string;
+    const alias = request.variables['alias'] as string | undefined;
+    switch (kind) {
+      case 'removeEmote':
+        backend.live = backend.live.filter(
+          (entry) => !(entry.id === emoteId && (alias === undefined || entry.alias === alias)),
+        );
+        options.onRemove?.(backend, request.variables);
+        return {
+          data: { emoteSets: { emoteSet: { removeEmote: { id: request.variables['setId'] } } } },
+        };
+      case 'addEmote':
+        backend.live.push({
+          id: emoteId,
+          alias: alias ?? emoteId,
+          addedAt: options.addedAtOnAdd ?? '2026-10-13T12:00:00.000Z',
+        });
+        return {
+          data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['setId'] } } } },
+        };
+      default: {
+        const withDate = request.query.includes('addedAt');
+        const items = backend.live.map((entry) => ({
+          alias: entry.alias,
+          ...(withDate ? { addedAt: entry.addedAt } : {}),
+          emote: { id: entry.id, defaultName: entry.alias },
+        }));
+        return {
+          data: {
+            emoteSets: {
+              emoteSet: { emotes: { totalCount: items.length, pageCount: 1, items } },
+            },
+          },
+        };
+      }
+    }
+  });
+  return backend;
 }
 
 /** Parsed body of one call to 7TV's GQL endpoint, handed to a `mockSevenTvGql` handler. */

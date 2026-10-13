@@ -302,4 +302,43 @@ describe('toDeleteQueueEmotes', () => {
 
     expect(row.aliases).toEqual(['Hosted']);
   });
+
+  describe('an entry row', () => {
+    const entry = {
+      slotId: 'slot-1',
+      alias: 'hob44',
+      addedAt: '2026-10-13T08:00:14.902Z',
+      cardKey: 'slot-1',
+    };
+
+    it('keeps its one alias and target, whatever the live read knows about the id', () => {
+      const [row] = toDeleteQueueEmotes(
+        [emote({ name: 'hob44', aliases: ['hob44'], entry })],
+        entries({ '7tv-1': ['hob44', 'ome44'] }, ['7tv-1']),
+      );
+
+      expect(row.aliases).toEqual(['hob44']);
+      expect(row.entry).toBe(entry);
+    });
+
+    it('leaves an id row beside it enriched as before', () => {
+      const rows = toDeleteQueueEmotes(
+        [
+          emote({ name: 'hob44', aliases: ['hob44'], entry }),
+          emote({ sevenTvEmoteId: '7tv-2', name: 'KEKW', aliases: undefined }),
+        ],
+        entries({ '7tv-1': ['hob44', 'ome44'], '7tv-2': ['KEKW', 'KEKW2'] }),
+      );
+
+      expect(rows[1].aliases).toEqual(['KEKW', 'KEKW2']);
+      expect(rows[1].entry).toBeUndefined();
+    });
+
+    // Flag off = today: the id row has no `entry` property at all, not even an undefined one.
+    it('adds no entry property to an id row', () => {
+      expect(toDeleteQueueEmotes([emote()], undefined)).toStrictEqual([
+        { emoteId: 'local-1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['Hosted'] },
+      ]);
+    });
+  });
 });

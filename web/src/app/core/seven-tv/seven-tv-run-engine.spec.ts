@@ -577,6 +577,26 @@ describe('SevenTvRunEngine', () => {
       expect(results[0].doneKeys).toEqual(['internal-1']);
     });
 
+    it('carries the reason code of a skip onto the row, and none for a skip without one', () => {
+      const reason = { key: 'usageStats.delete.noAlias', params: { name: 'a' } } as const;
+      const beforeStep = vi
+        .fn()
+        .mockReturnValueOnce(of<StepGate>({ kind: 'skip', errorMessage: 'no alias', reason }))
+        .mockReturnValue(of<StepGate>({ kind: 'skip', errorMessage: 'plain' }));
+      expect(start(EMOTES, { ...TEST_OPERATION, beforeStep })).toBe(true);
+
+      expect(engine.queue()[0].skipReason).toEqual(reason);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      expect(engine.queue()[1].skipReason).toBeUndefined();
+    });
+
+    it('gives the engine-owned fallback code to a hook that completes without a value', () => {
+      const beforeStep = vi.fn().mockReturnValue(EMPTY);
+      expect(start(EMOTES, { ...TEST_OPERATION, beforeStep })).toBe(true);
+
+      expect(engine.queue()[0].skipReason).toEqual({ key: 'massDelete.errors.beforeStepFailed' });
+    });
+
     it('cancels the row without a request when the hook skips the first step, and paces the next row as usual', () => {
       const beforeStep = vi
         .fn()

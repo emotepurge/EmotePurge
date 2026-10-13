@@ -648,6 +648,17 @@ export function toDeleteQueueEmotes(
   liveEntries: SevenTvSetEntries | undefined,
 ): DeleteQueueEmote[] {
   return confirmedSelection.map((emote) => {
+    // An entry row names exactly its one entry: the aliases the id has elsewhere in the set are
+    // siblings that are not deleted, and the protocol must not list them.
+    if (emote.entry) {
+      return {
+        emoteId: emote.emoteId,
+        sevenTvEmoteId: emote.sevenTvEmoteId,
+        name: emote.name,
+        aliases: emote.aliases,
+        entry: emote.entry,
+      };
+    }
     // The live read knows every entry the one `REMOVE` will take; a cell it does not know keeps
     // what the host said.
     const live = liveEntries?.aliasesById.get(emote.sevenTvEmoteId);

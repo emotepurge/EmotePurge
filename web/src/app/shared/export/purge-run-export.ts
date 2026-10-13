@@ -1,3 +1,7 @@
+import {
+  SevenTvEntryGeneration,
+  isValidEntryGeneration,
+} from '../../core/seven-tv/seven-tv-entry-target';
 import { RunItemStatus, RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import { CsvColumn, toCsv } from './csv';
 import { ExportEnvelope, ExportKind, buildEnvelope } from './export-envelope';
@@ -35,8 +39,24 @@ import { readEnvelope } from './read-envelope';
  * offering it for restore — the exact silent-short failure this version field exists to prevent.
  * `parsePurgeRunProtocol` keeps accepting `1` and `2` alongside this version, so no file already on
  * someone's disk from before either change stops being readable.
+ *
+ * `3 → 4` (slot delete, #365 child 8, Plan-378 4.8, S6) — **only for a file that carries an entry
+ * target**, see {@link PURGE_RUN_ENTRY_FORMAT_VERSION}. A run without one still writes this version,
+ * byte for byte as before, so this constant stays the version of every file the flag-off app writes.
  */
 export const PURGE_RUN_FORMAT_VERSION = 3;
+
+/**
+ * The version of a purge protocol with at least one entry row (a slot delete removed one set entry
+ * by its alias, Plan-378 4.8): such a row also records the entry's slot (when it had one) and the
+ * add date of the removed generation, which a restore reports back so the server reactivates that
+ * very slot. A version 3 reader would drop both fields without a word and restore per id — the
+ * server then un-archives only the emote, and the next reconciliation resumes the most recently
+ * archived slot of that name, possibly not the removed one: exactly the silent wrong result the
+ * version exists to prevent, so such a file is a version an older reader refuses. Written only when
+ * a target is present; `parsePurgeRunProtocol` accepts it only with one (see there).
+ */
+export const PURGE_RUN_ENTRY_FORMAT_VERSION = 4;
 
 export interface PurgeRunRow {
   /** Local `Emote.Id`, or `null` for a set-view row that never had one (spec #200, 7.2). Kept for
@@ -50,6 +70,12 @@ export interface PurgeRunRow {
   aliases: string[];
   status: RunItemStatus;
   errorMessage: string | null;
+  /** Entry rows only (format version 4): the usage slot of the removed entry — absent for an entry
+   *  without one. */
+  slotId?: string;
+  /** Entry rows only (format version 4): the add date of the removed generation, verbatim. Its
+   *  presence is what makes a row an entry row; `name` is then its alias and `aliases` `[alias]`. */
+  addedAt?: string;
 }
 
 /**
@@ -83,6 +109,10 @@ export interface RestoreRow {
    * precedes the actual `ADD` can vouch for it fully (`already-present-filter.ts`).
    */
   uncertain?: true;
+  /** The removed entry's generation — set only on an entry row of a version 4 purge protocol
+   *  (Plan-378 4.8), checked strictly while reading. The restore re-adds exactly its alias and
+   *  reports slot and original add date. */
+  entry?: SevenTvEntryGeneration;
 }
 
 export interface PurgeRunMeta {
@@ -110,6 +140,15 @@ export interface PurgeRunMeta {
 
 export type PurgeRunProtocol = ExportEnvelope<PurgeRunRow, PurgeRunMeta>;
 
+/** The aliases a protocol row records: an entry row its own alias, an id row its known aliases, or
+ *  its name when it has none. */
+function protocolRowAliases(item: RunQueueItem): string[] {
+  if (item.entry) {
+    return [item.entry.alias];
+  }
+  return item.aliases && item.aliases.length > 0 ? [...item.aliases] : [item.name];
+}
+
 export function buildPurgeRunProtocol(input: {
   channelName: string;
   emoteSetId: string;
@@ -126,6 +165,7 @@ export function buildPurgeRunProtocol(input: {
   targetOwnerTwitchId: string | null;
 }): PurgeRunProtocol {
   const statuses = input.items.map((item) => item.status);
+  const hasEntryRow = input.items.some((item) => item.entry !== undefined);
   const envelope = buildEnvelope({
     kind: 'purge-run',
     channelName: input.channelName,
@@ -143,18 +183,32 @@ export function buildPurgeRunProtocol(input: {
       },
       targetOwnerTwitchId: input.targetOwnerTwitchId,
     },
-    rows: input.items.map((item) => ({
-      emoteId: item.emoteId ?? null,
-      sevenTvEmoteId: item.sevenTvEmoteId,
-      name: item.name,
-      aliases: item.aliases && item.aliases.length > 0 ? [...item.aliases] : [item.name],
-      status: item.status,
-      errorMessage: item.errorMessage ?? null,
-    })),
+    rows: input.items.map((item): PurgeRunRow => {
+      const row: PurgeRunRow = {
+        emoteId: item.emoteId ?? null,
+        sevenTvEmoteId: item.sevenTvEmoteId,
+        name: item.name,
+        aliases: protocolRowAliases(item),
+        status: item.status,
+        errorMessage: item.errorMessage ?? null,
+      };
+      // An id row gets no further key at all, so a run of id rows writes the bytes it always did.
+      return item.entry === undefined
+        ? row
+        : {
+            ...row,
+            ...(item.entry.slotId === undefined ? {} : { slotId: item.entry.slotId }),
+            addedAt: item.entry.addedAt,
+          };
+    }),
   });
   // Overrides the shared envelope's own EXPORT_FORMAT_VERSION (still 1) — see
-  // PURGE_RUN_FORMAT_VERSION's doc above for why this kind versions independently.
-  return { ...envelope, formatVersion: PURGE_RUN_FORMAT_VERSION };
+  // PURGE_RUN_FORMAT_VERSION's doc above for why this kind versions independently, and
+  // PURGE_RUN_ENTRY_FORMAT_VERSION's for why only a file with an entry row is version 4.
+  return {
+    ...envelope,
+    formatVersion: hasEntryRow ? PURGE_RUN_ENTRY_FORMAT_VERSION : PURGE_RUN_FORMAT_VERSION,
+  };
 }
 
 export function purgeRunJson(protocol: PurgeRunProtocol): string {
@@ -253,9 +307,22 @@ export type ProtocolParseResult =
  * Reads every protocol this app has ever written (spec #200, AK 69): `emoteId` as a Guid (before
  * K5), `null` (a row without a local emote), or missing; `aliases` present, or missing — an older
  * file, whose one alias is its `name`. The returned rows are normalised to today's shape. Accepts
- * `formatVersion` `1` (every file written before K5), `2` (K5's row shape, before #275) and
- * `PURGE_RUN_FORMAT_VERSION` (today's row shape, `unknown` rows included) — anything else is
- * refused rather than parsed short (see that constant's doc).
+ * `formatVersion` `1` (every file written before K5), `2` (K5's row shape, before #275),
+ * `PURGE_RUN_FORMAT_VERSION` (today's row shape, `unknown` rows included) and
+ * `PURGE_RUN_ENTRY_FORMAT_VERSION` — anything else is refused rather than parsed short (see those
+ * constants' docs).
+ *
+ * Version 4 (Plan-378 4.8, S6, T-6) is read **strictly**: a row with `addedAt` or `slotId` is an
+ * entry row, and its target must be whole — exactly one alias, and the target valid per
+ * `isValidEntryGeneration`, the very check the restore applies before queueing (a non-empty alias,
+ * `slotId` absent or non-empty, `addedAt` valid per `parseStrictEntryDate`; `Date.parse` alone takes
+ * values the report endpoint refuses). One malformed target refuses the **whole file**
+ * (`invalidEntryTarget`) instead of quietly restoring that row per id, which would bring the entry
+ * back without the generation that leads the server to its slot — or, for an empty alias, dropping
+ * the row later without a word. A version 4 file without any entry target is not one this app
+ * writes (a run without one stays version 3), and is refused with the same `invalidEntryTarget`: the
+ * file claims entry targets and holds none, which is not a matter of a newer app. In versions 1–3
+ * neither field is read.
  *
  * `meta` (and with it `meta.counts`) is passed through unvalidated beyond `emoteSetId` above — a
  * v1 or v2 file has no `counts.unknown` at all, so it comes back `undefined` at runtime despite the
@@ -281,10 +348,12 @@ export function parsePurgeRunProtocol(text: string): ProtocolParseResult {
   if (
     envelope.formatVersion !== 1 &&
     envelope.formatVersion !== 2 &&
-    envelope.formatVersion !== PURGE_RUN_FORMAT_VERSION
+    envelope.formatVersion !== PURGE_RUN_FORMAT_VERSION &&
+    envelope.formatVersion !== PURGE_RUN_ENTRY_FORMAT_VERSION
   ) {
     return { ok: false, errorKey: 'restore.import.errors.wrongVersion' };
   }
+  const readsEntryTargets = envelope.formatVersion === PURGE_RUN_ENTRY_FORMAT_VERSION;
   // The envelope's channel is carried through for the caller's own use, never compared — but it
   // still has to be a string for the result type to be honest about it.
   if (typeof envelope.channelName !== 'string') {
@@ -301,16 +370,25 @@ export function parsePurgeRunProtocol(text: string): ProtocolParseResult {
   // Reads the row in its full on-disk shape first (status included) so the `done`/`unknown` check
   // below has something to check, then narrows to the RestoreRow shape a restore actually needs —
   // `status`/`errorMessage` are the paper trail's business, not the restore flow's.
+  // Entry targets first, over every row the file holds (version 4 only): one malformed target
+  // refuses the whole file, whatever its row's status.
+  const entries = new Map<unknown, SevenTvEntryGeneration>();
+  if (readsEntryTargets && !collectEntryTargets(envelope.rows as unknown[], entries)) {
+    return { ok: false, errorKey: 'restore.import.errors.invalidEntryTarget' };
+  }
+
   const restorable = (envelope.rows as unknown[]).flatMap((row): RestoreRow[] => {
     const parsed = readProtocolRow(row);
     if (!parsed || (parsed.status !== 'done' && parsed.status !== 'unknown')) {
       return [];
     }
+    const entry = entries.get(row);
     const restoreRow: RestoreRow = {
       emoteId: parsed.emoteId,
       sevenTvEmoteId: parsed.sevenTvEmoteId,
       name: parsed.name,
       aliases: parsed.aliases,
+      ...(entry === undefined ? {} : { entry }),
     };
     return [parsed.status === 'unknown' ? { ...restoreRow, uncertain: true } : restoreRow];
   });
@@ -334,6 +412,28 @@ export function parsePurgeRunProtocol(text: string): ProtocolParseResult {
       ownerLogin: readNonBlankStringHint(envelope.channelName),
     },
   };
+}
+
+/** Reads the entry target of every row into `entries` (keyed by the raw row). `false` when one is
+ *  malformed, or when a version 4 file holds none at all — either refuses the whole file. */
+function collectEntryTargets(
+  rows: readonly unknown[],
+  entries: Map<unknown, SevenTvEntryGeneration>,
+): boolean {
+  for (const row of rows) {
+    const parsed = readProtocolRow(row);
+    if (!parsed) {
+      continue;
+    }
+    const entry = readEntryTarget(row as Record<string, unknown>, parsed);
+    if (entry === null) {
+      return false;
+    }
+    if (entry !== undefined) {
+      entries.set(row, entry);
+    }
+  }
+  return entries.size > 0;
 }
 
 /** One row of an untrusted protocol file, or `null` when it cannot be restored from. The 7TV id
@@ -370,4 +470,31 @@ function readProtocolRow(value: unknown): PurgeRunRow | null {
     status: status as RunItemStatus,
     errorMessage: typeof errorMessage === 'string' ? errorMessage : null,
   };
+}
+
+/** The entry target of one version 4 row (Plan-378 4.8): `undefined` for a row without one (no
+ *  `addedAt`, no `slotId` — an id row), `null` for a malformed one, which refuses the file. The
+ *  alias is the row's one alias; the add date is passed on verbatim, never reformatted. Judged by
+ *  `isValidEntryGeneration`, the restore's own check, so the two cannot drift apart: an empty alias
+ *  (`name: ""`, which `readProtocolRow` turns into `aliases: [""]`) refuses the file here instead of
+ *  being dropped by the restore later. */
+function readEntryTarget(
+  row: Record<string, unknown>,
+  parsed: PurgeRunRow,
+): SevenTvEntryGeneration | null | undefined {
+  const { slotId, addedAt } = row;
+  if (slotId === undefined && addedAt === undefined) {
+    return undefined;
+  }
+  if (parsed.aliases.length !== 1) {
+    return null;
+  }
+  // Untrusted values typed as the target only to be checked: `isValidEntryGeneration` tests every
+  // field's type itself.
+  const target = {
+    ...(slotId === undefined ? {} : { slotId }),
+    alias: parsed.aliases[0],
+    addedAt,
+  } as SevenTvEntryGeneration;
+  return isValidEntryGeneration(target) ? target : null;
 }

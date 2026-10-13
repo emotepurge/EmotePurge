@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import {
+  PURGE_RUN_ENTRY_FORMAT_VERSION,
   PURGE_RUN_FORMAT_VERSION,
   buildPurgeRunProtocol,
   parsePurgeRunProtocol,
@@ -291,7 +292,9 @@ describe('parsePurgeRunProtocol', () => {
     });
   });
 
-  it.each([99, PURGE_RUN_FORMAT_VERSION + 1])(
+  // The first version past the newest known one: since Plan-378 that is the entry format's
+  // successor, version 4 being a known one now.
+  it.each([99, PURGE_RUN_ENTRY_FORMAT_VERSION + 1])(
     'rejects an unknown format version (%i)',
     (version) => {
       const future = purgeRunJson(protocol()).replace(
@@ -550,6 +553,183 @@ describe('parsePurgeRunProtocol', () => {
     expect(parsePurgeRunProtocol(purgeRunJson(proto))).toEqual({
       ok: false,
       errorKey: 'restore.import.errors.noRestorableRows',
+    });
+  });
+});
+
+// Plan-378 4.8 (S6, T-6): a run with an entry row — a slot delete removed one set entry — keeps
+// the entry's slot and the add date of the removed generation, in a version older readers refuse.
+describe('purge protocol with entry rows (version 4)', () => {
+  const ORIGINAL = '2026-10-13T08:00:14.902123+02:00';
+  const ENTRY_ITEMS: RunQueueItem[] = [
+    {
+      key: '7tv-x#slot-hob',
+      emoteId: 'e-x',
+      sevenTvEmoteId: '7tv-x',
+      name: 'hob44',
+      aliases: ['hob44'],
+      entry: { slotId: 'slot-hob', alias: 'hob44', addedAt: ORIGINAL, cardKey: 'slot-hob' },
+      status: 'done',
+      completedSteps: 1,
+      failedStep: null,
+    },
+    {
+      key: '7tv-y#live:7tv-y#zaza',
+      sevenTvEmoteId: '7tv-y',
+      name: 'zaza',
+      aliases: ['zaza'],
+      entry: { alias: 'zaza', addedAt: '2026-10-01T00:00:00Z', cardKey: 'live:7tv-y#zaza' },
+      status: 'unknown',
+      completedSteps: 0,
+      failedStep: 0,
+    },
+    ITEMS[0],
+  ];
+
+  function entryProtocol(items: RunQueueItem[] = ENTRY_ITEMS) {
+    return buildPurgeRunProtocol({
+      channelName: 'sensitron',
+      emoteSetId: 'set-1',
+      startedAt: 0,
+      finishedAt: 1,
+      targetOwnerTwitchId: null,
+      items,
+    });
+  }
+
+  /** The JSON of `entryProtocol()` with its first row changed by `edit`. */
+  function withFirstRow(edit: (row: Record<string, unknown>) => void): string {
+    const file = JSON.parse(purgeRunJson(entryProtocol()));
+    edit(file.rows[0]);
+    return JSON.stringify(file);
+  }
+
+  it('writes version 4 with the slot and the add date of each entry row, verbatim', () => {
+    const proto = entryProtocol();
+
+    expect(proto.formatVersion).toBe(PURGE_RUN_ENTRY_FORMAT_VERSION);
+    expect(PURGE_RUN_ENTRY_FORMAT_VERSION).toBe(4);
+    expect(proto.rows[0]).toEqual({
+      emoteId: 'e-x',
+      sevenTvEmoteId: '7tv-x',
+      name: 'hob44',
+      aliases: ['hob44'],
+      status: 'done',
+      errorMessage: null,
+      slotId: 'slot-hob',
+      addedAt: ORIGINAL,
+    });
+    // An entry without a slot, and an id row in the same run without either field.
+    expect(proto.rows[1]).not.toHaveProperty('slotId');
+    expect(proto.rows[1].addedAt).toBe('2026-10-01T00:00:00Z');
+    expect(Object.keys(proto.rows[2])).toEqual([
+      'emoteId',
+      'sevenTvEmoteId',
+      'name',
+      'aliases',
+      'status',
+      'errorMessage',
+    ]);
+  });
+
+  // Flag off: a run of id rows writes the file it always wrote.
+  it('keeps a run of id rows at version 3, with no new key in any row', () => {
+    const json = purgeRunJson(protocol());
+
+    expect(JSON.parse(json).formatVersion).toBe(3);
+    expect(json).not.toContain('slotId');
+    expect(json).not.toContain('addedAt');
+  });
+
+  it('reads the entry targets of a version 4 file back into the restore rows', () => {
+    const parsed = parsePurgeRunProtocol(purgeRunJson(entryProtocol()));
+
+    expect(parsed.ok && parsed.rows).toEqual([
+      {
+        emoteId: 'e-x',
+        sevenTvEmoteId: '7tv-x',
+        name: 'hob44',
+        aliases: ['hob44'],
+        entry: { slotId: 'slot-hob', alias: 'hob44', addedAt: ORIGINAL },
+      },
+      {
+        emoteId: null,
+        sevenTvEmoteId: '7tv-y',
+        name: 'zaza',
+        aliases: ['zaza'],
+        entry: { alias: 'zaza', addedAt: '2026-10-01T00:00:00Z' },
+        uncertain: true,
+      },
+      { emoteId: 'i1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'] },
+    ]);
+  });
+
+  it.each([
+    ['a bare number as add date', (row: Record<string, unknown>) => (row['addedAt'] = '0')],
+    [
+      'a day that does not exist',
+      (row: Record<string, unknown>) => (row['addedAt'] = '2026-02-31T00:00:00.000Z'),
+    ],
+    ['a slot without an add date', (row: Record<string, unknown>) => delete row['addedAt']],
+    ['an empty slot id', (row: Record<string, unknown>) => (row['slotId'] = '')],
+    [
+      'two aliases on one entry',
+      (row: Record<string, unknown>) => (row['aliases'] = ['hob44', 'ome44']),
+    ],
+    [
+      'an empty alias',
+      (row: Record<string, unknown>) => {
+        row['name'] = '';
+        row['aliases'] = [''];
+      },
+    ],
+  ])('refuses the whole version 4 file for %s, never restoring the row per id', (_label, edit) => {
+    expect(parsePurgeRunProtocol(withFirstRow(edit))).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.invalidEntryTarget',
+    });
+  });
+
+  it('refuses a malformed target on a row that is not restorable too', () => {
+    const file = withFirstRow((row) => {
+      row['status'] = 'failed';
+      row['addedAt'] = '2026-10-13T08:00:14';
+    });
+
+    expect(parsePurgeRunProtocol(file)).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.invalidEntryTarget',
+    });
+  });
+
+  it('refuses a version 4 file without any entry target — this app never writes one', () => {
+    const file = purgeRunJson(protocol()).replace('"formatVersion": 3', '"formatVersion": 4');
+
+    // Not "a newer version": the file claims entry targets and holds none.
+    expect(parsePurgeRunProtocol(file)).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.invalidEntryTarget',
+    });
+  });
+
+  // Versions 1–3 never carried targets: the fields are not read there, the file reads as before.
+  it('reads no target from a version 3 file', () => {
+    const file = purgeRunJson(entryProtocol()).replace('"formatVersion": 4', '"formatVersion": 3');
+    const parsed = parsePurgeRunProtocol(file);
+
+    expect(parsed.ok && parsed.rows.map((row) => row.entry)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it('refuses a version 5 file', () => {
+    const file = purgeRunJson(entryProtocol()).replace('"formatVersion": 4', '"formatVersion": 5');
+
+    expect(parsePurgeRunProtocol(file)).toEqual({
+      ok: false,
+      errorKey: 'restore.import.errors.wrongVersion',
     });
   });
 });

@@ -2,7 +2,18 @@ import { describe, expect, it } from 'vitest';
 
 import { RunQueueItem, RunResult } from './seven-tv-run-engine';
 import { SevenTvSetEntries } from './seven-tv-set-entries';
-import { settleDeleteResult, settleRestoreResult, unknownCount } from './seven-tv-run-settlement';
+import {
+  EntryBaseline,
+  entryPostCheckOwed,
+  entryTimeKey,
+  findUnexpectedRemovals,
+  freezeBaselineGroup,
+  mergeIntoBaseline,
+  settleDeleteResult,
+  settleEntryDeleteRun,
+  settleRestoreResult,
+  unknownCount,
+} from './seven-tv-run-settlement';
 
 function queueItem(overrides: Partial<RunQueueItem> & Pick<RunQueueItem, 'key'>): RunQueueItem {
   return {
@@ -446,5 +457,246 @@ describe('unknownCount', () => {
   it('returns 0 for an empty list and for a list with no unknown rows', () => {
     expect(unknownCount([])).toBe(0);
     expect(unknownCount([queueItem({ key: '1', status: 'done' })])).toBe(0);
+  });
+});
+
+// Plan-378 4.4 step 5 (S2, A6): the comparison baseline of a slot delete run.
+describe('mergeIntoBaseline', () => {
+  const T1 = '2026-10-13T08:00:00.000Z';
+  const T2 = '2026-10-13T09:00:00Z';
+  const T3 = '2026-10-13T10:00:00Z';
+
+  function aliasesOf(baseline: EntryBaseline, id = 'x'): Record<string, (string | null)[]> {
+    return Object.fromEntries(
+      [...(baseline.get(id) ?? new Map()).values()].map((group) => [group.addedAt, group.aliases]),
+    );
+  }
+
+  it('compares add dates in milliseconds, whatever the number of fraction digits', () => {
+    expect(entryTimeKey('2026-10-13T08:00:00Z')).toBe(entryTimeKey('2026-10-13T08:00:00.000000Z'));
+    expect(entryTimeKey(null)).toBe(entryTimeKey('not a date'));
+    expect(entryTimeKey(null)).not.toBe(entryTimeKey(T1));
+  });
+
+  it('takes each read as it is while the run has removed nothing of the emote yet', () => {
+    const baseline: EntryBaseline = new Map();
+    mergeIntoBaseline(baseline, 'x', [
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T2 },
+    ]);
+    // b left before the run touched the emote — none of the run's requests can have taken it.
+    mergeIntoBaseline(baseline, 'x', [{ alias: 'a', addedAt: T1 }]);
+
+    expect(aliasesOf(baseline)).toEqual({ [T1]: ['a'] });
+  });
+
+  it('accumulates once a removal of the emote was let through and never forgets an entry', () => {
+    const baseline: EntryBaseline = new Map();
+    mergeIntoBaseline(baseline, 'x', [
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T2 },
+      { alias: 'c', addedAt: T3 },
+    ]);
+    freezeBaselineGroup(baseline, 'x', entryTimeKey(T1));
+    // The next read misses b (and a, which the run removed): both stay in the baseline.
+    mergeIntoBaseline(baseline, 'x', [{ alias: 'c', addedAt: T3 }]);
+    // An entry another editor added since joins it.
+    mergeIntoBaseline(baseline, 'x', [
+      { alias: 'c', addedAt: T3 },
+      { alias: 'd', addedAt: '2026-10-13T11:00:00Z' },
+    ]);
+
+    expect(aliasesOf(baseline)).toEqual({
+      [T1]: ['a'],
+      [T2]: ['b'],
+      [T3]: ['c'],
+      '2026-10-13T11:00:00Z': ['d'],
+    });
+  });
+
+  it('takes a later alias of a known, unfrozen date as a rename, but keeps a frozen date as it was', () => {
+    const baseline: EntryBaseline = new Map();
+    mergeIntoBaseline(baseline, 'x', [
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T1 },
+      { alias: 'c', addedAt: T2 },
+    ]);
+    freezeBaselineGroup(baseline, 'x', entryTimeKey(T1));
+    mergeIntoBaseline(baseline, 'x', [
+      { alias: 'z', addedAt: T1 },
+      { alias: 'a', addedAt: T1 },
+      { alias: 'cc', addedAt: T2 },
+    ]);
+
+    expect(aliasesOf(baseline)).toEqual({ [T1]: ['a', 'b'], [T2]: ['cc'] });
+  });
+});
+
+// Plan-378 4.5 (S5, T-3, T-4): clearing up and checking a slot delete run per entry.
+describe('slot delete settlement', () => {
+  const T1 = '2026-10-13T08:00:00Z';
+  const T2 = '2026-10-13T09:00:00Z';
+
+  function entryItem(
+    alias: string,
+    addedAt: string,
+    status: RunQueueItem['status'],
+    sevenTvEmoteId = 'x',
+  ): RunQueueItem {
+    return queueItem({
+      key: `${sevenTvEmoteId}#${alias}`,
+      sevenTvEmoteId,
+      name: alias,
+      status,
+      entry: { slotId: `slot-${alias}`, alias, addedAt, cardKey: alias },
+    });
+  }
+
+  function baselineOf(entries: { alias: string | null; addedAt: string }[]): EntryBaseline {
+    const baseline: EntryBaseline = new Map();
+    mergeIntoBaseline(baseline, 'x', entries);
+    return baseline;
+  }
+
+  function datedRead(entries: { alias: string | null; addedAt: string }[], complete = true) {
+    return setEntries({
+      aliasesById: new Map([['x', entries.flatMap((entry) => entry.alias ?? [])]]),
+      entriesById: new Map([['x', entries]]),
+      complete,
+    });
+  }
+
+  it('confirms an unknown entry row only when its alias is gone and fewer entries are left at its date', () => {
+    const baseline = baselineOf([
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T2 },
+    ]);
+    const gone = settleEntryDeleteRun(
+      runResult([entryItem('a', T1, 'unknown')]),
+      datedRead([{ alias: 'b', addedAt: T2 }]),
+      baseline,
+    );
+    expect(gone.result.items[0].status).toBe('done');
+    expect(gone.result.doneKeys).toEqual(['x#a']);
+    expect(gone.unexpectedRemovals).toEqual([]);
+
+    // Renamed rather than removed: same count at the date, another alias — positive only.
+    const renamed = settleEntryDeleteRun(
+      runResult([entryItem('a', T1, 'unknown')]),
+      datedRead([
+        { alias: 'c', addedAt: '2026-10-13T08:00:00.000000Z' },
+        { alias: 'b', addedAt: T2 },
+      ]),
+      baseline,
+    );
+    expect(renamed.result.items[0].status).toBe('unknown');
+    expect(renamed.unexpectedRemovals).toEqual([]);
+  });
+
+  it('confirms no more unknown rows of one tie date than entries are gone there', () => {
+    const baseline = baselineOf([
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T1 },
+    ]);
+    const settled = settleEntryDeleteRun(
+      runResult([entryItem('a', T1, 'unknown'), entryItem('b', T1, 'unknown')]),
+      datedRead([{ alias: 'c', addedAt: T1 }]),
+      baseline,
+    );
+
+    expect(settled.result.items.map((item) => item.status)).toEqual(['done', 'unknown']);
+  });
+
+  it('settles id rows as before next to entry rows', () => {
+    const baseline = baselineOf([{ alias: 'a', addedAt: T1 }]);
+    const idGone = queueItem({ key: 'gone', status: 'unknown' });
+    const idThere = queueItem({ key: 'there', status: 'unknown' });
+    const read = setEntries({
+      aliasesById: new Map([['there', ['T']]]),
+      entriesById: new Map([['there', [{ alias: 'T', addedAt: T2 }]]]),
+    });
+    const settled = settleEntryDeleteRun(
+      runResult([idGone, entryItem('a', T1, 'unknown'), idThere]),
+      read,
+      baseline,
+    );
+
+    expect(settled.result.items.map((item) => item.status)).toEqual(['done', 'done', 'unknown']);
+    expect(settled.result.doneKeys).toEqual(['gone', 'x#a']);
+  });
+
+  it('judges nothing without a complete read with add dates', () => {
+    const baseline = baselineOf([{ alias: 'a', addedAt: T1 }]);
+    const result = runResult([entryItem('a', T1, 'unknown')]);
+
+    for (const entries of [
+      null,
+      datedRead([], false),
+      setEntries({ aliasesById: new Map() }), // a read without the add dates
+    ]) {
+      const settled = settleEntryDeleteRun(result, entries, baseline);
+      expect(settled.unexpectedRemovals).toBeNull();
+      expect(settled.result.items[0].status).toBe('unknown');
+    }
+  });
+
+  it('counts without a tie and goes by alias inside one', () => {
+    const groups = baselineOf([
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T2 },
+      { alias: 'c', addedAt: T2 },
+    ]).get('x')!;
+    const own = new Map([[entryTimeKey(T2), ['b']]]);
+
+    // a renamed (own date, so still there) and c renamed inside the tie (counts as gone).
+    expect(
+      findUnexpectedRemovals(
+        'x',
+        groups,
+        [
+          { alias: 'a2', addedAt: T1 },
+          { alias: 'c2', addedAt: T2 },
+        ],
+        own,
+      ),
+    ).toEqual([{ sevenTvEmoteId: 'x', alias: 'c', addedAt: T2 }]);
+    // An entry still there, but an own removal at the date accounts for it: nothing missing.
+    expect(
+      findUnexpectedRemovals(
+        'x',
+        groups,
+        [
+          { alias: 'a', addedAt: T1 },
+          { alias: 'c', addedAt: T2 },
+        ],
+        own,
+      ),
+    ).toEqual([]);
+  });
+
+  it('owes the check when a sent removal leaves baseline entries of its emote, skipped rows included', () => {
+    const baseline = baselineOf([
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T2 },
+    ]);
+
+    expect(
+      entryPostCheckOwed(
+        runResult([entryItem('a', T1, 'cancelled'), entryItem('b', T2, 'done')]),
+        baseline,
+      ),
+    ).toBe(true);
+    expect(
+      entryPostCheckOwed(
+        runResult([entryItem('a', T1, 'unknown'), entryItem('b', T2, 'done')]),
+        baseline,
+      ),
+    ).toBe(false);
+    expect(
+      entryPostCheckOwed(
+        runResult([entryItem('a', T1, 'cancelled'), entryItem('b', T2, 'failed')]),
+        baseline,
+      ),
+    ).toBe(false);
   });
 });

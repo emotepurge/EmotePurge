@@ -53,6 +53,11 @@ import { dedupeImportRows, ImportRow, ImportSource } from '../../core/seven-tv/i
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { EmoteSetListResponse } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
+import {
+  isValidEntryGeneration,
+  parseStrictEntryDate,
+  SevenTvEntryTarget,
+} from '../../core/seven-tv/seven-tv-entry-target';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { refusedStartMessage, SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
@@ -152,6 +157,7 @@ import { actionDockHasContent } from '../../shared/seven-tv/action-dock';
 import {
   DockOutcomeAnnouncer,
   hiddenByFilterNoticeKey,
+  pendingSyncNoticeKey,
 } from '../../shared/seven-tv/dock-outcome-announcer';
 import { ImportFlowDeps, startImportFlow } from '../../shared/seven-tv/import-flow';
 import { ImportProgressSection } from '../../shared/seven-tv/import-progress-section';
@@ -363,42 +369,56 @@ function selectedSevenTvIds(emotes: readonly EmoteUsageTotal[]): string[] {
   return [...new Set(emotes.map((emote) => emote.sevenTvEmoteId))];
 }
 
-/** A card that stands for one set entry next to its siblings: a slot card, or a live member keyed
- *  per entry in a slot response (plan 377, 2.3) — never an emote-mode row or a grouped member. */
-function isPerEntryCard(emote: EmoteUsageTotal): boolean {
-  return emote.slotId !== null || emote.slotKey.startsWith('live:');
-}
+/**
+ * How one marked `'live'` card enters a delete run (plan 378, section 3). An **entry row** removes
+ * exactly the card's one set entry, by its alias, and is reported with its generation; an **id
+ * row** removes every entry of the 7TV id, as every row did before slots; a **held** card does not
+ * reach the run at all.
+ */
+type DeleteRowKind =
+  | { readonly kind: 'entry'; readonly target: SevenTvEntryTarget }
+  | { readonly kind: 'id' }
+  | { readonly kind: 'held' };
 
 /**
- * The names the delete confirmation lists for one 7TV id shown as slot cards (plan 377, 2.6, F3):
- * the first marked card's name, then the names of every `'live'` card of the id in D2 order (add
- * date ascending, unknown last, then name ordinal), then any further alias the run records — so the
- * confirmation names every entry the run's one `REMOVE` takes. Ordinal distinct.
+ * The {@link DeleteRowKind} of a marked `'live'` card:
+ *
+ * - a **slot card** is an entry row once its add date is 7TV's (`firstSeenAtFromRest`) — the date
+ *   goes into the target verbatim, so the report sends the very string the server compares against;
+ *   a provisional slot card is held (spec D11: the next reconciliation dates it);
+ * - a **per-entry Klasse-3 card** (a live entry without a counted row in a slot response) is an
+ *   entry row without a slot, bound and reported by 7TV's own add date (`liveAddedAt`, plan 378,
+ *   R1 a); without a date it is held;
+ * - every other card — an emote-mode row, a grouped Klasse-3 card — is an id row.
+ *
+ * A target that fails the strict check (`isValidEntryGeneration`: a date the Api would reject, an
+ * empty alias) is held as well — fail-closed, because its run would change 7TV and then have its
+ * report refused (plan 378, T-6). With the flag off no `/totals` row has a slot and no card is keyed
+ * per entry, so every card is an id row, exactly as before.
  */
-function confirmationNamesFor(
-  markedName: string,
-  cards: readonly EmoteUsageTotal[],
-  aliases: readonly string[],
-): string[] {
-  const instantOf = (iso: string | null): number | null => {
-    const ms = iso ? Date.parse(iso) : Number.NaN;
-    return Number.isNaN(ms) ? null : ms;
-  };
-  const byD2 = cards
-    .flatMap((emote) =>
-      emote.aliases.map((name) => ({ name, instant: instantOf(emote.firstSeenAt) })),
-    )
-    .sort((a, b) => {
-      if (a.instant !== b.instant) {
-        if (a.instant === null) {
-          return 1;
-        }
-        return b.instant === null ? -1 : a.instant - b.instant;
-      }
-      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
-    })
-    .map((entry) => entry.name);
-  return [...new Set([markedName, ...byD2, ...aliases])];
+function deleteRowKindOf(card: EmoteUsageTotal): DeleteRowKind {
+  let target: SevenTvEntryTarget | null = null;
+  if (card.slotId !== null) {
+    const addedAt = card.firstSeenAtFromRest ? parseStrictEntryDate(card.firstSeenAt) : null;
+    target =
+      addedAt === null
+        ? null
+        : { slotId: card.slotId, alias: card.emoteName, addedAt, cardKey: card.slotKey };
+  } else if (card.slotKey.startsWith('live:')) {
+    const addedAt = parseStrictEntryDate(card.liveAddedAt);
+    target = addedAt === null ? null : { alias: card.emoteName, addedAt, cardKey: card.slotKey };
+  } else {
+    return { kind: 'id' };
+  }
+  return target !== null && isValidEntryGeneration(target)
+    ? { kind: 'entry', target }
+    : { kind: 'held' };
+}
+
+/** The key a delete run gives the entry row of a card (plan 378, 4.3), and its `doneKeys` report:
+ *  the card's 7TV id and its `slotKey`, joined by the first `#`. */
+function entryRowKey(sevenTvEmoteId: string, slotKey: string): string {
+  return `${sevenTvEmoteId}#${slotKey}`;
 }
 
 /** `emotes` grouped by 7TV id, groups in first-appearance order, cards in their given order. */
@@ -2134,6 +2154,20 @@ export class UsageStatsPage {
   /** The single tab stop in the grid (WAI-ARIA grid pattern) — arrow keys move it. */
   protected readonly activeIndex = signal(0);
 
+  /**
+   * Every marked `'live'` card with the way it enters a delete run (`deleteRowKindOf`, plan 378,
+   * section 3), in the order of `emotes()` (`selectedItems()` resolves against it) — the one classification `selectedForDelete` and
+   * `pendingRemovalSlots` both read, so the run and the dock's projection cannot disagree about a
+   * card. A `'left'` card is never here (spec #200, 8.2): it is no longer in the set, so there is
+   * nothing to remove (E23, AK 57).
+   */
+  private readonly markedDeleteRows = computed(() =>
+    this.selection
+      .selectedItems()
+      .filter((emote) => emote.membership === 'live')
+      .map((card) => ({ card, row: deleteRowKindOf(card) })),
+  );
+
   // Resolved items, not selection.selectedKeys(): the delete engine needs sevenTvEmoteId and the
   // display name, which only the loaded row carries. selectedItems() resolves against the
   // unfiltered universe (emotes()), not the filtered atlasOrder(), so a row a name/usage filter is
@@ -2142,26 +2176,66 @@ export class UsageStatsPage {
   // cannot resolve is a key that was actually removed from emotes() (reload, finished delete),
   // which retainAmong()/clear() already keep out of selectedKeys() before this ever reads it.
   //
-  // One kind of row never reaches the delete run (spec #200, 8.2): a `'left'` row is no longer in
-  // the set, so there is nothing to remove (E23, AK 57) — it only exists in a non-active set's view.
-  // A row without `Emote.Id` goes in like any other since K5 (spec 7.2): the run is keyed by the 7TV
-  // id and the protocol writes `emoteId: null` for it. A #74 duplicate cell is one row with both
-  // aliases — one `REMOVE` takes both entries (Sonde 5, branch A), and the protocol keeps both names
-  // so the restore can re-add each.
+  // One row per marked card that removes one set entry (plan 378, 4.9): a dated slot card, and a
+  // per-entry Klasse-3 card with 7TV's add date (R1 a), each go in as an **entry row** — its own
+  // alias only, never the names of its siblings, which the run leaves where they are; the protocol
+  // and a restore must not bring them back either. A held card (provisional, undated or with a date
+  // the strict check refuses) is not in the run at all.
   //
-  // One entry per 7TV id, not per card (plan 377, 2.6 — the transition until #378 deletes per
-  // slot): a `REMOVE` without an alias takes every entry of the id, so marking one of two slot
-  // cards deletes both, and the protocol must name both for the restore. `aliases` is therefore the
-  // union over every `'live'` card of the id in `emotes()`, marked or not — their own names and the
-  // siblings they report. `name` is the first marked card's, `emoteId` the first Guid of the id, and
-  // the entry counts as hidden only when every marked card of the id is. With the flag off there is
-  // one card per id, and this is exactly the per-row mapping it always was.
+  // No row sets `confirmationNames` (plan 378, A9; operator decision B-1, 2026-10-13): the
+  // confirmation lists each row's `name` — an entry row its one alias, so one marked slot card
+  // next to a sibling reads "1 Emote löschen?"; an id row its first marked card's name, as before
+  // slots (an emote-mode duplicate cell `×2` included). The title still counts the listed names.
+  // Plan 377's per-id transition named every alias of the id there, because its one `REMOVE` took
+  // them all; an entry row's `REMOVE` takes only its own. The panel keeps the field for any host
+  // whose row does take more than it shows.
+  //
+  // One row per 7TV id for every other card (an **id row**, as before slots): a `REMOVE` without an
+  // alias takes every entry of the id, so `aliases` is the union over every `'live'` card of the id
+  // in `emotes()`, marked or not. A row without `Emote.Id` goes in like any other since K5 (spec
+  // 7.2): the run is keyed by the 7TV id and the protocol writes `emoteId: null` for it. A #74
+  // duplicate cell is one row with both aliases — one `REMOVE` takes both entries (Sonde 5, branch
+  // A), and the protocol keeps both names so the restore can re-add each. With the flag off every
+  // card is an id row and there is one card per id, so this is exactly the per-row mapping it always
+  // was.
+  //
+  // Rows keep the order of their cards in `emotes()`; an id row stands where its first marked card
+  // does.
   protected readonly selectedForDelete = computed<DeletableEmote[]>(() => {
     const liveById = groupBySevenTvId(this.emotes().filter((emote) => emote.membership === 'live'));
-    const markedById = groupBySevenTvId(
-      this.selection.selectedItems().filter((emote) => emote.membership === 'live'),
-    );
-    return [...markedById].map(([sevenTvEmoteId, marked]) => {
+    const markedIdCards = new Map<string, EmoteUsageTotal[]>();
+    const order: ({ entry: DeletableEmote } | { sevenTvEmoteId: string })[] = [];
+    for (const { card, row } of this.markedDeleteRows()) {
+      if (row.kind === 'entry') {
+        order.push({
+          entry: {
+            emoteId: card.emoteId ?? undefined,
+            sevenTvEmoteId: card.sevenTvEmoteId,
+            name: row.target.alias,
+            aliases: [row.target.alias],
+            // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl überlebt
+            // Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the dock's own
+            // hiddenSelectedCount is built from, so the two count the same cards.
+            hidden: !this.selection.isVisible(card),
+            entry: row.target,
+          },
+        });
+      } else if (row.kind === 'id') {
+        const group = markedIdCards.get(card.sevenTvEmoteId);
+        if (group) {
+          group.push(card);
+        } else {
+          markedIdCards.set(card.sevenTvEmoteId, [card]);
+          order.push({ sevenTvEmoteId: card.sevenTvEmoteId });
+        }
+      }
+    }
+    return order.map((slot) => {
+      if ('entry' in slot) {
+        return slot.entry;
+      }
+      const { sevenTvEmoteId } = slot;
+      const marked = markedIdCards.get(sevenTvEmoteId) ?? [];
       const idCards = liveById.get(sevenTvEmoteId) ?? marked;
       const cards = [...marked, ...idCards];
       const aliases = [
@@ -2172,41 +2246,60 @@ export class UsageStatsPage {
         sevenTvEmoteId,
         name: marked[0].emoteName,
         aliases,
-        // Every name the run takes, for the confirmation (plan 377, 2.6, F3) — only for an id
-        // shown as slot cards, so with the flag off the confirmation lists exactly what it did,
-        // and an emote-mode duplicate cell (`×2`) still names only its own name there.
-        ...(idCards.some(isPerEntryCard)
-          ? { confirmationNames: confirmationNamesFor(marked[0].emoteName, idCards, aliases) }
-          : {}),
-        // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl überlebt
-        // Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the dock's own
-        // hiddenSelectedCount is built from, so the two numbers cannot disagree for an id with one card
-        // (with several cards per id they count different things). An unmarked
-        // sibling that the filter hides does not make the entry hidden.
+        // As for an entry row above; an id counts as hidden only when every marked card of it is.
         hidden: marked.every((emote) => !this.selection.isVisible(emote)),
       };
     });
   });
 
   /**
-   * How many slots of the shown set deleting the marked rows would free (spec 8.2, AK 58): a #74
-   * duplicate cell is one row but two set entries, and one `REMOVE` takes both (Sonde 5, branch A).
-   * `'left'` rows occupy no slot of the set any more and free none. In the active set's view every
-   * `slotCount` is 1, so this is the selection size, exactly as before.
-   *
-   * Summed per marked 7TV id over **every** `'live'` card of that id (plan 377, 2.6): the run
-   * deletes per id until #378, so marking one of two slot cards frees both slots. With one card per
-   * id (the flag off) this is the same sum as before.
+   * The names of the marked cards held out of the delete run (plan 378, 4.9, A10): a slot card 7TV
+   * has not dated yet (spec D11 — the next reconciliation dates it), an uncounted entry 7TV gave no
+   * date, or a card whose date fails the strict check. They are held **before** the confirmation —
+   * the confirmation, the delete button's count and the projection name only what the run takes —
+   * and the dock names them in a line of their own, so a marked card never drops out unexplained.
+   * In the order of `emotes()`, like the run's rows; never re-sorted here.
+   */
+  protected readonly pendingSyncNames = computed(() =>
+    this.markedDeleteRows().flatMap(({ card, row }) =>
+      row.kind === 'held' ? [card.emoteName] : [],
+    ),
+  );
+
+  /** Wording for the dock's pending-sync line — the same helper the announcer uses, so the shown
+   *  and the spoken sentence cannot drift apart. */
+  protected readonly pendingSyncKey = computed(() =>
+    pendingSyncNoticeKey(this.pendingSyncNames().length),
+  );
+
+  /** `pendingSyncNames()` as `DockOutcomeAnnouncer` speaks it: empty whenever the dock's line is not
+   *  on screen — the same gates as `dockHiddenSelectedCount` (the dock's `!isCoarse()`, the marking
+   *  half's set gate) — so spoken and shown stay the same statement (docs/UI-Designsprache.md §4.5). */
+  protected readonly dockPendingSyncNames = computed(() =>
+    !this.isCoarse() && this.selectedEmoteSetId() !== null ? this.pendingSyncNames() : [],
+  );
+
+  /**
+   * How many slots of the shown set deleting the marked rows would free (spec 8.2, AK 58; D27), per
+   * row kind (plan 378, 4.9): an entry row frees its one slot; an id row frees every entry of the id
+   * — summed over **every** `'live'` card of that id, so a #74 duplicate cell (one card, two set
+   * entries, one `REMOVE` takes both — Sonde 5, branch A) counts two; a held card frees none, it is
+   * not in the run. `'left'` rows occupy no slot of the set any more and free none. With the flag off
+   * every card is an id row with one card per id, so this is the same sum as before.
    */
   protected readonly pendingRemovalSlots = computed(() => {
-    const markedIds = new Set(
-      this.selection
-        .selectedItems()
-        .flatMap((emote) => (emote.membership === 'live' ? [emote.sevenTvEmoteId] : [])),
-    );
+    let entrySlots = 0;
+    const idRowIds = new Set<string>();
+    for (const { card, row } of this.markedDeleteRows()) {
+      if (row.kind === 'entry') {
+        entrySlots += 1;
+      } else if (row.kind === 'id') {
+        idRowIds.add(card.sevenTvEmoteId);
+      }
+    }
     return this.emotes()
-      .filter((emote) => emote.membership === 'live' && markedIds.has(emote.sevenTvEmoteId))
-      .reduce((sum, emote) => sum + emote.slotCount, 0);
+      .filter((emote) => emote.membership === 'live' && idRowIds.has(emote.sevenTvEmoteId))
+      .reduce((sum, emote) => sum + emote.slotCount, entrySlots);
   });
 
   /**
@@ -3239,15 +3332,19 @@ export class UsageStatsPage {
     });
   }
 
-  // `deletedSevenTvEmoteIds` are the run's keys — 7TV ids (spec #200, E18) — so rows are matched by
-  // `sevenTvEmoteId`, never by the Guid a row may not have.
+  // `doneKeys` are the run's keys (plan 378, 4.3): the bare 7TV id of an id row (spec #200, E18),
+  // `${sevenTvEmoteId}#${cardKey}` of an entry row — so rows are matched by `sevenTvEmoteId` and the
+  // card key, never by the Guid a row may not have. A 7TV id never contains `#` (Crockford base32),
+  // so a key with a `#` is an entry row's, and the id ends at its first `#`; a per-entry Klasse-3
+  // card key carries further `#`s of its own, so an entry key is matched whole against each card's
+  // own `entryRowKey`, never taken apart at a later `#`.
   //
   // Edits the rows on screen only when they are the run's own set of the run's own channel: the set
   // dropdown is locked for the length of the run (`deleteRunActive`), but a sync can still move the
   // active set, and the delete service outlives a channel switch. A run of another channel has
   // nothing to say about this one's rows; a run whose set is no longer the one on screen reloads
   // instead of subtracting another set's emotes and slots (the selection reconciles against it).
-  protected onDeleted(deletedSevenTvEmoteIds: string[]): void {
+  protected onDeleted(doneKeys: string[]): void {
     const run = this.deleteService.lastRun();
     if (!run || run.channelName !== this.totalsChannel()) {
       return;
@@ -3256,22 +3353,40 @@ export class UsageStatsPage {
       this.refresh();
       return;
     }
-    const deleted = new Set(deletedSevenTvEmoteIds);
-    // A cell frees one slot per entry, not one (spec 7.2, AK 72) — a #74 duplicate took two with
-    // its one `REMOVE`. In the active view a cell's own `slotCount` is always 1 (one name per id,
-    // E20), so the run's row is asked first: the panel read the set's live entries before the run
-    // (`readLiveAliasesFromActiveSet`) and recorded every alias the `REMOVE` took. Summed over the
-    // rows on screen before they are dropped.
+    const deletedIds = new Set(doneKeys.filter((key) => !key.includes('#')));
+    const deletedEntryKeys = new Set(doneKeys.filter((key) => key.includes('#')));
+    // An entry row took exactly its own card's entry: that card goes, one slot frees, and the
+    // card's name leaves the sibling hint of every card of the id that stays (`+n` is right at
+    // once, spec 9.3). In the active view every card is a `/totals` row keyed by its `slotId`, so
+    // the run's card key is the row's.
+    const freedEntrySlots = new Set<string>();
+    const removedSiblingNames = new Map<string, Set<string>>();
+    for (const emote of this.emotes()) {
+      const key = entryRowKey(emote.sevenTvEmoteId, emote.slotKey);
+      if (emote.membership === 'live' && deletedEntryKeys.has(key) && !freedEntrySlots.has(key)) {
+        freedEntrySlots.add(key);
+        const names = removedSiblingNames.get(emote.sevenTvEmoteId) ?? new Set<string>();
+        removedSiblingNames.set(emote.sevenTvEmoteId, names.add(emote.emoteName));
+      }
+    }
+    // An id row frees one slot per entry, not one (spec 7.2, AK 72) — a #74 duplicate took two
+    // with its one `REMOVE`. In the active view a cell's own `slotCount` is always 1 (one name per
+    // id, E20), so the run's row is asked first: the panel read the set's live entries before the
+    // run (`readLiveAliasesFromActiveSet`) and recorded every alias the `REMOVE` took. Summed over
+    // the rows on screen before they are dropped.
     //
-    // Per 7TV id, not per card (plan 377, 2.6, A8): two slot cards of one id are two entries that
-    // the run's one row already counts with its two aliases — taking the larger of the two numbers
-    // per card would free four. With one card per id (the flag off) this is the sum it always was.
+    // Per 7TV id, not per card (plan 377, 2.6, A8): an id row that met two slot cards of its id —
+    // a run that removes per id, such as a tag removal — took two entries that its one row already
+    // counts with its two aliases; taking the larger of the two numbers per card would free four.
+    // With one card per id (the flag off) this is the sum it always was.
     const runAliasCounts = new Map(
-      run.result.items.map((item) => [item.sevenTvEmoteId, item.aliases?.length ?? 0]),
+      run.result.items
+        .filter((item) => item.entry === undefined)
+        .map((item) => [item.sevenTvEmoteId, item.aliases?.length ?? 0]),
     );
     const cardSlotsById = new Map<string, number>();
     for (const emote of this.emotes()) {
-      if (emote.membership === 'live' && deleted.has(emote.sevenTvEmoteId)) {
+      if (emote.membership === 'live' && deletedIds.has(emote.sevenTvEmoteId)) {
         cardSlotsById.set(
           emote.sevenTvEmoteId,
           (cardSlotsById.get(emote.sevenTvEmoteId) ?? 0) + emote.slotCount,
@@ -3281,9 +3396,27 @@ export class UsageStatsPage {
     const freedSlots = [...cardSlotsById].reduce(
       (sum, [sevenTvEmoteId, cardSlots]) =>
         sum + Math.max(cardSlots, runAliasCounts.get(sevenTvEmoteId) ?? 0),
-      0,
+      freedEntrySlots.size,
     );
-    this.totalsRows.update((items) => items.filter((item) => !deleted.has(item.sevenTvEmoteId)));
+    this.totalsRows.update((items) =>
+      items
+        .filter(
+          (item) =>
+            !deletedIds.has(item.sevenTvEmoteId) &&
+            !freedEntrySlots.has(
+              entryRowKey(item.sevenTvEmoteId, item.slotId ?? item.sevenTvEmoteId),
+            ),
+        )
+        .map((item) => {
+          const removed = removedSiblingNames.get(item.sevenTvEmoteId);
+          return removed
+            ? {
+                ...item,
+                siblingNames: (item.siblingNames ?? []).filter((name) => !removed.has(name)),
+              }
+            : item;
+        }),
+    );
     // Freed slots are shown right away rather than waiting for the channel.synced round trip the
     // bookkeeping call triggers — the emptied bar is the feedback the delete was run for. The
     // refetch that follows a moment later confirms or corrects it.
