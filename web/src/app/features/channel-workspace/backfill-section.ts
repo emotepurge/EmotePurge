@@ -4,6 +4,7 @@ import {
   afterNextRender,
   Component,
   computed,
+  DestroyRef,
   effect,
   ElementRef,
   inject,
@@ -446,6 +447,7 @@ export class BackfillSection {
   private readonly transloco = inject(TranslocoService);
   private readonly dialog = inject(Dialog);
   private readonly injector = inject(Injector);
+  private readonly destroyRef = inject(DestroyRef);
 
   /** How many status reads have been issued so far; the next one gets this number plus one. */
   private readsIssued = 0;
@@ -996,9 +998,13 @@ export class BackfillSection {
         this.removalAnnouncement.set(backfillRemovalAnnouncement(result));
         // The dialog has handed focus back to the trigger, which goes now: hand it on to the
         // outcome that takes the section's place.
-        afterNextRender(() => this.removalConfirmation()?.nativeElement.focus(), {
-          injector: this.injector,
-        });
+        // A view that is already gone (the user left the tab before the answer) takes no focus, and
+        // registering a render hook on it would throw NG0911.
+        if (!this.destroyRef.destroyed) {
+          afterNextRender(() => this.removalConfirmation()?.nativeElement.focus(), {
+            injector: this.injector,
+          });
+        }
         // After the commit nothing imported is left: take it off screen at once, so a second click
         // in the window before the refetch lands cannot send a second POST.
         this.status.update(

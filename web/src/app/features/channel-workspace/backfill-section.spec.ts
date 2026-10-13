@@ -1322,6 +1322,25 @@ describe('BackfillSection', () => {
       expect(importedSection(fixture)).toBeNull();
     });
 
+    it('takes no render hook for the confirmation when the view is gone before the answer arrives', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const pending = new Subject<BackfillRemovalResult>();
+      removeImported.mockReturnValue(pending);
+      const fixture = await create();
+      removeButton(fixture)?.click();
+      fixture.destroy();
+
+      // An error thrown inside a subscriber surfaces from a timer, so fake timers make it observable.
+      vi.useFakeTimers();
+      try {
+        pending.next({ removedUsageRows: 40, removedCoverageDays: 183 });
+        pending.complete();
+        expect(() => vi.runAllTimers()).not.toThrow();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('ignores the answer of a removal issued for a channel the user has since left', async () => {
       getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
       const pending = new Subject<BackfillRemovalResult>();
@@ -1477,10 +1496,16 @@ describe('BackfillSection', () => {
       expect(getStatus).toHaveBeenCalledTimes(2);
       getStatus.mockReturnValue(of(status({ coverage: [MORE, ...COVERAGE] })));
 
-      FakeEventSource.instances
-        .find((source) => source.url === channelLiveUrl('sensitron'))!
-        .emit({ type: LIVE_EVENT_TYPES.backfillProgress, channel: 'sensitron' });
-      await new Promise((resolve) => setTimeout(resolve, 520));
+      // Installed before the nudge, so the debounce timer it starts runs on the fake clock.
+      vi.useFakeTimers();
+      try {
+        FakeEventSource.instances
+          .find((source) => source.url === channelLiveUrl('sensitron'))!
+          .emit({ type: LIVE_EVENT_TYPES.backfillProgress, channel: 'sensitron' });
+        await vi.advanceTimersByTimeAsync(520);
+      } finally {
+        vi.useRealTimers();
+      }
       fixture.detectChanges();
       expect(getStatus).toHaveBeenCalledTimes(2);
 
