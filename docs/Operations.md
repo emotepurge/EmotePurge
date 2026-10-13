@@ -1098,6 +1098,117 @@ Seeds that a flag-off enqueue created for active emotes are not archived: they r
 seeds without rows after the switch. They are inert (no numbers, no cards, no permanent 409) and are
 swept after #379 removes the flag-off branches.
 
+### Switching the slot flag on (#379, phase 1)
+
+The images that contain the slot code already run with the flag off; this window only flips the flag, there is no
+migration and no new image. Plan one short window with api and worker stopped together, outside big streams. The SQL
+below is read-only unless it says otherwise; table and column names are those of the schema, and the statements are
+sketches to adapt, not tested constants. Run them against the production database through the tunnel described under
+"Prod-Migration" in `CLAUDE.md` (bash; passwords as placeholders, never in a file).
+
+**Admission order for backfill runs.** A run enqueued while the flag is off binds an unsettled seed, which nothing
+after the switch can follow reliably. So: **close the enqueue first, then drain, then count, then switch**, and keep
+the backfill off for as long as the slot flag is off, also after a rollback below. (`ChatLogBackfill:Enabled=false`
+closes the enqueue too, but takes the cancel route away; stopping the api closes only the enqueue.)
+
+1. **Close:** stop the api.
+2. **Drain:** let the worker finish its run or stop it; close runs that are still open with the statement of
+   "Rolling back" under "Chat-log backfill", step 5.
+3. **Count**, with api and worker both stopped:
+   `SELECT count(*) FROM "ChatLogBackfillRuns" WHERE "Status" IN ('queued', 'running', 'paused');` must be 0.
+4. **Switch:** start the new configuration of api and worker together.
+
+A run that slips through anyway is not counted wrongly; it ends in `worker_error`.
+
+**Preconditions** for the switch-on: the running images contain the slot code (`migrations list` shows nothing
+pending, see M2 and M3 below), `ChatLogBackfill__Enabled` is `false` in the stack, and the write-ahead-log cost has been
+accepted (see "Known limits"; the extrapolation from an acceptance run on a database copy should stay below roughly
+2 MB/min for your row count).
+
+1. **Check the #406 precondition (read-only).** The UTF-8 name order of #403/#406 must be deployed, and no settled
+   slot may exist yet while the flag is off:
+
+   ```sh
+   psql 'host=localhost port=15432 dbname=emotepurge user=emotepurge password=<PROD-PW>' -c 'BEGIN READ ONLY' \
+    -c 'SELECT count(*) FILTER (WHERE NOT "SeedUnsettled") AS own, count(*) FILTER (WHERE NOT "SeedUnsettled" AND NOT "IsArchived") AS own_active FROM "EmoteSlots"' \
+    -c 'ROLLBACK'
+   ```
+
+   `own = 0` is what counts. (PR #406 adds a second query for active own slots whose names straddle the UTF-16/UTF-8
+   boundary; it filters on own active slots and therefore returns no row when `own = 0`.) Anything else: stop and
+   compare the names by hand under both orders.
+2. **Measure before (read-only).** Fix a date `D0` (the UTC date of the measurement; do not measure between 23:55 and
+   00:05 UTC) and write the result of each population below to a file, plus `pg_current_wal_lsn()` with the time and the
+   number of reconcile targets (the emote rows of the active sets of active channels, which one tick locks).
+3. **Back up** with `scripts/backup-postgres.sh`.
+4. **Stop worker and api** (both, before either starts with the flag on); `pg_stat_activity` shows no `EmotePurge%`
+   session.
+5. **Set** `SEVENTV_SLOT_RECONCILE_ENABLED=true` in your stack's environment and bring both up together. Note the time.
+6. **Check the effective configuration in both containers**, not the stack setting: `printenv SevenTv__SlotReconcile__Enabled`
+   in the api container and in the worker container must print `true`. Anything else: stop and correct before going on.
+7. **Verify within five minutes**, against the populations below:
+   - the **settle population** has no unsettled seed left, except channels whose worker log says
+     `settle deferred: v4 dates missing for N emotes` (not a lasting state: it clears within three ticks);
+   - the **unchanged population** is byte-equal to the measurement before;
+   - the **preservation population** is exact;
+   - an emote under two aliases now shows two cards on the usage page, the old total on the original alias and a small
+     number on the new one;
+   - the log line that names the emotes left out of the match map falls to 0 (except deferred channels);
+   - `usage.flushed` without flush errors in the worker log, today's counts growing.
+8. **Day 1 (logs, read-only):** `AmbiguousDelta` reasons per kind (only with the EventAPI on; `seed-of-active-set`
+   only at the start, `rename-with-siblings` is the common lasting one); WAL over ten ticks against the value before;
+   `/totals` latency on the largest channel; the first real delete run of a slot card sends `alias` and `entries`, and
+   `sync-deleted` answers 200; the leave observation of an emote removed after the 30-minute window.
+
+**Populations.** Every comparison names its population; do not widen one:
+
+- **Settle population:** unsettled seeds with usage rows of the active set of an active channel whose first sync after
+  the switch **succeeded** (`LastSyncFailureReason` empty, sync time after the switch) and whose emote is active
+  afterwards, i.e. present in the live set. Only here "unsettled → 0" is required. Sketch of the count:
+
+  ```sql
+  SELECT count(*) FROM "EmoteSlots" s
+  JOIN "Emotes" e ON e."Id" = s."EmoteId" JOIN "Channels" c ON c."Id" = e."ChannelId"
+  WHERE s."SeedUnsettled" AND c."IsBotActive" AND NOT e."IsArchived"
+    AND EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id" AND u."EmoteSetId" = c."ActiveEmoteSetId");
+  ```
+- **Unchanged population:** seeds of emotes that are absent (archived, with historical rows in the active set; they stay
+  unsettled on purpose and leave no deferral line) and seeds of other sets. Before and after must be byte-equal: a
+  checksum over all columns, sorted, e.g. `SELECT md5(string_agg(s::text, '|' ORDER BY s."Id")) FROM "EmoteSlots" s WHERE …`
+  with the population's predicate.
+- **Preservation population:** `UsageStats` rows with `"Date" < D0`. Per `("EmoteId", "EmoteSetId")` the row count and
+  the sums of `UseCount`, `BotUseCount` and `SharedChatUseCount`, before and after, must be equal (three counters per
+  pair):
+
+  ```sql
+  SELECT "EmoteId", "EmoteSetId", count(*), sum("UseCount"), sum("BotUseCount"), sum("SharedChatUseCount")
+  FROM "UsageStats" WHERE "Date" < '<D0>' GROUP BY 1, 2 ORDER BY 1, 2;
+  ```
+
+  The flush only writes today's row, the backfill is off, and retention deletes `UsageStats` rows only through a channel
+  cascade (a channel removed during the check is dropped from the comparison and named). Today's growth (`"Date" = D0`)
+  is watched separately and not compared.
+
+**Rollback (phase 1).** Stop worker and api; set the variable to `false`; bring both up; check with `printenv` in both
+containers. The backfill stays off (admission order above), so nothing is enqueued while the flag is off. The numbers
+stay right: slots stay settled, the flag-off counting writes to the oldest slot with rows of the (emote, set) pair and
+the readers sum per emote. The slot inventory goes stale while off and heals on the next run with the flag on, by the
+add date. One consequence: with the flag on, two slots of one emote can have a row on the same day, so the `Down` of
+the usage-key migration (M2) and of the snapshot-key migration (M3) need their collapse statements first, as described
+below; do not expect a lossless `Down` after a phase with the flag on.
+
+**Known limits** (accepted for the switch-on; documented so they are not rediscovered as bugs):
+
+- Re-adding an entry whose slot is still active on our side (a delete report that never succeeded and a restore after
+  it, a lagging 7TV REST, a fan-out entry without a slot id in a channel where the set is active) yields a new slot at
+  0; the old slot is archived and keeps its history, but the card does not continue it.
+- `/totals` and `/series` read the slot snapshot and the aggregates in separate read-committed statements: a settle or
+  rebind that commits in between can show one emote with 0 uses in a single response; the next response is right.
+- A report that fans out into a channel holding only a seed of the emote, or only archived slots, loses its leave inside
+  the credibility window.
+- The write-ahead-log cost of the 60-second tick (a row lock on every reconcile target, also when nothing changes) is
+  carried; compare the measured WAL with the figure before the switch.
+
 ### Usage key switch (M2, #373)
 
 From #373 on, usage is counted per slot: the flush writes `UsageStats.SlotId` and upserts on
