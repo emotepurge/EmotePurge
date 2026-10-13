@@ -8,22 +8,40 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BackfillCoverageInterval,
   BackfillOption,
+  BackfillRemovalResult,
   BackfillRun,
   BackfillStatus,
+  ExpectedCoverageInterval,
 } from '../../core/channels/backfill.model';
 import { BackfillService } from '../../core/channels/backfill.service';
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
+import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { EmoteSetListResponse } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import en from '../../../../public/i18n/en.json';
-import { BackfillSection, backfillAnnouncement, backfillStartErrorKey } from './backfill-section';
+import {
+  BackfillSection,
+  backfillAnnouncement,
+  backfillRemovalAnnouncement,
+  backfillStartErrorKey,
+} from './backfill-section';
 
 class FakeEventSource {
+  static instances: FakeEventSource[] = [];
   onmessage: ((event: MessageEvent) => void) | null = null;
   onopen: (() => void) | null = null;
   onerror: (() => void) | null = null;
+
+  constructor(readonly url: string) {
+    FakeEventSource.instances.push(this);
+  }
+
   close(): void {
     /* no-op */
+  }
+
+  emit(event: { type: string; channel?: string }): void {
+    this.onmessage?.({ data: JSON.stringify(event) } as MessageEvent);
   }
 }
 
@@ -115,6 +133,14 @@ describe('BackfillSection', () => {
   >;
   let listSets: ReturnType<typeof vi.fn<(channel: string) => Observable<EmoteSetListResponse>>>;
   let cancel: ReturnType<typeof vi.fn<(channel: string) => Observable<void>>>;
+  let removeImported: ReturnType<
+    typeof vi.fn<
+      (
+        channel: string,
+        coverage: readonly ExpectedCoverageInterval[],
+      ) => Observable<BackfillRemovalResult>
+    >
+  >;
   /** What the confirm dialog answers; `undefined` = dismissed. */
   let dialogAnswer: boolean | undefined;
   let openDialog: ReturnType<typeof vi.fn>;
@@ -129,12 +155,12 @@ describe('BackfillSection', () => {
         }),
       ],
       providers: [
-        { provide: BackfillService, useValue: { getStatus, start, cancel } },
+        { provide: BackfillService, useValue: { getStatus, start, cancel, removeImported } },
         { provide: Dialog, useValue: { open: openDialog } },
         { provide: SevenTvEmoteSetService, useValue: { listChannelEmoteSets: listSets } },
         {
           provide: EVENT_SOURCE_FACTORY,
-          useValue: () => new FakeEventSource() as unknown as EventSource,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
         },
       ],
     });
@@ -156,6 +182,8 @@ describe('BackfillSection', () => {
     start = vi.fn(() => of(RUN));
     listSets = vi.fn(() => of(LIST));
     cancel = vi.fn(() => of(undefined));
+    removeImported = vi.fn(() => of({ removedUsageRows: 40, removedCoverageDays: 183 }));
+    FakeEventSource.instances = [];
     dialogAnswer = true;
     openDialog = vi.fn(() => ({ closed: of(dialogAnswer) }));
   });
@@ -901,6 +929,529 @@ describe('BackfillSection', () => {
       expect(section['starting']()).toBe(true);
     });
   });
+  describe('removing imported data', () => {
+    const COVERAGE: BackfillCoverageInterval[] = [
+      {
+        from: '2026-04-08',
+        to: '2026-07-08',
+        emoteSetId: 'set-halloween',
+        emoteSetName: 'Halloween',
+        archiveHost: 'logs.cyex.app',
+      },
+      {
+        from: '2026-07-08',
+        to: '2026-10-08',
+        emoteSetId: 'set-active',
+        emoteSetName: null,
+        archiveHost: 'logs.cyex.app',
+      },
+    ];
+    const MORE: BackfillCoverageInterval = {
+      from: '2026-01-08',
+      to: '2026-04-08',
+      emoteSetId: 'set-old',
+      emoteSetName: 'Old',
+      archiveHost: 'logs.cyex.app',
+    };
+    const RUNNING = { ...RUN, id: 5, status: 'running', weeksDone: 3 } as BackfillRun;
+
+    function buttonNamed(
+      fixture: ComponentFixture<BackfillSection>,
+      label: string,
+    ): HTMLButtonElement | null {
+      fixture.detectChanges();
+      return (
+        ([...fixture.nativeElement.querySelectorAll('button')] as HTMLButtonElement[]).find(
+          (button) => button.textContent?.trim() === label,
+        ) ?? null
+      );
+    }
+
+    const removeButton = (fixture: ComponentFixture<BackfillSection>) =>
+      buttonNamed(fixture, en.backfill.remove.action);
+
+    /** The section named by its own heading, found by its accessible name. */
+    function importedSection(fixture: ComponentFixture<BackfillSection>): HTMLElement | null {
+      fixture.detectChanges();
+      const root = fixture.nativeElement as HTMLElement;
+      return (
+        ([...root.querySelectorAll('section[aria-labelledby]')] as HTMLElement[]).find(
+          (section) =>
+            root
+              .querySelector(`#${section.getAttribute('aria-labelledby')}`)
+              ?.textContent?.trim() === en.backfill.remove.title,
+        ) ?? null
+      );
+    }
+
+    function liveRegionText(fixture: ComponentFixture<BackfillSection>): string {
+      fixture.detectChanges();
+      return (
+        (fixture.nativeElement as HTMLElement)
+          .querySelector('[role="status"]')
+          ?.textContent?.replace(/\s+/g, ' ')
+          .trim() ?? ''
+      );
+    }
+
+    /** Lets a resource load settle and its effects run without waiting for a pending GET. */
+    async function flush(fixture: ComponentFixture<BackfillSection>): Promise<void> {
+      for (let i = 0; i < 3; i++) {
+        await new Promise((resolve) => setTimeout(resolve));
+        fixture.detectChanges();
+      }
+    }
+
+    function dialogMessage(call = 0): string {
+      return (openDialog.mock.calls[call][1].data as { message: string }).message;
+    }
+
+    function intervalLine(fixture: ComponentFixture<BackfillSection>, i: BackfillCoverageInterval) {
+      const transloco = TestBed.inject(TranslocoService);
+      const format = (day: string) => fixture.componentInstance['formatDay'](day);
+      const last = new Date(`${i.to}T00:00:00Z`);
+      last.setUTCDate(last.getUTCDate() - 1);
+      return transloco.translate('backfill.remove.confirm.interval', {
+        from: format(i.from),
+        to: format(last.toISOString().slice(0, 10)),
+        set: i.emoteSetName ?? i.emoteSetId,
+      });
+    }
+
+    it('shows the section only while the status lists coverage, one line per interval', async () => {
+      const without = await create();
+      expect(without.componentInstance.importedIntervals()).toEqual([]);
+      expect(importedSection(without)).toBeNull();
+      TestBed.resetTestingModule();
+
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const fixture = await create();
+      const lines = fixture.componentInstance.importedIntervals();
+
+      expect(importedSection(fixture)).not.toBeNull();
+      expect(lines).toHaveLength(2);
+      // The inclusive last day, and the set's id while its name is unknown.
+      expect(lines[0]).toMatchObject({
+        set: 'Halloween',
+        to: fixture.componentInstance['formatDay']('2026-07-07'),
+      });
+      expect(lines[1].set).toBe('set-active');
+    });
+
+    it('can remove without a run; a run locks it with a reason the button is described by', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const free = await create();
+      expect(free.componentInstance.canRemove()).toBe(true);
+      expect(free.componentInstance.removeBlockedReasonKey()).toBeNull();
+      expect(removeButton(free)?.hasAttribute('aria-describedby')).toBe(false);
+      TestBed.resetTestingModule();
+
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE, activeRun: RUNNING })));
+      const fixture = await create();
+      const button = removeButton(fixture);
+
+      expect(fixture.componentInstance.canRemove()).toBe(false);
+      expect(fixture.componentInstance.removeBlockedReasonKey()).toBe(
+        'backfill.remove.blockedByRun',
+      );
+      expect(button?.disabled).toBe(true);
+      const reason = (fixture.nativeElement as HTMLElement).querySelector(
+        `#${button?.getAttribute('aria-describedby')}`,
+      );
+      expect(reason?.textContent?.trim()).toBe(en.backfill.remove.blockedByRun);
+    });
+
+    it('locks Remove and Start while the removal is pending, so a double click sends one POST', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      removeImported.mockReturnValue(new Subject<BackfillRemovalResult>());
+      const fixture = await create();
+
+      removeButton(fixture)?.click();
+      removeButton(fixture)?.click();
+
+      expect(fixture.componentInstance.canRemove()).toBe(false);
+      expect(fixture.componentInstance.canStart()).toBe(false);
+      expect(removeButton(fixture)?.disabled).toBe(true);
+      expect(removeImported).toHaveBeenCalledTimes(1);
+      // A lock of a moment, not a reason worth a sentence.
+      expect(fixture.componentInstance.removeBlockedReasonKey()).toBeNull();
+    });
+
+    it('locks Remove while a start is pending', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      start.mockReturnValue(new Subject<BackfillRun>());
+      const fixture = await create();
+
+      buttonNamed(fixture, en.backfill.start)?.click();
+
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(fixture.componentInstance.canRemove()).toBe(false);
+    });
+
+    it('sends nothing when the dialog is dismissed or declined', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const fixture = await create();
+
+      dialogAnswer = undefined;
+      removeButton(fixture)?.click();
+      dialogAnswer = false;
+      removeButton(fixture)?.click();
+
+      expect(openDialog).toHaveBeenCalledTimes(2);
+      expect(removeImported).not.toHaveBeenCalled();
+    });
+
+    it('sends exactly once, and exactly the intervals the dialog listed', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const fixture = await create();
+
+      removeButton(fixture)?.click();
+
+      expect(removeImported).toHaveBeenCalledTimes(1);
+      const [channel, sent] = removeImported.mock.calls[0];
+      expect(channel).toBe('sensitron');
+      expect(sent).toEqual(COVERAGE);
+      const lines = dialogMessage().split('\n');
+      expect(lines[0]).toBe(en.backfill.remove.confirm.title);
+      // One line per sent interval, in the same order — and what stays, with the counting start.
+      expect(lines.slice(2, 2 + sent.length)).toEqual(
+        COVERAGE.map((interval) => intervalLine(fixture, interval)),
+      );
+      expect(dialogMessage()).toContain(fixture.componentInstance['formatDay']('2026-10-08'));
+    });
+
+    it('asks again when the coverage changed behind the open dialog, and then sends the new one', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const fixture = await create();
+      const closed = new Subject<boolean>();
+      openDialog.mockReturnValue({ closed });
+
+      removeButton(fixture)?.click();
+      getStatus.mockReturnValue(of(status({ coverage: [MORE, ...COVERAGE] })));
+      fixture.componentInstance['statusResource'].reload();
+      await fixture.whenStable();
+      closed.next(true);
+
+      expect(removeImported).not.toHaveBeenCalled();
+      expect(fixture.componentInstance['removeErrorKey']()).toBe(
+        'errors.api.backfill_remove_scope_changed',
+      );
+
+      openDialog.mockReturnValue({ closed: of(true) });
+      removeButton(fixture)?.click();
+
+      expect(dialogMessage(1)).toContain(intervalLine(fixture, MORE));
+      expect(removeImported).toHaveBeenCalledTimes(1);
+      expect(removeImported.mock.calls[0][1]).toEqual([MORE, ...COVERAGE]);
+    });
+
+    it('sends nothing when a run showed up behind the dialog, and gives the reason, not an error', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const fixture = await create();
+      const closed = new Subject<boolean>();
+      openDialog.mockReturnValue({ closed });
+
+      removeButton(fixture)?.click();
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE, activeRun: RUNNING })));
+      fixture.componentInstance['statusResource'].reload();
+      await fixture.whenStable();
+      closed.next(true);
+
+      expect(removeImported).not.toHaveBeenCalled();
+      expect(fixture.componentInstance['removeErrorKey']()).toBeNull();
+      expect(fixture.componentInstance.removeBlockedReasonKey()).toBe(
+        'backfill.remove.blockedByRun',
+      );
+    });
+
+    it.each(['backfill_remove_run_active', 'backfill_remove_scope_changed'])(
+      'shows the error of a 409 %s and refetches the status',
+      async (code) => {
+        getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+        removeImported.mockReturnValue(throwError(() => httpError(409, code)));
+        const fixture = await create();
+
+        removeButton(fixture)?.click();
+        await fixture.whenStable();
+
+        expect(fixture.componentInstance['removeErrorKey']()).toBe(`errors.api.${code}`);
+        expect(getStatus).toHaveBeenCalledTimes(2);
+        expect(fixture.componentInstance['removing']()).toBe(false);
+        fixture.detectChanges();
+        expect(importedSection(fixture)?.querySelector('[role="alert"]')).not.toBeNull();
+      },
+    );
+
+    it('replaces a run_active error with the reason once the refetch shows the run', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      removeImported.mockReturnValue(
+        throwError(() => httpError(409, 'backfill_remove_run_active')),
+      );
+      const fixture = await create();
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE, activeRun: RUNNING })));
+
+      removeButton(fixture)?.click();
+      await fixture.whenStable();
+
+      expect(fixture.componentInstance['removeErrorKey']()).toBeNull();
+      expect(fixture.componentInstance.removeBlockedReasonKey()).toBe(
+        'backfill.remove.blockedByRun',
+      );
+    });
+
+    it.each([
+      [404, 'backfill_disabled', 'errors.api.backfill_disabled'],
+      [404, 'channel_not_found', 'errors.api.channel_not_found'],
+      [0, undefined, 'errors.status.offline'],
+      [500, undefined, 'errors.status.server'],
+    ])(
+      'shows the error of a %i %s and refetches, since the outcome may be unknown',
+      async (code, errorCode, key) => {
+        getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+        removeImported.mockReturnValue(throwError(() => httpError(code, errorCode)));
+        const fixture = await create();
+
+        removeButton(fixture)?.click();
+        await fixture.whenStable();
+
+        expect(fixture.componentInstance['removeErrorKey']()).toBe(key);
+        expect(getStatus).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it('after a 409 scope_changed and the new status, the next click shows the new scope and clears the error', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      removeImported.mockReturnValueOnce(
+        throwError(() => httpError(409, 'backfill_remove_scope_changed')),
+      );
+      const fixture = await create();
+      getStatus.mockReturnValue(of(status({ coverage: [MORE, ...COVERAGE] })));
+
+      removeButton(fixture)?.click();
+      await fixture.whenStable();
+      expect(fixture.componentInstance['removeErrorKey']()).not.toBeNull();
+      expect(dialogMessage(0)).not.toContain(intervalLine(fixture, MORE));
+
+      removeImported.mockReturnValue(new Subject<BackfillRemovalResult>());
+      removeButton(fixture)?.click();
+
+      expect(dialogMessage(1)).toContain(intervalLine(fixture, MORE));
+      expect(removeImported.mock.calls[1][1]).toEqual([MORE, ...COVERAGE]);
+      expect(fixture.componentInstance['removeErrorKey']()).toBeNull();
+    });
+
+    it('announces the removed days ahead of the last run, takes the section off at once, and keeps the announcement through the refetch', async () => {
+      // The run was seen running, so its outcome is on the live region before the removal.
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE, activeRun: RUNNING })));
+      const fixture = await create();
+      getStatus.mockReturnValue(
+        of(status({ coverage: COVERAGE, lastRun: { ...RUNNING, status: 'completed' } })),
+      );
+      fixture.componentInstance['statusResource'].reload();
+      await fixture.whenStable();
+      expect(liveRegionText(fixture)).toBe(en.backfill.announce.completed);
+      const after = new Subject<BackfillStatus>();
+      getStatus.mockReturnValue(after);
+
+      removeButton(fixture)?.click();
+
+      const transloco = TestBed.inject(TranslocoService);
+      const announced = transloco.translate('backfill.remove.announceDone.other', { count: 183 });
+      expect(fixture.componentInstance.importedIntervals()).toEqual([]);
+      expect(importedSection(fixture)).toBeNull();
+      expect(liveRegionText(fixture)).toBe(announced);
+      expect(getStatus).toHaveBeenCalledTimes(3);
+
+      after.next(status({ coverage: [], lastRun: { ...RUNNING, status: 'completed' } }));
+      await fixture.whenStable();
+
+      expect(importedSection(fixture)).toBeNull();
+      expect(liveRegionText(fixture)).toBe(announced);
+    });
+
+    it('gives the live region back to the run once a new run shows up', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const fixture = await create();
+      removeButton(fixture)?.click();
+      expect(fixture.componentInstance['removalAnnouncement']()).not.toBeNull();
+
+      getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
+      fixture.componentInstance['statusResource'].reload();
+      await fixture.whenStable();
+
+      expect(fixture.componentInstance['removalAnnouncement']()).toBeNull();
+      expect(liveRegionText(fixture)).toBe('Backfill Running: 3 of 14 weeks.');
+    });
+
+    it('ignores the answer of a removal issued for a channel the user has since left', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const pending = new Subject<BackfillRemovalResult>();
+      removeImported.mockReturnValue(pending);
+      const fixture = await create();
+      const section = fixture.componentInstance;
+
+      removeButton(fixture)?.click();
+      fixture.componentRef.setInput('channelName', 'other');
+      fixture.detectChanges();
+      await fixture.whenStable();
+      expect(section['removing']()).toBe(false);
+      const callsBefore = getStatus.mock.calls.length;
+
+      pending.next({ removedUsageRows: 40, removedCoverageDays: 183 });
+      pending.complete();
+
+      expect(section['removalAnnouncement']()).toBeNull();
+      expect(section.importedIntervals()).toHaveLength(2);
+      expect(getStatus.mock.calls.length).toBe(callsBefore);
+    });
+
+    it('does not show the error of a removal issued for a channel the user has since left', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const pending = new Subject<BackfillRemovalResult>();
+      removeImported.mockReturnValue(pending);
+      const fixture = await create();
+
+      removeButton(fixture)?.click();
+      fixture.componentRef.setInput('channelName', 'other');
+      fixture.detectChanges();
+      await fixture.whenStable();
+      pending.error(httpError(409, 'backfill_remove_scope_changed'));
+
+      expect(fixture.componentInstance['removeErrorKey']()).toBeNull();
+    });
+
+    describe('after a cancel', () => {
+      function cancelButton(fixture: ComponentFixture<BackfillSection>) {
+        return buttonNamed(fixture, en.backfill.cancel);
+      }
+
+      it('stays locked after the 204 until the next read has settled, then unlocks', async () => {
+        getStatus.mockReturnValue(of(status({ coverage: COVERAGE, activeRun: RUNNING })));
+        const fixture = await create();
+        const reread = new Subject<BackfillStatus>();
+        getStatus.mockReturnValue(reread);
+
+        cancelButton(fixture)?.click();
+        fixture.detectChanges();
+
+        expect(fixture.componentInstance['status']()?.activeRun).toBeNull();
+        expect(fixture.componentInstance.canRemove()).toBe(false);
+        // Short and self-ending: no sentence for it.
+        expect(fixture.componentInstance.removeBlockedReasonKey()).toBeNull();
+
+        reread.next(status({ coverage: COVERAGE, lastRun: { ...RUNNING, status: 'cancelled' } }));
+        await fixture.whenStable();
+
+        expect(fixture.componentInstance.canRemove()).toBe(true);
+      });
+
+      it('unlocks when the post-cancel read fails too', async () => {
+        getStatus.mockReturnValue(of(status({ coverage: COVERAGE, activeRun: RUNNING })));
+        const fixture = await create();
+        const reread = new Subject<BackfillStatus>();
+        getStatus.mockReturnValue(reread);
+
+        cancelButton(fixture)?.click();
+        fixture.detectChanges();
+        expect(fixture.componentInstance.canRemove()).toBe(false);
+        reread.error(httpError(503));
+        await fixture.whenStable();
+
+        expect(fixture.componentInstance.canRemove()).toBe(true);
+      });
+
+      it('a GET issued before the 204 that lands late with `running` opens nothing; the read queued behind it does', async () => {
+        getStatus.mockReturnValue(of(status({ coverage: COVERAGE, activeRun: RUNNING })));
+        const fixture = await create();
+        const section = fixture.componentInstance;
+        // A refetch has failed: the retained status still shows the run.
+        getStatus.mockReturnValue(throwError(() => httpError(503)));
+        section['statusResource'].reload();
+        await fixture.whenStable();
+        expect(section.statusRefetchFailed()).toBe(true);
+        // A new GET goes out before the cancel and hangs.
+        const early = new Subject<BackfillStatus>();
+        getStatus.mockReturnValue(early);
+        section['statusResource'].reload();
+        await flush(fixture);
+        expect(getStatus).toHaveBeenCalledTimes(3);
+        const fresh = new Subject<BackfillStatus>();
+        getStatus.mockReturnValue(fresh);
+
+        cancelButton(fixture)?.click();
+
+        // The 204 asked for a read, but the resource refuses while it loads: nothing went out yet.
+        expect(cancel).toHaveBeenCalledTimes(1);
+        expect(getStatus).toHaveBeenCalledTimes(3);
+        expect(section.canRemove()).toBe(false);
+        expect(section.canStart()).toBe(false);
+
+        early.next(status({ coverage: COVERAGE, activeRun: RUNNING }));
+        await flush(fixture);
+
+        expect(section.canRemove()).toBe(false);
+        expect(section.canStart()).toBe(false);
+        expect(getStatus).toHaveBeenCalledTimes(4);
+
+        fresh.next(status({ coverage: COVERAGE, lastRun: { ...RUNNING, status: 'cancelled' } }));
+        await fixture.whenStable();
+
+        expect(section.canRemove()).toBe(true);
+        expect(section.canStart()).toBe(true);
+      });
+
+      it('the same late GET without a run still opens nothing before the queued read settles', async () => {
+        getStatus.mockReturnValue(of(status({ coverage: COVERAGE, activeRun: RUNNING })));
+        const fixture = await create();
+        const section = fixture.componentInstance;
+        const early = new Subject<BackfillStatus>();
+        getStatus.mockReturnValue(early);
+        section['statusResource'].reload();
+        await flush(fixture);
+        const fresh = new Subject<BackfillStatus>();
+        getStatus.mockReturnValue(fresh);
+
+        cancelButton(fixture)?.click();
+        // Pre-cancel coverage: a block committed just before the DELETE would be missing from it.
+        early.next(status({ coverage: COVERAGE }));
+        await flush(fixture);
+
+        expect(section['status']()?.activeRun).toBeNull();
+        expect(section.canRemove()).toBe(false);
+        expect(section.canStart()).toBe(false);
+
+        fresh.next(status({ coverage: [MORE, ...COVERAGE] }));
+        await fixture.whenStable();
+
+        expect(section.canRemove()).toBe(true);
+        expect(section.importedIntervals()).toHaveLength(3);
+      });
+    });
+
+    it('does not lose an SSE nudge that arrives while a GET hangs', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const fixture = await create();
+      const hanging = new Subject<BackfillStatus>();
+      getStatus.mockReturnValue(hanging);
+      fixture.componentInstance['statusResource'].reload();
+      await flush(fixture);
+      expect(getStatus).toHaveBeenCalledTimes(2);
+      getStatus.mockReturnValue(of(status({ coverage: [MORE, ...COVERAGE] })));
+
+      FakeEventSource.instances
+        .find((source) => source.url === channelLiveUrl('sensitron'))!
+        .emit({ type: LIVE_EVENT_TYPES.backfillProgress, channel: 'sensitron' });
+      await new Promise((resolve) => setTimeout(resolve, 520));
+      fixture.detectChanges();
+      expect(getStatus).toHaveBeenCalledTimes(2);
+
+      hanging.next(status({ coverage: COVERAGE }));
+      await fixture.whenStable();
+
+      expect(getStatus).toHaveBeenCalledTimes(3);
+      expect(fixture.componentInstance.importedIntervals()).toHaveLength(3);
+    });
+  });
 });
 
 describe('backfillStartErrorKey', () => {
@@ -991,7 +1542,7 @@ describe('BackfillSection live region', () => {
         },
         {
           provide: EVENT_SOURCE_FACTORY,
-          useValue: () => new FakeEventSource() as unknown as EventSource,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
         },
       ],
     });
@@ -1014,5 +1565,23 @@ describe('BackfillSection live region', () => {
     await fixture.whenStable();
     fixture.detectChanges();
     expect(region?.textContent?.trim()).toBe('Backfill completed.');
+  });
+});
+
+describe('backfillRemovalAnnouncement', () => {
+  it('says how many days went, in the right plural', () => {
+    expect(backfillRemovalAnnouncement({ removedUsageRows: 40, removedCoverageDays: 183 })).toEqual(
+      { key: 'backfill.remove.announceDone.other', count: 183 },
+    );
+    expect(backfillRemovalAnnouncement({ removedUsageRows: 2, removedCoverageDays: 1 })).toEqual({
+      key: 'backfill.remove.announceDone.one',
+      count: 1,
+    });
+  });
+
+  it('says the data was already gone when nothing was left to remove', () => {
+    expect(backfillRemovalAnnouncement({ removedUsageRows: 0, removedCoverageDays: 0 }).key).toBe(
+      'backfill.remove.announceNothingLeft',
+    );
   });
 });

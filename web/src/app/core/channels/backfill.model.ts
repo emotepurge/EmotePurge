@@ -78,3 +78,20 @@ export interface StartBackfillRequest {
   emoteSetId: string;
   months: number;
 }
+
+/** One interval of `expectedCoverage`: a coverage interval as the status listed it, without its name. */
+export type ExpectedCoverageInterval = Pick<
+  BackfillCoverageInterval,
+  'from' | 'to' | 'emoteSetId' | 'archiveHost'
+>;
+
+/** POST /api/channels/{c}/backfill/imported/remove body (spec 2026-10-13, §5.2). */
+export interface RemoveImportedBackfillRequest {
+  expectedCoverage: ExpectedCoverageInterval[];
+}
+
+/** POST /api/channels/{c}/backfill/imported/remove answer; zeros when nothing was left to remove. */
+export interface BackfillRemovalResult {
+  removedUsageRows: number;
+  removedCoverageDays: number;
+}

@@ -2352,6 +2352,26 @@
       "completed": "Backfill abgeschlossen.",
       "failed": "Backfill fehlgeschlagen.",
       "cancelled": "Backfill abgebrochen."
+    },
+    "remove": {
+      "title": "Importierte Daten",
+      "intro": "Für diese Tage stammen die Zahlen aus dem Chat-Archiv, und die Nutzungsseite weist sie so aus:",
+      "interval": "{{ from }} – {{ to }} · {{ set }}",
+      "action": "Importierte Daten entfernen",
+      "blockedByRun": "Brich zuerst den laufenden Backfill ab.",
+      "confirm": {
+        "title": "Importierte Daten dieses Channels entfernen?",
+        "lead": "Entfernt werden die aus dem Chat-Archiv importierten Zahlen für:",
+        "interval": "· {{ from }} – {{ to }} · {{ set }}",
+        "label": "und damit der Hinweis „aus dem Chat-Archiv“ auf der Nutzungsseite.",
+        "keeps": "Bleiben: alle Zahlen, die wir selbst seit dem {{ countingSince }} zählen, und die Liste der bisherigen Läufe.",
+        "irreversible": "Das lässt sich nicht rückgängig machen. Ein neuer Backfill liest das Archiv neu; seine Zahlen können abweichen."
+      },
+      "announceDone": {
+        "one": "Importierte Daten entfernt: {{ count }} Tag.",
+        "other": "Importierte Daten entfernt: {{ count }} Tage."
+      },
+      "announceNothingLeft": "Die importierten Daten waren bereits entfernt."
     }
   }
 }

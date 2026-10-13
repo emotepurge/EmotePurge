@@ -22,7 +22,10 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `tests/EmotePurge.Infrastructure.Tests/Integration/ChatLogImportRemovalServiceTests.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Fixtures/ImportedBackfillSeed.cs` ·
 `tests/EmotePurge.Infrastructure.Tests/Unit/ChatLogImportScopeTests.cs` ·
-`tests/EmotePurge.Infrastructure.Tests/Integration/AuditLogQueryServiceTests.cs`
+`tests/EmotePurge.Infrastructure.Tests/Integration/AuditLogQueryServiceTests.cs` ·
+`web/src/app/features/channel-workspace/backfill-section.ts` · `web/src/app/core/channels/backfill.service.ts` ·
+`web/src/app/core/channels/backfill.model.ts` · `web/src/app/core/audit/audit.model.ts` ·
+`web/src/app/shared/audit/audit-actions.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
 
 Until now a manager could start a backfill but not take it back; the only way to remove imported numbers
 was the operator procedure in `docs/Operations.md` ("Chat-log backfill" → "Rolling back"). Spec:
@@ -103,6 +106,23 @@ Decision (this entry covers the service and the route; the UI follows in the sam
   `ScopeChanged` → 409 `backfill_remove_scope_changed`; `NotFound` → 404 `channel_not_found`.
 - **Correct for the slot flag on only**: the removal is reachable only with `ChatLogBackfill:Enabled`, which
   requires the slot flag; the service does not read `SlotReconcileOptions` (#379 part B removes the type).
+- **The client binding** (settings tab, section "Imported data" below the backfill section, rendered by
+  `BackfillSection` on its one status read): the dialog text and the sent `expectedCoverage` come from the
+  same captured intervals, and the confirmation sends only while the canonical key of the current
+  intervals (channel + `from|to|emoteSetId|archiveHost` in status order) is still the captured one —
+  otherwise nothing goes out and the section shows the `backfill_remove_scope_changed` sentence; the next
+  click shows the new scope. Start and Remove lock each other while either request is in flight. The
+  success sentence has its own state in the section's permanent live region and takes precedence over the
+  run's announcement until a new run shows up or the channel changes, so it outlives the refetch that
+  unmounts the section.
+- **Post-cancel read by read generation, for Start as much as for Remove** (Sol-1 of the plan review):
+  every status read is numbered when its GET goes out, and after the cancel's 204 both stay locked until a
+  read numbered after the 204 has settled (answer or failure). The former check ("the resource value
+  changed since the 204") let a GET that had started before the cancel and landed afterwards open the
+  gate. Angular's `ResourceRef.reload()` returns `false` while any load is in flight (initial or reload —
+  measured in `@angular/core` 22.2.1), and all six reload calls ignored that; they now go through one
+  path that remembers a refused reload and issues it once the running load settles, so neither the read
+  a cancel waits for nor an SSE nudge is lost. The fix applies to Start too, which had the same gap.
 
 ### 2026-10-12 — System-load rollup: loose index scan, per-hour loader and batched catch-up
 
