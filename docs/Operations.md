@@ -1112,8 +1112,8 @@ swept after #379 removes the flag-off branches.
 The images that contain the slot code already run with the flag off; this window only flips the flag, there is no
 migration and no new image. Plan one short window with api and worker stopped together, outside big streams. The SQL
 below is read-only unless it says otherwise; table and column names are those of the schema. The statements of
-"Populations" and the WAL check were run in the acceptance run on a copy of the development database; a statement
-marked "untested sketch" was not, and is to be adapted. Run them against the production database through the tunnel described under
+"Populations" and the WAL check were run on copies of the development database in the flag-off state (the acceptance
+run and a separate runbook test, both 2026-10-13). Run them against the production database through the tunnel described under
 "Prod-Migration" in `CLAUDE.md` (bash; passwords as placeholders, never in a file).
 
 **Admission order for backfill runs.** A run enqueued while the flag is off binds an unsettled seed, which nothing
@@ -1142,8 +1142,8 @@ emote rows (live entries that are not yet in the table are created by the first 
 
 ```sql
 SELECT count(*) AS locked_rows FROM "Emotes" e JOIN "Channels" c ON c."Id" = e."ChannelId"
-WHERE c."IsBotActive" AND NOT e."IsArchived";   -- untested sketch, predicate from RowLocks.LockEmotesForReconcileAsync
-SHOW checkpoint_timeout;                        -- C, in seconds
+WHERE c."IsBotActive" AND NOT e."IsArchived";   -- predicate of RowLocks.LockEmotesForReconcileAsync, before the switch
+SELECT setting::int AS c_seconds FROM pg_settings WHERE name = 'checkpoint_timeout';   -- C, in seconds
 ```
 
 Measured on a copy with `pg_walinspect` (acceptance run of #379): 54 bytes per locked row and tick without
@@ -1211,15 +1211,16 @@ Production at the time of writing (2 channels, about 960 rows) costs about 0.14 
     AND EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id" AND u."EmoteSetId" = c."ActiveEmoteSetId");
   ```
 
-  Right after the switch, add the channel condition for the "after" reading (untested sketch): `AND c."LastSyncFailureReason" IS NULL
-  AND c."LastSyncedAtUtc" > '<time from step 5>'`. Channels that fail it are not in the population; name them
+  Right after the switch, add the channel condition for the "after" reading: `AND c."LastSyncFailureReason" IS NULL
+  AND c."LastSyncedAtUtc" > '<UTC time from step 5>+00'` (the column is `timestamptz`; without the `+00` the literal is
+  read in the session's time zone). Channels that fail it are not in the population; name them
   and look at their worker log. Take the "before" reading just before stopping the processes (it can drift by a
   few seeds: 788 became 790 in the acceptance run because two emotes were counted for the first time).
 - **Unchanged population:** unsettled seeds that are **not** in the settle population: seeds of emotes that are absent
   (archived, with historical rows in the active set; they stay unsettled on purpose and leave no deferral line),
   seeds of other sets, seeds of channels without `IsBotActive`. Before and after must be byte-equal: a checksum over
-  the whole row, sorted (composed from the tested settle predicate and the tested checksum form; the whole statement
-  is an untested sketch):
+  the whole row, sorted (the complement of the settle predicate among the unsettled seeds; on the test copy the two
+  counts added up to every unsettled seed):
 
   ```sql
   SELECT count(*), md5(string_agg(s::text, '|' ORDER BY s."Id")) FROM "EmoteSlots" s
