@@ -16,6 +16,7 @@ import {
 
 import { ChannelService } from '../channels/channel.service';
 import { EmoteTagService } from '../tags/emote-tag.service';
+import { SevenTvEntryTarget } from './seven-tv-entry-target';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import {
@@ -94,13 +95,35 @@ export const ABORTED_DELETE_NOTICE_MS = 8000;
 /** v4 dropped the `action` enum in favour of one field per operation; the emote travels inside the
  *  `EmoteSetEmoteId` input object rather than as a sibling argument, and variable types are `Id!`
  *  instead of `ObjectID!`. Removal has no alias, unlike `addEmote` in the import/restore services.
- *  One `removeEmote` takes every entry of the id. Shared with the import run's replace rows. */
+ *  One `removeEmote` takes every entry of the id. Shared with the import run's replace rows, the
+ *  undo, the vote page's removals and the delete run's id rows; an entry row of a slot delete run
+ *  uses {@link REMOVE_SLOT_ENTRY_MUTATION} instead. */
 export const REMOVE_EMOTE_MUTATION: SevenTvMutation = {
   query: `
   mutation RemoveEmote($setId: Id!, $emoteId: Id!) {
     emoteSets {
       emoteSet(id: $setId) {
         removeEmote(id: { emoteId: $emoteId }) {
+          id
+        }
+      }
+    }
+  }
+`,
+  resultPath: ['emoteSets', 'emoteSet', 'removeEmote'],
+};
+
+/** The slot-delete counterpart of {@link REMOVE_EMOTE_MUTATION} (Plan-378 [E1]): removes only the
+ *  entry of the id that sits under `alias`. Its own constant — not an optional `$alias` on the one
+ *  above — so every other caller keeps sending today's bytes, and `$alias` is **required**
+ *  (`String!`): a request for one entry can never leave without an alias, which 7TV would read as
+ *  "every entry of the id". */
+export const REMOVE_SLOT_ENTRY_MUTATION: SevenTvMutation = {
+  query: `
+  mutation RemoveSlotEntry($setId: Id!, $emoteId: Id!, $alias: String!) {
+    emoteSets {
+      emoteSet(id: $setId) {
+        removeEmote(id: { emoteId: $emoteId, alias: $alias }) {
           id
         }
       }
@@ -120,10 +143,17 @@ export const REMOVE_EMOTE_MUTATION: SevenTvMutation = {
  *  `cancelled`. */
 const REMOVE_OPERATION: RunOperation = {
   label: 'mass delete',
-  buildRequest: (setId, emote) => ({
-    mutation: REMOVE_EMOTE_MUTATION,
-    variables: { setId, emoteId: emote.sevenTvEmoteId },
-  }),
+  // By row type: an entry row removes its one entry by alias, an id row takes every entry of the id.
+  buildRequest: (setId, emote) =>
+    emote.entry
+      ? {
+          mutation: REMOVE_SLOT_ENTRY_MUTATION,
+          variables: { setId, emoteId: emote.sevenTvEmoteId, alias: emote.entry.alias },
+        }
+      : {
+          mutation: REMOVE_EMOTE_MUTATION,
+          variables: { setId, emoteId: emote.sevenTvEmoteId },
+        },
   transportLossIsUnknown: true,
 };
 
@@ -140,6 +170,9 @@ export interface DeleteQueueEmote {
   /** Every alias the emote sits under in the set — two for a #74 duplicate cell. The delete
    *  records them in the protocol; the restore sends one `ADD` per alias. Omitted means `[name]`. */
   aliases?: readonly string[];
+  /** Set on an entry row: removes exactly this one set entry (see `SevenTvEntryTarget`), keyed
+   *  `${sevenTvEmoteId}#${entry.cardKey}`. Absent: an id row, one per 7TV id, as always. */
+  entry?: SevenTvEntryTarget;
 }
 /** Historical aliases — the panel and both host pages import these names. */
 export type DeleteItemStatus = RunItemStatus;
@@ -816,14 +849,41 @@ export class SevenTvDeleteService {
   }
 }
 
-/** One queue row per 7TV id, keyed by it (spec #200, 7.2, Sonde 5 branch A): a #74 duplicate cell
- *  is one row, and its one `REMOVE` takes every entry. Should a caller hand in the same id twice,
- *  the rows merge — two rows with one key would make the engine's per-key status updates hit
- *  both, and the second `REMOVE` could only fail — keeping every alias for the protocol. */
+/** The delete queue. **Id rows** are one per 7TV id, keyed by it (spec #200, 7.2, Sonde 5 branch A):
+ *  a #74 duplicate cell is one row, and its one `REMOVE` takes every entry. Should a caller hand in
+ *  the same id twice, the rows merge — two rows with one key would make the engine's per-key status
+ *  updates hit both, and the second `REMOVE` could only fail — keeping every alias for the protocol.
+ *
+ *  **Entry rows** (slot delete, Plan-378 4.3) are one per card, keyed `${id}#${cardKey}`, and record
+ *  exactly their own alias — never enriched with the aliases the id has elsewhere in the set, or the
+ *  protocol and a restore would bring back siblings that were never deleted. A second row with the
+ *  same card key is dropped. An entry row whose id also has an id row in the same call (the page
+ *  never builds that) goes up in the id row, whose alias-less `REMOVE` takes the entry anyway. */
 function toDeleteQueue(emotes: readonly DeleteQueueEmote[]): RunQueueEmote[] {
+  const idRowIds = new Set(
+    emotes.filter((emote) => !emote.entry).map((emote) => emote.sevenTvEmoteId),
+  );
   const rows = new Map<string, RunQueueEmote & { aliases: string[] }>();
   for (const emote of emotes) {
-    const aliases = emote.aliases && emote.aliases.length > 0 ? emote.aliases : [emote.name];
+    const aliases = emote.entry
+      ? [emote.entry.alias]
+      : emote.aliases && emote.aliases.length > 0
+        ? emote.aliases
+        : [emote.name];
+    if (emote.entry && !idRowIds.has(emote.sevenTvEmoteId)) {
+      const key = `${emote.sevenTvEmoteId}#${emote.entry.cardKey}`;
+      if (!rows.has(key)) {
+        rows.set(key, {
+          key,
+          emoteId: emote.emoteId,
+          sevenTvEmoteId: emote.sevenTvEmoteId,
+          name: emote.name,
+          aliases: [...aliases],
+          entry: emote.entry,
+        });
+      }
+      continue;
+    }
     const existing = rows.get(emote.sevenTvEmoteId);
     if (existing) {
       existing.aliases.push(...aliases.filter((alias) => !existing.aliases.includes(alias)));

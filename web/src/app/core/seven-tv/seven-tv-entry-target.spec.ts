@@ -1,0 +1,47 @@
+import { describe, expect, it } from 'vitest';
+
+import { parseStrictEntryDate } from './seven-tv-entry-target';
+
+describe('parseStrictEntryDate', () => {
+  // The Api binds `AddedAt` as a DateTimeOffset: every accepted value must survive that binding.
+  it.each([
+    '2026-10-13T08:00:14.902Z',
+    '2026-10-13T08:00:14Z',
+    '2026-10-13T08:00:14.902123+02:00',
+    '2026-10-13T08:00:14-05:30',
+    '2024-02-29T12:00:00Z',
+  ])('accepts %s', (value) => {
+    expect(parseStrictEntryDate(value)).toBe(value);
+  });
+
+  // `Date.parse` takes several of these; the report endpoint rejects them with a 400 after 7TV was
+  // already changed.
+  it.each([
+    ['a bare number', '0'],
+    ['a day that does not exist in the month', '2026-02-31T00:00:00.000Z'],
+    ['a leap day in a common year', '2025-02-29T00:00:00Z'],
+    ['no zone', '2026-10-13T08:00:14'],
+    ['a date without a time', '2026-10-13'],
+    ['hour 25', '2026-10-13T25:00:00Z'],
+    ['month 13', '2026-13-01T00:00:00Z'],
+    ['minute 60', '2026-10-13T08:60:00Z'],
+    ['a zone offset without minutes', '2026-10-13T08:00:14+02'],
+    ['an empty string', ''],
+    ['a surrounding blank', ' 2026-10-13T08:00:14Z'],
+  ])('rejects %s', (_label, value) => {
+    expect(parseStrictEntryDate(value)).toBeNull();
+  });
+
+  it('rejects what is not a string', () => {
+    expect(parseStrictEntryDate(null)).toBeNull();
+    expect(parseStrictEntryDate(undefined)).toBeNull();
+    expect(parseStrictEntryDate(1_760_000_000_000)).toBeNull();
+  });
+
+  it('hands the very same string back, never a reformatted one', () => {
+    const wire = '2026-10-13T08:00:14.902123+02:00';
+
+    expect(parseStrictEntryDate(wire)).toBe(wire);
+    expect(parseStrictEntryDate(wire)).not.toBe(new Date(wire).toISOString());
+  });
+});

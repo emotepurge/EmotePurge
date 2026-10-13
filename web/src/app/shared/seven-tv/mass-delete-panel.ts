@@ -14,6 +14,7 @@ import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { SevenTvEntryTarget } from '../../core/seven-tv/seven-tv-entry-target';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
@@ -65,6 +66,9 @@ export interface DeletableEmote {
    *  "everything is visible" — the delete-confirm dialog's hidden-by-filter block depends on every
    *  host page actually supplying it. */
   hidden: boolean;
+  /** Set on an entry row: the delete removes exactly this one set entry, by alias, instead of every
+   *  entry of the id (slot delete, Plan-378 3). Absent: an id row, as before. */
+  entry?: SevenTvEntryTarget;
 }
 
 /** What the delete confirmation lists for one entry — see `DeletableEmote.confirmationNames`. */

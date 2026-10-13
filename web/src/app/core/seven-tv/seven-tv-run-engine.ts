@@ -21,6 +21,7 @@ import {
   timer,
 } from 'rxjs';
 
+import { SevenTvEntryTarget } from './seven-tv-entry-target';
 import { SevenTvTokenService } from './seven-tv-token.service';
 
 const SEVEN_TV_GQL_ENDPOINT = 'https://7tv.io/v4/gql';
@@ -50,8 +51,9 @@ const RATE_LIMIT_PACING_MARGIN = 1.1;
 export interface RunQueueEmote {
   /** Identity of this row within one run's queue — what `updateRow` matches on and what
    *  `RunResult.doneKeys` reports. Set by the calling service (spec #200, 7.2): a delete run keys
-   *  by `sevenTvEmoteId` (one row per set-view cell, a #74 duplicate included — one `REMOVE` takes
-   *  every entry), a restore run by `${sevenTvEmoteId}#${alias}` (one `ADD` per alias), an import
+   *  by `sevenTvEmoteId` for an id row (one row per set-view cell, a #74 duplicate included — one
+   *  `REMOVE` takes every entry) and by `${sevenTvEmoteId}#${cardKey}` for an entry row (one row
+   *  per set entry, `entry` set), a restore run by `${sevenTvEmoteId}#${alias}` (one `ADD` per alias), an import
    *  run (K2) by `sevenTvEmoteId` too. Must be unique within a run; the engine never deduplicates
    *  (the calling service does). */
   key: string;
@@ -66,6 +68,10 @@ export interface RunQueueEmote {
    *  one `REMOVE` takes both entries. Written into the purge protocol, which is the only place a
    *  later restore can learn them from. Absent means `[name]`. */
   aliases?: readonly string[];
+  /** Delete runs only: set on an **entry row**, which removes exactly this one set entry (by its
+   *  alias) instead of every entry of the id. Carried through to results, protocol, restore input
+   *  and retry; the engine itself never reads it. Absent on an id row. */
+  entry?: SevenTvEntryTarget;
 }
 
 /** `unknown` is the outcome of a step whose answer never came out of 7TV's GraphQL layer — no

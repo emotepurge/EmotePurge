@@ -2054,4 +2054,139 @@ describe('SevenTvDeleteService', () => {
       expect(service.tagRemovalReport()).toBe('idle');
     });
   });
+
+  // Slot mass delete (Plan-378 3, 4.2, 4.3): an entry row removes exactly one set entry, by alias.
+  describe('entry rows', () => {
+    const HOB = {
+      sevenTvEmoteId: '7tv-1',
+      name: 'hob44',
+      aliases: ['hob44', 'ome44'],
+      entry: {
+        slotId: 'slot-1',
+        alias: 'hob44',
+        addedAt: '2026-10-13T08:00:14.902Z',
+        cardKey: 'slot-1',
+      },
+    } satisfies DeleteQueueEmote;
+    const OME = {
+      sevenTvEmoteId: '7tv-1',
+      name: 'ome44',
+      entry: {
+        slotId: 'slot-2',
+        alias: 'ome44',
+        addedAt: '2026-10-13T09:00:00Z',
+        cardKey: 'slot-2',
+      },
+    } satisfies DeleteQueueEmote;
+
+    /** Answers every pending REMOVE in turn and then the closing report; returns the removals' variables. */
+    function runToEnd(rowCount: number): Record<string, unknown>[] {
+      const sent: Record<string, unknown>[] = [];
+      for (let row = 0; row < rowCount; row++) {
+        const request = httpMock.expectOne(isRemove);
+        sent.push(request.request.body.variables);
+        flushApplied(request);
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+      }
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      return sent;
+    }
+
+    it('keys the row by id and card and removes that one entry by its alias', () => {
+      service.startDelete('set-1', 'sensitron', [HOB], 'sensitron', null);
+
+      expect(service.queue().map((row) => row.key)).toEqual(['7tv-1#slot-1']);
+      const request = httpMock.expectOne(isRemove);
+      const body = request.request.body as { query: string; variables: unknown };
+      expect(body.variables).toEqual({ setId: 'set-1', emoteId: '7tv-1', alias: 'hob44' });
+      // The alias is mandatory in the request text: an entry request can never leave without one,
+      // which 7TV would read as "every entry of the id".
+      expect(body.query).toContain('$alias: String!');
+      expect(body.query).toContain('removeEmote(id: { emoteId: $emoteId, alias: $alias })');
+      flushApplied(request);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('runs two cards of one id as two rows with one request each, each with its own alias', () => {
+      service.startDelete('set-1', 'sensitron', [HOB, OME], 'sensitron', null);
+
+      expect(service.queue().map((row) => row.key)).toEqual(['7tv-1#slot-1', '7tv-1#slot-2']);
+      expect(runToEnd(2)).toEqual([
+        { setId: 'set-1', emoteId: '7tv-1', alias: 'hob44' },
+        { setId: 'set-1', emoteId: '7tv-1', alias: 'ome44' },
+      ]);
+    });
+
+    it('records only its own alias, never the ones the id has elsewhere in the set', () => {
+      service.startDelete('set-1', 'sensitron', [HOB], 'sensitron', null);
+
+      // HOB came in with a sibling alias in `aliases`; the protocol must not bring it back.
+      expect(service.queue()[0].aliases).toEqual(['hob44']);
+      runToEnd(1);
+    });
+
+    it('carries the entry target on the row for results, protocol and restore', () => {
+      service.startDelete('set-1', 'sensitron', [HOB], 'sensitron', null);
+
+      expect(service.queue()[0].entry).toEqual(HOB.entry);
+      runToEnd(1);
+      expect(service.lastRun()?.result.items[0].entry).toEqual(HOB.entry);
+    });
+
+    it('drops a second row with the same card key', () => {
+      service.startDelete(
+        'set-1',
+        'sensitron',
+        [HOB, { ...HOB, name: 'again' }],
+        'sensitron',
+        null,
+      );
+
+      expect(service.queue()).toHaveLength(1);
+      expect(service.queue()[0].name).toBe('hob44');
+      runToEnd(1);
+    });
+
+    it('folds entry rows into an id row of the same id, which removes without an alias', () => {
+      service.startDelete(
+        'set-1',
+        'sensitron',
+        [OME, { sevenTvEmoteId: '7tv-1', name: 'hob44', aliases: ['hob44'] }],
+        'sensitron',
+        null,
+      );
+
+      expect(service.queue()).toHaveLength(1);
+      expect(service.queue()[0].key).toBe('7tv-1');
+      expect(service.queue()[0].entry).toBeUndefined();
+      expect(service.queue()[0].aliases).toEqual(['ome44', 'hob44']);
+      expect(runToEnd(1)).toEqual([{ setId: 'set-1', emoteId: '7tv-1' }]);
+    });
+
+    // Flag off = today: an id row sends the bytes it always sent.
+    it('keeps an id row on the original mutation, keyed by the id, with no alias variable', () => {
+      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
+
+      expect(service.queue().map((row) => row.key)).toEqual(['7tv-1']);
+      expect(service.queue()[0].entry).toBeUndefined();
+      const request = httpMock.expectOne(isRemove);
+      const body = request.request.body as { query: string; variables: unknown };
+      expect(body.variables).toEqual({ setId: 'set-1', emoteId: '7tv-1' });
+      expect(body.query).not.toContain('alias');
+      expect(body.query).toContain('removeEmote(id: { emoteId: $emoteId })');
+      flushApplied(request);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('sends an id row and an entry row of different emotes each in its own form', () => {
+      service.startDelete('set-1', 'sensitron', [EMOTES[1], HOB], 'sensitron', null);
+
+      expect(runToEnd(2)).toEqual([
+        { setId: 'set-1', emoteId: '7tv-2' },
+        { setId: 'set-1', emoteId: '7tv-1', alias: 'hob44' },
+      ]);
+    });
+  });
 });
