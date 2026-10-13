@@ -21,7 +21,7 @@ import {
   timer,
 } from 'rxjs';
 
-import { SevenTvEntryTarget } from './seven-tv-entry-target';
+import { SevenTvEntryGeneration, SevenTvEntryTarget } from './seven-tv-entry-target';
 import { SevenTvTokenService } from './seven-tv-token.service';
 
 const SEVEN_TV_GQL_ENDPOINT = 'https://7tv.io/v4/gql';
@@ -68,10 +68,12 @@ export interface RunQueueEmote {
    *  one `REMOVE` takes both entries. Written into the purge protocol, which is the only place a
    *  later restore can learn them from. Absent means `[name]`. */
   aliases?: readonly string[];
-  /** Delete runs only: set on an **entry row**, which removes exactly this one set entry (by its
-   *  alias) instead of every entry of the id. Carried through to results, protocol, restore input
-   *  and retry; the engine itself never reads it. Absent on an id row. */
-  entry?: SevenTvEntryTarget;
+  /** Set on an **entry row**: a delete row removes exactly this one set entry (by its alias)
+   *  instead of every entry of the id; a restore row re-adds it and reports the generation it
+   *  removed (Plan-378 4.7). A delete row carries the full target, card key included; a restore
+   *  row only the generation. Carried through to results, protocol, restore input and retry; the
+   *  engine itself never reads it. Absent on an id row. */
+  entry?: SevenTvEntryTarget | SevenTvEntryGeneration;
 }
 
 /** `unknown` is the outcome of a step whose answer never came out of 7TV's GraphQL layer — no

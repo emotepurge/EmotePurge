@@ -16,12 +16,12 @@ import { catchError, finalize, of, timeout } from 'rxjs';
 
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { pluralKey } from '../../core/i18n/plural';
-import {
-  DeleteQueueEmote,
-  SevenTvDeleteService,
-} from '../../core/seven-tv/seven-tv-delete.service';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
-import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
+import {
+  RestoreQueueEmote,
+  SevenTvRestoreService,
+} from '../../core/seven-tv/seven-tv-restore.service';
 import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { unknownCount } from '../../core/seven-tv/seven-tv-run-settlement';
@@ -75,10 +75,11 @@ function restoreTargetCheckReasonKey(reason: TargetCheckBlockReason): string {
   }
 }
 
-/** One row the restore entry hands both duplicate checks: the queue row the run needs, plus the
- *  `uncertain` marker (#275) set from an `unknown` delete row — only the checks read it
- *  (`RestoreFilterRow.uncertain`), the run never does. */
-type RestoreCandidate = DeleteQueueEmote & Pick<RestoreFilterRow, 'uncertain'>;
+/** One row the restore entry hands both duplicate checks: the queue row the run needs — the delete
+ *  row's entry target included (Plan-378 4.7) — plus the `uncertain` marker (#275) set from an
+ *  `unknown` delete row — only the checks read it (`RestoreFilterRow.uncertain`), the run never
+ *  does. */
+type RestoreCandidate = RestoreQueueEmote & Pick<RestoreFilterRow, 'uncertain'>;
 
 /** The finished delete run's rows the restore entry offers (#275, plan Festlegung 16): every `done`
  *  row — the emote provably left the set — and every `unknown` row, whose delete may or may not
@@ -88,6 +89,12 @@ type RestoreCandidate = DeleteQueueEmote & Pick<RestoreFilterRow, 'uncertain'>;
  *  function's. */
 function restorableItems(items: readonly RunQueueItem[]): RunQueueItem[] {
   return items.filter((item) => item.status === 'done' || item.status === 'unknown');
+}
+
+/** Whether a settled delete run removed at least one set entry by its slot (a `done` entry row,
+ *  Plan-378 4.7 b) — the runs whose exact restore waits for the removal report. */
+function removedAnEntry(items: readonly RunQueueItem[]): boolean {
+  return items.some((item) => item.status === 'done' && item.entry !== undefined);
 }
 
 /**
@@ -183,7 +190,16 @@ function restorableItems(items: readonly RunQueueItem[]): RunQueueItem[] {
                 </button>
               }
             }
-            @if (restoreOffered() && arbiter.activeRun() === null) {
+            @if (restoreAwaitsReport() && arbiter.activeRun() === null) {
+              <!-- Plan-378 4.7 b (operator decision R4 a): the run removed set entries by their
+                   slot, and the server only reactivates a slot the removal report has archived —
+                   restored before that, the entry would come back as a new slot at zero. The line
+                   stands in for the restore button next to the report's own retry button. -->
+              <span class="text-xs text-fg-muted">
+                {{ 'usageStats.delete.restoreAfterReport' | transloco }}
+              </span>
+            }
+            @if (restoreOffered() && !restoreAwaitsReport() && arbiter.activeRun() === null) {
               <!-- Spec 13.2: a restore is a run of its own without a tag, so what it brings back
                    is in the set but placed by no tag. Said where the button is, and only after a
                    tag removal. -->
@@ -312,6 +328,23 @@ export class DeleteProgressSection {
     return run !== null && restorableItems(run.result.items).length > 0;
   });
 
+  /** The exact restore of a run that removed set entries by their slot waits for its removal report
+   *  (Plan-378 4.7 b, operator decision R4 a): the server reactivates only a slot the report has
+   *  archived, so a restore before that would bring the entry back as a new slot at zero and leave
+   *  the history on the old one. `true` while the run has a `done` entry row and its `sync-deleted`
+   *  has not reached the server — pending, or failed (the dock then offers the report's retry, and a
+   *  successful retry lifts this). `partial` counts as reached: the report was applied, only short
+   *  or for another channel. A run of id rows only (flag off, the vote page, a tag removal) is never
+   *  held, exactly as before. */
+  protected readonly restoreAwaitsReport = computed(() => {
+    const run = this.deleteService.lastRun();
+    if (run === null || !removedAnEntry(run.result.items)) {
+      return false;
+    }
+    const report = this.deleteService.syncReport();
+    return report !== 'succeeded' && report !== 'partial';
+  });
+
   /** How many of the settled run's rows 7TV's answer never clarified (#275) — `0` before the run has
    *  settled (`lastRun()` is `null` while running or settling), same source `restoreOffered` reads. */
   protected readonly unknownRowCount = computed(() => {
@@ -418,7 +451,8 @@ export class DeleteProgressSection {
     }
     // Every done and unknown row (#275), with or without a local emote — see `restorableItems`.
     const restoreItems = restorableItems(run.result.items);
-    if (restoreItems.length === 0) {
+    // Belt and suspenders next to the template, which shows no button while the report is owed.
+    if (restoreItems.length === 0 || this.restoreAwaitsReport()) {
       return;
     }
     // #256 P3-3 (Plan-256 review): the delete service is a root singleton, so its finished run can
@@ -529,11 +563,14 @@ export class DeleteProgressSection {
   ): void {
     // #275: an `unknown` row carries the `uncertain` marker into both duplicate checks, which drop
     // it whenever their read cannot vouch for it — the rule lives in the filter, not here.
+    // An entry row's target goes along unchanged (Plan-378 4.7): its slot and the **original** add
+    // date of the removed generation, which the restore's report hands back to the server.
     const emotes: RestoreCandidate[] = restoreItems.map((item) => ({
       emoteId: item.emoteId,
       sevenTvEmoteId: item.sevenTvEmoteId,
       name: item.name,
       aliases: item.aliases,
+      ...(item.entry === undefined ? {} : { entry: item.entry }),
       ...(item.status === 'unknown' ? { uncertain: true as const } : {}),
     }));
 

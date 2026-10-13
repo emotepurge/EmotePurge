@@ -17,7 +17,7 @@ import {
 
 import { ChannelService } from '../channels/channel.service';
 import { EmoteTagService } from '../tags/emote-tag.service';
-import { SevenTvEntryTarget } from './seven-tv-entry-target';
+import { SevenTvEntryGeneration, SevenTvEntryTarget } from './seven-tv-entry-target';
 import {
   SyncDeletedInSetResponse,
   SyncInSetBody,
@@ -665,7 +665,7 @@ export class SevenTvDeleteService {
     context: EntryRunContext,
     setId: string,
     emote: RunQueueEmote,
-    entry: SevenTvEntryTarget,
+    entry: SevenTvEntryGeneration,
   ): Observable<StepGate> {
     if (context.consecutiveReadFailures >= MAX_CONSECUTIVE_ENTRY_READ_FAILURES) {
       return of(this.skipEntry(context, emote, readFailureKey(context.lastReadFailure), {}));
@@ -723,7 +723,7 @@ export class SevenTvDeleteService {
   private gateEntry(
     context: EntryRunContext,
     emote: RunQueueEmote,
-    entry: SevenTvEntryTarget,
+    entry: SevenTvEntryGeneration,
     read: SevenTvSetEntries,
   ): StepGate {
     const binding = bindEntry(entry, read.entriesById?.get(emote.sevenTvEmoteId) ?? []);
@@ -1269,7 +1269,7 @@ function readFailureKey(reason: 'unavailable' | 'truncated'): string {
  * hits an aliasless entry is not established. No entry, or a tie without the alias (D4: a rename
  * inside a tie reads as remove plus add), means the entry has left.
  */
-function bindEntry(entry: SevenTvEntryTarget, live: readonly SevenTvSetEntry[]): EntryBinding {
+function bindEntry(entry: SevenTvEntryGeneration, live: readonly SevenTvSetEntry[]): EntryBinding {
   if (!entry.alias) {
     // Never reached from the page (a card always has a name) — but a request for one entry must
     // never go out without an alias, which 7TV would read as "every entry of the id".

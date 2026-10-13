@@ -18,6 +18,15 @@ export interface SevenTvEntryTarget {
   cardKey: string;
 }
 
+/**
+ * The part of a {@link SevenTvEntryTarget} that names the entry and its generation — all a run row
+ * needs once it is queued: the removal sends the alias and binds to the date, the report names
+ * slot, alias and date. A restore row carries only this (Plan-378 4.7): it re-adds the entry under
+ * its alias and reports the slot and the **original** add date of the generation that was removed,
+ * but has no card of its own — a row read from a purge protocol file never had one in this tab.
+ */
+export type SevenTvEntryGeneration = Omit<SevenTvEntryTarget, 'cardKey'>;
+
 const ENTRY_DATE_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
 
@@ -62,4 +71,19 @@ export function parseStrictEntryDate(value: unknown): string | null {
     offsetHour <= 23 &&
     offsetMinute <= 59;
   return valid ? value : null;
+}
+
+/**
+ * Whether `entry` can be reported as it stands: a non-empty alias, a slot id that is either absent
+ * or non-empty, and an add date that passes {@link parseStrictEntryDate}. The restore checks every
+ * target with it right before queueing (Plan-378 4.3, T-6) — a target that fails would let an `ADD`
+ * change 7TV and then have its report refused, so its row never reaches the queue.
+ */
+export function isValidEntryGeneration(entry: SevenTvEntryGeneration): boolean {
+  return (
+    typeof entry.alias === 'string' &&
+    entry.alias.length > 0 &&
+    (entry.slotId === undefined || (typeof entry.slotId === 'string' && entry.slotId.length > 0)) &&
+    parseStrictEntryDate(entry.addedAt) !== null
+  );
 }

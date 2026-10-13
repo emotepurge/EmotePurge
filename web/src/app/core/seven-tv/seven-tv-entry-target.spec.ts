@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseStrictEntryDate } from './seven-tv-entry-target';
+import { isValidEntryGeneration, parseStrictEntryDate } from './seven-tv-entry-target';
 
 describe('parseStrictEntryDate', () => {
   // The Api binds `AddedAt` as a DateTimeOffset: every accepted value must survive that binding.
@@ -43,5 +43,22 @@ describe('parseStrictEntryDate', () => {
 
     expect(parseStrictEntryDate(wire)).toBe(wire);
     expect(parseStrictEntryDate(wire)).not.toBe(new Date(wire).toISOString());
+  });
+});
+
+describe('isValidEntryGeneration', () => {
+  const valid = { slotId: 'slot-1', alias: 'hob44', addedAt: '2026-10-13T08:00:14.902Z' };
+
+  it('accepts a target with a slot and one without', () => {
+    expect(isValidEntryGeneration(valid)).toBe(true);
+    expect(isValidEntryGeneration({ alias: 'hob44', addedAt: valid.addedAt })).toBe(true);
+  });
+
+  it.each([
+    ['an add date the report endpoint would refuse', { ...valid, addedAt: '2026-02-31T00:00:00Z' }],
+    ['an empty slot id', { ...valid, slotId: '' }],
+    ['an empty alias', { ...valid, alias: '' }],
+  ])('rejects %s', (_label, entry) => {
+    expect(isValidEntryGeneration(entry)).toBe(false);
   });
 });

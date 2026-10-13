@@ -1093,7 +1093,8 @@
         "one": "{{names}} is now missing from the set although the run did not delete it — a deletion may have removed this entry as well.",
         "other": "{{names}} are now missing from the set although the run did not delete them — a deletion may have removed these entries as well."
       },
-      "postCheckUnavailable": "Could not check whether other entries were affected — look at the set in 7TV."
+      "postCheckUnavailable": "Could not check whether other entries were affected — look at the set in 7TV.",
+      "restoreAfterReport": "Restoring is possible once the removal report has arrived."
     }
   },
   "sevenTvSync": {
