@@ -1,5 +1,6 @@
 using System.Text.Json;
 using EmotePurge.Core.Entities;
+using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
@@ -114,6 +115,60 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal(2, slots.Count);
         Assert.Equal(("ome44", (DateTime?)EntryT1, true, false, NowUtc), (slots[renamed.Id].Name, slots[renamed.Id].AddedAt, slots[renamed.Id].AddedAtFromRest, slots[renamed.Id].IsArchived, slots[renamed.Id].LastSyncedAt));
         Assert.Equal(Columns(archived), Columns(slots[archived.Id]));
+    }
+
+    // The bind renamed a slot that is visible in the set: no later REST tick sees an inventory change, so the
+    // enqueue itself announces channel.synced and an open usage view refetches the new alias.
+    [Fact]
+    public async Task On_ActivePreviewRenamingAVisibleSlot_PublishesChannelSynced()
+    {
+        var channel = await SeedChannelAsync("bfmultisynced");
+        await SeedUserAsync();
+        var emote = await SeedEmoteAsync(channel, "X", "A");
+        await AddSlotAsync(emote.Id, "A", EntryT1, fromRest: true);
+        PreviewReturns(ActiveSetId, "Active", Member("X", "C", EntryT1));
+
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, ActiveSetId)).Status);
+
+        await _publisher.Received(1).PublishAsync(
+            LiveEvents.Channel,
+            Arg.Is<string>(m => m.Contains(LiveEvents.ChannelSynced, StringComparison.Ordinal) && m.Contains(channel.ChannelName, StringComparison.Ordinal)),
+            Arg.Any<CancellationToken>());
+    }
+
+    // AK 27 with an archived slot: it is not visible in the set, so renaming it changes nothing a usage view
+    // shows by itself, and nothing is announced.
+    [Fact]
+    public async Task On_ActivePreviewRenamingAnArchivedSlot_PublishesNoChannelSynced()
+    {
+        var channel = await SeedChannelAsync("bfmultisilent");
+        await SeedUserAsync();
+        var emote = await SeedEmoteAsync(channel, "X", "XNow");
+        var archived = await AddSlotAsync(emote.Id, "old", EntryT2, fromRest: true, archived: true, archivedAt: EarlierArchive);
+        PreviewReturns(ActiveSetId, "Active", Member("X", "new", EntryT2));
+
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueOnAsync(channel, ActiveSetId)).Status);
+
+        await using var verify = CreateDbContext();
+        Assert.Equal("new", (await verify.EmoteSlots.AsNoTracking().SingleAsync(s => s.Id == archived.Id)).Name);
+        await _publisher.DidNotReceive().PublishAsync(
+            LiveEvents.Channel, Arg.Is<string>(m => m.Contains(LiveEvents.ChannelSynced, StringComparison.Ordinal)), Arg.Any<CancellationToken>());
+    }
+
+    // Flag off is child 3's path: no slot is renamed and nothing but the backfill messages goes out.
+    [Fact]
+    public async Task Off_Enqueue_PublishesNoChannelSynced()
+    {
+        var channel = await SeedChannelAsync("bfmultioffsync");
+        await SeedUserAsync();
+        var emote = await SeedEmoteAsync(channel, "X", "A");
+        await AddSlotAsync(emote.Id, "A", EntryT1, fromRest: true);
+        PreviewReturns(ActiveSetId, "Active", Member("X", "C", EntryT1));
+
+        Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, ActiveSetId, months: 6)).Status);
+
+        await _publisher.DidNotReceive().PublishAsync(
+            LiveEvents.Channel, Arg.Is<string>(m => m.Contains(LiveEvents.ChannelSynced, StringComparison.Ordinal)), Arg.Any<CancellationToken>());
     }
 
     // AK 22, another set: new slots are archived like in the active set; a seed of the active set does not
@@ -273,6 +328,7 @@ public partial class ChatLogBackfillServiceTests
         Assert.Contains("1 emotes", line.Message, StringComparison.Ordinal);
         Assert.Contains(nameof(BackfillSlotBindingRejection.ActiveSetSeedUnsettled), line.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("Zyxwv", line.Message, StringComparison.Ordinal);
+        Assert.Contains(emote.SevenTvEmoteId, line.Message, StringComparison.Ordinal);
     }
 
     // 2.6 / 7.3 "flag off": the same state with the flag off is child 3's path — no 409, the snapshot binds

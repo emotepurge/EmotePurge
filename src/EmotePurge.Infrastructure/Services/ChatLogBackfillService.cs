@@ -235,7 +235,7 @@ public sealed class ChatLogBackfillService(
         // check under the locks with the 7TV snapshot already read. The last deadlock propagates. With
         // the slot flag on, a conflict on the authoritative slot key counts against the same attempts
         // (slot plan #375 2.1): only a slot writer that does not take the emote row lock can cause it.
-        (ChatLogBackfillEnqueueStatus Status, ChatLogBackfillRun? Run, string? ChannelName) outcome;
+        (ChatLogBackfillEnqueueStatus Status, ChatLogBackfillRun? Run, string? ChannelName, bool RenamedVisibleSlot) outcome;
         for (var attempt = 1; ; attempt++)
         {
             try
@@ -278,6 +278,12 @@ public sealed class ChatLogBackfillService(
         // page refetches on its own, so a Redis outage here must not turn a stored run into an error.
         await PublishSafelyAsync(BotCommands.Channel, $"{BotCommands.BackfillPrefix}{outcome.ChannelName}", cancellationToken);
         await PublishProgressAsync(outcome.ChannelName!, cancellationToken);
+        if (outcome.RenamedVisibleSlot)
+        {
+            // The bind renamed a visible slot: no later sync sees an inventory change, so announce it here.
+            await PublishSafelyAsync(
+                LiveEvents.Channel, new LiveEvent(LiveEvents.ChannelSynced, ChannelName.Normalize(outcome.ChannelName!)).Serialize(), cancellationToken);
+        }
 
         return ChatLogBackfillEnqueueResult.Enqueued(dto);
     }
@@ -765,7 +771,7 @@ public sealed class ChatLogBackfillService(
     /// The final transaction of the enqueue (D35, §3.1): locks, re-validation, placeholder rows, run,
     /// snapshot, audit — committed together or not at all.
     /// </summary>
-    private async Task<(ChatLogBackfillEnqueueStatus Status, ChatLogBackfillRun? Run, string? ChannelName)> EnqueueUnderLocksAsync(
+    private async Task<(ChatLogBackfillEnqueueStatus Status, ChatLogBackfillRun? Run, string? ChannelName, bool RenamedVisibleSlot)> EnqueueUnderLocksAsync(
         string channelId,
         string capturedTwitchChannelId,
         string capturedChannelName,
@@ -785,7 +791,7 @@ public sealed class ChatLogBackfillService(
         var channel = await db.LockChannelByIdAsync(channelId, cancellationToken);
         if (channel is null)
         {
-            return (ChatLogBackfillEnqueueStatus.ChannelGone, null, null);
+            return (ChatLogBackfillEnqueueStatus.ChannelGone, null, null, false);
         }
 
         // The identity the 7TV read was made for: the same Twitch id under the same login. A rename or
@@ -793,7 +799,7 @@ public sealed class ChatLogBackfillService(
         if (!string.Equals(channel.TwitchChannelId, capturedTwitchChannelId, StringComparison.Ordinal)
             || !string.Equals(channel.ChannelName, capturedChannelName, StringComparison.Ordinal))
         {
-            return (ChatLogBackfillEnqueueStatus.ChannelIdentityChanged, null, null);
+            return (ChatLogBackfillEnqueueStatus.ChannelIdentityChanged, null, null, false);
         }
 
         // FOR SHARE: waits for a running account deletion (which takes FOR UPDATE) and blocks one
@@ -801,36 +807,45 @@ public sealed class ChatLogBackfillService(
         // written. Taken after the channel row: the deletion locks no channel row, so there is no cycle.
         if (await db.LockUserAsync(actor.TwitchUserId, UserRowLock.ForShare, cancellationToken) is null)
         {
-            return (ChatLogBackfillEnqueueStatus.RequesterGone, null, null);
+            return (ChatLogBackfillEnqueueStatus.RequesterGone, null, null, false);
         }
 
         if (!channel.IsBotActive)
         {
-            return (ChatLogBackfillEnqueueStatus.NotActive, null, null);
+            return (ChatLogBackfillEnqueueStatus.NotActive, null, null, false);
         }
 
         if (excludedChannelFilter.IsExcluded(channel.TwitchChannelId))
         {
             logger.LogWarning("Chat-log backfill refused: the channel is on the excluded-channel list.");
-            return (ChatLogBackfillEnqueueStatus.ChannelExcluded, null, null);
+            return (ChatLogBackfillEnqueueStatus.ChannelExcluded, null, null, false);
         }
 
         if (await HasActiveRunAsync(channel.Id, cancellationToken))
         {
-            return (ChatLogBackfillEnqueueStatus.AlreadyActive, null, null);
+            return (ChatLogBackfillEnqueueStatus.AlreadyActive, null, null, false);
         }
 
         var now = UtcNow();
 
         // Slot plan #375 E1: the flag decides the snapshot's shape. Off is child 3's path unchanged.
-        var snapshot = slotReconcileEnabled
-            ? await BindPreviewEntriesAsync(channel, emoteSetId, members, now, cancellationToken)
-            : await BindOneSlotPerEmoteAsync(channel.Id, emoteSetId, members, now, cancellationToken);
-        if (snapshot is null)
+        List<ChatLogBackfillRunEmote> snapshot;
+        var renamedVisibleSlot = false;
+        if (slotReconcileEnabled)
         {
-            // Rejected before any write of its own; the placeholder upsert rolls back with the
-            // transaction on dispose.
-            return (ChatLogBackfillEnqueueStatus.SlotsUnsettled, null, null);
+            var bound = await BindPreviewEntriesAsync(channel, emoteSetId, members, now, cancellationToken);
+            if (bound is null)
+            {
+                // Rejected before any write of its own; the placeholder upsert rolls back with the
+                // transaction on dispose.
+                return (ChatLogBackfillEnqueueStatus.SlotsUnsettled, null, null, false);
+            }
+
+            (snapshot, renamedVisibleSlot) = bound.Value;
+        }
+        else
+        {
+            snapshot = await BindOneSlotPerEmoteAsync(channel.Id, emoteSetId, members, now, cancellationToken);
         }
 
         var run = new ChatLogBackfillRun
@@ -874,11 +889,11 @@ public sealed class ChatLogBackfillService(
         {
             // The index is the last word (B10): a run that slipped past the check above.
             db.ChangeTracker.Clear();
-            return (ChatLogBackfillEnqueueStatus.AlreadyActive, null, null);
+            return (ChatLogBackfillEnqueueStatus.AlreadyActive, null, null, false);
         }
 
         await transaction.CommitAsync(cancellationToken);
-        return (ChatLogBackfillEnqueueStatus.Enqueued, run, channel.ChannelName);
+        return (ChatLogBackfillEnqueueStatus.Enqueued, run, channel.ChannelName, renamedVisibleSlot);
     }
 
     /// <summary>
@@ -954,7 +969,7 @@ public sealed class ChatLogBackfillService(
     /// in this attempt, never for a seed bound or settled in place.
     /// </para>
     /// </summary>
-    private async Task<List<ChatLogBackfillRunEmote>?> BindPreviewEntriesAsync(
+    private async Task<(List<ChatLogBackfillRunEmote> Snapshot, bool RenamedVisibleSlot)?> BindPreviewEntriesAsync(
         Channel channel,
         string emoteSetId,
         IReadOnlyList<ForeignEmoteRow> entries,
@@ -1015,21 +1030,35 @@ public sealed class ChatLogBackfillService(
         var rejected = plans.Where(p => p.Plan.Rejection is not null).ToList();
         if (rejected.Count > 0)
         {
-            // 2.4: one group that cannot be bound rejects the whole enqueue. No names in the line.
+            // 2.4: one group that cannot be bound rejects the whole enqueue. The 7TV emote ids identify the
+            // blocking emotes (capped); no aliases in the line.
+            const int MaxLoggedEmoteIds = 20;
             logger.LogInformation(
-                "Chat-log backfill enqueue for channel {ChannelName} refused: the slots of {Count} emotes are not settled yet ({Reasons}).",
+                "Chat-log backfill enqueue for channel {ChannelName} refused: the slots of {Count} emotes are not settled yet ({Reasons}); first {Logged} 7TV emote ids: {EmoteIds}.",
                 channel.ChannelName,
                 rejected.Count,
-                string.Join(", ", rejected.Select(p => p.Plan.Rejection!.Value).Distinct().Order()));
+                string.Join(", ", rejected.Select(p => p.Plan.Rejection!.Value).Distinct().Order()),
+                Math.Min(rejected.Count, MaxLoggedEmoteIds),
+                string.Join(", ", rejected.Take(MaxLoggedEmoteIds).Select(p => p.Group.Key)));
             return null;
         }
 
         // 1. Identity changes of existing slots (renames, date authorizations, D7 re-keys, the seed
         // settle); they ride the caller's SaveChanges.
         var slotsById = slots.ToDictionary(s => s.Id, StringComparer.Ordinal);
+        // A rename of a slot that was visible before (not archived, not an unsettled seed) changes the
+        // alias an open usage view shows; the REST tick sees no inventory change afterwards, so the
+        // caller announces channel.synced itself.
+        var renamedVisibleSlot = false;
         foreach (var state in plans.SelectMany(p => p.Plan.UpdatedSlots))
         {
-            state.ApplyTo(slotsById[state.Id], now);
+            var original = slotsById[state.Id];
+            if (!original.IsArchived && !original.SeedUnsettled && !string.Equals(original.Name, state.Name, StringComparison.Ordinal))
+            {
+                renamedVisibleSlot = true;
+            }
+
+            state.ApplyTo(original, now);
         }
 
         // 2. New authoritative slots, archived and never in the set (E2, spec 4.1) — only dated entries
@@ -1090,10 +1119,12 @@ public sealed class ChatLogBackfillService(
             throw new InvalidOperationException("Two entries of the backfill snapshot are bound to one slot.");
         }
 
-        return snapshot
-            .OrderBy(e => e.EmoteId, StringComparer.Ordinal)
-            .ThenBy(e => e.SlotId, StringComparer.Ordinal)
-            .ToList();
+        return (
+            snapshot
+                .OrderBy(e => e.EmoteId, StringComparer.Ordinal)
+                .ThenBy(e => e.SlotId, StringComparer.Ordinal)
+                .ToList(),
+            renamedVisibleSlot);
     }
 
     /// <summary>
