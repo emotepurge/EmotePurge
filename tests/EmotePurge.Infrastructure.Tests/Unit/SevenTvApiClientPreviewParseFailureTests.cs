@@ -50,7 +50,7 @@ public class SevenTvApiClientPreviewParseFailureTests
             new RecordingRateLimitTelemetry(),
             new RecordingForeignUpstreamRequestBudget(),
             new RecordingSevenTvSearchBudget(),
-            logger, slotReconcile: SlotFlag.On);
+            logger);
     }
 
     private sealed class StubHandler(HttpResponseMessage response) : HttpMessageHandler

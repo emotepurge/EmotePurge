@@ -293,7 +293,7 @@ public class GuardedSevenTvEditorGrantsServiceTests
                 new RecordingRateLimitTelemetry(),
                 RequestBudget,
                 new RecordingSevenTvSearchBudget(),
-                new RecordingLogger<SevenTvApiClient>(), slotReconcile: SlotFlag.On);
+                new RecordingLogger<SevenTvApiClient>());
             GrantsCache = grantsCache ?? Substitute.For<IModRoleCache>();
             var holdCache = holds ?? Holds;
             Service = new GuardedSevenTvEditorGrantsService(

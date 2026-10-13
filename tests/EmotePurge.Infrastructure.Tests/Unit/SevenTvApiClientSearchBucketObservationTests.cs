@@ -186,7 +186,7 @@ public class SevenTvApiClientSearchBucketObservationTests
             new RecordingRateLimitTelemetry(),
             new RecordingForeignUpstreamRequestBudget(),
             budget,
-            new RecordingLogger<SevenTvApiClient>(), slotReconcile: SlotFlag.On);
+            new RecordingLogger<SevenTvApiClient>());
     }
 
     private sealed class StubHandler(HttpResponseMessage response) : HttpMessageHandler

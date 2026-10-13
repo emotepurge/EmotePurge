@@ -107,7 +107,7 @@ public class SevenTvApiClientEmoteSetOwnerLookupTests
             new RecordingRateLimitTelemetry(),
             budget ?? new RecordingForeignUpstreamRequestBudget(),
             new RecordingSevenTvSearchBudget(),
-            new RecordingLogger<SevenTvApiClient>(), slotReconcile: SlotFlag.On);
+            new RecordingLogger<SevenTvApiClient>());
     }
 
     private sealed class StubHandler(HttpStatusCode statusCode, string body) : HttpMessageHandler

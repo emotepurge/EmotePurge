@@ -385,7 +385,7 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
                 : Json($$$"""{"emote_set":{"id":"{{{setId}}}","capacity":600},"user":{"id":"7tv-user","connections":[]}}"""));
         var apiClient = new SevenTvApiClient(
             new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
-            new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(), new RecordingLogger<SevenTvApiClient>(), slotReconcile: SlotFlag.On);
+            new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(), new RecordingLogger<SevenTvApiClient>());
         var service = new SevenTvSyncService(
             db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db),
             new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),

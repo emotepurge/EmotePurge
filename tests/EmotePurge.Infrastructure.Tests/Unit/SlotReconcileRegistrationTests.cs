@@ -1,6 +1,5 @@
 using System.Reflection;
 using EmotePurge.Core.Services;
-using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -34,7 +33,6 @@ public class SlotReconcileRegistrationTests
 
         Assert.Equal(expected, FlagOf(services.GetRequiredService<ISevenTvSyncService>(), "slotReconcileEnabled"));
         Assert.Equal(expected, FlagOf(services.GetRequiredService<IEmoteService>(), "slotReconcileEnabled"));
-        Assert.Equal(expected, FlagOf(services.GetRequiredService<ISevenTvApiClient>(), "slotReconcileEnabled"));
         Assert.Equal(expected, FlagOf(services.GetRequiredService<IChatLogBackfillService>(), "slotReconcileEnabled"));
     }
 

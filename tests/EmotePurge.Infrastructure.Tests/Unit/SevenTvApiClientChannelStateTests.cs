@@ -189,7 +189,7 @@ public class SevenTvApiClientChannelStateTests
         var handler = CreateHandler(userPayload, ("emote-sets", emoteSetPayload));
         var logger = new RecordingLogger<SevenTvApiClient>();
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") };
-        var client = new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(), logger, slotReconcile: SlotFlag.On);
+        var client = new SevenTvApiClient(httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(), logger);
 
         await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
 
@@ -345,9 +345,9 @@ public class SevenTvApiClientChannelStateTests
         """{"emote_set":{"id":"SET9","capacity":600,"emotes":[{"id":"01GCQTH5B80005MW1W9ACDPQXA","name":"inkorrekt"},{"id":"01GCQTH5B80005MW1W9ACDPQXA","name":"Nerdge"},{"id":"01M4E7KHK5DV534ZBGHKATJNKZ","name":"ome44"},{"id":"01M4E7KHK5DV534ZBGHKATJNKZ","name":"hob44"},{"id":"01GDR51Q1R0006171NHFCC48HX","name":"OMEGALUL"},{"id":"01NOTINV4000000000000000000","name":"Lonely"}]},"user":{"id":"USER1","connections":[]}}""";
 
     [Fact]
-    public async Task SlotReconcileOn_DatesEachEntryOfOneEmoteByItsAlias_AndLeavesUnmatchedUndated()
+    public async Task DatesEachEntryOfOneEmoteByItsAlias_AndLeavesUnmatchedUndated()
     {
-        var client = CreateClient(CreateAliasFixtureHandler(), slotReconcile: true);
+        var client = CreateClient(CreateAliasFixtureHandler());
 
         var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
 
@@ -364,34 +364,17 @@ public class SevenTvApiClientChannelStateTests
     // Live data (AK 29, 2026-10-12) showed no null alias and no null emote; both cases are defensive, so a
     // small synthetic payload covers them.
     [Fact]
-    public async Task SlotReconcileOn_AliasNull_DatesTheEntryThroughTheEmotesDefaultName()
+    public async Task AliasNull_DatesTheEntryThroughTheEmotesDefaultName()
     {
         const string userPayload = """{"emote_set":{"id":"SET9","capacity":600,"emotes":[{"id":"01FSNM69NG0000JPZ36BHMFR18","name":"PepeLaugh"}]},"user":{"id":"USER1","connections":[]}}""";
         const string v4Payload =
             """{"data":{"emote_sets":{"emote_set":{"emotes":{"page_count":1,"items":[{"alias":null,"added_at":"2024-12-24T08:00:00.789+00:00","emote":{"id":"01FSNM69NG0000JPZ36BHMFR18","default_name":"PepeLaugh"}},{"alias":"gone","added_at":"2025-01-01T00:00:00.000+00:00","emote":null}]}}}}}""";
-        var client = CreateClient(CreateHandler(userPayload, v4Response: () => JsonResponse(HttpStatusCode.OK, v4Payload)), slotReconcile: true);
+        var client = CreateClient(CreateHandler(userPayload, v4Response: () => JsonResponse(HttpStatusCode.OK, v4Payload)));
 
         var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
 
         Assert.Equal(new DateTime(2024, 12, 24, 8, 0, 0, 789, DateTimeKind.Utc), Assert.Single(result.State!.EmoteSet.Emotes).AddedToSetAt);
         Assert.Equal(1, result.State.EmoteSet.RemoteEntryCount);
-    }
-
-    [Fact]
-    public async Task SlotReconcileOff_GivesEveryEntryOfAnEmoteTheDateOfTheLastHit()
-    {
-        var client = CreateClient(CreateAliasFixtureHandler(), slotReconcile: false);
-
-        var result = await client.GetChannelStateForTwitchUserAsync(TwitchUserId);
-
-        var emotes = result.State!.EmoteSet.Emotes;
-        var nerdgeLastHit = new DateTime(2026, 10, 10, 11, 54, 31, 85, DateTimeKind.Utc);
-        var hobLastHit = new DateTime(2026, 10, 10, 10, 13, 15, 6, DateTimeKind.Utc);
-        Assert.Equal(nerdgeLastHit, emotes[0].AddedToSetAt);
-        Assert.Equal(nerdgeLastHit, emotes[1].AddedToSetAt);
-        Assert.Equal(hobLastHit, emotes[2].AddedToSetAt);
-        Assert.Equal(hobLastHit, emotes[3].AddedToSetAt);
-        Assert.Equal(new DateTime(2024, 10, 1, 19, 3, 46, 853, DateTimeKind.Utc), emotes[4].AddedToSetAt);
     }
 
     private static RoutingStubHandler CreateAliasFixtureHandler() =>
@@ -425,12 +408,12 @@ public class SevenTvApiClientChannelStateTests
         return new RoutingStubHandler(routes);
     }
 
-    private static SevenTvApiClient CreateClient(RoutingStubHandler handler, bool slotReconcile = true)
+    private static SevenTvApiClient CreateClient(RoutingStubHandler handler)
     {
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") };
         return new SevenTvApiClient(
             httpClient, new RecordingRateLimitTelemetry(), new RecordingForeignUpstreamRequestBudget(), new RecordingSevenTvSearchBudget(),
-            new RecordingLogger<SevenTvApiClient>(), new SlotReconcileOptions { Enabled = slotReconcile });
+            new RecordingLogger<SevenTvApiClient>());
     }
 
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, string payload) =>
