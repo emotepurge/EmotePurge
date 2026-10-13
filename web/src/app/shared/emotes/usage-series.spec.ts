@@ -180,7 +180,7 @@ describe('toPolylinePoints', () => {
 
   it('draws a day the emote was used on even when drawFrom claims it did not exist yet', () => {
     // The re-added emote: 7TV moves `addedAt` forward to the latest set entry, while the very same
-    // Emote row keeps its usage history (SevenTvSyncService.UpsertEmote un-archives in place). If
+    // Emote row keeps its usage history (the sync un-archives it in place). If
     // drawFrom won here, a curve of measured 90 uses would collapse into a flat stub — a false
     // "unused" on the page whose only job is deciding whether an emote may be deleted.
     const points = fillDailySeries(
@@ -461,15 +461,6 @@ describe('seriesDrift (plan 377, 2.11)', () => {
   const entry = (sevenTvEmoteId: string, slotId: string | null = null) => ({
     sevenTvEmoteId,
     slotId,
-  });
-
-  it('reads a missing slotId like null, so rows from an older Api cause no drift', () => {
-    const rows = [{ sevenTvEmoteId: '7tv-x', totalUseCount: 5 }] as unknown as Parameters<
-      typeof seriesDrift
-    >[0];
-    const entries = [{ sevenTvEmoteId: '7tv-x', slotId: null }];
-
-    expect(seriesDrift(rows, entries)).toEqual({ mismatchedIds: [], staleSlotIds: [] });
   });
 
   it('flags an id whose rows are slots while the series still holds its emote-mode entry, once and sorted', () => {

@@ -1246,7 +1246,7 @@ export interface MockEmoteUsage {
   lastUsedDate?: string | null;
   previousWindowUseCount?: number;
   firstSeenAt?: string | null;
-  // Emote slots (#365): the defaults describe the flag-off world, where no row carries a slot, so
+  // Emote slots (#365): the defaults describe an emote-mode answer, where no row carries a slot, so
   // no spec grows a slot marker it did not ask for.
   slotId?: string | null;
   firstSeenAtFromRest?: boolean;
@@ -1331,7 +1331,7 @@ export async function mockUsageChannelSeries(
   channelName: string,
   days: Record<string, [number, number][]>,
   liveDays: number[] = [],
-  // Slot-mode entries (#365), one per slot; none by default, which is the flag-off answer.
+  // Slot-mode entries (#365), one per slot; none by default, which is an emote-mode answer.
   slotSeries: MockSlotSeries[] = [],
 ): Promise<void> {
   await page.route(`**/api/channels/${channelName}/usage-stats/series**`, (route) => {

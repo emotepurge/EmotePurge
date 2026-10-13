@@ -333,16 +333,6 @@ describe('mergeSetView per slot (plan 377)', () => {
     });
   });
 
-  it('F6: reads an absent firstSeenAtShared (older Api) as shared and binds only by name', () => {
-    const olderDto: Partial<EmoteUsageTotalDto> = slotDto('slot-a', 'A', { totalUseCount: 100 });
-    delete olderDto.firstSeenAtShared;
-
-    const result = mergeSetView([olderDto as EmoteUsageTotalDto], [slotEntry('B', T)], false);
-
-    expect(result[0]).toMatchObject({ slotKey: 'slot-a', membership: 'left', totalUseCount: 100 });
-    expect(result[1]).toMatchObject({ emoteName: 'B', totalUseCount: null });
-  });
-
   it('binds a provisional slot row to the live entry of its name, dated or not', () => {
     const result = mergeSetView(
       [
@@ -551,31 +541,6 @@ describe('mergeSetView per slot (plan 377)', () => {
     expect(result).toHaveLength(9);
     expect(new Set(keys).size).toBe(keys.length);
     expect(result.every((row) => row.siblingNames.length === 0 || row.slotCount === 1)).toBe(true);
-  });
-
-  it('reads the slot fields of an older DTO without them as their off values', () => {
-    const olderDto: Partial<EmoteUsageTotalDto> = dto({
-      sevenTvEmoteId: '01OLD',
-      emoteName: 'Old',
-    });
-    delete olderDto.slotId;
-    delete olderDto.firstSeenAtFromRest;
-    delete olderDto.siblingNames;
-    delete olderDto.firstSeenAtShared;
-
-    for (const [live, isActiveSet] of [
-      [null, true],
-      [[liveRow({ sevenTvEmoteId: '01OLD', name: 'Old' })], false],
-    ] as const) {
-      const [row] = mergeSetView([olderDto as EmoteUsageTotalDto], live, isActiveSet);
-      expect(row).toMatchObject({
-        slotId: null,
-        slotKey: '01OLD',
-        firstSeenAtFromRest: false,
-        siblingNames: [],
-        membership: 'live',
-      });
-    }
   });
 
   it('binds the same one of two unbound same-named slot rows whatever the order of totals', () => {

@@ -632,7 +632,7 @@ describe('purge protocol with entry rows (version 4)', () => {
     ]);
   });
 
-  // Flag off: a run of id rows writes the file it always wrote.
+  // Emote mode: a run of id rows writes the file it always wrote.
   it('keeps a run of id rows at version 3, with no new key in any row', () => {
     const json = purgeRunJson(protocol());
 

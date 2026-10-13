@@ -8,13 +8,12 @@
  *
  * **Two modes.** A slot-mode row (`slotId` set) shows exactly one slot: its name, its add date and
  * its own counts. An emote-mode row (`slotId: null`) is the row as it was before slots: the emote's
- * name and first-seen date, and the sum over every slot of the emote under the set. With the slot
- * reconcile flag off every row is in emote mode, which is how the page tells the two states apart
- * without knowing the flag (plan 377, F2). In one response a 7TV id has either exactly one
+ * name and first-seen date, and the sum over every slot of the emote under the set. Until a set's
+ * rows are bound to slots (a set seeded with rows), every row is in emote mode, which is how the
+ * page tells the two states apart from the response alone (plan 377, F2). In one response a 7TV id has either exactly one
  * emote-mode row or only slot-mode rows.
  *
- * The slot fields are typed as the wire sends them; {@link mergeSetView} still reads an absent one
- * (an older Api answering mid-deploy) as its off value.
+ * The slot fields are typed as the wire sends them; the Api always sends all of them.
  */
 export interface EmoteUsageTotalDto {
   emoteId: string;

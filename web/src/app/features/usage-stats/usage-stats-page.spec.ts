@@ -5496,7 +5496,7 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       expect(component['voteBallotSize']()).toBe(1);
     });
 
-    it('gives an emote-mode duplicate cell (×2) no confirmation names, so its confirmation reads as before (F3 flag-off guard)', async () => {
+    it('gives an emote-mode duplicate cell (×2) no confirmation names, so its confirmation reads as before (F3 emote-mode guard)', async () => {
       await openView({
         emoteSetId: 'set-b',
         totals: [emote('d', 'Dupe', 5)],
@@ -8335,8 +8335,7 @@ describe('UsageStatsPage — imported numbers keep their source without a tracki
 });
 
 /**
- * Plan 377 (emote slots, child 7), T3: the page keys every card by `slotKey` (2.3). With the slot
- * reconcile flag on, one emote under two names arrives as two slot rows sharing a 7TV id and a
+ * Plan 377 (emote slots, child 7), T3: the page keys every card by `slotKey` (2.3). In slot mode, one emote under two names arrives as two slot rows sharing a 7TV id and a
  * Guid; each must be a card of its own for the selection, the inspector, the rank, the fill bar,
  * the curve and the drilldown. Emote-mode rows keep the 7TV id as their key (F4), which the
  * unchanged blocks above guard.
@@ -8618,7 +8617,7 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
       ['7tv-y', 'Other', undefined],
       ['7tv-x', 'hob44', 'slot-hob'],
     ]);
-    // The id row is the one it always was, with no entry and no confirmation names (flag-off guard).
+    // The id row is the one it always was, with no entry and no confirmation names (emote-mode guard).
     expect(rows[1]).toStrictEqual({
       emoteId: 'y',
       sevenTvEmoteId: '7tv-y',
@@ -8894,7 +8893,7 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
       expect(takeSeriesRequests()).toHaveLength(0);
     });
 
-    it('never asks again on emote-mode totals, the slot flag being off (flag-off guard)', () => {
+    it('never asks again on emote-mode totals, the response being in emote mode (emote-mode guard)', () => {
       mount([emote('x', 'Ome', 40), other()], [seriesEntry('7tv-y', null, 'Other', [[0, 20]])]);
 
       silentReload([emote('x', 'Ome', 45), emote('y', 'Other', 25), emote('z', 'Fresh', 3)]);
@@ -9142,7 +9141,7 @@ describe('UsageStatsPage — slot card markers (plan 377, T4)', () => {
     expect(text).not.toContain('usageStats.setView.slots');
   });
 
-  it('gives an emote-mode duplicate the slots sentence and never the also-as sentence (flag-off guard)', async () => {
+  it('gives an emote-mode duplicate the slots sentence and never the also-as sentence (emote-mode guard)', async () => {
     await openView(
       [emote('d', 'Dupe', 5)],
       [member('7tv-d', 'Dupe'), member('7tv-d', 'DupeAlias')],

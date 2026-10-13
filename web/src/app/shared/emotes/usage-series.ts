@@ -84,7 +84,7 @@ export interface SeriesDrift {
  *
  * Deliberately not drift: a slot row with count 0 and no entry, and an emote-mode row without an
  * entry — both still read "absent = unused" as before; and a row without counts, which draws no
- * curve at all. With every row in emote mode (slot flag off) both lists are therefore always empty.
+ * curve at all. With every row in emote mode (a set seeded with rows) both lists are therefore always empty.
  */
 export function seriesDrift(
   rows: readonly SeriesDriftRow[],
@@ -94,8 +94,7 @@ export function seriesDrift(
   const slotEntryIds = new Set<string>();
   const slotEntries = new Set<string>();
   for (const entry of entries) {
-    // A missing field reads as "emote mode", like `mergeSetView` does for an older Api.
-    const slotId = entry.slotId ?? null;
+    const { slotId } = entry;
     if (slotId === null) {
       emoteEntryIds.add(entry.sevenTvEmoteId);
     } else {
@@ -106,7 +105,7 @@ export function seriesDrift(
 
   const mismatched = new Set<string>();
   for (const row of rows) {
-    const rowSlotId = row.slotId ?? null;
+    const rowSlotId = row.slotId;
     const otherMode = rowSlotId === null ? slotEntryIds : emoteEntryIds;
     if (row.totalUseCount !== null && otherMode.has(row.sevenTvEmoteId)) {
       mismatched.add(row.sevenTvEmoteId);
@@ -114,7 +113,7 @@ export function seriesDrift(
   }
   const stale = new Set<string>();
   for (const row of rows) {
-    const rowSlotId = row.slotId ?? null;
+    const rowSlotId = row.slotId;
     if (
       rowSlotId !== null &&
       row.totalUseCount !== null &&
@@ -338,7 +337,7 @@ export function liveDaysFrom(
  * First index the curve may speak for. Days before `drawFrom` stay silent — but never a day that
  * carries usage: a day the emote was used on is by definition a day it existed, and 7TV moves a
  * re-added emote's `addedAt` forward past its own surviving history (see
- * SevenTvSyncService.UpsertEmote, which un-archives the same row and keeps its UsageStats). Hiding
+ * the sync's re-add path, which un-archives the same row and keeps its UsageStats). Hiding
  * measured counts is the worse false statement.
  *
  * Shared by all three readers of `drawFrom` so they cannot disagree about which days the curve, its

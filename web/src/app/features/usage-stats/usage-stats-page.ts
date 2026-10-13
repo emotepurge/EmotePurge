@@ -281,8 +281,8 @@ const SYNC_PROBE_DELAYS_MS = [2000, 8000, 30000];
 // reason keeps up for as long as it stays open.
 const SYNC_FAILURE_RECHECK_INTERVAL_MS = 60000;
 
-// Minimum spacing between two of the series refetches a drift triggers (plan 377, 2.11). With the
-// slot flag on, a slot used for the first time after the series loaded reads as stale too, and the
+// Minimum spacing between two of the series refetches a drift triggers (plan 377, 2.11). A
+// slot used for the first time after the series loaded reads as stale too, and the
 // usage flush that reports it comes every 30 s — without a floor, a busy channel would spend a permit
 // of the 40/min InteractiveRead bucket on every flush. 60 s to match the backend's periodic resync,
 // the same floor as the recheck above: slots settle in its REST reconcile, so asking more often
@@ -393,7 +393,7 @@ type DeleteRowKind =
  *
  * A target that fails the strict check (`isValidEntryGeneration`: a date the Api would reject, an
  * empty alias) is held as well — fail-closed, because its run would change 7TV and then have its
- * report refused (plan 378, T-6). With the flag off no `/totals` row has a slot and no card is keyed
+ * report refused (plan 378, T-6). In emote mode no `/totals` row has a slot and no card is keyed
  * per entry, so every card is an id row, exactly as before.
  */
 function deleteRowKindOf(card: EmoteUsageTotal): DeleteRowKind {
@@ -1575,7 +1575,7 @@ export class UsageStatsPage {
   // Keyed by the card's `slotKey` (plan 377, 2.3), not `Emote.Id` (spec #200, 7.2, AK 54): a set
   // view's live member without a counted row has no Guid, and keying on a `null` would fold every
   // such row into one selection entry; nor the 7TV id alone, which two slot cards of one emote
-  // share (AK 34). For an emote-mode row the key still is the 7TV id, so with the flag off nothing
+  // share (AK 34). For an emote-mode row the key still is the 7TV id, so in emote mode nothing
   // changes. The class itself is untouched — it has always been generic over its key.
   protected readonly selection = new ListSelection(
     this.atlasOrder,
@@ -1859,10 +1859,10 @@ export class UsageStatsPage {
    * curve therefore states the range as of the last range change, exactly like the drilldown
    * dialog's own cached series has always done.
    *
-   * Two exceptions, both only possible with the slot flag on (plan 377, 2.11): an emote whose rows
+   * Two exceptions, both only possible in slot mode (plan 377, 2.11): an emote whose rows
    * moved to slots (or back) since the series loaded, and a slot row with uses the series has no
    * entry for. Either would draw a flat line under a positive count, so the series is fetched once
-   * more past the cache — see `refetchDriftedSeries`. With the flag off neither can occur.
+   * more past the cache — see `refetchDriftedSeries`. In emote mode neither can occur.
    */
   private readonly channelSeries = signal<ChannelUsageSeries | null>(null);
   protected readonly seriesFailed = signal(false);
@@ -2195,7 +2195,7 @@ export class UsageStatsPage {
   // in `emotes()`, marked or not. A row without `Emote.Id` goes in like any other since K5 (spec
   // 7.2): the run is keyed by the 7TV id and the protocol writes `emoteId: null` for it. A #74
   // duplicate cell is one row with both aliases — one `REMOVE` takes both entries (Sonde 5, branch
-  // A), and the protocol keeps both names so the restore can re-add each. With the flag off every
+  // A), and the protocol keeps both names so the restore can re-add each. In emote mode every
   // card is an id row and there is one card per id, so this is exactly the per-row mapping it always
   // was.
   //
@@ -2284,7 +2284,7 @@ export class UsageStatsPage {
    * row kind (plan 378, 4.9): an entry row frees its one slot; an id row frees every entry of the id
    * — summed over **every** `'live'` card of that id, so a #74 duplicate cell (one card, two set
    * entries, one `REMOVE` takes both — Sonde 5, branch A) counts two; a held card frees none, it is
-   * not in the run. `'left'` rows occupy no slot of the set any more and free none. With the flag off
+   * not in the run. `'left'` rows occupy no slot of the set any more and free none. In emote mode
    * every card is an id row with one card per id, so this is the same sum as before.
    */
   protected readonly pendingRemovalSlots = computed(() => {
@@ -3378,7 +3378,7 @@ export class UsageStatsPage {
     // Per 7TV id, not per card (plan 377, 2.6, A8): an id row that met two slot cards of its id —
     // a run that removes per id, such as a tag removal — took two entries that its one row already
     // counts with its two aliases; taking the larger of the two numbers per card would free four.
-    // With one card per id (the flag off) this is the sum it always was.
+    // With one card per id (emote mode) this is the sum it always was.
     const runAliasCounts = new Map(
       run.result.items
         .filter((item) => item.entry === undefined)
@@ -3412,7 +3412,7 @@ export class UsageStatsPage {
           return removed
             ? {
                 ...item,
-                siblingNames: (item.siblingNames ?? []).filter((name) => !removed.has(name)),
+                siblingNames: item.siblingNames.filter((name) => !removed.has(name)),
               }
             : item;
         }),
