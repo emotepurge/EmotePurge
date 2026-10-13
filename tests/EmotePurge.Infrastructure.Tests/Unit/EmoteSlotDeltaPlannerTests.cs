@@ -86,6 +86,21 @@ public class EmoteSlotDeltaPlannerTests
     }
 
     [Fact]
+    public void Push_TwoNamesInOneDispatch_DeriveTheUtf8SmallestNameOnTheTie()
+    {
+        // #403: one dispatch stamps both new slots with the same `now`; D13 breaks the tie in UTF-8 order.
+        var emoji = "\U0001F600";
+        Assert.Equal(0x1F600, char.ConvertToUtf32(emoji, 0));
+
+        var plan = Plan(Delta(pushed: [Push(X, emoji), Push(X, "\uFF5E")]), []);
+
+        var emote = Single(plan);
+        Assert.Equal(2, emote.CreatedSlots.Count);
+        Assert.All(emote.CreatedSlots, s => Assert.Equal(Now, s.AddedAt));
+        Assert.Equal("\uFF5E", emote.Derivation!.Name);
+    }
+
+    [Fact]
     public void Push_OfAnActiveName_IsANoOp()
     {
         // AK 19: our REST pass was faster — nothing at all, not even the image.

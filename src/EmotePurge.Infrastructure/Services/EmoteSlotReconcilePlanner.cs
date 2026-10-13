@@ -28,7 +28,9 @@ namespace EmotePurge.Infrastructure.Services;
 /// flag on, step 1 must not rename the emote — the name is derived here.
 /// </para>
 /// <para>
-/// All name comparisons and orderings are ordinal and case-sensitive (U14); dates compare by ticks.
+/// Name equality is ordinal and case-sensitive (U14); dates compare by ticks. A name tie in an "oldest alias"
+/// ordering (D13, the settle candidate) is broken in UTF-8 byte order (<see cref="BaseSlotRule.Utf8Order"/>,
+/// the order of D2; #403), which differs from UTF-16 ordinal for supplementary characters.
 /// </para>
 /// </summary>
 internal static class EmoteSlotReconcilePlanner
@@ -197,7 +199,7 @@ internal static class EmoteSlotReconcilePlanner
     /// <summary>
     /// Step 2 (§6.3, D12, plan 2.4 E11–E13): settles the unsettled seed(s) of the active set. The target
     /// candidate is the only entry (|G| = 1) or the oldest one (|G| ≥ 2, all dated — the deferral case
-    /// has returned before; tie → ordinally smallest name).
+    /// has returned before; tie → smallest name in UTF-8 byte order, as D2).
     /// <para>
     /// <b>Target exists</b> (E11): the candidate binds to an own slot by step 3 (already computed) or by
     /// step 5 → the seed's active-set rows move onto that slot and the seed becomes an empty settled
@@ -229,7 +231,7 @@ internal static class EmoteSlotReconcilePlanner
             ? 0
             : Enumerable.Range(0, entries.Count)
                 .OrderBy(i => entries[i].AddedAt!.Value)
-                .ThenBy(i => entries[i].Name, StringComparer.Ordinal)
+                .ThenBy(i => entries[i].Name, BaseSlotRule.Utf8Order)
                 .First();
 
         var target = bindings[candidate] ?? BindByName(entries[candidate], own, bindings);
@@ -345,7 +347,7 @@ internal static class EmoteSlotReconcilePlanner
 
     /// <summary>
     /// Step 8, D13 strictly (plan 2.3 step 8, replaces E9): the active own slot with the smallest
-    /// <c>AddedAt</c> (null last, then name ordinal, then id ordinal) gives <c>Emote.Name</c> and
+    /// <c>AddedAt</c> (null last, then name in UTF-8 byte order like D2, then id ordinal) gives <c>Emote.Name</c> and
     /// <c>Emote.FirstSeenAt</c> — the latter also when it is <c>null</c>: a replacement never inherits
     /// the departed slot's date. Without an active own slot nothing is derived.
     /// </summary>
@@ -355,7 +357,7 @@ internal static class EmoteSlotReconcilePlanner
             .Where(s => !s.IsArchived)
             .OrderBy(s => s.AddedAt is null)
             .ThenBy(s => s.AddedAt)
-            .ThenBy(s => s.Name, StringComparer.Ordinal)
+            .ThenBy(s => s.Name, BaseSlotRule.Utf8Order)
             .ThenBy(s => s.Id, StringComparer.Ordinal)
             .FirstOrDefault();
         return first is null ? null : new EmoteNameDerivation(first.Name, first.AddedAt);
