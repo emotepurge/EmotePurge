@@ -119,5 +119,6 @@ public class SevenTvApiClientEditorGrantsLookupTests
         new RecordingRateLimitTelemetry(),
         budget ?? new RecordingForeignUpstreamRequestBudget(),
         new RecordingSevenTvSearchBudget(),
-        new RecordingLogger<SevenTvApiClient>());
+        new RecordingLogger<SevenTvApiClient>(),
+        SlotFlag.On);
 }

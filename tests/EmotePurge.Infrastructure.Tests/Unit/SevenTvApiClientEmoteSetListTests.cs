@@ -324,7 +324,7 @@ public class SevenTvApiClientEmoteSetListTests
             new RecordingRateLimitTelemetry(),
             requestBudget ?? new RecordingForeignUpstreamRequestBudget(),
             new RecordingSevenTvSearchBudget(),
-            new RecordingLogger<SevenTvApiClient>());
+            new RecordingLogger<SevenTvApiClient>(), slotReconcile: SlotFlag.On);
     }
 
     /// <summary>Answers every POST with one body and records the query and variables it was sent.</summary>

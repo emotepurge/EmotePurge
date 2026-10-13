@@ -609,7 +609,7 @@ public class SevenTvApiClientEmoteSetPreviewTests
             new RecordingRateLimitTelemetry(),
             requestBudget ?? new RecordingForeignUpstreamRequestBudget(),
             new RecordingSevenTvSearchBudget(),
-            new RecordingLogger<SevenTvApiClient>());
+            new RecordingLogger<SevenTvApiClient>(), slotReconcile: SlotFlag.On);
     }
 
     /// <summary>Answers every POST with the response the given function derives from the request's

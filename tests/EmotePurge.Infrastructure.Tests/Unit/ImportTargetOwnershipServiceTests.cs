@@ -341,7 +341,7 @@ public class ImportTargetOwnershipServiceTests
             new RecordingRateLimitTelemetry(),
             requestBudget,
             new RecordingSevenTvSearchBudget(),
-            new RecordingLogger<SevenTvApiClient>());
+            new RecordingLogger<SevenTvApiClient>(), slotReconcile: SlotFlag.On);
         var breaker = new ForeignSevenTvBreakerPolicy();
         var budget = new ForeignEmoteSetProviderBudget();
         var grants = new GuardedSevenTvEditorGrantsService(
@@ -367,7 +367,7 @@ public class ImportTargetOwnershipServiceTests
             new RecordingRateLimitTelemetry(),
             new RecordingForeignUpstreamRequestBudget(),
             new RecordingSevenTvSearchBudget(),
-            new RecordingLogger<SevenTvApiClient>());
+            new RecordingLogger<SevenTvApiClient>(), slotReconcile: SlotFlag.On);
         var breaker = new ForeignSevenTvBreakerPolicy();
         var service = CreateService(
             ListsReturning((ActorTwitchId, ListOf(ActorSevenTvId))), EditorsReturning(Grants()), client, breaker);
@@ -882,7 +882,7 @@ public class ImportTargetOwnershipServiceTests
             new RecordingRateLimitTelemetry(),
             requestBudget,
             new RecordingSevenTvSearchBudget(),
-            new RecordingLogger<SevenTvApiClient>());
+            new RecordingLogger<SevenTvApiClient>(), slotReconcile: SlotFlag.On);
 
         var listCache = new InMemoryListCache();
         await listCache.SetAsync(ActorTwitchId, actorList, TimeSpan.FromSeconds(60));
@@ -986,7 +986,7 @@ public class ImportTargetOwnershipServiceTests
             new RecordingRateLimitTelemetry(),
             requestBudget,
             new RecordingSevenTvSearchBudget(),
-            new RecordingLogger<SevenTvApiClient>());
+            new RecordingLogger<SevenTvApiClient>(), slotReconcile: SlotFlag.On);
 
         var grantsCache = Substitute.For<IModRoleCache>();
         if (grantsCached)
