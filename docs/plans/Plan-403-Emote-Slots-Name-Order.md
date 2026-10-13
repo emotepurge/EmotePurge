@@ -1,7 +1,12 @@
 # Plan #403 — Emote-Slots: eine Namensordnung für D13 und D2 (UTF-8-Bytefolge statt UTF-16)
 
 Erstellt am 2026-10-13 im Worktree `EmotePurge-403` (Branch `fix/403-name-order`, Basis `origin/main` @ `94a84782`).
-**Status: Entwurf, vor der adversarialen Prüfung (Codex Sol).**
+**Status: Revision 1 (13.10.) nach der adversarialen Prüfung (Codex Sol, zwei P2).**
+
+| Änderung | beantwortet |
+|---|---|
+| Freigabe-Gate vor #379: kein Client-Sortierer für D2-Namen auf JS-`<` mehr, mit konkreter Prüfung und den Wegen (a) #378 entfernt `confirmationNamesFor` (erwartet, von #378 bestätigt), (b) #378 übernimmt `d2-order.ts`, (c) Folge-PR von #403 (§8, §10, T3) | Sol P2-1 |
+| TS-Fixtures in JS-Schreibweise (`\u{1F600}`), `codePointAt`-Wächter, übersetzte Präfix-Paare; Regressionsfälle rot vor grün gegen `<` bzw. `StringComparer.Ordinal` (§7, T1, T2) | Sol P2-2 |
 Quellen: Issue #403 (keine Kommentare), [Spec](../superpowers/specs/2026-10-10-emote-slots-spec.md) D2, D12, D13, §6.2 Schritt 8,
 §6.3, §9.1 (`mergeSetView`, `siblingNames`), §13 AK 10; DECISIONS #365 („Child 2", „Child 3", „Child 6");
 [Plan-375](https://github.com/emotepurge/EmotePurge/blob/feat/375-backfill-slots/docs/plans/Plan-375-Emote-Slots-Backfill.md) §12 A
@@ -28,7 +33,7 @@ Quellen: Issue #403 (keine Kommentare), [Spec](../superpowers/specs/2026-10-10-e
 
 | Was | Warum / wer |
 |---|---|
-| `confirmationNamesFor` in `web/src/app/features/usage-stats/usage-stats-page.ts` (zweiter Client-Spiegel, ebenfalls JS-`<`) | #378 baut die Stelle gerade um (Betreiber 13.10.). Der neue Vergleicher aus §4 liegt in `core/` und ist von dort aus wiederverwendbar; #378 entscheidet selbst. |
+| `confirmationNamesFor` in `web/src/app/features/usage-stats/usage-stats-page.ts` (zweiter Client-Spiegel, ebenfalls JS-`<`) | #378 baut die Stelle um (Betreiber 13.10.); #403 editiert sie nicht. Erwartet Weg (a): sie entfällt in #378 T4. Abgesichert durch das **Freigabe-Gate vor #379** (§8, §10) — ohne das blieben zwei Client-Ordnungen. |
 | Aufteilen von `Settle` in Zielwahl und Mutation | #375 T4. #403 tauscht nur die Vergleicherzeile, damit es vor T4 mergen kann (Plan-375 §12 A). |
 | `EmoteSlotDeltaPlanner` Z. 115 (`names … Order(StringComparer.Ordinal)`) und Z. 414 (`created.OrderBy(Name, Ordinal)`) | **[E]** Reine Iterations-/Ausgabereihenfolge für Determinismus; keine davon entscheidet „ältester Alias" — `Derive` bildet das Minimum über alle Slots selbst. |
 | `ArchivedSlotUpsert` (`ThenBy(Name, Ordinal)`), `BindByName`, `ResumeArchivedSlots`, `BindByDate` | Ordnen nur nach `Id` (ASCII-GUIDs, in beiden Ordnungen gleich) oder vergleichen Namen auf **Gleichheit**; Gleichheit bleibt ordinal (Spec §4.1 „Name … ordinal"). |
@@ -128,9 +133,11 @@ Kandidaten entstehen erst unter der neuen Ordnung.
 
 ## 7. Tests
 
-**Backend (`tests/EmotePurge.Infrastructure.Tests/Unit/`, container-frei).** Testpaar wie in `BaseSlotD2OrderTests`: `"\U0001F600"`
-(UTF-16 vorn, UTF-8 hinten) gegen `"～"`; zusätzlich `"a\U0001F600"` gegen `"a￿"` (Abweichung nicht an Stelle 0).
-- `EmoteSlotReconcilePlannerTests`, Abschnitt `Derive`: Gleichstand mit beiden `AddedAt = null` und mit gleichem Datum → `"～"` gewinnt,
+**Backend (`tests/EmotePurge.Infrastructure.Tests/Unit/`, container-frei).** C#-Schreibweise wie in `BaseSlotD2OrderTests`: Emoji
+`"\U0001F600"` (U+1F600; UTF-16 vorn, UTF-8 hinten) gegen Tilde `"\uFF5E"` (U+FF5E); zusätzlich `"a\U0001F600"` gegen `"a\uFFFF"`
+(Abweichung nicht an Stelle 0). **Rot vor grün:** jeder neue Regressionsfall wird vor dem Tausch geschrieben und muss gegen
+`StringComparer.Ordinal` fehlschlagen.
+- `EmoteSlotReconcilePlannerTests`, Abschnitt `Derive`: Gleichstand mit beiden `AddedAt = null` und mit gleichem Datum → die Tilde gewinnt,
   unabhängig von der Eingabereihenfolge. **Gleichlauf-Test:** für eine Reihe von Namenspaaren (ASCII, Latin-1 gegen U+E000, die beiden
   Grenzfälle) ist der Name von `Derive` gleich dem Minimum der Kandidaten unter `BaseSlotRule.D2Order` — pinnt „eine Regel" und schlägt an,
   wenn jemand (etwa bei der #375-Konfliktauflösung) die Zeile zurücktauscht.
@@ -142,13 +149,20 @@ Kandidaten entstehen erst unter der neuen Ordnung.
   dasselbe `now` (Gleichstand), `Derivation.Name = tilde`. Das ist der realistischste Weg zum Gleichstand und deckt „Delta folgt `Derive`".
 - Set-zentrische Berichte: **[E]** kein eigener Test — reiner Aufruf von `Derive`, durch die Unit-Tests gedeckt.
 
-**Frontend (Vitest, Regel 12, co-located).**
-- `core/usage-stats/d2-order.spec.ts`: `compareUtf8` mit denselben Paaren wie `Utf8Order_AgreesWithAByteComparisonOfTheUtf8Encoding`
-  (C#-InlineData) plus Emoji/Tilde — Erwartung jeweils gegen einen Bytevergleich der `TextEncoder`-Kodierung, beide Richtungen
-  (Antisymmetrie), Gleichheit → 0, Präfix zuerst; der Randfall „ungepaartes Surrogat" (gegen U+E000: UTF-8-Regel sagt hinten, JS-`<` vorn).
-  D2-Vergleicher: Datum vor Name, `null` zuletzt, Name in UTF-8.
-- `merge-set-view.spec.ts`: ein Fall, in dem zwei Live-Geschwister ohne Datum (oder gleiches `addedAt`) `"\U0001F600"`/`"～"` heißen →
-  `siblingNames` der dritten Zeile in UTF-8-Reihenfolge. Bestehende ASCII-Erwartungen (Z. 431–434) unverändert.
+**Frontend (Vitest, Regel 12, co-located).** **Fixture-Schreibweise (Sol P2-2):** `"\U0001F600"` ist C#-Syntax — in TypeScript ist
+das der ASCII-Text `U0001F600`, mit dem alter und neuer Sortierer übereinstimmen und der Test nichts prüft. In TS deshalb immer
+`"\u{1F600}"` (oder das Literal 😀). Übersetzung der C#-Paare: `"\U0001F600"` → `"\u{1F600}"`, `"a\U0001F600"` →
+`"a\u{1F600}"`; `"\uFF5E"`, `"a\uFFFF"`, `"\u00E9"`, `"\uE000"` bleiben wörtlich gleich. **Wächter:** jeder TS-Spec mit diesen
+Paaren prüft vorab `codePointAt(0) === 0x1F600` (bzw. an Index 1 für das `a`-Präfix) und `length === 2` (bzw. 3) des Emoji-Strings.
+- `core/usage-stats/d2-order.spec.ts`: `compareUtf8` mit allen Paaren aus `Utf8Order_AgreesWithAByteComparisonOfTheUtf8Encoding`
+  (übersetzt wie oben) plus Emoji/Tilde — Erwartung jeweils gegen einen Bytevergleich der `TextEncoder`-Kodierung, beide Richtungen
+  (Antisymmetrie), Gleichheit → 0, Präfix zuerst; dazu je Grenzpaar die ausdrückliche Gegenprobe, dass JS-`<` das Gegenteil sagt (belegt,
+  dass das Paar die Ordnungen unterscheidet). Randfall „ungepaartes Surrogat" (`"\uD800"` gegen `"\uE000"`: UTF-8-Regel hinten, `<`
+  vorn). D2-Vergleicher: Datum vor Name, `null` zuletzt, Name in UTF-8.
+- `merge-set-view.spec.ts`: ein Fall, in dem zwei Live-Geschwister ohne Datum (oder mit gleichem `addedAt`) `"\u{1F600}"` und
+  `"\uFF5E"` heißen → `siblingNames` einer dritten Zeile derselben ID in UTF-8-Reihenfolge (`"\uFF5E"` vor dem Emoji). **Rot vor
+  grün:** der Fall wird vor der Umstellung geschrieben und muss gegen den heutigen `<`-Sortierer fehlschlagen; bestehende
+  ASCII-Erwartungen (Z. 431–434) unverändert.
 
 ## 8. Gates, Live-Verifikation, Deploy
 
@@ -158,15 +172,26 @@ Kandidaten entstehen erst unter der neuen Ordnung.
 - `node scripts/coverage-local.mjs` **nach** dem Commit (zählt nur Committetes). Neue TS-Datei voll gedeckt; die zwei geänderten C#-Zeilen
   laufen durch die neuen Tests.
 - Live-Verifikation (Regel 16): s. Rückfrage R1.
+- **Freigabe-Gate vor #379 (Sol P2-1): kein Client-Sortierer für D2-Namen auf JS-`<`/`>` mehr.** #403 allein erfüllt es nicht —
+  `confirmationNamesFor` (`usage-stats-page.ts`, erreichbar über `selectedForDelete`) sortiert noch mit `<`; Besitzer ist #378 (§10).
+  Prüfung **nach dem #378-Merge auf `main`, vor dem Flag-an von #379**:
+  1. `grep -rn "confirmationNamesFor" web/src` → kein Treffer (Weg (a)), **oder** die Funktion sortiert über den D2-Vergleicher aus
+     `core/usage-stats/d2-order.ts` und hat einen Spec-Fall mit dem Grenzpaar aus §7 (Weg (b), #378 übernimmt `d2-order.ts`).
+  2. `grep -rnE "\b(a|b)\.(name|alias|emoteName) *[<>] *(a|b)\.(name|alias|emoteName)" web/src/app --include='*.ts' | grep -v '\.spec\.ts'`
+     → kein Treffer (Stand 13.10. zwei: `merge-set-view.ts:335`, `usage-stats-page.ts:398`; nach #403 nur noch der zweite). Jede verbleibende Sortierung über Alias-Namen in `web/src/app` läuft über `d2-order.ts`. Ausdrücklich keine
+     D2-Ordnung und damit nicht Gegenstand: die alphabetische Anzeigesortierung `localeCompare(…, { sensitivity: 'base' })` in
+     `usage-stats-page.ts` (~Z. 336).
+  3. Ist 1 oder 2 rot und #378 gemergt: Folge-PR von #403 (Weg (c)) stellt die Stelle auf `d2-order.ts` um, mit Regressionsfall wie §7.
+  Ergebnis als Kommentar auf #403 und #379; das Gate steht als Haken in der #379-Checkliste.
 - Deploy: nur Images, keine Migration, Flag bleibt aus; kein Verhalten sichtbar, bis #379 das Flag einschaltet.
 
 ## 9. Aufgabenliste (je Aufgabe ein Subagent mit frischem Kontext; nacheinander — gemeinsamer Git-Index)
 
 | # | Aufgabe | Modell | Aufwand | Liest | Fertig, wenn |
 |---|---|---|---|---|---|
-| T1 | Backend-Tausch (`Derive`, Settle-Zeile, Kommentare) samt Tests aus §7 Backend, Spec-Text §5, DECISIONS-Satz + `Betrifft`-Pfad aus §5 | sonnet | 0,25 T | dieser Plan §2, §3, §5, §7; `BaseSlotD2OrderTests` als Muster | neue Tests vorher rot, danach grün; `dotnet test EmotePurge.slnx` grün; `dotnet format` sauber; ein Commit `fix(slots): …` mit Spec und DECISIONS (Regel 3) |
-| T2 | Client: `d2-order.ts` + Spec, `d2Names` umstellen, Fall in `merge-set-view.spec.ts` | sonnet | 0,25 T | §2, §4, §7 Frontend; `BaseSlotRule.CompareUtf8` als Referenz | Vitest, Lint, Prettier grün; `usage-stats-page.ts` unberührt; ein Commit `fix(web): …` |
-| T3 | Review, Gates, PR | **opus** (Review); Codex Sol `/codex:review --model gpt-6.1-sol` | 0,25 T | Branch-Diff, §1.2, §6, §8, §10 | alle Gates aus §8 grün, Coverage-Schätzung ≥ 80 %, Codex-Befund unverändert vorgelegt, PR mit Prod-Abfrage aus §6, Deploy-Hinweis (keine eigene Migration, ausstehende `main`-Migrationen gelistet) und Hinweis an #375 (Gleichstandszeile liegt jetzt in UTF-8; T4 verschiebt sie nur) |
+| T1 | Backend-Tausch (`Derive`, Settle-Zeile, Kommentare) samt Tests aus §7 Backend, Spec-Text §5, DECISIONS-Satz + `Betrifft`-Pfad aus §5 | sonnet | 0,25 T | dieser Plan §2, §3, §5, §7; `BaseSlotD2OrderTests` als Muster | Regressionstests **zuerst** geschrieben und nachweislich rot gegen `StringComparer.Ordinal` (Ausgabe im Bericht), nach dem Tausch grün; `dotnet test EmotePurge.slnx` grün; `dotnet format` sauber; ein Commit `fix(slots): …` mit Spec und DECISIONS (Regel 3) |
+| T2 | Client: `d2-order.ts` + Spec, `d2Names` umstellen, Fall in `merge-set-view.spec.ts` | sonnet | 0,25 T | §2, §4, §7 Frontend (Fixture-Schreibweise!); `BaseSlotRule.CompareUtf8` als Referenz | `codePointAt`-Wächter grün; der `merge-set-view`-Fall **zuerst** geschrieben und nachweislich rot gegen den heutigen `<`-Sortierer (Ausgabe im Bericht), nach der Umstellung grün; Vitest, Lint, Prettier grün; `usage-stats-page.ts` unberührt; ein Commit `fix(web): …` |
+| T3 | Review, Gates, PR | **opus** (Review); Codex Sol `/codex:review --model gpt-6.1-sol` | 0,25 T | Branch-Diff, §1.2, §6, §8, §10 | alle Gates aus §8 grün, Coverage-Schätzung ≥ 80 %, Codex-Befund unverändert vorgelegt, PR mit Prod-Abfrage aus §6, Deploy-Hinweis (keine eigene Migration, ausstehende `main`-Migrationen gelistet), Hinweis an #375 (Gleichstandszeile liegt jetzt in UTF-8; T4 verschiebt sie nur); **Freigabe-Gate aus §8 als offener Haken im PR-Text und als Kommentar auf #379** |
 
 ## 10. Überschneidungen
 
@@ -174,10 +199,15 @@ Kandidaten entstehen erst unter der neuen Ordnung.
   Gleichlauf-Test aus §7 ist der Wächter, falls ein späterer Rebase die Zeile auf `StringComparer.Ordinal` zurücksetzt. Schafft #403 den
   Merge vor T4 nicht, wartet es bis nach #375 und tauscht die Zeile in der neuen Zielwahl (gleiche Änderung, andere Stelle).
   DECISIONS: #375 schreibt zwischen „Child 4" und „Child 6" — #403 schreibt in „Child 2" (Z. ~503) und in `Betrifft` Z. 468.
-- **#378:** berührt `usage-stats-page.ts`, die letzte `Betrifft`-Zeile, „Child 8" und Spec §9.3 — alles außerhalb von #403. Nach dem Merge
-  kann #378 `confirmationNamesFor` auf den D2-Vergleicher aus `core/usage-stats/d2-order.ts` umstellen (Hinweis im PR an #378).
+- **#378:** berührt `usage-stats-page.ts`, die letzte `Betrifft`-Zeile, „Child 8" und Spec §9.3 — alles außerhalb von #403.
+  **Koordinationspunkt `confirmationNamesFor` (zweiter Client-Sortierer auf JS-`<`):** erwarteter Weg **(a)**, von der #378-Sitzung am
+  13.10. bestätigt: #378 T4 setzt `confirmationNames` nicht mehr, `confirmationNamesFor` entfällt, in seinem Bereich bleibt keine
+  D2-Namenssortierung; braucht T4 doch eine, übernimmt es `d2-order.ts` und meldet das an #403. #378 T4 ist noch nicht committet und
+  bestätigt nach dem Commit. Unabhängig davon gilt das Freigabe-Gate aus §8 (nach dem #378-Merge, vor #379).
 
-## 11. Rückfragen an den Betreiber
+## 11. Rückfragen an den Betreiber — entschieden 2026-10-13
+
+Der Betreiber hat alle drei Empfehlungen übernommen: R1 keine Live-Verifikation (Begründung im PR nennen), R2 §6.3 und AK 10 verweisen auf D13, R3 nur die Namensstufe von `Derive` tauschen.
 
 - **R1 — Live-Verifikation (Regel 16).** Empfehlung: **keine** Live-Probe gegen 7TV. Die Änderung ist ein reiner Vergleicher; der
   Gleichstand lässt sich live kaum herstellen (REST-`added_at` ist je Eintrag eigen, ein Delta-Gleichstand braucht zwei Pushes in einem
