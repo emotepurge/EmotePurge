@@ -207,6 +207,10 @@ interface EntryRunContext {
   /** Unexpected removals a binding read already noticed (4.4 step 6) — kept even when the re-read
    *  after the run fails, merged with what that re-read finds. */
   earlyUnexpected: UnexpectedEntryRemoval[];
+  /** Per 7TV id of an entry row, the emote's default name as the last read that listed one gave it
+   *  — what an unexpectedly removed entry without an alias is called by (the read that notices it
+   *  gone may no longer list the emote at all). */
+  readonly defaultNames: Map<string, string>;
   /** The last complete read and when its request started; `null` before the first one. */
   held: { read: SevenTvSetEntries; startedAt: number } | null;
   consecutiveReadFailures: number;
@@ -702,6 +706,7 @@ export class SevenTvDeleteService {
             return failBindingRead(context, 'truncated');
           }
           context.consecutiveReadFailures = 0;
+          noteDefaultNames(context, read);
           noteEarlyUnexpectedRemovals(context, read);
           for (const sevenTvEmoteId of context.entryEmoteIds) {
             mergeIntoBaseline(
@@ -1189,6 +1194,7 @@ function createEntryRunContext(queue: readonly RunQueueEmote[]): EntryRunContext
     baseline: new Map(),
     attempted: new Map(),
     earlyUnexpected: [],
+    defaultNames: new Map(),
     held: null,
     consecutiveReadFailures: 0,
     lastReadFailure: 'unavailable',
@@ -1239,15 +1245,39 @@ function settleEntryRun(
   postCheckUnavailable: boolean;
 } {
   const settled = settleEntryDeleteRun(snapshot, entries, context.baseline);
+  if (entries !== null) {
+    noteDefaultNames(context, entries);
+  }
   return {
     result: settled.result,
     unexpectedRemovals: mergeUnexpectedRemovals(
       context.earlyUnexpected,
       settled.unexpectedRemovals ?? [],
-    ),
+    ).map((removal) => withDefaultName(removal, context.defaultNames)),
     postCheckUnavailable:
       settled.unexpectedRemovals === null && entryPostCheckOwed(snapshot, context.baseline),
   };
+}
+
+/** Keeps the default name `read` lists for each emote of the run's entry rows (an empty one is no
+ *  name, see `SevenTvSetEntries.defaultNameById`). */
+function noteDefaultNames(context: EntryRunContext, read: SevenTvSetEntries): void {
+  for (const sevenTvEmoteId of context.entryEmoteIds) {
+    const defaultName = read.defaultNameById.get(sevenTvEmoteId);
+    if (defaultName) {
+      context.defaultNames.set(sevenTvEmoteId, defaultName);
+    }
+  }
+}
+
+/** `removal` with its emote's default name when it has no alias of its own and a read named the
+ *  emote; every other removal unchanged. */
+function withDefaultName(
+  removal: UnexpectedEntryRemoval,
+  defaultNames: ReadonlyMap<string, string>,
+): UnexpectedEntryRemoval {
+  const defaultName = defaultNames.get(removal.sevenTvEmoteId);
+  return removal.alias || defaultName === undefined ? removal : { ...removal, defaultName };
 }
 
 function failBindingRead(context: EntryRunContext, reason: 'unavailable' | 'truncated'): null {

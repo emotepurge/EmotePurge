@@ -110,8 +110,9 @@ function restoreCandidatesOf(items: readonly RunQueueItem[]): RestoreCandidate[]
 /** One entry the run's post-check found missing although none of its removals accounts for it
  *  (Plan-378 4.5, D33), as the dock shows and offers it. */
 interface UnexpectedRemovalOffer {
-  /** What the dock calls the entry: its alias, else the name the run knew the emote by, else the
-   *  7TV id — a removal read without an alias (an aliasless entry) has no name of its own. */
+  /** What the dock calls the entry: its alias, else — for an aliasless entry, which 7TV shows
+   *  under the emote's default name — that default name as the run's reads gave it, else the 7TV
+   *  id. Never the name of a row the run deleted on purpose: that is a sibling's alias. */
   label: string;
   candidate: RestoreCandidate;
 }
@@ -124,15 +125,15 @@ interface UnexpectedRemovalOffer {
 function unexpectedRemovalOffers(run: DeleteRunInfo): UnexpectedRemovalOffer[] {
   return (run.unexpectedRemovals ?? []).map((removal) => {
     const known = run.result?.items.find((item) => item.sevenTvEmoteId === removal.sevenTvEmoteId);
-    const label = removal.alias ?? (known?.name || removal.sevenTvEmoteId);
+    const label = removal.alias || removal.defaultName || removal.sevenTvEmoteId;
     return {
       label,
       candidate: {
         ...(known?.emoteId === undefined ? {} : { emoteId: known.emoteId }),
         sevenTvEmoteId: removal.sevenTvEmoteId,
         name: label,
-        aliases: [removal.alias],
-        defaultName: label,
+        aliases: [removal.alias || null],
+        defaultName: removal.defaultName || label,
         perEntry: true as const,
       },
     };

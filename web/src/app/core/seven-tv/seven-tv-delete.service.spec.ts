@@ -131,7 +131,10 @@ function datedSetPage(entries: readonly LiveEntry[], totalCount = entries.length
             items: entries.map((entry) => ({
               alias: entry.alias,
               addedAt: entry.addedAt,
-              emote: { id: entry.id },
+              emote: {
+                id: entry.id,
+                ...(entry.defaultName === undefined ? {} : { defaultName: entry.defaultName }),
+              },
             })),
           },
         },
@@ -144,6 +147,8 @@ interface LiveEntry {
   id: string;
   alias: string | null;
   addedAt: string | null;
+  /** The emote's default name; left out of the read unless set. */
+  defaultName?: string;
 }
 
 const EMOTES: DeleteQueueEmote[] = [
@@ -2722,6 +2727,23 @@ describe('SevenTvDeleteService', () => {
       httpMock
         .expectOne('/api/channels/sensitron/resync')
         .flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it("names an aliasless entry the removal took by its emote's default name from an earlier read", () => {
+      service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+
+      answerRead([
+        { ...X_AAA, defaultName: 'xDefault' },
+        { id: '7tv-x', alias: null, addedAt: T2, defaultName: 'xDefault' },
+      ]);
+      answerRemove();
+      // The re-read no longer lists the emote at all, so only the earlier read knows its name.
+      answerRead([]);
+
+      expect(service.run()?.unexpectedRemovals).toEqual([
+        { sevenTvEmoteId: '7tv-x', alias: null, addedAt: T2, defaultName: 'xDefault' },
+      ]);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
     it('keeps the tie sibling expected after a confirmed removal and flags it when it is gone', () => {

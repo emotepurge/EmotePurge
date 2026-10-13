@@ -187,6 +187,10 @@ export interface UnexpectedEntryRemoval {
   alias: string | null;
   /** The entry's add date as read, verbatim — `null` when 7TV sent none. */
   addedAt: string | null;
+  /** The emote's default name as the run's reads listed it — only for an entry without an alias,
+   *  which 7TV shows under that name, so the dock can call it by it (the delete service adds it).
+   *  Absent when no read carried one. */
+  defaultName?: string;
 }
 
 /**

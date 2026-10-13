@@ -1883,15 +1883,26 @@ describe('DeleteProgressSection — an entry a slot removal took unexpectedly', 
     };
   }
 
-  it('names the entry, with a fallback for one without an alias, and offers its own restore', async () => {
-    await mount({
-      unexpectedRemovals: [LOST, { sevenTvEmoteId: '7tv-9', alias: null, addedAt: null }],
-    });
+  it('names the entry by its alias and offers its own restore', async () => {
+    await mount({ unexpectedRemovals: [LOST] });
 
-    expect(text()).toContain('ome44, 7tv-9');
-    expect(text()).toContain('fehlen möglicherweise');
+    expect(text()).toContain('ome44 fehlt möglicherweise');
     expect(button('Diese Einträge wiederherstellen')).toBeDefined();
     expect(text()).not.toContain('Nachprüfung nicht möglich.');
+  });
+
+  // The reachable case: an aliasless entry of an emote the run removed from. It must not be called
+  // by the run's own row (hob44), whose alias is a sibling's.
+  it("names an aliasless entry by its emote's default name, else by the 7TV id", async () => {
+    await mount({
+      unexpectedRemovals: [
+        { sevenTvEmoteId: '7tv-1', alias: null, addedAt: null, defaultName: 'hob' },
+        { sevenTvEmoteId: '7tv-1', alias: null, addedAt: '2026-10-01T00:00:00Z' },
+      ],
+    });
+
+    expect(text()).toContain('hob, 7tv-1 fehlen möglicherweise');
+    expect(text()).not.toContain('hob44');
   });
 
   it('says nothing about unexpected removals for a run without any', async () => {
