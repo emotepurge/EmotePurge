@@ -526,7 +526,7 @@ Ein von der Enqueue gesettelter Seed ist kein `CreatedSlot` und bleibt (AK 39).
 30. `/daily?slotId=` nur der Slot; `?emoteId=` Summe; beide → `slotId`; fremde ID → 404; Filter-Matrix unverändert.
 31. `/series` je Slot mit `slotId`/`name`; Kodierung bytegleich.
 32. `occupiedSlots` = aktive Slots; `duplicateNames` über Slots.
-33. Vote: Set-Session mit `X` in zwei Slots → eine Ballot-Zeile, `NamesAtCreation = [ome44, hob44]`; Null-Session `EmoteNames` live; doppelte `emoteId` im Request → eine Zeile, 201.
+33. Vote: Set-Session mit `X` in zwei Slots → eine Ballot-Zeile, `NamesAtCreation = [ome44, hob44]`; Null-Session `EmoteNames` live; doppelte `emoteId` im Request → eine Zeile, 200.
 
 **Frontend**
 34. Zwei Karten `ome44`/`hob44` mit Marker `+1` und „Auch im Set als …"; Suche `hob44` findet die zweite; Bänder/Rang je Karte; keine `NG0955`.
