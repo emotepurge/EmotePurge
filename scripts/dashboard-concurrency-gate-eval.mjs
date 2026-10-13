@@ -55,7 +55,6 @@
 //       13mo is reported); every load response <= 256 KiB
 
 import { lstatSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -74,11 +73,11 @@ const END_SLACK_MS = 3;
 // keeps fast cached answers (2-30 ms) out.
 const LEGACY_SPAWN_SLACK_MS = 200;
 const KEYS = ['24h', '13mo'];
-// Directories the CSV may live in: the repository (prepared fixtures) and the temp directory
-// (default output of dashboard-concurrency-gate.sh).
+// Directories the CSV may live in: the repository (prepared fixtures) and, optionally, the directory
+// named by GATE_CSV_DIR (where a measurement run wrote its output, e.g. its OUT directory).
 const ALLOWED_BASES = [
   resolve(dirname(fileURLToPath(import.meta.url)), '..'),
-  resolve(process.env.TMPDIR || tmpdir()),
+  ...(process.env.GATE_CSV_DIR ? [resolve(process.env.GATE_CSV_DIR)] : []),
 ];
 
 const file = process.argv[2];
@@ -389,7 +388,7 @@ function readCsvFile(candidate) {
     return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
   });
   if (!inside) {
-    console.error('the gate CSV must lie inside the repository or the temp directory');
+    console.error('the gate CSV must lie inside the repository or in GATE_CSV_DIR');
     process.exit(64);
   }
   if (extname(resolved).toLowerCase() !== '.csv') {
