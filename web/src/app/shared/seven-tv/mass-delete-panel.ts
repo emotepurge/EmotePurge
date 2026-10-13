@@ -263,9 +263,10 @@ export class MassDeletePanel {
    */
   readonly leadingActionsPresent = input<boolean>(false);
 
-  /** 7TV ids (the run's `doneKeys`, spec #200 E18) the host page may drop from its list without a
-   *  refetch — emitted only once the backend has confirmed the report. Hosts match them against
-   *  `sevenTvEmoteId`, never against a Guid. */
+  /** The run's `doneKeys` (spec #200 E18) the host page may drop from its list without a refetch —
+   *  emitted only once the backend has confirmed the report. An id row's key is its 7TV id, which
+   *  hosts match against `sevenTvEmoteId`, never against a Guid; an entry row's key is
+   *  `${sevenTvEmoteId}#${cardKey}` (Plan-378 4.9), which names exactly one card. */
   readonly deleted = output<string[]>();
 
   /** The run finished on 7TV, but the backend does not (fully) know about it. The host page must
@@ -463,9 +464,9 @@ export class MassDeletePanel {
         return;
       }
 
-      // RunResult.doneKeys, not a re-derivation from the queue: a delete run keys every row by its
-      // 7TV id, so these are exactly the ids that left the set — rows without a local emote
-      // included (spec #200, E18).
+      // RunResult.doneKeys, not a re-derivation from the queue: a delete run keys an id row by its
+      // 7TV id and an entry row by `${sevenTvEmoteId}#${cardKey}`, so these are exactly the ids
+      // and entries that left the set — rows without a local emote included (spec #200, E18).
       const doneKeys = this.deleteService.lastRun()?.result.doneKeys ?? [];
       if (doneKeys.length > 0) {
         this.deleted.emit(doneKeys);
