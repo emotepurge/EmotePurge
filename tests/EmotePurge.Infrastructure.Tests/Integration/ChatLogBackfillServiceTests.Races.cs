@@ -233,10 +233,9 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task LockRace_LeaveWhileTheEnqueueHoldsTheChannel_WaitsAndCancelsTheNewRun()
     {
-        PinFlagOff();
         var channel = await SeedChannelAsync("bflockleave");
         await SeedUserAsync();
-        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));
+        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", EntryT1));
 
         await using var holder = CreateDbContext();
         await using var holderTx = await HoldUserRowAsync(holder);
@@ -271,7 +270,7 @@ public partial class ChatLogBackfillServiceTests
         var channel = await SeedChannelAsync("bflockdispatch");
         await SeedUserAsync();
         await SeedEmoteAsync(channel, "a1", "A1");
-        PreviewReturns(SetB, "Set B", Member("x1", "XInB", null), Member("n1", "BNew1", null));
+        PreviewReturns(SetB, "Set B", Member("x1", "XInB", EntryT1), Member("n1", "BNew1", EntryT1));
 
         await using var holder = CreateDbContext();
         await using var holderTx = await HoldUserRowAsync(holder);
@@ -304,11 +303,10 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task LockRace_FullResyncWhileTheEnqueueHoldsTheChannel_AdoptsThePlaceholder()
     {
-        PinFlagOff();
         var channel = await SeedChannelAsync("bflocksync");
         await SeedUserAsync();
         await SeedEmoteAsync(channel, "a1", "A1");
-        PreviewReturns(SetB, "Set B", Member("x1", "XInB", null));
+        PreviewReturns(SetB, "Set B", Member("x1", "XInB", EntryT1));
 
         await using var holder = CreateDbContext();
         await using var holderTx = await HoldUserRowAsync(holder);
@@ -341,10 +339,9 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task LockRace_OppositeKeyOrderDeadlock_IsRetried_AndTheEnqueueAdoptsTheOtherWritersRows()
     {
-        PinFlagOff();
         var channel = await SeedChannelAsync("bflockdeadlock");
         await SeedUserAsync();
-        PreviewReturns(SetB, "Set B", Member("a", "AliasA", null), Member("z", "AliasZ", null));
+        PreviewReturns(SetB, "Set B", Member("a", "AliasA", EntryT1), Member("z", "AliasZ", EntryT1));
         var logger = new RecordingLogger<ChatLogBackfillService>();
 
         await using var other = fixture.CreateTaggedDbContext("bflockdeadlock-other", DatabaseName);
@@ -376,10 +373,9 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task LockRace_ARunCommittedPastTheRecheck_LosesOnThePartialUniqueIndex()
     {
-        PinFlagOff();
         var channel = await SeedChannelAsync("bflockindex");
         await SeedUserAsync();
-        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));
+        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", EntryT1));
 
         await using var holder = CreateDbContext();
         await using var holderTx = await HoldUserRowAsync(holder);

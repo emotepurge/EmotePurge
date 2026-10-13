@@ -36,8 +36,14 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         new(pushed ?? [], updated ?? [], (pulledIds ?? []).Select(id => new SevenTvPulledEntry(id)).ToList());
 
     private static SevenTvSyncService CreateService(Persistence.AppDbContext db, EmoteMatchCache cache) =>
+        CreateServiceCore(SlotFlag.On, db, cache);
+
+    private static SevenTvSyncService CreateServiceFlagOff(Persistence.AppDbContext db, EmoteMatchCache cache) =>
+        CreateServiceCore(SlotFlag.Off, db, cache);
+
+    private static SevenTvSyncService CreateServiceCore(SlotReconcileOptions slotReconcile, Persistence.AppDbContext db, EmoteMatchCache cache) =>
         new(db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(),
-            new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
+            new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: slotReconcile);
 
     // The REST answer a seeded channel would get back unchanged — same set, same emotes, same
     // image urls, so a sync over it is a true no-op.
@@ -275,7 +281,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_rename", ("e1", "oldname", false));
-        var service = CreateService(db, cache);
+        var service = CreateServiceFlagOff(db, cache);
 
         var result = await service.ApplyEmoteSetUpdateAsync(
             channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", null, "newname", "https://cdn/e1.webp")]));
@@ -378,7 +384,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_imageurl", ("e1", "pic", false));
-        var service = CreateService(db, cache);
+        var service = CreateServiceFlagOff(db, cache);
 
         var result = await service.ApplyEmoteSetUpdateAsync(
             channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", null, "pic_renamed", "")]));
@@ -851,7 +857,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_firstseen_dispatch", ("e1", "stable", false));
-        var service = CreateService(db, cache);
+        var service = CreateServiceFlagOff(db, cache);
 
         var result = await service.ApplyEmoteSetUpdateAsync(
             channel.ChannelName,
