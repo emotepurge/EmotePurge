@@ -55,7 +55,9 @@
 //       13mo is reported); every load response <= 256 KiB
 
 import { lstatSync, readFileSync } from 'node:fs';
-import { extname, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const MEMORY_LIMIT_KIB = 64 * 1024;
 const MEMORY_JITTER_KIB = 4 * 1024;
@@ -72,6 +74,12 @@ const END_SLACK_MS = 3;
 // keeps fast cached answers (2-30 ms) out.
 const LEGACY_SPAWN_SLACK_MS = 200;
 const KEYS = ['24h', '13mo'];
+// Directories the CSV may live in: the repository (prepared fixtures) and the temp directory
+// (default output of dashboard-concurrency-gate.sh).
+const ALLOWED_BASES = [
+  resolve(dirname(fileURLToPath(import.meta.url)), '..'),
+  resolve(process.env.TMPDIR || tmpdir()),
+];
 
 const file = process.argv[2];
 if (!file) {
@@ -376,6 +384,14 @@ function buildPlan({ mainTicks, cooldownTicks, dualCycles }) {
 // Developer harness input: accept only a regular, non-symlink *.csv file.
 function readCsvFile(candidate) {
   const resolved = resolve(candidate);
+  const inside = ALLOWED_BASES.some((base) => {
+    const rel = relative(base, resolved);
+    return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+  });
+  if (!inside) {
+    console.error('the gate CSV must lie inside the repository or the temp directory');
+    process.exit(64);
+  }
   if (extname(resolved).toLowerCase() !== '.csv') {
     console.error('the gate input must be a .csv file');
     process.exit(64);
