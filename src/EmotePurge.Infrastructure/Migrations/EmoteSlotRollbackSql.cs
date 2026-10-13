@@ -3,10 +3,11 @@ namespace EmotePurge.Infrastructure.Migrations;
 /// <summary>
 /// The collapse statements of the emote-slot rollback procedure (spec section 12.2), plus the one-off
 /// sweep of row-less unsettled seeds after the removal of the slot flag (#379, part B). The collapse
-/// statements run before the M2-Down / M3-Down migrations and make the old unique keys valid again: (EmoteId, EmoteSetId,
-/// Date) on UsageStats and (RunId, EmoteId) on ChatLogBackfillRunEmotes. docs/Operations.md shows
-/// the identical text. The ordering (AddedAt ascending with NULL last, then Name ordinal, then the
-/// slot id) is the D2 order of <c>EmoteSlotSeedSql</c> (E17) and must stay in sync with it.
+/// statements run before the M2-Down / M3-Down migrations and make the old unique keys valid again:
+/// (EmoteId, EmoteSetId, Date) on UsageStats and (RunId, EmoteId) on ChatLogBackfillRunEmotes.
+/// docs/Operations.md shows the identical text. The ordering (AddedAt ascending with NULL last, then
+/// Name ordinal, then the slot id) is the D2 order of <c>EmoteSlotSeedSql</c> (E17) and must stay
+/// in sync with it.
 /// <para>
 /// A row whose SlotId is NULL or points at no slot sorts as if its slot had no AddedAt and no Name,
 /// that is after every real slot. Each constant is one statement, needs no parameters, and a second

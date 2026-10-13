@@ -84,7 +84,8 @@ export interface SeriesDrift {
  *
  * Deliberately not drift: a slot row with count 0 and no entry, and an emote-mode row without an
  * entry — both still read "absent = unused" as before; and a row without counts, which draws no
- * curve at all. With every row in emote mode (a set seeded with rows) both lists are therefore always empty.
+ * curve at all. With every row in emote mode (a set seeded with rows) both lists are therefore
+ * always empty.
  */
 export function seriesDrift(
   rows: readonly SeriesDriftRow[],

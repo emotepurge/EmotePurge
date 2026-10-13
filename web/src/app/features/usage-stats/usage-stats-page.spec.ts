@@ -8335,8 +8335,9 @@ describe('UsageStatsPage — imported numbers keep their source without a tracki
 });
 
 /**
- * Plan 377 (emote slots, child 7), T3: the page keys every card by `slotKey` (2.3). In slot mode, one emote under two names arrives as two slot rows sharing a 7TV id and a
- * Guid; each must be a card of its own for the selection, the inspector, the rank, the fill bar,
+ * Plan 377 (emote slots, child 7), T3: the page keys every card by `slotKey` (2.3). In slot mode,
+ * one emote under two names arrives as two slot rows sharing a 7TV id and a Guid; each must be a
+ * card of its own for the selection, the inspector, the rank, the fill bar,
  * the curve and the drilldown. Emote-mode rows keep the 7TV id as their key (F4), which the
  * unchanged blocks above guard.
  */

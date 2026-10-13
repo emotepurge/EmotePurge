@@ -14,7 +14,8 @@ import { EmoteUsageTotal, EmoteUsageTotalDto } from './usage-stat.model';
  * **Mode of the response.** The response tells which mode it is in: an emote-mode answer (a set
  * seeded with rows, or one the slot sync has not bound yet) carries no `slotId` on any `/totals`
  * row. A response with at least one slot-mode row is a *slot response*; anything else is an *emote
- * response* and is merged exactly as before slots (plan 377, F2). The view (`isActiveSet`) and the response mode are independent.
+ * response* and is merged exactly as before slots (plan 377, F2). The view (`isActiveSet`) and the
+ * response mode are independent.
  *
  * **Active set** (`isActiveSet: true`, or `live === null`): `live` is ignored. Every `totals` row
  * becomes a `'live'` row with `slotCount: 1`, `aliases: [emoteName]` and the DTO's `siblingNames` —

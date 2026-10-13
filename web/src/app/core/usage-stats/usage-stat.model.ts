@@ -10,8 +10,8 @@
  * its own counts. An emote-mode row (`slotId: null`) is the row as it was before slots: the emote's
  * name and first-seen date, and the sum over every slot of the emote under the set. Until a set's
  * rows are bound to slots (a set seeded with rows), every row is in emote mode, which is how the
- * page tells the two states apart from the response alone (plan 377, F2). In one response a 7TV id has either exactly one
- * emote-mode row or only slot-mode rows.
+ * page tells the two states apart from the response alone (plan 377, F2). In one response a 7TV id
+ * has either exactly one emote-mode row or only slot-mode rows.
  *
  * The slot fields are typed as the wire sends them; the Api always sends all of them.
  */
