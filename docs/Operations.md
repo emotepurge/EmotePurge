@@ -1348,6 +1348,30 @@ below; do not expect a lossless `Down` after a phase with the flag on.
   carried while the locked-row count stays below the threshold of the WAL check above; compare the measured WAL with
   the figure before the switch. The follow-up #411 (plan before locking) removes it.
 
+### Sweeping row-less unsettled seeds (#379, part B)
+
+Run this once, after the image without the slot flag runs (admission order above done). On production that is after
+phase 2, on any other database after its update. The flag-off path created unsettled seeds (`"SeedUnsettled"`) for
+active emotes; some of them never received a usage row and are inert now (no numbers, no cards, no 409). The sweep
+deletes exactly those, in every set and for every `Source`. Unsettled seeds that carry rows and settled empty seeds
+stay. The only foreign key on `"EmoteSlots"` is `"UsageStats"."SlotId"`, so nothing cascades; a snapshot row of a
+finished backfill run may keep pointing at a deleted slot, which is harmless. The expected count on production is 0.
+Run it in one transaction, note the first number, and check that the second is 0 (`psql "$C"` as above):
+
+```sql
+BEGIN;
+SELECT count(*) FROM "EmoteSlots" s
+WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id");
+DELETE FROM "EmoteSlots" s
+WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id");
+SELECT count(*) FROM "EmoteSlots" s
+WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id");
+COMMIT;
+```
+
+The statements are `EmoteSlotRollbackSql.CountRowlessUnsettledSeedsSql` and
+`EmoteSlotRollbackSql.SweepRowlessUnsettledSeedsSql`; keep both texts identical.
+
 ### Usage key switch (M2, #373)
 
 From #373 on, usage is counted per slot: the flush writes `UsageStats.SlotId` and upserts on
