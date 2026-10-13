@@ -63,7 +63,7 @@
 # (without rebuild rows, which the evaluation then reports as invalid).
 #
 # Usage: API_CONTAINER=... PG_CONTAINER=... GATE_ADMIN_COOKIE_FILE=... scripts/dashboard-concurrency-gate.sh
-#        node scripts/dashboard-concurrency-gate-eval.mjs <csv>
+#        GATE_CSV_DIR=$(dirname "$OUT") node scripts/dashboard-concurrency-gate-eval.mjs <csv>
 
 set -euo pipefail
 
@@ -367,4 +367,4 @@ done < "$WORK/rebuild-lines.txt" \
   >> "$RAW"
 
 write_csv "$OUT"
-echo "Wrote $OUT ($(($(wc -l < "$OUT") - 1)) rows). Evaluate with: node scripts/dashboard-concurrency-gate-eval.mjs $OUT" >&2
+echo "Wrote $OUT ($(($(wc -l < "$OUT") - 1)) rows). Evaluate with: GATE_CSV_DIR=$(dirname "$OUT") node scripts/dashboard-concurrency-gate-eval.mjs $OUT" >&2
