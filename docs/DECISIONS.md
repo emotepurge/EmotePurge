@@ -10,6 +10,89 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-13 — Channel managers remove a channel's imported backfill data; the confirmed coverage is checked on the server, seeds left rowless go with it, inventory and run history stay (#384)
+
+**Betrifft:** `src/EmotePurge.Core/Services/IChatLogImportRemovalService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChatLogImportRemovalService.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChatLogImportRemovalSql.cs` ·
+`src/EmotePurge.Infrastructure/Services/ChatLogImportScope.cs` ·
+`src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs` ·
+`src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Services/IAuditLogQueryService.cs` ·
+`src/EmotePurge.Infrastructure/Services/AuditLogQueryService.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/ChatLogImportRemovalServiceTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Fixtures/ImportedBackfillSeed.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Unit/ChatLogImportScopeTests.cs` ·
+`tests/EmotePurge.Infrastructure.Tests/Integration/AuditLogQueryServiceTests.cs`
+
+Until now a manager could start a backfill but not take it back; the only way to remove imported numbers
+was the operator procedure in `docs/Operations.md` ("Chat-log backfill" → "Rolling back"). Spec:
+`docs/superpowers/specs/2026-10-13-remove-imported-backfill-spec.md`; plan:
+`docs/plans/Plan-384-Remove-Imported-Backfill.md`.
+
+Decision (this entry covers the service; the route and the UI follow in the same branch):
+
+- **A service of its own** (D2): `IChatLogImportRemovalService` in Core, `ChatLogImportRemovalService` and
+  the SQL texts in `ChatLogImportRemovalSql` in Infrastructure. Not a method on `IChatLogBackfillService`:
+  #379 part B is reshaping exactly that file, and a separate contract keeps both branches apart.
+- **Granularity is the whole channel** (D1): every set, every run. **Deleted** (D5): every
+  `UsageStats` row with `Source = 1` of the channel's emotes — with or without a coverage day —, every
+  `ChatLogBackfillCoverage` row of the channel, and every unsettled seed that this deletion left without
+  rows (D7). **Kept** (D6, D8): live rows, run rows, snapshot rows, placeholder emotes, settled slots
+  (with or without `CreatedSlot`, also when now rowless), unsettled seeds that were rowless before or
+  still carry rows, the provider cooldown, the audit log. The exception to "`CreatedSlot` stays" is
+  deliberate (Sol finding 3): a flag-off enqueue seed is `SeedUnsettled` **and** `CreatedSlot`; it goes
+  when it carried only imported rows, and its snapshot row in the finished run stays, pointing nowhere
+  (`SlotId` has no foreign key).
+- **Seed removal only for seeds this call made rowless** (D7): the candidates are the slot ids of the
+  deleted rows; the predicate is the one of the #379 part B sweep (`SeedUnsettled AND NOT EXISTS
+  UsageStats on SlotId`) restricted to them, with no look at `CreatedSlot`, `IsArchived` or `ArchivedAt`.
+  A channel-wide predicate would do the sweep's work; skipping the seeds would leave exactly the rowless
+  seeds the one-off sweep removes and never revisits.
+- **Row delete and seed delete are two statements.** Every part of one statement reads the same
+  snapshot, so a seed check written as a second CTE of the row delete would still see the rows it
+  deletes and never find a seed that has just become rowless.
+- **Idempotent, checked before the expectation** (D9): a channel with neither imported rows nor
+  coverage answers `NothingToRemove` — no audit, no event — whatever expectation the request carries, so
+  a double click or a second manager with the same view is "already done", not a conflict.
+- **The confirmation is bound to the coverage it showed** (D15, Sol finding 2): the request carries the
+  intervals the dialog displayed; under the channel lock the service compares them day by day with the
+  current coverage and refuses with `ScopeChanged` on any difference (a day more or fewer, another set or
+  host on a day, overlapping intervals). The same days split into different intervals are the same scope.
+  The comparison (`ChatLogImportScope`) works on canonical intervals and never expands them into days:
+  the Api limits the number of intervals, not their span, and one interval from year 1 to 9999 would
+  otherwise be millions of tuples.
+- **Locks in the project's order**: the channel row `FOR NO KEY UPDATE` by name (the leave's loader,
+  `ChannelQueries.LoadChannelForNoKeyUpdateAsync`), then the check for an active run (`queued`,
+  `running`, `paused` → `RunActive`, nothing written), then the emotes that carry imported rows
+  `FOR NO KEY UPDATE` (`RowLocks.LockEmotesByIdsAsync`), and only then usage, slot and coverage rows. The
+  channel lock serializes with the enqueue — the only writer that creates an active run — and with the
+  REST reconcile; without an active run nothing else writes coverage, so the compared coverage stays as
+  read. The emote locks serialize with the settle and with the block commit of a just cancelled run,
+  which holds the same emotes `FOR SHARE` before it touches a usage row. The requester's user row is not
+  locked (D12, like the cancel).
+- **Deadlock retry**: the whole transaction is retried at most three times on 40P01, with a 20–150 ms
+  random pause and a warning per retry — the enqueue's and the broadcaster purge's policy. A third
+  deadlock propagates (500, nothing written).
+- **Audit and events**: one `backfill.removeImported` entry with the channel and a new detail kind
+  `backfillRemovedDays` (count form like `backfillMonths`, projected by `AuditLogQueryService`), only
+  when something was removed; days, not rows, because the coverage counts days and the dialog shows them.
+  After the commit `backfill.progress`, then `usage.flushed`, for the normalized name of the locked row;
+  a Redis failure is logged and does not change the result. No new event type: the existing two trigger
+  exactly the refetches the settings tab and the usage page need.
+- **No migration**: everything needed is in the schema (`UsageStats.Source`/`SlotId`,
+  `ChatLogBackfillCoverage`, `EmoteSlots.SeedUnsettled`). Only a "data removed at" column on the run would
+  need one, and that display was rejected (F4).
+- **Placeholders and settled `CreatedSlot` slots are not deleted online** (F2 (A); option (B) rejected,
+  Sol finding 1): creating a set-session ballot takes neither the channel nor the emote row lock, only the
+  foreign-key `KEY SHARE` when it inserts into `VoteSessionEmotes`. If it commits while a placeholder
+  `DELETE` waits for that row, Postgres re-checks the `NOT EXISTS` vote predicates under READ COMMITTED
+  with the old snapshot, the new ballot row is invisible, the placeholder goes and the cascade takes the
+  fresh ballot row with it. The rollback procedure's step 3 is safe only because api and worker are
+  stopped there. These rows stay invisible without usage and are reused by a later run or the reconcile;
+  steps 3 and 3b of the operator procedure still find them through the unchanged snapshot provenance.
+- **Correct for the slot flag on only**: the removal is reachable only with `ChatLogBackfill:Enabled`, which
+  requires the slot flag; the service does not read `SlotReconcileOptions` (#379 part B removes the type).
+
 ### 2026-10-12 — System-load rollup: loose index scan, per-hour loader and batched catch-up
 
 **Betrifft:** `src/EmotePurge.Infrastructure/Services/SystemLoadRollupService.cs` ·
