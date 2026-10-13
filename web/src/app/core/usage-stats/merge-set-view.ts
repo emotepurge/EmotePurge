@@ -1,4 +1,5 @@
 import { ForeignEmoteRow } from '../seven-tv/foreign-emote-set.model';
+import { compareD2, D2Entry } from './d2-order';
 import { EmoteUsageTotal, EmoteUsageTotalDto } from './usage-stat.model';
 
 /**
@@ -320,21 +321,9 @@ function klasse3Keys(
   });
 }
 
-/** Names in D2 order — add date ascending, unknown last, then name ordinal — ordinal distinct. */
-function d2Names(entries: { name: string; instant: number | null }[]): string[] {
-  const sorted = [...entries].sort((a, b) => {
-    if (a.instant !== b.instant) {
-      if (a.instant === null) {
-        return 1;
-      }
-      if (b.instant === null) {
-        return -1;
-      }
-      return a.instant - b.instant;
-    }
-    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
-  });
-  return [...new Set(sorted.map((entry) => entry.name))];
+/** Names in D2 order — add date ascending, unknown last, then name in UTF-8 byte order like the server — ordinal distinct. */
+function d2Names(entries: D2Entry[]): string[] {
+  return [...new Set([...entries].sort(compareD2).map((entry) => entry.name))];
 }
 
 /** Milliseconds of an ISO timestamp, `null` when absent or unparseable. */
