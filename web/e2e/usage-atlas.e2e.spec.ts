@@ -4,6 +4,7 @@ import {
   AUTH_USER,
   MockEmoteUsage,
   MockSlotSeries,
+  MockSyncInSetAnswer,
   emitLive,
   installLiveStub,
   mockActiveEmoteSet,
@@ -13,8 +14,13 @@ import {
   mockChannelStatus,
   mockImportCoverage,
   mockTrackedEmoteSetPreview,
+  mockEmoteSetTargets,
   mockLegalAvailability,
   mockMyChannels,
+  mockSetWarning,
+  mockSevenTvSetBackend,
+  mockSyncDeletedInSet,
+  mockSyncRestoredInSet,
   mockTags,
   mockUsageChannelSeries,
   mockUsageDaily,
@@ -1605,5 +1611,295 @@ test.describe('emote slot cards (#365, #377)', () => {
     await expect(sidecar).toContainText('27');
     await expect(sidecar).toContainText('Neu · heute');
     await expect(page.getByText('Auswahl bereinigt')).toHaveCount(0);
+  });
+});
+
+/**
+ * Slot delete runs (#365, #378): the page deletes per set entry once the server answers with slot
+ * rows, and exactly as before while it does not. Everything 7TV is a stateful stand-in
+ * (`mockSevenTvSetBackend`) that records what the page sent.
+ */
+test.describe('emote slot delete runs (#378)', () => {
+  const CHANNEL = 'sensitron';
+  const ACTIVE_SET_ID = 'set-1';
+  const SHARED_7TV_ID = '7tv-ome';
+  const OME_ADDED = '2026-10-13T08:05:00.000Z';
+  const HOB_ADDED = '2026-10-13T08:00:14.902Z';
+
+  const slotRows: MockEmoteUsage[] = [
+    {
+      emoteId: 'e-ome',
+      emoteName: 'ome44',
+      sevenTvEmoteId: SHARED_7TV_ID,
+      imageUrl: 'https://cdn.7tv.app/emote/ome/2x.webp',
+      totalUseCount: 50,
+      lastUsedDate: '2026-07-14',
+      slotId: 'slot-ome',
+      firstSeenAt: OME_ADDED,
+      firstSeenAtFromRest: true,
+      siblingNames: ['hob44'],
+    },
+    {
+      emoteId: 'e-ome',
+      emoteName: 'hob44',
+      sevenTvEmoteId: SHARED_7TV_ID,
+      imageUrl: 'https://cdn.7tv.app/emote/ome/2x.webp',
+      totalUseCount: 20,
+      lastUsedDate: '2026-07-14',
+      slotId: 'slot-hob',
+      firstSeenAt: HOB_ADDED,
+      firstSeenAtFromRest: true,
+      siblingNames: ['ome44'],
+    },
+    {
+      emoteId: 'e-plain',
+      emoteName: 'plainOne',
+      sevenTvEmoteId: '7tv-plain',
+      imageUrl: 'https://cdn.7tv.app/emote/plain/2x.webp',
+      totalUseCount: 5,
+      lastUsedDate: '2026-07-14',
+    },
+  ];
+
+  const slotSeries = [
+    { slotId: 'slot-ome', sevenTvEmoteId: SHARED_7TV_ID, name: 'ome44', days: [[10, 50]] },
+    { slotId: 'slot-hob', sevenTvEmoteId: SHARED_7TV_ID, name: 'hob44', days: [[10, 20]] },
+  ] as MockSlotSeries[];
+
+  const slotLive = [
+    { id: SHARED_7TV_ID, alias: 'ome44', addedAt: OME_ADDED },
+    { id: SHARED_7TV_ID, alias: 'hob44', addedAt: HOB_ADDED },
+    { id: '7tv-plain', alias: 'plainOne', addedAt: '2026-07-01T00:00:00.000Z' },
+  ];
+
+  /** Everything a delete run touches besides 7TV itself, registered before the first navigation. */
+  async function mockRunSurroundings(page: Page, slotMode: boolean) {
+    await mockLegalAvailability(page);
+    await mockTags(page, CHANNEL);
+    await mockUsageChannelSeries(page, CHANNEL, {}, [], slotMode ? slotSeries : []);
+    await mockChannelEmoteSetList(page, CHANNEL, {
+      activeEmoteSetId: ACTIVE_SET_ID,
+      sets: [{ id: ACTIVE_SET_ID, name: 'Hauptset' }],
+    });
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: 'sensitron-1',
+        twitchLogin: CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: CHANNEL,
+        activeEmoteSetId: ACTIVE_SET_ID,
+        sets: [{ id: ACTIVE_SET_ID, name: 'Hauptset', isActive: true }],
+      },
+    ]);
+    await mockSetWarning(page, CHANNEL);
+    await page.route(`**/api/channels/${CHANNEL}/resync`, (route) =>
+      route.fulfill({ status: 202 }),
+    );
+  }
+
+  async function confirmDelete(page: Page, count: number): Promise<void> {
+    await page.getByRole('button', { name: `Löschen (${count})` }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
+  }
+
+  test('flag off: a delete run sends the unchanged REMOVE without an alias, reads the set without add dates and reports without entries', async ({
+    page,
+  }) => {
+    await mockRunSurroundings(page, false);
+    const backend = await mockSevenTvSetBackend(
+      page,
+      EMOTES.map((emote) => ({
+        id: emote.sevenTvEmoteId,
+        alias: emote.emoteName,
+        addedAt: '2026-07-01T00:00:00.000Z',
+      })),
+    );
+    const syncDeleted = await mockSyncDeletedInSet(page, ACTIVE_SET_ID);
+
+    await openAtlas(page);
+    await cell(page, 'KEKW').click();
+    await confirmDelete(page, 1);
+
+    await expect(cell(page, 'KEKW')).toHaveCount(0);
+    await expect.poll(() => syncDeleted.length).toBe(1);
+
+    const [remove] = backend.mutations();
+    expect(backend.mutations()).toHaveLength(1);
+    expect(remove.kind).toBe('removeEmote');
+    expect(remove.query).toContain('mutation RemoveEmote($setId: Id!, $emoteId: Id!)');
+    expect(remove.query).not.toContain('alias');
+    expect(remove.variables).toEqual({ setId: ACTIVE_SET_ID, emoteId: '7tv-4' });
+    expect(backend.reads().length).toBeGreaterThan(0);
+    for (const read of backend.reads()) {
+      expect(read.query).not.toContain('addedAt');
+    }
+    expect(syncDeleted[0]).not.toHaveProperty('entries');
+    expect(syncDeleted[0].sevenTvEmoteIds).toEqual(['7tv-4']);
+  });
+  /** Marks the card named `name` and deletes it through the confirmation; waits for its report. */
+  async function deleteSlotCard(
+    page: Page,
+    name: string,
+    syncDeleted: { length: number },
+  ): Promise<void> {
+    await cell(page, name).click();
+    await expect(page.getByRole('button', { name: 'Löschen (1)' })).toBeVisible();
+    await page.getByRole('button', { name: 'Löschen (1)' }).click();
+    const dialog = page.getByRole('dialog');
+    // The confirmation counts and names only the entry that is marked, never its sibling.
+    await expect(dialog.locator('#app-dialog-title')).toContainText('1 Emote');
+    await expect(dialog.getByText(name, { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Löschen starten' }).click();
+    await expect.poll(() => syncDeleted.length).toBeGreaterThan(0);
+  }
+
+  test('flag on, partial delete: only the marked slot card is removed, by its alias, and reported with its slot and add date (AK 37)', async ({
+    page,
+  }) => {
+    await mockRunSurroundings(page, true);
+    const backend = await mockSevenTvSetBackend(page, slotLive);
+    const syncDeleted = await mockSyncDeletedInSet(page, ACTIVE_SET_ID);
+
+    await openAtlas(page, slotRows);
+    await deleteSlotCard(page, 'hob44', syncDeleted);
+
+    const removeIndex = backend.requests.findIndex((request) => request.kind === 'removeEmote');
+    const readsBefore = backend.requests
+      .slice(0, removeIndex)
+      .filter((request) => request.kind === 'setRead');
+    expect(readsBefore.length).toBeGreaterThan(0);
+    expect(readsBefore.at(-1)?.query).toContain('addedAt');
+
+    expect(backend.mutations()).toHaveLength(1);
+    const [remove] = backend.mutations();
+    expect(remove.query).toContain('mutation RemoveSlotEntry(');
+    expect(remove.variables).toEqual({
+      setId: ACTIVE_SET_ID,
+      emoteId: SHARED_7TV_ID,
+      alias: 'hob44',
+    });
+    expect(syncDeleted).toHaveLength(1);
+    expect(syncDeleted[0].sevenTvEmoteIds).toEqual([SHARED_7TV_ID]);
+    expect(syncDeleted[0].entries).toEqual([
+      { sevenTvEmoteId: SHARED_7TV_ID, slotId: 'slot-hob', alias: 'hob44', addedAt: HOB_ADDED },
+    ]);
+
+    await expect(cell(page, 'hob44')).toHaveCount(0);
+    await expect(cell(page, 'ome44')).toBeVisible();
+    expect(backend.live.map((entry) => entry.alias)).toEqual(['ome44', 'plainOne']);
+  });
+
+  test('flag on, restore: the dock re-adds the alias and reports the slot with the original add date (AK 42)', async ({
+    page,
+  }) => {
+    await mockRunSurroundings(page, true);
+    const backend = await mockSevenTvSetBackend(page, slotLive);
+    const syncDeleted = await mockSyncDeletedInSet(page, ACTIVE_SET_ID);
+    const syncRestored = await mockSyncRestoredInSet(page, ACTIVE_SET_ID);
+
+    await openAtlas(page, slotRows);
+    await deleteSlotCard(page, 'hob44', syncDeleted);
+
+    await page.getByRole('button', { name: 'Emotes wiederherstellen' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Wiederherstellen' }).click();
+    await expect.poll(() => syncRestored.length).toBe(1);
+
+    const adds = backend.mutations().filter((request) => request.kind === 'addEmote');
+    expect(adds).toHaveLength(1);
+    expect(adds[0].variables).toEqual({
+      setId: ACTIVE_SET_ID,
+      emoteId: SHARED_7TV_ID,
+      alias: 'hob44',
+    });
+    expect(syncRestored[0].sevenTvEmoteIds).toEqual([SHARED_7TV_ID]);
+    // The original date of the removed generation, not the one 7TV gave the re-added entry.
+    expect(syncRestored[0].entries).toEqual([
+      { sevenTvEmoteId: SHARED_7TV_ID, slotId: 'slot-hob', alias: 'hob44', addedAt: HOB_ADDED },
+    ]);
+    expect(backend.live.map((entry) => entry.alias).sort()).toEqual(['hob44', 'ome44', 'plainOne']);
+  });
+
+  test('a provisional slot card is held out of the run: the dock names it and the delete button stays at zero and disabled (D11)', async ({
+    page,
+  }) => {
+    await mockRunSurroundings(page, true);
+    const backend = await mockSevenTvSetBackend(page, slotLive);
+    await mockSyncDeletedInSet(page, ACTIVE_SET_ID);
+    const provisional = slotRows.map((row) =>
+      row.emoteName === 'hob44' ? { ...row, firstSeenAtFromRest: false } : row,
+    );
+
+    await openAtlas(page, provisional);
+    await cell(page, 'hob44').click();
+
+    // Shown in the dock (aria-hidden) and spoken by the permanently mounted announcer.
+    const heldLine = page.getByText(
+      /hob44 wird gerade mit 7TV abgeglichen und ist deshalb nicht im Löschlauf/,
+    );
+    await expect(heldLine).toHaveCount(2);
+    await expect(heldLine.and(page.locator('[aria-hidden="true"]'))).toBeVisible();
+    const button = page.getByRole('button', { name: 'Löschen (0)' });
+    await expect(button).toBeVisible();
+    await expect(button).toBeDisabled();
+    expect(backend.mutations()).toHaveLength(0);
+  });
+  test('restore waits for the removal report: after a failed report the dock says so instead of offering it, and a successful retry brings the button (R4 a)', async ({
+    page,
+  }) => {
+    await mockRunSurroundings(page, true);
+    await mockSevenTvSetBackend(page, slotLive);
+    const answer: MockSyncInSetAnswer = { status: 500 };
+    const syncDeleted = await mockSyncDeletedInSet(page, ACTIVE_SET_ID, answer);
+
+    await openAtlas(page, slotRows);
+    await deleteSlotCard(page, 'hob44', syncDeleted);
+
+    // Two automatic retries (2 s, then 4 s) come first, so the failure takes a few real seconds.
+    const lock = page.getByText(
+      'Wiederherstellen geht erst, wenn der Lösch-Bericht angekommen ist.',
+    );
+    await expect(lock).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('Rückmeldung an EmotePurge fehlgeschlagen')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Emotes wiederherstellen' })).toHaveCount(0);
+
+    answer.status = 200;
+    await page.getByRole('button', { name: 'Erneut melden' }).click();
+
+    await expect(page.getByRole('button', { name: 'Emotes wiederherstellen' })).toBeVisible();
+    await expect(lock).toHaveCount(0);
+  });
+
+  test('an entry that vanished with the removal is named in the dock and restored on its own, reported by 7TV id only (4.5, 4.7)', async ({
+    page,
+  }) => {
+    await mockRunSurroundings(page, true);
+    // 7TV takes the sibling along with the entry it was asked to remove.
+    const backend = await mockSevenTvSetBackend(page, slotLive, {
+      onRemove: (set) => {
+        set.live = set.live.filter((entry) => entry.alias !== 'ome44');
+      },
+    });
+    const syncDeleted = await mockSyncDeletedInSet(page, ACTIVE_SET_ID);
+    const syncRestored = await mockSyncRestoredInSet(page, ACTIVE_SET_ID);
+
+    await openAtlas(page, slotRows);
+    await deleteSlotCard(page, 'hob44', syncDeleted);
+
+    await expect(
+      page.getByText(/ome44 fehlt jetzt im Set, ohne dass der Lauf es gelöscht hat/),
+    ).toBeVisible();
+    // The run's own report names only what it removed on purpose.
+    expect(syncDeleted[0].entries).toEqual([
+      { sevenTvEmoteId: SHARED_7TV_ID, slotId: 'slot-hob', alias: 'hob44', addedAt: HOB_ADDED },
+    ]);
+
+    await page.getByRole('button', { name: 'Diese Einträge wiederherstellen' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Wiederherstellen' }).click();
+    await expect.poll(() => syncRestored.length).toBe(1);
+
+    const adds = backend.mutations().filter((request) => request.kind === 'addEmote');
+    expect(adds.map((request) => request.variables['alias'])).toEqual(['ome44']);
+    expect(syncRestored[0].sevenTvEmoteIds).toEqual([SHARED_7TV_ID]);
+    expect(syncRestored[0]).not.toHaveProperty('entries');
   });
 });
