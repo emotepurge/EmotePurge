@@ -1124,15 +1124,22 @@ closes the enqueue too, but takes the cancel route away; stopping the api closes
 1. **Close:** stop the api.
 2. **Drain:** let the worker finish its run or stop it; close runs that are still open with the statement of
    "Rolling back" under "Chat-log backfill", step 5.
-3. **Count**, with api and worker both stopped:
+3. **Count runs**, with api and worker both stopped:
    `SELECT count(*) FROM "ChatLogBackfillRuns" WHERE "Status" IN ('queued', 'running', 'paused');` must be 0.
-4. **Switch:** start the new configuration of api and worker together.
+4. **Count seeds without rows**, also with both stopped: unsettled seeds that carry no usage row (an enqueue with the
+   flag off can leave them) are expected to be 0; otherwise name them and decide before switching:
+   `SELECT count(*) FROM "EmoteSlots" s WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id");`
+5. **Switch:** start the new configuration of api and worker together.
 
-A run that slips through anyway is not counted wrongly; it ends in `worker_error`.
+A run that slips through anyway is not counted wrongly. In phase 1 the worker follows a settle that moved its
+snapshot rows: `SnapshotChanged` makes it re-read the snapshot, move the aggregates of the block to their rows' new
+slots and hand the block in once more (log line "the snapshot changed under block"). Only a block it cannot follow
+fails the run with `worker_error`; after the removal of the flag-off branches (part B) that is the whole safety net.
 
 **Preconditions** for the switch-on: the running images contain the slot code (`migrations list` shows nothing
-pending, see M2 and M3 below), `ChatLogBackfill__Enabled` is `false` in the stack, and the write-ahead-log cost has been
-accepted: the WAL check below passes (under the threshold of roughly 2 MB/min for your row count).
+pending, see M2 and M3 below; that proves the database state, not the running images, so check the image version
+separately: inspect the running api and worker containers' image tag or revision label), `ChatLogBackfill__Enabled` is `false` in the stack, and the write-ahead-log cost has been
+accepted: the WAL check below passes (under the threshold of roughly 2 MiB/min for your row count; all WAL figures here are MiB, 1 MiB = 1,048,576 bytes).
 
 **WAL check before the switch (read-only).** With the flag on, every 60-second tick locks every reconcile target
 row of every active channel `FOR NO KEY UPDATE`, also when nothing changes. The rows that tick locks are the
@@ -1153,12 +1160,12 @@ interval `C` in seconds:
 
 `B/row/min = 54 * (60/I) + 486 * (60/C)`
 
-At `I = 60` and `C = 300` that is 151 bytes per row and minute; 2 MB/min is reached at about **13,900 locked rows**
-(about 38,800 if full-page images are left out). Put the production `C` into the formula; `wal_compression` was off
+At `I = 60` and `C = 300` that is 151 bytes per row and minute; 2 MiB/min (2,097,152 bytes) is reached at about
+**13,900 locked rows** (about 38,800 if full-page images are left out). Put the production `C` into the formula; `wal_compression` was off
 on the copy, and the figures rest on five ticks without and one tick with full-page images. **Below the threshold:
 go on. Above it: do not switch the flag on;** either bring forward the follow-up "Slot reconcile: plan before
 locking rows (dry run)" (#411) or raise `SevenTv:ResyncIntervalSeconds` (a raise helps only the 54-byte part).
-Production at the time of writing (2 channels, about 960 rows) costs about 0.14 MB/min.
+Production at the time of writing (2 channels, about 960 rows) costs about 0.14 MiB/min.
 
 1. **Check the #406 precondition (read-only).** The UTF-8 name order of #403/#406 must be deployed, and no settled
    slot may exist yet while the flag is off:
@@ -1182,7 +1189,7 @@ Production at the time of writing (2 channels, about 960 rows) costs about 0.14 
    in the api container and in the worker container must print `true`. Anything else: stop and correct before going on.
 7. **Verify within five minutes**, against the populations below:
    - the **settle population** has no unsettled seed left, except channels whose worker log says
-     `settle deferred: v4 dates missing for N emotes` (not a lasting state: it clears within three ticks);
+     `settle deferred: v4 dates missing for N emotes` (not a lasting state; if it has not cleared after three ticks, investigate that channel before going on);
    - the **unchanged population** is byte-equal to the measurement before;
    - the **preservation population** is exact;
    - an emote under two aliases now shows two cards on the usage page, the old total on the original alias and a small
@@ -1190,8 +1197,13 @@ Production at the time of writing (2 channels, about 960 rows) costs about 0.14 
      `NOT "SeedUnsettled"` as well, because unsettled seeds of other sets are not archived. Count:
      `SELECT count(*) FROM (SELECT "EmoteId" FROM "EmoteSlots" WHERE NOT "IsArchived" AND NOT "SeedUnsettled" GROUP BY 1 HAVING count(*) > 1) t;`
      (3 for `handofblood` in the acceptance run);
-   - the log line that names the emotes left out of the match map falls to 0 (except deferred channels);
-   - `usage.flushed` without flush errors in the worker log, today's counts growing.
+   - the log line "<channel>: N active emotes are not counted until their unsettled seed of the active set is settled."
+     is gone: at 0 the worker logs instead "<channel>: every active emote with a slot is counted again — no unsettled
+     seed of the active set is left." (except deferred channels);
+   - today's counts are growing: count the rows of today before and after a few minutes
+     (`SELECT count(*), sum("UseCount") FROM "UsageStats" WHERE "Date" = '<D0>';`, with `D0` the current UTC date), and
+     the worker log has no line "Usage flush failed" and no line "Usage flush has failed" (a successful flush logs
+     nothing; `usage.flushed` is a Redis live event, not a log line).
 8. **Day 1 (logs, read-only):** `AmbiguousDelta` reasons per kind (only with the EventAPI on; `seed-of-active-set`
    only at the start, `rename-with-siblings` is the common lasting one); WAL over ten ticks against the value before;
    `/totals` latency on the largest channel; the first real delete run of a slot card sends `alias` and `entries`, and
@@ -1252,8 +1264,12 @@ Production at the time of writing (2 channels, about 960 rows) costs about 0.14 
   cascade (a channel removed during the check is dropped from the comparison and named). Today's growth (`"Date" = D0`)
   is watched separately and not compared.
 
-**Rollback (phase 1).** Stop worker and api; set the variable to `false`; bring both up; check with `printenv` in both
-containers. The backfill stays off (admission order above), so nothing is enqueued while the flag is off. The numbers
+**Rollback (phase 1).** If the backfill was switched on after phase 1, take it down **first**, in the order of
+admission: stop the api (or set the backfill flag off), empty the open runs (cancel them or close them with the
+statement of "Rolling back" under "Chat-log backfill", step 5), and with both processes stopped count the open runs and
+the seeds without rows (steps 3 and 4 above): both must be 0. Only then switch the slot flag off: stop worker and api;
+set the variable to `false`; bring both up; check with `printenv` in both containers. The backfill stays off as long as
+the slot flag is off (admission order above), so nothing is enqueued while the flag is off. The numbers
 stay right: slots stay settled, the flag-off counting writes to the oldest slot with rows of the (emote, set) pair and
 the readers sum per emote. The slot inventory goes stale while off and heals on the next run with the flag on, by the
 add date. One consequence: with the flag on, two slots of one emote can have a row on the same day, so the `Down` of
