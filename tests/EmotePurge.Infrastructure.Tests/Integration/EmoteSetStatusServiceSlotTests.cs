@@ -16,7 +16,7 @@ public class EmoteSetStatusServiceSlotTests(PostgresFixture fixture)
     private async Task<EmoteSetStatusDto> StatusAsync(Channel channel, bool slotsEnabled)
     {
         await using var db = fixture.CreateDbContext();
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db), new SlotReconcileOptions { Enabled = slotsEnabled })
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), new SlotReconcileOptions { Enabled = slotsEnabled })
             .GetAsync(channel.ChannelName);
         return status!;
     }

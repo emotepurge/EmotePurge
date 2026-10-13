@@ -106,7 +106,7 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
 
         await using (var beforeDb = fixture.CreateDbContext())
         {
-            var before = await new VoteSessionQueryService(beforeDb, new UsageStatQueryService(beforeDb))
+            var before = await new VoteSessionQueryService(beforeDb, new UsageStatQueryService(beforeDb, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On)
                 .GetResultsAsync(channel.ChannelName, openSession.Id);
             Assert.Equal(2, Assert.Single(before!.Emotes).Score);
         }
@@ -117,7 +117,7 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
         }
 
         await using var afterDb = fixture.CreateDbContext();
-        var after = await new VoteSessionQueryService(afterDb, new UsageStatQueryService(afterDb))
+        var after = await new VoteSessionQueryService(afterDb, new UsageStatQueryService(afterDb, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On)
             .GetResultsAsync(channel.ChannelName, openSession.Id);
         Assert.Equal(1, Assert.Single(after!.Emotes).Score);
         Assert.Equal(1, after.VoterCount);

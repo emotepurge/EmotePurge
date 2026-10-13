@@ -35,7 +35,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         db.Votes.Add(new Vote { VoteSessionId = session.Id, EmoteId = loved.Id, UserId = voterA.Id, Type = VoteType.Keep });
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id);
 
         Assert.NotNull(results);
@@ -60,7 +60,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
 
         var withheld = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: false);
         Assert.Null(Assert.Single(withheld!.Emotes).TotalUseCount);
@@ -80,7 +80,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         var session = await SeedActiveSessionAsync(db, channel.Id);
         await SeedBallotAsync(db, session.Id, onBallot.Id, alsoOnBallot.Id);
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id);
 
         Assert.Equal(2, results!.Emotes.Count);
@@ -101,7 +101,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         emote.IsArchived = true;
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
 
         var result = Assert.Single(results!.Emotes);
@@ -122,7 +122,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         var session = await SeedActiveSessionAsync(db, channel.Id);
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id);
 
         var result = Assert.Single(results!.Emotes);
@@ -145,7 +145,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         db.Votes.Add(new Vote { VoteSessionId = session.Id, EmoteId = emoteA.Id, UserId = casualVoter.Id, Type = VoteType.Keep });
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id);
 
         Assert.Equal(2, results!.VoterCount);
@@ -162,7 +162,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         db.Votes.Add(new Vote { VoteSessionId = session.Id, EmoteId = emote.Id, UserId = viewer.Id, Type = VoteType.Keep });
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerTwitchUserId: viewer.Id);
 
         var result = Assert.Single(results!.Emotes);
@@ -183,7 +183,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         db.Votes.Add(new Vote { VoteSessionId = session.Id, EmoteId = loved.Id, UserId = voter.Id, Type = VoteType.Keep });
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerTwitchUserId: voter.Id);
 
         Assert.True(results!.HideResultsUntilEnd);
@@ -215,7 +215,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         db.Votes.Add(new Vote { VoteSessionId = session.Id, EmoteId = loved.Id, UserId = voter.Id, Type = VoteType.Keep });
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
 
         Assert.Equal(-1, results!.Emotes.Single(r => r.EmoteId == doomed.Id).Score);
@@ -237,7 +237,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         session.EndedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id);
 
         // The flag stays reported (the list still labels the session), but it no longer withholds.
@@ -258,7 +258,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         db.Votes.Add(new Vote { VoteSessionId = session.Id, EmoteId = emote.Id, UserId = voter.Id, Type = VoteType.Keep });
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id);
 
         Assert.False(results!.HideResultsUntilEnd);
@@ -281,7 +281,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         await SeedSetBallotAsync(db, session.Id, member.Id, "GoneFromSet", member.ImageUrl);
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
 
         var result = Assert.Single(results!.Emotes);
@@ -306,7 +306,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         await SeedSetBallotAsync(db, session.Id, member.Id, "TwoSets", member.ImageUrl);
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
 
         Assert.Equal(7, Assert.Single(results!.Emotes).TotalUseCount);
@@ -327,7 +327,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         await SeedBallotAsync(db, session.Id, emote.Id);
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
 
         Assert.Equal(13, Assert.Single(results!.Emotes).TotalUseCount);
@@ -347,7 +347,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         await SeedBallotAsync(db, session.Id, emote.Id);
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
 
         Assert.Equal(13, Assert.Single(results!.Emotes).TotalUseCount);
@@ -366,7 +366,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         await SeedBallotAsync(db, session.Id, emote.Id);
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
 
         Assert.Equal(4, Assert.Single(results!.Emotes).TotalUseCount);
@@ -386,7 +386,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         await SeedBallotAsync(db, session.Id, emote.Id);
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
 
         Assert.Equal(3, Assert.Single(results!.Emotes).TotalUseCount);
@@ -405,7 +405,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         await SeedSetBallotAsync(db, session.Id, member.Id, "NeverCounted", member.ImageUrl);
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
 
         Assert.Null(Assert.Single(results!.Emotes).TotalUseCount);
@@ -436,7 +436,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id, viewerIsManager: true);
 
         Assert.Equal(0, Assert.Single(results!.Emotes).TotalUseCount);
@@ -456,7 +456,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         member.Name = "RenamedBySync";
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id);
 
         Assert.Equal("FrozenAtCreation", Assert.Single(results!.Emotes).EmoteName);
@@ -470,7 +470,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         var open = await SeedActiveSessionAsync(db, channel.Id, startedAt: DateTime.UtcNow.AddMinutes(-2));
         var hidden = await SeedActiveSessionAsync(db, channel.Id, startedAt: DateTime.UtcNow.AddMinutes(-1), hideResultsUntilEnd: true);
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var page = await service.ListSessionsPagedAsync(channel.ChannelName, page: 1, pageSize: 10);
 
         Assert.True(page.Items.Single(i => i.Id == hidden.Id).HideResultsUntilEnd);
@@ -485,7 +485,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         var session = await SeedActiveSessionAsync(
             db, channel.Id, allowedVoterRoles: AllowedRoles.Mods | AllowedRoles.Broadcaster);
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
 
         // Not manager-gated: the audience describes the session, and the detail page badges it for
         // whoever got past VoteAudienceFilter.
@@ -499,7 +499,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "votetest4");
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, sessionId: 999_999);
 
         Assert.Null(results);
@@ -510,7 +510,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync("does-not-exist", sessionId: 1);
 
         Assert.Null(results);
@@ -526,7 +526,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         await SeedActiveSessionAsync(db, channel.Id, startedAt: now.AddMinutes(-2));
         await SeedActiveSessionAsync(db, channel.Id, startedAt: now.AddMinutes(-1));
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
 
         var firstPage = await service.ListSessionsPagedAsync(channel.ChannelName, page: 1, pageSize: 2);
         Assert.Equal(2, firstPage.Items.Count);
@@ -548,7 +548,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         var subsetSession = await SeedActiveSessionAsync(db, channel.Id, startedAt: DateTime.UtcNow.AddMinutes(-1));
         await SeedBallotAsync(db, subsetSession.Id, emoteA.Id, emoteB.Id);
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var page = await service.ListSessionsPagedAsync(channel.ChannelName, page: 1, pageSize: 10);
 
         Assert.Equal(2, page.Items[0].EmoteCount); // subsetSession, created last
@@ -567,7 +567,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         var firstCreated = await SeedActiveSessionAsync(db, channel.Id, startedAt: now.AddMinutes(-1));
         var lastCreated = await SeedActiveSessionAsync(db, channel.Id, startedAt: now.AddDays(-30));
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var page = await service.ListSessionsPagedAsync(channel.ChannelName, page: 1, pageSize: 10);
 
         Assert.Equal(lastCreated.Id, page.Items[0].Id);
@@ -589,7 +589,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         db.Votes.Add(new Vote { VoteSessionId = sessionB.Id, EmoteId = emoteB.Id, UserId = voter.Id, Type = VoteType.Delete });
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var page = await service.ListMyVoteSessionsAsync(voter.Id, page: 1, pageSize: 20);
 
         Assert.Equal(2, page.TotalCount);
@@ -609,7 +609,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         db.Votes.Add(new Vote { VoteSessionId = session.Id, EmoteId = emote.Id, UserId = otherVoter.Id, Type = VoteType.Keep });
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var page = await service.ListMyVoteSessionsAsync(targetVoter.Id, page: 1, pageSize: 20);
 
         Assert.Empty(page.Items);
@@ -632,7 +632,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         db.Votes.Add(new Vote { VoteSessionId = sessionB.Id, EmoteId = emoteB.Id, UserId = voter.Id, Type = VoteType.Keep, UpdatedAt = now.AddMinutes(-1) });
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var page = await service.ListMyVoteSessionsAsync(voter.Id, page: 1, pageSize: 20);
 
         Assert.Equal(sessionB.Id, page.Items[0].SessionId);
@@ -653,7 +653,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         db.Votes.Add(new Vote { VoteSessionId = session.Id, EmoteId = emoteB.Id, UserId = voter.Id, Type = VoteType.Delete, UpdatedAt = now.AddMinutes(-1) });
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var page = await service.ListMyVoteSessionsAsync(voter.Id, page: 1, pageSize: 20);
 
         var item = Assert.Single(page.Items);
@@ -675,7 +675,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
             await db.SaveChangesAsync();
         }
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
 
         var firstPage = await service.ListMyVoteSessionsAsync(voter.Id, page: 1, pageSize: 2);
         Assert.Equal(2, firstPage.Items.Count);
@@ -703,7 +703,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
             new VoteSessionEmote { VoteSessionId = session.Id, EmoteId = legacy.Id });
         await db.SaveChangesAsync();
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db));
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On);
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id);
 
         var byId = results!.Emotes.ToDictionary(r => r.EmoteId);
@@ -732,7 +732,7 @@ public class VoteSessionQueryServiceTests(PostgresFixture fixture)
         await db.SaveChangesAsync();
         var session = await SeedActiveSessionAsync(db, channel.Id);
 
-        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db), new SlotReconcileOptions { Enabled = flag });
+        var service = new VoteSessionQueryService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), new SlotReconcileOptions { Enabled = flag });
         var results = await service.GetResultsAsync(channel.ChannelName, session.Id);
 
         var row = results!.Emotes.Single(r => r.EmoteId == emote.Id);

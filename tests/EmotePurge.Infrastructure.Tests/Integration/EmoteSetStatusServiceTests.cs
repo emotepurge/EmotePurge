@@ -22,7 +22,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await SeedEmoteAsync(db, channel.Id, "Two");
         await SeedEmoteAsync(db, channel.Id, "AlreadyDeleted", isArchived: true);
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Equal(2, status.OccupiedSlots);
@@ -38,7 +38,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "slotstest2", capacity: null);
         await SeedEmoteAsync(db, channel.Id, "One");
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Null(status.Capacity);
@@ -56,7 +56,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         channel.TrackingResumedAt = new DateTime(2026, 7, 20, 0, 0, 0, DateTimeKind.Utc);
         await db.SaveChangesAsync();
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Equal(new DateTime(2026, 7, 20, 0, 0, 0, DateTimeKind.Utc), status.TrackedSince);
@@ -70,7 +70,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         channel.CreatedAt = new DateTime(2026, 3, 5, 0, 0, 0, DateTimeKind.Utc);
         await db.SaveChangesAsync();
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Equal(new DateTime(2026, 3, 5, 0, 0, 0, DateTimeKind.Utc), status.TrackedSince);
@@ -84,7 +84,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "slotstest5", capacity: null, activeEmoteSetId: "");
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Equal(string.Empty, status.ActiveEmoteSetId);
@@ -103,7 +103,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         channel.LastSyncAttemptAtUtc = new DateTime(2026, 8, 29, 10, 0, 0, DateTimeKind.Utc);
         await db.SaveChangesAsync();
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Equal("no_active_emote_set", status.SyncFailureReason);
@@ -118,7 +118,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "slotstest8", capacity: null, activeEmoteSetId: "");
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Null(status.SyncFailureReason);
@@ -132,7 +132,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "slotstest6", capacity: 600);
         await SeedEmoteAsync(db, channel.Id, "One");
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync("  SlotsTest6 ");
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync("  SlotsTest6 ");
 
         Assert.NotNull(status);
         Assert.Equal(1, status.OccupiedSlots);
@@ -143,7 +143,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync("slotstest_missing");
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync("slotstest_missing");
 
         Assert.Null(status);
     }
@@ -157,7 +157,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await SeedEmoteAsync(db, channel.Id, "Dup", sevenTvEmoteId: "7tv-a");
         await SeedEmoteAsync(db, channel.Id, "Solo", sevenTvEmoteId: "7tv-c");
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         var group = Assert.Single(status.DuplicateNames);
@@ -176,7 +176,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await SeedEmoteAsync(db, channel.Id, "Dup");
         await SeedEmoteAsync(db, channel.Id, "Dup", isArchived: true);
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Empty(status.DuplicateNames);
@@ -194,7 +194,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await SeedEmoteAsync(db, channel.Id, "Emote");
         await SeedEmoteAsync(db, channel.Id, "emote");
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Empty(status.DuplicateNames);
@@ -208,7 +208,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await SeedEmoteAsync(db, channel.Id, "One");
         await SeedEmoteAsync(db, channel.Id, "Two");
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Empty(status.DuplicateNames);
@@ -226,7 +226,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await SeedEmoteAsync(db, channel.Id, "Dup");
         await SeedEmoteAsync(db, channel.Id, "Dup");
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Empty(status.DuplicateNames);
@@ -248,7 +248,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Equal(new DateOnly(2026, 8, 15), status.BotsExcludedSince);
@@ -264,7 +264,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Null(status.BotsExcludedSince);
@@ -284,7 +284,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Null(status.BotsExcludedSince);
@@ -302,7 +302,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Equal(new DateOnly(2026, 8, 5), status.BotsExcludedSince);
@@ -324,7 +324,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Equal(new DateOnly(2026, 8, 15), status.SharedChatSeparatedSince);
@@ -341,7 +341,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Null(status.SharedChatSeparatedSince);
@@ -361,7 +361,7 @@ public class EmoteSetStatusServiceTests(PostgresFixture fixture)
         await db.AssignUsageSlotsAsync();
         await db.SaveChangesAsync();
 
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db)).GetAsync(channel.ChannelName);
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db, slotReconcile: SlotFlag.On), slotReconcile: SlotFlag.On).GetAsync(channel.ChannelName);
 
         Assert.NotNull(status);
         Assert.Null(status.SharedChatSeparatedSince);
