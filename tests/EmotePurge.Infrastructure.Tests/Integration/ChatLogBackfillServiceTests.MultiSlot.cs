@@ -475,7 +475,7 @@ public partial class ChatLogBackfillServiceTests
                     return;
                 }
 
-                rest = Task.Run(() => SlotSyncKit.CreateService(restDb, SlotSyncKit.ApiReturning(channel, ActiveSetId, Live("X", "C", EntryT1)), slotsEnabled: true)
+                rest = Task.Run(() => SlotSyncKit.CreateService(restDb, SlotSyncKit.ApiReturning(channel, ActiveSetId, Live("X", "C", EntryT1)))
                     .SyncChannelAsync(channel.ChannelName));
                 await fixture.WaitUntilBlockedOnLockAsync(tag, rest);
             });
@@ -520,7 +520,7 @@ public partial class ChatLogBackfillServiceTests
             });
         await using (var restDb = fixture.CreateTaggedDbContext("bfmulti27b-rest", [hook], databaseName: DatabaseName))
         {
-            Assert.NotNull(await SlotSyncKit.CreateService(restDb, SlotSyncKit.ApiReturning(channel, ActiveSetId, Live("X", "A", EntryT1)), slotsEnabled: true)
+            Assert.NotNull(await SlotSyncKit.CreateService(restDb, SlotSyncKit.ApiReturning(channel, ActiveSetId, Live("X", "A", EntryT1)))
                 .SyncChannelAsync(channel.ChannelName));
         }
 
@@ -731,7 +731,7 @@ public partial class ChatLogBackfillServiceTests
     private async Task RestOnAsync(Channel channel, string emoteSetId, params SevenTvEmote[] live)
     {
         await using var db = CreateDbContext();
-        Assert.NotNull(await SlotSyncKit.CreateService(db, SlotSyncKit.ApiReturning(channel, emoteSetId, live), slotsEnabled: true)
+        Assert.NotNull(await SlotSyncKit.CreateService(db, SlotSyncKit.ApiReturning(channel, emoteSetId, live))
             .SyncChannelAsync(channel.ChannelName));
     }
 

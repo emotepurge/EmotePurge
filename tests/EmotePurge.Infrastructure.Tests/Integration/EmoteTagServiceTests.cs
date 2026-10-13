@@ -2916,7 +2916,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
     private async Task SyncSlotsOnAsync(Channel channel, string set, params SevenTvEmote[] live)
     {
         await using var db = fixture.CreateDbContext();
-        Assert.NotNull(await SlotSyncKit.SyncAsync(db, channel, slotsEnabled: true, set, logger: null, live));
+        Assert.NotNull(await SlotSyncKit.SyncAsync(db, channel, set, logger: null, live));
     }
 
     private async Task<bool> PlacedByThisTagAsync(Channel channel, long tagId)

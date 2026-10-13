@@ -36,14 +36,8 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         new(pushed ?? [], updated ?? [], (pulledIds ?? []).Select(id => new SevenTvPulledEntry(id)).ToList());
 
     private static SevenTvSyncService CreateService(Persistence.AppDbContext db, EmoteMatchCache cache) =>
-        CreateServiceCore(SlotFlag.On, db, cache);
-
-    private static SevenTvSyncService CreateServiceFlagOff(Persistence.AppDbContext db, EmoteMatchCache cache) =>
-        CreateServiceCore(SlotFlag.Off, db, cache);
-
-    private static SevenTvSyncService CreateServiceCore(SlotReconcileOptions slotReconcile, Persistence.AppDbContext db, EmoteMatchCache cache) =>
         new(db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(),
-            new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: slotReconcile);
+            new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
     // The REST answer a seeded channel would get back unchanged — same set, same emotes, same
     // image urls, so a sync over it is a true no-op.
@@ -52,31 +46,12 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         EmoteMatchCache cache,
         Channel channel,
         string emoteSetId,
-        params SevenTvEmote[] liveEmotes) =>
-        CreateRestServiceCore(SlotFlag.On, db, cache, channel, emoteSetId, liveEmotes);
-
-    // The same service with the slot reconcile pinned off, for the cases whose assertion is flag-off
-    // behaviour (pending usage keys, the emote column as the first-seen authority).
-    private static SevenTvSyncService CreateRestServiceFlagOff(
-        Persistence.AppDbContext db,
-        EmoteMatchCache cache,
-        Channel channel,
-        string emoteSetId,
-        params SevenTvEmote[] liveEmotes) =>
-        CreateRestServiceCore(SlotFlag.Off, db, cache, channel, emoteSetId, liveEmotes);
-
-    private static SevenTvSyncService CreateRestServiceCore(
-        SlotReconcileOptions slotReconcile,
-        Persistence.AppDbContext db,
-        EmoteMatchCache cache,
-        Channel channel,
-        string emoteSetId,
-        SevenTvEmote[] liveEmotes)
+        params SevenTvEmote[] liveEmotes)
     {
         var apiClient = Substitute.For<ISevenTvApiClient>();
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(emoteSetId, liveEmotes))));
-        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: slotReconcile);
+        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
     }
 
     // Same as CreateRestService, but with an explicit set capacity. Separate method because a
@@ -93,7 +68,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var apiClient = Substitute.For<ISevenTvApiClient>();
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(emoteSetId, liveEmotes, capacity))));
-        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
     }
 
     // As CreateRestService, but with a logger of the caller's choosing. Separate method for the
@@ -104,31 +79,12 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Channel channel,
         string emoteSetId,
         ILogger<SevenTvSyncService> logger,
-        params SevenTvEmote[] liveEmotes) =>
-        CreateRestServiceWithLoggerCore(SlotFlag.On, db, cache, channel, emoteSetId, logger, liveEmotes);
-
-    private static SevenTvSyncService CreateRestServiceWithLoggerFlagOff(
-        Persistence.AppDbContext db,
-        EmoteMatchCache cache,
-        Channel channel,
-        string emoteSetId,
-        ILogger<SevenTvSyncService> logger,
-        params SevenTvEmote[] liveEmotes) =>
-        CreateRestServiceWithLoggerCore(SlotFlag.Off, db, cache, channel, emoteSetId, logger, liveEmotes);
-
-    private static SevenTvSyncService CreateRestServiceWithLoggerCore(
-        SlotReconcileOptions slotReconcile,
-        Persistence.AppDbContext db,
-        EmoteMatchCache cache,
-        Channel channel,
-        string emoteSetId,
-        ILogger<SevenTvSyncService> logger,
-        SevenTvEmote[] liveEmotes)
+        params SevenTvEmote[] liveEmotes)
     {
         var apiClient = Substitute.For<ISevenTvApiClient>();
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(emoteSetId, liveEmotes))));
-        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), logger, slotReconcile: slotReconcile);
+        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), logger);
     }
 
     private static string SeededImageUrl(string sevenTvId) => $"https://cdn.7tv.app/emote/{sevenTvId}/2x.webp";
@@ -149,8 +105,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
             new RecordingSevenTvSearchBudget(),
             new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
-            logger ?? NullLogger<SevenTvSyncService>.Instance,
-            slotReconcile: SlotFlag.On);
+            logger ?? NullLogger<SevenTvSyncService>.Instance);
 
     // An id-less row with emotes — the shape a Helix outage at join time leaves behind (#245, D3).
     private async Task<Channel> SeedIdLessChannelAsync(Persistence.AppDbContext db, string name, params (string SevenTvId, string Name, bool Archived)[] emotes)
@@ -190,8 +145,8 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
                 IsArchived = archived
             };
             db.Emotes.Add(emote);
-            // With the slot reconcile on, the match map is built from settled slots, so a seeded emote
-            // needs its base slot to be matched at all (an emote row alone is invisible to the map).
+            // The match map is built from settled slots, so a seeded emote needs its base slot to be
+            // matched at all (an emote row alone is invisible to the map).
             db.EmoteSlots.Add(new EmoteSlot { Emote = emote, Name = emoteName, IsArchived = archived });
         }
 
@@ -210,7 +165,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user", new SevenTvEmoteSet(SetId,
                 [LiveEmote("7tv-dup-a", "Dup"), LiveEmote("7tv-dup-b", "Dup"), LiveEmote("7tv-solo", "Solo")]))));
-        var service = new SevenTvSyncService(db, apiClient, cache, tracker, new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+        var service = new SevenTvSyncService(db, apiClient, cache, tracker, new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
         await service.SyncChannelAsync(channel.ChannelName);
 
@@ -281,10 +236,12 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_rename", ("e1", "oldname", false));
-        var service = CreateServiceFlagOff(db, cache);
+        var service = CreateService(db, cache);
 
+        // The rename names its old alias: with one active slot under that name it is renamed in place
+        // (a rename without the old name is ambiguous per slot and covered by the slot delta tests).
         var result = await service.ApplyEmoteSetUpdateAsync(
-            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", null, "newname", "https://cdn/e1.webp")]));
+            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", "oldname", "newname", "https://cdn/e1.webp")]));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1");
@@ -384,10 +341,10 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_imageurl", ("e1", "pic", false));
-        var service = CreateServiceFlagOff(db, cache);
+        var service = CreateService(db, cache);
 
         var result = await service.ApplyEmoteSetUpdateAsync(
-            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", null, "pic_renamed", "")]));
+            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", "pic", "pic_renamed", "")]));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1");
@@ -408,7 +365,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState(
                 "7tv-user-77",
                 new SevenTvEmoteSet(SetId, [new SevenTvEmote("e1", "hi", "https://cdn/e1.webp")]))));
-        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
         var result = await service.SyncChannelAsync("wstest_syncresult");
 
@@ -469,7 +426,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var channel = await db.Channels.SingleAsync(c => c.ChannelName == "wstest_ak78_retry");
         var cache = new EmoteMatchCache();
         var logger = new RecordingLogger<SevenTvSyncService>();
-        var service = CreateRestServiceWithLoggerFlagOff(
+        var service = CreateRestServiceWithLogger(
             db, cache, channel, SetId, logger,
             LiveEmote("e1", "stable"),
             new SevenTvEmote("race-x", "RaceX", SeededImageUrl("race-x"), addedAt));
@@ -499,8 +456,11 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Null(reloadedChannel.LastSyncFailureReason);
         Assert.True(await verifyDb.ChannelEmoteSetObservations.AnyAsync(
             o => o.ChannelId == channel.Id && o.SevenTvEmoteSetId == SetId && o.ObservedToUtc == null));
-        // Flag off and no usage row yet: the map hands out the pending key of the emote (plan #373, E8).
-        Assert.Equal(PendingSlotKey.For(row.Id), cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId["RaceX"]);
+        // The dated entry settled one slot on the adopted row, and the map counts under that slot (plan
+        // #373, E7).
+        var slot = await verifyDb.EmoteSlots.SingleAsync(s => s.EmoteId == row.Id);
+        Assert.Equal(addedAt, slot.AddedAt);
+        Assert.Equal(slot.Id, cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId["RaceX"]);
         Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
     }
 
@@ -788,9 +748,13 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_firstseen_keep", ("e1", "stable", false));
         var known = new DateTime(2026, 1, 9, 6, 0, 0, DateTimeKind.Utc);
+        // FirstSeenAt is derived from the emote's oldest dated slot (D13), so the known date sits on the
+        // slot as well as on the row; a live entry without a date must leave both alone.
         await db.Emotes.Where(e => e.ChannelId == channel.Id)
             .ExecuteUpdateAsync(s => s.SetProperty(e => e.FirstSeenAt, known));
-        var service = CreateRestServiceFlagOff(db, cache, channel, SetId, LiveEmote("e1", "stable"));
+        await db.EmoteSlots.Where(s => s.Emote.ChannelId == channel.Id)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.AddedAt, known).SetProperty(x => x.AddedAtFromRest, true));
+        var service = CreateRestService(db, cache, channel, SetId, LiveEmote("e1", "stable"));
 
         await service.SyncChannelAsync(channel.ChannelName);
 
@@ -857,12 +821,12 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_firstseen_dispatch", ("e1", "stable", false));
-        var service = CreateServiceFlagOff(db, cache);
+        var service = CreateService(db, cache);
 
         var result = await service.ApplyEmoteSetUpdateAsync(
             channel.ChannelName,
             SetId,
-            Delta(updated: [new SevenTvEmoteRename("e1", null, "stable", SeededImageUrl("e1"))]));
+            Delta(updated: [new SevenTvEmoteRename("e1", "stable", "stable", SeededImageUrl("e1"))]));
 
         Assert.Equal(SevenTvDeltaOutcome.NoChange, result.Outcome);
         Assert.Null(await db.Emotes
@@ -957,7 +921,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var apiClient = Substitute.For<ISevenTvApiClient>();
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Failed(status));
-        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+        return new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
     }
 
     [Theory]
@@ -1100,7 +1064,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var apiClient = Substitute.For<ISevenTvApiClient>();
         apiClient.ResolveTwitchUserIdAsync("wstest_reason_noid", Arg.Any<CancellationToken>())
             .Returns(SevenTvTwitchUserIdResult.Failed(SevenTvLookupStatus.NoSevenTvAccount));
-        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
         var result = await service.SyncChannelAsync("wstest_reason_noid");
 
@@ -1128,7 +1092,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
             .Returns(SevenTvTwitchUserIdResult.Ok("222"));
         apiClient.GetChannelStateForTwitchUserAsync("222", Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user-222", new SevenTvEmoteSet(SetId, [LiveEmote("e1", "hi")]))));
-        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
@@ -1153,7 +1117,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         excludedChannelFilter.IsExcluded(channel.TwitchChannelId).Returns(true);
         var logger = new RecordingLogger<SevenTvSyncService>();
         var service = new SevenTvSyncService(
-            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), excludedChannelFilter, new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), logger, slotReconcile: SlotFlag.On);
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), excludedChannelFilter, new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), logger);
 
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
@@ -1181,7 +1145,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         excludedChannelFilter.IsExcluded("880001").Returns(true);
         var logger = new RecordingLogger<SevenTvSyncService>();
         var service = new SevenTvSyncService(
-            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), excludedChannelFilter, new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), logger, slotReconcile: SlotFlag.On);
+            db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), excludedChannelFilter, new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), logger);
 
         var result = await service.SyncChannelAsync(channel.ChannelName);
 
@@ -1208,7 +1172,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         excludedChannelFilter.IsExcluded(channel.TwitchChannelId).Returns(true);
         var service = new SevenTvSyncService(
             db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(),
-            excludedChannelFilter, new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+            excludedChannelFilter, new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
         var result = await service.ApplyEmoteSetUpdateAsync(channel.ChannelName, SetId, Delta(pulledIds: ["e1"]));
 
@@ -1226,7 +1190,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_warmonly", ("e1", "active", false), ("e2", "archived", true));
         var apiClient = Substitute.For<ISevenTvApiClient>();
-        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
         await service.WarmChannelAsync("WSTEST_WarmOnly");
 
@@ -1245,7 +1209,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_warmonly_filled", ("e1", "postgresonly", false));
         cache.ReplaceChannel(channel.ChannelName, SetId, new Dictionary<string, string> { ["markeronly"] = "marker-id" });
-        var service = new SevenTvSyncService(db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+        var service = new SevenTvSyncService(db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
         await service.WarmChannelAsync(channel.ChannelName);
 
@@ -1263,7 +1227,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var apiClient = Substitute.For<ISevenTvApiClient>();
         var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
         excludedChannelFilter.IsExcluded(channel.TwitchChannelId).Returns(true);
-        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), excludedChannelFilter, new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), excludedChannelFilter, new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
         await service.WarmChannelAsync(channel.ChannelName);
         await service.WarmChannelAsync("wstest_warmonly_nosuchchannel");
@@ -1513,7 +1477,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         // member; the real bug is the unique-index collision that follows, not a missing stub.
         apiClient.GetChannelStateForTwitchUserAsync("111", Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-user-dup", new SevenTvEmoteSet(SetId, [LiveEmote("e1", "hi")]))));
-        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+        var service = new SevenTvSyncService(db, apiClient, cache, new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System), new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), NullLogger<SevenTvSyncService>.Instance);
 
         var result = await service.SyncChannelAsync(renamed.ChannelName);
 
@@ -1612,24 +1576,23 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_ak14_split", ("e1", "combo", false));
-        var beforeSwitch = CreateRestServiceFlagOff(db, cache, channel, SetId, LiveEmote("e1", "combo"));
+        var beforeSwitch = CreateRestService(db, cache, channel, SetId, LiveEmote("e1", "combo"));
         Assert.NotNull(await beforeSwitch.SyncChannelAsync(channel.ChannelName));
         var counts = new Dictionary<UsageCounterKey, int>();
 
         CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "combo"); // before
 
-        var afterSwitch = CreateRestServiceFlagOff(db, cache, channel, SwitchedSetId, LiveEmote("e1", "combo"));
+        var afterSwitch = CreateRestService(db, cache, channel, SwitchedSetId, LiveEmote("e1", "combo"));
         Assert.NotNull(await afterSwitch.SyncChannelAsync(channel.ChannelName));
 
         CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "combo"); // during
         CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "combo"); // after
 
-        var emoteId = await db.Emotes.Where(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1")
-            .Select(e => e.Id).SingleAsync();
+        var slotId = await SingleSlotIdAsync(db, channel, "e1");
         Assert.Equal(2, counts.Count);
-        // Flag off, no usage rows: the key is the emote's pending key in both sets (plan #373, E8).
-        Assert.Equal(1, counts[new UsageCounterKey(PendingSlotKey.For(emoteId), SetId)]);
-        Assert.Equal(2, counts[new UsageCounterKey(PendingSlotKey.For(emoteId), SwitchedSetId)]);
+        // The slot is the same in both sets (a slot is per emote and name, not per set); the set id splits.
+        Assert.Equal(1, counts[new UsageCounterKey(slotId, SetId)]);
+        Assert.Equal(2, counts[new UsageCounterKey(slotId, SwitchedSetId)]);
     }
 
     [Fact]
@@ -1641,30 +1604,35 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_ak14_stare");
-        var beforeSwitch = CreateRestServiceFlagOff(db, cache, channel, SetId, LiveEmote("stare-a", "Stare"));
+        var beforeSwitch = CreateRestService(db, cache, channel, SetId, LiveEmote("stare-a", "Stare"));
         Assert.NotNull(await beforeSwitch.SyncChannelAsync(channel.ChannelName));
         var counts = new Dictionary<UsageCounterKey, int>();
 
         CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "Stare"); // row A, before
 
-        var afterSwitch = CreateRestServiceFlagOff(db, cache, channel, SwitchedSetId, LiveEmote("stare-b", "Stare"));
+        var afterSwitch = CreateRestService(db, cache, channel, SwitchedSetId, LiveEmote("stare-b", "Stare"));
         Assert.NotNull(await afterSwitch.SyncChannelAsync(channel.ChannelName));
 
         CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "Stare"); // row B, after
         CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "Stare"); // row B, after
 
-        var rowAId = await db.Emotes.Where(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "stare-a")
-            .Select(e => e.Id).SingleAsync();
-        var rowBId = await db.Emotes.Where(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "stare-b")
-            .Select(e => e.Id).SingleAsync();
-        Assert.NotEqual(rowAId, rowBId);
+        var slotAId = await SingleSlotIdAsync(db, channel, "stare-a");
+        var slotBId = await SingleSlotIdAsync(db, channel, "stare-b");
+        Assert.NotEqual(slotAId, slotBId);
         Assert.Equal(2, counts.Count);
-        Assert.Equal(1, counts[new UsageCounterKey(PendingSlotKey.For(rowAId), SetId)]);
-        Assert.Equal(2, counts[new UsageCounterKey(PendingSlotKey.For(rowBId), SwitchedSetId)]);
+        Assert.Equal(1, counts[new UsageCounterKey(slotAId, SetId)]);
+        Assert.Equal(2, counts[new UsageCounterKey(slotBId, SwitchedSetId)]);
         // Never counted on both: neither row's key appears combined with the other switch state.
-        Assert.False(counts.ContainsKey(new UsageCounterKey(PendingSlotKey.For(rowAId), SwitchedSetId)));
-        Assert.False(counts.ContainsKey(new UsageCounterKey(PendingSlotKey.For(rowBId), SetId)));
+        Assert.False(counts.ContainsKey(new UsageCounterKey(slotAId, SwitchedSetId)));
+        Assert.False(counts.ContainsKey(new UsageCounterKey(slotBId, SetId)));
     }
+
+    // The one slot of a 7TV emote of the channel — the key the map counts it under.
+    private static Task<string> SingleSlotIdAsync(Persistence.AppDbContext db, Channel channel, string sevenTvId) =>
+        db.EmoteSlots
+            .Where(s => s.Emote.ChannelId == channel.Id && s.Emote.SevenTvEmoteId == sevenTvId)
+            .Select(s => s.Id)
+            .SingleAsync();
 
     // A switch line is the only one that has to name both sets at once, which identifies it without
     // pinning its prose.
@@ -1674,7 +1642,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
             && e.Message.Contains(SwitchedSetId, StringComparison.Ordinal))];
 
     // The forced interleaving for AK 78. Fires inside the worker context's SavingChangesAsync — after
-    // ReconcileAsync has read the rows and staged its inserts, before any INSERT is sent — and, for
+    // ReconcileSlotsAsync has read the rows and staged its inserts, before any INSERT is sent — and, for
     // the first maxInsertions saves that stage an Emote insert, commits one of those same keys from
     // a second AppDbContext first. The SQL mirrors VoteSessionService.UpsertSetSessionEmotesAsync:
     // an archived row with no archive date, inserted ON CONFLICT DO NOTHING.

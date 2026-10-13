@@ -53,7 +53,7 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
     private readonly IForeignEmoteSetService _foreign = Substitute.For<IForeignEmoteSetService>();
 
     // xUnit builds one instance per case: a case that asserts the flag-off snapshot and binding behaviour
-    // calls PinFlagOff() first; CreateService and CreateSyncService read this.
+    // calls PinFlagOff() first; CreateService reads this (the sync of CreateSyncService has no flag).
     private bool _slotsEnabled = true;
 
     public async Task InitializeAsync()
@@ -347,34 +347,6 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
 
         Assert.Equal(ChatLogBackfillEnqueueStatus.AlreadyActive, result.Status);
         await _foreign.DidNotReceiveWithAnyArgs().GetForeignEmoteSetBySetIdAsync(default!, default!, default, default);
-    }
-
-    // EPIC AC 26: the same 7TV id under two aliases — one snapshot row and one Emote row with the LAST
-    // alias, the name the reconcile itself stores for the same list (#341).
-    [Fact]
-    public async Task Enqueue_DuplicateSevenTvId_KeepsTheLastAlias_LikeTheReconcile()
-    {
-        PinFlagOff();
-        var channel = await SeedChannelAsync("bfdupe", activeSetId: SetB);
-        await SeedUserAsync();
-        PreviewReturns(SetB, "Set B", Member("dup1", "FirstAlias", null), Member("other1", "Other", null), Member("dup1", "LastAlias", null));
-
-        var result = await EnqueueAsync(channel, SetB, months: 6);
-
-        Assert.Equal(2, result.Run!.EmoteCount);
-        await using (var verify = CreateDbContext())
-        {
-            Assert.Equal("LastAlias", (await verify.ChatLogBackfillRunEmotes.AsNoTracking().SingleAsync(e => e.SevenTvEmoteId == "dup1")).Name);
-            Assert.Equal("LastAlias", (await verify.Emotes.AsNoTracking().SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "dup1")).Name);
-        }
-
-        await SyncAsync(channel, SetB, Live("dup1", "FirstAlias"), Live("other1", "Other"), Live("dup1", "LastAlias"));
-
-        await using (var verify = CreateDbContext())
-        {
-            var row = await verify.Emotes.AsNoTracking().SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "dup1");
-            Assert.Equal(("LastAlias", false), (row.Name, row.IsArchived));
-        }
     }
 
     // Child 3 AC 4 / EPIC AC 21: a row the enqueue created is found by the reconcile when its set becomes
@@ -871,7 +843,7 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
             new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
             new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
-            NullLogger<SevenTvSyncService>.Instance, slotReconcile: new SlotReconcileOptions { Enabled = _slotsEnabled });
+            NullLogger<SevenTvSyncService>.Instance);
 
     private static ISevenTvApiClient RestAnswering(Channel channel, string emoteSetId, params SevenTvEmote[] liveEmotes)
     {

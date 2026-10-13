@@ -112,7 +112,7 @@ public class AddEmotePlaceholderMarkerMigrationTests(PostgresFixture fixture)
                 new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
                 new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
                 new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
-                NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+                NullLogger<SevenTvSyncService>.Instance);
             Assert.NotNull(await service.SyncChannelAsync("migrationresync"));
         }
 

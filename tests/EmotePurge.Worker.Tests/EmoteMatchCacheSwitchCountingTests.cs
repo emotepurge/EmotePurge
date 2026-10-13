@@ -44,7 +44,7 @@ public class EmoteMatchCacheSwitchCountingTests
         Assert.Equal(2, drained[new UsageCounterKey("emote-1", SetB)].Human);
     }
 
-    // AK 17 / O1 (emote slots spec): while the flag-on map leaves an emote out (a seed of the active set
+    // AK 17 / O1 (emote slots spec): while the match map leaves an emote out (a seed of the active set
     // is not settled yet) nothing of it is counted; once the map carries its two slots, one message with
     // both names counts +1 on each slot — deduplicated per slot, not per emote.
     [Fact]

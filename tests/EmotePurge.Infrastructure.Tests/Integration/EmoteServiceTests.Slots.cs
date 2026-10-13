@@ -630,7 +630,7 @@ public partial class EmoteServiceTests
     private async Task SyncOnSetAsync(Channel channel, string set, params SevenTvEmote[] live)
     {
         await using var db = fixture.CreateDbContext();
-        Assert.NotNull(await SyncAsync(db, channel, slotsEnabled: true, set, logger: null, live));
+        Assert.NotNull(await SyncAsync(db, channel, set, logger: null, live));
     }
 
     private async Task<Channel> SeedOnAsync(string name, string set)

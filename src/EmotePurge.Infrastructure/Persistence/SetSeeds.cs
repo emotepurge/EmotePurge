@@ -3,7 +3,7 @@ using EmotePurge.Core.Entities;
 namespace EmotePurge.Infrastructure.Persistence;
 
 /// <summary>
-/// The "seeds of a set" query, shared by the sync (settle population and flag-on match-map exclusion)
+/// The "seeds of a set" query, shared by the sync (settle population and match-map exclusion)
 /// and the slot-aware readers, so that none of them can drift from the others (emote-slots plan #376,
 /// section 2.1).
 /// </summary>

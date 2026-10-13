@@ -5,8 +5,6 @@ using EmotePurge.Api.Validation;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
 using static EmotePurge.Api.Tests.OwnershipLadderArrangements;
 using Xunit;
@@ -477,25 +475,6 @@ public class SevenTvEmoteSetSyncBookkeepingEndpointTests : IClassFixture<ApiFact
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ApiErrorCodes.InvalidRequestBody, await ReadErrorCodeAsync(response));
         await AssertOwnerCheckDidNotRunAsync();
-        await AssertNoReportAsync();
-    }
-
-    [Theory]
-    [InlineData(Deleted)]
-    [InlineData(Restored)]
-    public async Task MalformedEntries_AreRejectedWithTheSlotReconcileFlagOff_TooBecauseTheShapeCheckIsFlagIndependent(string route)
-    {
-        // Plan 376 R3 (a): with the flag off the service ignores `entries` *after* the shape check —
-        // the endpoint does not read the flag at all. The factory runs on the appsettings default.
-        var flag = _factory.Services.GetRequiredService<IConfiguration>().GetValue<bool>("SevenTv:SlotReconcile:Enabled");
-        Assert.False(flag);
-
-        var response = await SendAsync(
-            route, EmoteSetId, NewUserId(),
-            body: """{"sevenTvEmoteIds": ["7tv-x1"], "expectedChannelName": null, "entries": [{"sevenTvEmoteId": "7tv-x1", "slotId": "slot-1"}]}""");
-
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal(ApiErrorCodes.InvalidRequestBody, await ReadErrorCodeAsync(response));
         await AssertNoReportAsync();
     }
 

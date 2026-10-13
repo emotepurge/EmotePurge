@@ -22,7 +22,7 @@ internal static class SeedSettleWrites
     /// <c>EmoteSlotRollbackSql.CollapseUsageStatsSql</c>) — and deleted; every other row just changes its
     /// <c>SlotId</c> and keeps its id. A plain re-key would hit the unique slot index
     /// <c>(SlotId, EmoteSetId, Date)</c> on such a cell, fail the save and with it every following tick
-    /// of the channel. No live path is known to produce the collision (the flag-on map counts no emote
+    /// of the channel. No live path is known to produce the collision (the match map counts no emote
     /// with an open seed, E7); the merge is the belt, and the snapshot rebind (E11a) relies on it for
     /// imported rows. Runs behind the settle's locks (channel, then the emote rows), so the backfill
     /// block and flush phase 2 cannot write these slots meanwhile. Returns the rows re-keyed and the

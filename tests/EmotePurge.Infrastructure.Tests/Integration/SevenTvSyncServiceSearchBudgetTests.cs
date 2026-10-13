@@ -317,7 +317,7 @@ public class SevenTvSyncServiceSearchBudgetTests(PostgresFixture fixture)
                 Budget,
                 Backoff,
                 new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), Clock),
-                logger ?? NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+                logger ?? NullLogger<SevenTvSyncService>.Instance);
         }
 
         public HandWoundTimeProvider Clock { get; }

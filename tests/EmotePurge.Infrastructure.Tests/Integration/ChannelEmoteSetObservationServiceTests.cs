@@ -396,7 +396,7 @@ public class ChannelEmoteSetObservationServiceTests(PostgresFixture fixture)
             new RecordingSevenTvSearchBudget(),
             new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
-            NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
+            NullLogger<SevenTvSyncService>.Instance);
     }
 
     private static async Task<ChannelEmoteSetObservation> SeedOpenIntervalAsync(AppDbContext db, string channelId, string emoteSetId)

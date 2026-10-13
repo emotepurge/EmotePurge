@@ -258,15 +258,13 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal((ChatLogBackfillRunStatus.Cancelled, "channel_left"), (run.Status, run.ErrorCode));
     }
 
-    // The enqueue's lock must not block foreign-key inserts on the channel. A 7TV dispatch pushes an emote
-    // the chosen set also lists, while the enqueue holds the channel: the dispatch completes, and the
-    // enqueue's ON CONFLICT DO NOTHING then adopts the dispatch's row instead of creating one.
-    // Mutation probe: LockChannelByIdAsync with FOR UPDATE — the dispatch's FK check (KEY SHARE) waits for
-    // the enqueue while the enqueue's insert waits for the dispatch's uncommitted key: 40P01.
+    // A 7TV dispatch pushes an emote the chosen set also lists while the enqueue holds the channel. The
+    // dispatch takes the channel row first (plan #374 Z8, the slot work's lock order), so it waits for the
+    // enqueue instead of meeting it in a cycle: the enqueue creates the row, and the dispatch then pushes
+    // onto it. No 40P01 on either side.
     [Fact]
     public async Task LockRace_DispatchInsertingTheSameEmoteWhileTheEnqueueHoldsTheChannel_DoesNotDeadlock()
     {
-        PinFlagOff();
         var channel = await SeedChannelAsync("bflockdispatch");
         await SeedUserAsync();
         await SeedEmoteAsync(channel, "a1", "A1");
@@ -292,7 +290,7 @@ public partial class ChatLogBackfillServiceTests
         var x1 = await verify.Emotes.AsNoTracking().SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "x1");
         Assert.Equal(("XLive", false, false), (x1.Name, x1.IsArchived, x1.IsPlaceholder));
         var snapshot = await verify.ChatLogBackfillRunEmotes.AsNoTracking().ToDictionaryAsync(e => e.SevenTvEmoteId);
-        Assert.Equal((x1.Id, "XInB", false), (snapshot["x1"].EmoteId, snapshot["x1"].Name, snapshot["x1"].CreatedRow));
+        Assert.Equal((x1.Id, "XInB", true), (snapshot["x1"].EmoteId, snapshot["x1"].Name, snapshot["x1"].CreatedRow));
         Assert.True(snapshot["n1"].CreatedRow);
     }
 

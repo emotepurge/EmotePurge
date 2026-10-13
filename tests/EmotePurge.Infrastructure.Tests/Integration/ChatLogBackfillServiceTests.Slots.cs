@@ -585,7 +585,7 @@ public partial class ChatLogBackfillServiceTests
             });
         await using (var settleDb = fixture.CreateTaggedDbContext("bfsettlefirst-settle", [hook], databaseName: DatabaseName))
         {
-            Assert.NotNull(await SlotSyncKit.CreateService(settleDb, RestOf(channel), slotsEnabled: true).SyncChannelAsync(channel.ChannelName));
+            Assert.NotNull(await SlotSyncKit.CreateService(settleDb, RestOf(channel)).SyncChannelAsync(channel.ChannelName));
         }
 
         Assert.NotNull(block);
@@ -621,7 +621,7 @@ public partial class ChatLogBackfillServiceTests
 
         const string tag = "bfblockfirst-settle";
         await using var settleDb = fixture.CreateTaggedDbContext(tag, DatabaseName);
-        var settle = Task.Run(() => SlotSyncKit.CreateService(settleDb, RestOf(channel), slotsEnabled: true).SyncChannelAsync(channel.ChannelName));
+        var settle = Task.Run(() => SlotSyncKit.CreateService(settleDb, RestOf(channel)).SyncChannelAsync(channel.ChannelName));
         await fixture.WaitUntilBlockedOnLockAsync(tag, settle);
         Assert.Contains("FOR NO KEY UPDATE OF e", await fixture.WaitingQueryAsync(tag), StringComparison.Ordinal);
 
@@ -732,7 +732,7 @@ public partial class ChatLogBackfillServiceTests
     private async Task SettleAsync(Channel channel, RecordingLogger<SevenTvSyncService>? logger)
     {
         await using var db = CreateDbContext();
-        Assert.NotNull(await SlotSyncKit.CreateService(db, RestOf(channel), slotsEnabled: true, logger: logger).SyncChannelAsync(channel.ChannelName));
+        Assert.NotNull(await SlotSyncKit.CreateService(db, RestOf(channel), logger: logger).SyncChannelAsync(channel.ChannelName));
     }
 
     private static ISevenTvApiClient RestOf(Channel channel) =>
