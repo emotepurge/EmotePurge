@@ -34,6 +34,10 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
 
     private static readonly AuditActor Actor = new("100", "leaveobstester");
 
+    // xUnit builds one instance per case, so a case that asserts flag-off behaviour pins this to Off
+    // before its first sync; every helper below builds its services from it.
+    private SlotReconcileOptions _slotReconcile = SlotFlag.On;
+
     [Theory]
     [InlineData(null)]
     [InlineData(31)]
@@ -226,7 +230,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
 
         await using (var db = fixture.CreateDbContext([interceptor]))
         {
-            var service = CreateService(db, cache, RestAnswering(channel, SetId, Live("lokeep1"), Live("loracex1")));
+            var service = CreateService(db, cache, SlotFlag.On, RestAnswering(channel, SetId, Live("lokeep1"), Live("loracex1")));
             Assert.NotNull(await service.SyncChannelAsync(channel.ChannelName));
         }
 
@@ -252,7 +256,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
 
         await using (var db = fixture.CreateDbContext([interceptor]))
         {
-            var service = CreateService(db, new EmoteMatchCache(),
+            var service = CreateService(db, new EmoteMatchCache(), SlotFlag.On,
                 RestAnswering(channel, SetId, Live("lokeep1"), Live("loracea1"), Live("loraceb1")));
             await Assert.ThrowsAsync<DbUpdateException>(() => service.SyncChannelAsync(channel.ChannelName));
         }
@@ -265,6 +269,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
     [Fact]
     public async Task SyncChannel_ChannelPurgedRightBeforeTheObservationUpsert_IsAbandonedLikeAVanishedRow()
     {
+        _slotReconcile = SlotFlag.Off;
         var channel = await SeedChannelAsync("leaveobs_purged",
             ("lokeep1", false, null),
             ("logone1", false, null));
@@ -274,7 +279,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         SevenTvSyncResult? result;
         await using (var db = fixture.CreateDbContext([purge]))
         {
-            result = await CreateService(db, cache, RestAnswering(channel, SetId, Live("lokeep1"))).SyncChannelAsync(channel.ChannelName);
+            result = await CreateService(db, cache, _slotReconcile, RestAnswering(channel, SetId, Live("lokeep1"))).SyncChannelAsync(channel.ChannelName);
         }
 
         Assert.True(purge.Fired);
@@ -408,6 +413,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
     [Fact]
     public async Task CodexFinding2_StaleRestArchive_ThenRemoveDelta_ThenPush_LeavesAnObservationLaterThanTheRegistration()
     {
+        _slotReconcile = SlotFlag.Off;
         var channel = await SeedChannelAsync("leaveobs_codex2", ("lokeep1", false, null));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, (await ApplyAsync(channel, Delta(pushed: [Live("lotag1")]))).Outcome);
@@ -445,6 +451,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
     [Fact]
     public async Task CodexFinding2_EndToEnd_APlacementRegisteredBeforeTheRemove_NoLongerCountsAsPlacedByTheTag()
     {
+        _slotReconcile = SlotFlag.Off;
         var channel = await SeedChannelAsync("leaveobs_codex2_read", ("lokeep1", false, null));
         Assert.Equal(SevenTvDeltaOutcome.Applied, (await ApplyAsync(channel, Delta(pushed: [Live("lotag1")]))).Outcome);
         var (tagId, operationId) = await SeedPlacementAsync(channel, "lotag1", SetId, DateTime.UtcNow);
@@ -723,6 +730,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
     [Fact]
     public async Task MarkDeletedInSetAndAPulledDelta_Overlapping_TheLaterStampWins()
     {
+        _slotReconcile = SlotFlag.Off;
         var channel = await SeedChannelAsync("leaveobs_api_worker", ReportSetId,
             ("lokeep1", false, null),
             ("logone1", false, null));
@@ -731,7 +739,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         await using var apiDb = fixture.CreateDbContext([pause]);
         var emoteService = new EmoteService(
             apiDb, NullLogger<EmoteService>.Instance,
-            new ExcludedChannelFilter(new ConfigurationBuilder().Build(), NullLogger<ExcludedChannelFilter>.Instance), new BroadcasterChannelLockService(apiDb));
+            new ExcludedChannelFilter(new ConfigurationBuilder().Build(), NullLogger<ExcludedChannelFilter>.Instance), new BroadcasterChannelLockService(apiDb), slotReconcile: _slotReconcile);
         var report = emoteService.MarkDeletedInSetAsync(
             ReportSetId, "owner-seven-tv-id", "setowner", "owner-twitch-id", ["logone1"], channel.ChannelName, Actor);
         await pause.Reached.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -751,12 +759,12 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
     // A fresh empty-set tracker per service unless a case hands one in: only the cases that build a
     // zero streak across several syncs need the same instance (and a clock they can wind).
     private static SevenTvSyncService CreateService(
-        AppDbContext db, EmoteMatchCache cache, ISevenTvApiClient? apiClient = null, IEmptySetConfirmationTracker? emptySetConfirmations = null) =>
+        AppDbContext db, EmoteMatchCache cache, SlotReconcileOptions slotReconcile, ISevenTvApiClient? apiClient = null, IEmptySetConfirmationTracker? emptySetConfirmations = null) =>
         new(db, apiClient ?? Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(),
             new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
             new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             emptySetConfirmations ?? new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
-            NullLogger<SevenTvSyncService>.Instance);
+            NullLogger<SevenTvSyncService>.Instance, slotReconcile: slotReconcile);
 
     private static ISevenTvApiClient RestAnswering(Channel channel, string emoteSetId, params SevenTvEmote[] liveEmotes)
     {
@@ -771,7 +779,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
     private async Task<SevenTvSyncResult?> SyncAsync(Channel channel, string emoteSetId, params SevenTvEmote[] liveEmotes)
     {
         await using var db = fixture.CreateDbContext();
-        return await CreateService(db, new EmoteMatchCache(), RestAnswering(channel, emoteSetId, liveEmotes))
+        return await CreateService(db, new EmoteMatchCache(), _slotReconcile, RestAnswering(channel, emoteSetId, liveEmotes))
             .SyncChannelAsync(channel.ChannelName);
     }
 
@@ -785,14 +793,14 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState(
                 "7tv-user", new SevenTvEmoteSet(emoteSetId, [], RemoteEntryCount: remoteEntryCount))));
         await using var db = fixture.CreateDbContext();
-        return await CreateService(db, new EmoteMatchCache(), apiClient, tracker).SyncChannelAsync(channel.ChannelName);
+        return await CreateService(db, new EmoteMatchCache(), _slotReconcile, apiClient, tracker).SyncChannelAsync(channel.ChannelName);
     }
 
     private async Task<SevenTvDeltaResult> ApplyAsync(
         Channel channel, SevenTvEmoteSetDelta delta, EmoteMatchCache? cache = null, string emoteSetId = SetId)
     {
         await using var db = fixture.CreateDbContext();
-        return await CreateService(db, cache ?? new EmoteMatchCache()).ApplyEmoteSetUpdateAsync(channel.ChannelName, emoteSetId, delta);
+        return await CreateService(db, cache ?? new EmoteMatchCache(), _slotReconcile).ApplyEmoteSetUpdateAsync(channel.ChannelName, emoteSetId, delta);
     }
 
     // The tag read on a fresh context, for the channel's active set, as the tags page asks for it.
@@ -839,7 +847,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         db.Channels.Add(channel);
         foreach (var (sevenTvId, archived, enteredAtUtc) in emotes)
         {
-            db.Emotes.Add(new Emote
+            var emote = new Emote
             {
                 ChannelId = channel.Id,
                 SevenTvEmoteId = sevenTvId,
@@ -847,7 +855,11 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
                 ImageUrl = ImageUrl(sevenTvId),
                 IsArchived = archived,
                 LastEnteredSetAtUtc = enteredAtUtc,
-            });
+            };
+            db.Emotes.Add(emote);
+            // With the slot reconcile on, a delta resolves its emote through the emote's settled slot,
+            // so a seeded emote carries its base slot.
+            db.EmoteSlots.Add(new EmoteSlot { Emote = emote, Name = sevenTvId, IsArchived = archived });
         }
 
         await db.SaveChangesAsync();

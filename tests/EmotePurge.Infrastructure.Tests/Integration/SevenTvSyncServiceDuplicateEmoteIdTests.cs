@@ -20,7 +20,15 @@ public class SevenTvSyncServiceDuplicateEmoteIdTests(PostgresFixture fixture)
     private const string SetId = "01GV88A38G0006FW5TVZVMG507";
     private const string Url = "https://cdn.7tv.app/emote/dup/2x.webp";
 
-    private static Task<SevenTvSyncResult?> SyncAsync(Infrastructure.Persistence.AppDbContext db, Channel channel, params SevenTvEmote[] emotes)
+    private static Task<SevenTvSyncResult?> SyncAsync(Infrastructure.Persistence.AppDbContext db, Channel channel, params SevenTvEmote[] emotes) =>
+        SyncCoreAsync(SlotFlag.On, db, channel, emotes);
+
+    // The pre-slot reconcile (D36, last alias wins on the emote row), for the case that only exists there.
+    private static Task<SevenTvSyncResult?> SyncFlagOffAsync(Infrastructure.Persistence.AppDbContext db, Channel channel, params SevenTvEmote[] emotes) =>
+        SyncCoreAsync(SlotFlag.Off, db, channel, emotes);
+
+    private static Task<SevenTvSyncResult?> SyncCoreAsync(
+        SlotReconcileOptions slotReconcile, Infrastructure.Persistence.AppDbContext db, Channel channel, SevenTvEmote[] emotes)
     {
         var apiClient = Substitute.For<ISevenTvApiClient>();
         apiClient.GetChannelStateForTwitchUserAsync(channel.TwitchChannelId!, Arg.Any<CancellationToken>())
@@ -29,7 +37,7 @@ public class SevenTvSyncServiceDuplicateEmoteIdTests(PostgresFixture fixture)
             db, apiClient, new EmoteMatchCache(), new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db), new ChannelSyncGate(),
             Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(),
             new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
-            new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), new RecordingLogger<SevenTvSyncService>());
+            new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System), new RecordingLogger<SevenTvSyncService>(), slotReconcile: slotReconcile);
         return service.SyncChannelAsync(channel.ChannelName);
     }
 
@@ -70,7 +78,7 @@ public class SevenTvSyncServiceDuplicateEmoteIdTests(PostgresFixture fixture)
         db.Emotes.Add(new Emote { ChannelId = channel.Id, SevenTvEmoteId = "dup1", Name = "Nerdge", ImageUrl = Url, LastSyncedAt = stamp });
         await db.SaveChangesAsync();
 
-        var result = await SyncAsync(db, channel, new SevenTvEmote("dup1", "inkorrekt", Url), new SevenTvEmote("dup1", "Nerdge", Url));
+        var result = await SyncFlagOffAsync(db, channel, new SevenTvEmote("dup1", "inkorrekt", Url), new SevenTvEmote("dup1", "Nerdge", Url));
 
         var row = await db.Emotes.AsNoTracking().SingleAsync(e => e.ChannelId == channel.Id);
         Assert.False(result!.HasChanges);

@@ -151,7 +151,7 @@ public class SevenTvSyncServicePlaceholderTests(PostgresFixture fixture)
         await using (var db = fixture.CreateDbContext())
         {
             var emoteService = new EmoteService(
-                db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db));
+                db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), slotReconcile: SlotFlag.On);
             await emoteService.MarkRestoredInSetAsync(
                 RestoreSetId, "owner-seven-tv-id", "placeholder_restore", "tw_placeholder_restore", ["phballot1"], null, Actor);
         }
@@ -281,7 +281,7 @@ public class SevenTvSyncServicePlaceholderTests(PostgresFixture fixture)
             new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
             new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
-            NullLogger<SevenTvSyncService>.Instance);
+            NullLogger<SevenTvSyncService>.Instance, slotReconcile: SlotFlag.On);
 
     private static ISevenTvApiClient RestAnswering(Channel channel, string emoteSetId = SetId, params SevenTvEmote[] liveEmotes)
     {
