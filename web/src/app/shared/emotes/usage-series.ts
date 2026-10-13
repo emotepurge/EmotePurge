@@ -94,31 +94,35 @@ export function seriesDrift(
   const slotEntryIds = new Set<string>();
   const slotEntries = new Set<string>();
   for (const entry of entries) {
-    if (entry.slotId === null) {
+    // A missing field reads as "emote mode", like `mergeSetView` does for an older Api.
+    const slotId = entry.slotId ?? null;
+    if (slotId === null) {
       emoteEntryIds.add(entry.sevenTvEmoteId);
     } else {
       slotEntryIds.add(entry.sevenTvEmoteId);
-      slotEntries.add(entry.slotId);
+      slotEntries.add(slotId);
     }
   }
 
   const mismatched = new Set<string>();
   for (const row of rows) {
-    const otherMode = row.slotId === null ? slotEntryIds : emoteEntryIds;
+    const rowSlotId = row.slotId ?? null;
+    const otherMode = rowSlotId === null ? slotEntryIds : emoteEntryIds;
     if (row.totalUseCount !== null && otherMode.has(row.sevenTvEmoteId)) {
       mismatched.add(row.sevenTvEmoteId);
     }
   }
   const stale = new Set<string>();
   for (const row of rows) {
+    const rowSlotId = row.slotId ?? null;
     if (
-      row.slotId !== null &&
+      rowSlotId !== null &&
       row.totalUseCount !== null &&
       row.totalUseCount > 0 &&
-      !slotEntries.has(row.slotId) &&
+      !slotEntries.has(rowSlotId) &&
       !mismatched.has(row.sevenTvEmoteId)
     ) {
-      stale.add(row.slotId);
+      stale.add(rowSlotId);
     }
   }
   return {

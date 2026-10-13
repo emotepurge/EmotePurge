@@ -547,4 +547,23 @@ describe('mergeSetView per slot (plan 377)', () => {
       });
     }
   });
+
+  it('binds the same one of two unbound same-named slot rows whatever the order of totals', () => {
+    const provisional = (slotId: string, useCount: number) =>
+      slotDto(slotId, 'ome44', {
+        firstSeenAt: null,
+        firstSeenAtFromRest: false,
+        totalUseCount: useCount,
+      });
+    const bound = (totals: EmoteUsageTotalDto[]) =>
+      mergeSetView(totals, [slotEntry('ome44', LATER)], false)
+        .filter((row) => row.membership === 'live' && row.slotId !== null)
+        .map((row) => row.slotId);
+
+    const a = provisional('slot-a', 1);
+    const b = provisional('slot-b', 9);
+
+    expect(bound([a, b])).toEqual(['slot-a']);
+    expect(bound([b, a])).toEqual(['slot-a']);
+  });
 });

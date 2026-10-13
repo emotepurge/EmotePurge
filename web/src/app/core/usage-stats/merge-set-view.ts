@@ -123,10 +123,19 @@ export function mergeSetView(
   }
 
   // Step 3: the remaining slot rows by name — provisional rows any entry, dated rows undated ones.
+  // Rows compete for an entry in the backend's `BindByName` order (provisional first, then dated
+  // before undated, then by date, then `slotId` ordinal), so the order of `totals` (which is by
+  // usage) cannot decide which of two same-named slots keeps the entry. Archived rows are skipped,
+  // as the backend only binds active slots.
+  const remaining: number[] = [];
   wire.forEach((row, rowIndex) => {
-    if (row.slotId === null || bindings.has(rowIndex)) {
-      return;
+    if (row.slotId !== null && !bindings.has(rowIndex) && !row.dto.isArchived) {
+      remaining.push(rowIndex);
     }
+  });
+  remaining.sort((a, b) => compareByName(wire[a], wire[b]));
+  for (const rowIndex of remaining) {
+    const row = wire[rowIndex];
     const match = (entriesById.get(row.dto.sevenTvEmoteId) ?? []).find(
       (entryIndex) =>
         !consumed[entryIndex] &&
@@ -136,7 +145,7 @@ export function mergeSetView(
     if (match !== undefined) {
       bind(rowIndex, match);
     }
-  });
+  }
 
   const siblingsOf = (entryIndex: number): string[] =>
     d2Names(
@@ -200,6 +209,24 @@ interface WireRow {
   shared: boolean;
   /** Milliseconds of an authoritative, parseable `firstSeenAt` of a slot row; `null` otherwise. */
   instant: number | null;
+}
+
+/** The backend's `BindByName` candidate order for two slot rows. */
+function compareByName(a: WireRow, b: WireRow): number {
+  if (a.firstSeenAtFromRest !== b.firstSeenAtFromRest) {
+    return a.firstSeenAtFromRest ? 1 : -1;
+  }
+  const aDate = instantOf(a.dto.firstSeenAt);
+  const bDate = instantOf(b.dto.firstSeenAt);
+  if ((aDate === null) !== (bDate === null)) {
+    return aDate === null ? 1 : -1;
+  }
+  if (aDate !== null && bDate !== null && aDate !== bDate) {
+    return aDate - bDate;
+  }
+  const aId = a.slotId ?? '';
+  const bId = b.slotId ?? '';
+  return aId < bId ? -1 : aId > bId ? 1 : 0;
 }
 
 function readWire(dto: EmoteUsageTotalDto): WireRow {

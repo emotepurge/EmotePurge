@@ -463,6 +463,15 @@ describe('seriesDrift (plan 377, 2.11)', () => {
     slotId,
   });
 
+  it('reads a missing slotId like null, so rows from an older Api cause no drift', () => {
+    const rows = [{ sevenTvEmoteId: '7tv-x', totalUseCount: 5 }] as unknown as Parameters<
+      typeof seriesDrift
+    >[0];
+    const entries = [{ sevenTvEmoteId: '7tv-x', slotId: null }];
+
+    expect(seriesDrift(rows, entries)).toEqual({ mismatchedIds: [], staleSlotIds: [] });
+  });
+
   it('flags an id whose rows are slots while the series still holds its emote-mode entry, once and sorted', () => {
     const drift = seriesDrift(
       [slot('7tv-z', 'slot-z'), slot('7tv-x', 'slot-ome'), slot('7tv-x', 'slot-hob', 0)],
