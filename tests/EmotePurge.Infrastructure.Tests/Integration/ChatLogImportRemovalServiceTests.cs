@@ -11,6 +11,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
 using Xunit;
@@ -609,6 +610,42 @@ public partial class ChatLogImportRemovalServiceTests(PostgresFixture fixture) :
         await using var verify = CreateDbContext();
         Assert.Equal(0, await ImportedRowCountAsync(verify, main.Channel.Id));
         Assert.Equal(1, await verify.AuditLogEntries.CountAsync());
+    }
+
+    // AK 12, retry limit: a deadlock on every attempt is retried twice and then reaches the caller. The
+    // 40P01 is injected right after the coverage delete, so the rollback of the earlier deletes is what
+    // keeps the channel unchanged. Mutation probe: a retry loop without the limit never returns.
+    [Fact]
+    public async Task Race_ADeadlockOnTheLastAttempt_ReachesTheCaller_AndNothingIsWritten()
+    {
+        var main = await SeedMainScenarioAsync("rmdeadlockfinal");
+        var logger = new RecordingLogger<ChatLogImportRemovalService>();
+        ChannelHashes before;
+        await using (var read = CreateDbContext())
+        {
+            before = await ChannelHashesAsync(read, main.Channel.Id);
+        }
+
+        var attempts = 0;
+        var hook = new CommandHook(
+            c => c.Contains("DELETE", StringComparison.Ordinal) && c.Contains("ChatLogBackfillCoverage", StringComparison.Ordinal),
+            _ =>
+            {
+                Interlocked.Increment(ref attempts);
+                throw new PostgresException("deadlock detected", "ERROR", "ERROR", PostgresErrorCodes.DeadlockDetected);
+            });
+        await using var removalDb = CreateDbContext(hook);
+
+        var thrown = await Record.ExceptionAsync(
+            () => CreateService(removalDb, logger).RemoveImportedAsync(main.Channel.ChannelName, main.Expectation, Actor));
+
+        Assert.True(DatabaseErrors.IsDeadlock(thrown!), $"Expected a deadlock, got {thrown}");
+        Assert.Equal(3, attempts);
+        Assert.Equal(2, logger.Entries.Count(e => e.Level == LogLevel.Warning && e.Message.Contains("deadlock", StringComparison.Ordinal)));
+        await using var verify = CreateDbContext();
+        Assert.Equal(before, await ChannelHashesAsync(verify, main.Channel.Id));
+        Assert.False(await verify.AuditLogEntries.AnyAsync());
+        Assert.Empty(_publisher.ReceivedCalls());
     }
 
     // ---------------------------------------------------------------- Helpers
