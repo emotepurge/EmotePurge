@@ -1114,7 +1114,9 @@ migration and no new image. Plan one short window with api and worker stopped to
 below is read-only unless it says otherwise; table and column names are those of the schema. The statements of
 "Populations" and the WAL check were run on copies of the development database in the flag-off state (the acceptance
 run and a separate runbook test, both 2026-10-13). Run them against the production database through the tunnel described under
-"Prod-Migration" in `CLAUDE.md` (bash; passwords as placeholders, never in a file).
+"Prod-Migration" in `CLAUDE.md` (bash; passwords as placeholders, never in a file). The commands below that read
+`psql "$C"` expect the connection string in a shell variable of the same shell, set once before the window, for
+example `C='host=localhost port=15432 dbname=emotepurge user=emotepurge'` (psql then prompts for the password).
 
 **Admission order for backfill runs.** A run enqueued while the flag is off binds an unsettled seed, which nothing
 after the switch can follow reliably. So: **close the enqueue first, then drain, then count, then switch**, and keep
