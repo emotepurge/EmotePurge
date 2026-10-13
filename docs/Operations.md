@@ -1129,14 +1129,15 @@ a flag-off image binds an unsettled seed, which part B can no longer follow:
    other), then run the sweep.
 
 *Fail-closed for an overlooked run.* A run that was enqueued by a flag-off image and is still open when the new
-worker picks it up cannot be followed any more. Its first block whose aggregates name a slot the snapshot does not hold under that emote any more (the
-reconcile settled the seed the run was bound to) fails the pair check in `ReplaceBlockAsync` with an
-`ArgumentException`, and the run ends `Failed` with `ErrorCode` `worker_error`. Nothing is
-miscounted, but the run is lost; enqueue it again after the sweep. You recognise it by the worker log line
+worker picks it up cannot be followed any more. Its first block whose aggregates name a slot the snapshot does not
+hold under that emote any more (the reconcile settled the seed the run was bound to) fails the pair check in
+`ReplaceBlockAsync` with an `ArgumentException`, and the run ends `Failed` with `ErrorCode` `worker_error`. The
+sweep spares the seeds of such an active run, so this stays the outcome. Nothing is miscounted, but the run is
+lost; enqueue it again after the sweep. You recognise it by the worker log line
 `Chat-log backfill run <id> (<channel>) failed with an unexpected error.` followed by the exception
-`System.ArgumentException: <n> aggregates name a slot and an emote that are not one snapshot row of run <id>. (Parameter 'rows')`,
-and by a run row with status `failed`, `worker_error`, created before the update. A run with that signature
-that was created after the update is a different problem.
+`System.ArgumentException: <n> aggregates name a slot and an emote that are not one snapshot row of run <id>.`
+`(Parameter 'rows')`, and by a run row with status `failed`, `worker_error`, created before the update. A run with
+that signature that was created after the update is a different problem.
 
 **3. Rolling back to an image from before part B** (the code of `3720f7cf`, or the later build `30759199` with the same
 application code; pick it by its sha tag, not `:latest`). No migration is involved and there is no `Down`; seeds the
@@ -1408,18 +1409,30 @@ Run this once, after an image from part B runs (admission order above done). On 
 phase 2, on any other database after its update. The flag-off path of the images before part B created unsettled seeds
 (`"SeedUnsettled"`) for active emotes; some of them never received a usage row and are inert now (no numbers, no cards, no 409). The sweep
 deletes exactly those, in every set and for every `Source`. Unsettled seeds that carry rows and settled empty seeds
-stay. The only foreign key on `"EmoteSlots"` is `"UsageStats"."SlotId"`, so nothing cascades; a snapshot row of a
+stay, and so does a seed that the snapshot of a queued, running or paused backfill run points at: an overlooked run
+(see "Fail-closed for an overlooked run" above) must keep failing closed instead of losing counts silently when its
+seed is gone. The admission order still comes first and leaves no active run, so on a correctly prepared database
+that conjunct changes nothing; if the sweep spared a seed, run it again after the run has ended. The only foreign key on `"EmoteSlots"` is `"UsageStats"."SlotId"`, so nothing cascades; a snapshot row of a
 finished backfill run may keep pointing at a deleted slot, which is harmless. The expected count on production is 0.
 Run it in one transaction, note the first number, and check that the second is 0 (`psql "$C"` as above):
 
 ```sql
 BEGIN;
 SELECT count(*) FROM "EmoteSlots" s
-WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id");
+WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id")
+  AND NOT EXISTS (
+      SELECT 1 FROM "ChatLogBackfillRunEmotes" re JOIN "ChatLogBackfillRuns" r ON r."Id" = re."RunId"
+      WHERE re."SlotId" = s."Id" AND r."Status" IN ('queued', 'running', 'paused'));
 DELETE FROM "EmoteSlots" s
-WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id");
+WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id")
+  AND NOT EXISTS (
+      SELECT 1 FROM "ChatLogBackfillRunEmotes" re JOIN "ChatLogBackfillRuns" r ON r."Id" = re."RunId"
+      WHERE re."SlotId" = s."Id" AND r."Status" IN ('queued', 'running', 'paused'));
 SELECT count(*) FROM "EmoteSlots" s
-WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id");
+WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id")
+  AND NOT EXISTS (
+      SELECT 1 FROM "ChatLogBackfillRunEmotes" re JOIN "ChatLogBackfillRuns" r ON r."Id" = re."RunId"
+      WHERE re."SlotId" = s."Id" AND r."Status" IN ('queued', 'running', 'paused'));
 COMMIT;
 ```
 

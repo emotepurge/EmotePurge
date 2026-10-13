@@ -112,13 +112,20 @@ public static class EmoteSlotRollbackSql
     public const string CountRowlessUnsettledSeedsSql =
         """
         SELECT count(*) FROM "EmoteSlots" s
-        WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id");
+        WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id")
+          AND NOT EXISTS (
+              SELECT 1 FROM "ChatLogBackfillRunEmotes" re JOIN "ChatLogBackfillRuns" r ON r."Id" = re."RunId"
+              WHERE re."SlotId" = s."Id" AND r."Status" IN ('queued', 'running', 'paused'));
         """;
 
     /// <summary>
     /// One-off sweep after the removal of the slot flag (#379, part B): deletes the unsettled seeds that
     /// never received a usage row (the flag-off path created them, nothing follows them any more), in
-    /// every set and for every <c>Source</c>. Unsettled seeds with rows and settled empty seeds stay.
+    /// every set and for every <c>Source</c>. Unsettled seeds with rows and settled empty seeds stay, and so does
+    /// a seed that the snapshot of an active (queued, running or paused) backfill run points at: an overlooked run
+    /// that a flag-off image enqueued must keep failing closed (<c>worker_error</c> via the pair check) instead of
+    /// silently dropping counts once its seed is gone. The admission order leaves no active run anyway, so on a
+    /// correctly prepared database the conjunct changes nothing.
     /// The only foreign key on EmoteSlots is <c>UsageStats.SlotId</c>, so nothing cascades; a snapshot
     /// row of a finished backfill run may keep pointing at a deleted slot, which is harmless (the
     /// column has no foreign key and is read only for active runs). One statement, no parameters,
@@ -127,6 +134,9 @@ public static class EmoteSlotRollbackSql
     public const string SweepRowlessUnsettledSeedsSql =
         """
         DELETE FROM "EmoteSlots" s
-        WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id");
+        WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id")
+          AND NOT EXISTS (
+              SELECT 1 FROM "ChatLogBackfillRunEmotes" re JOIN "ChatLogBackfillRuns" r ON r."Id" = re."RunId"
+              WHERE re."SlotId" = s."Id" AND r."Status" IN ('queued', 'running', 'paused'));
         """;
 }

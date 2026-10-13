@@ -29,7 +29,8 @@ public class RowlessSeedSweepTests(PostgresFixture fixture)
         Assert.DoesNotContain("s-bare", left);
         Assert.DoesNotContain("s-snap", left);
         // (ii) rows of another set, (iii) only imported rows, (iv) settled empty archived seed, (v) own slot: stay.
-        Assert.Equal(["s-imported", "s-own", "s-settled", "s-twoset"], left.Order().ToList());
+        // (vii) the seed an active (running) run's snapshot row points to: stays, and is not counted.
+        Assert.Equal(["s-active", "s-imported", "s-own", "s-settled", "s-twoset"], left.Order().ToList());
         // The snapshot row of the finished run stays.
         var snapshotSlot = "s-snap" + k;
         Assert.Equal(1, await verify.Database.SqlQuery<int>(
@@ -67,6 +68,7 @@ public class RowlessSeedSweepTests(PostgresFixture fixture)
             INSERT INTO "EmoteSlots" ("Id", "EmoteId", "Name", "AddedAt", "AddedAtFromRest", "IsArchived", "ArchivedAt", "LastSyncedAt", "SeedUnsettled")
             VALUES ('s-bare{k}',     'e1{k}', 'Bare',     NULL,         false, false, NULL, now(), true),
                    ('s-snap{k}',     'e1{k}', 'Snap',     NULL,         false, false, NULL, now(), true),
+                   ('s-active{k}',   'e1{k}', 'Active',   NULL,         false, false, NULL, now(), true),
                    ('s-twoset{k}',   'e1{k}', 'TwoSet',   NULL,         false, false, NULL, now(), true),
                    ('s-imported{k}', 'e1{k}', 'Imported', NULL,         false, false, NULL, now(), true),
                    ('s-settled{k}',  'e1{k}', 'Settled',  '2026-03-04', true,  true,  now(), now(), false),
@@ -81,6 +83,13 @@ public class RowlessSeedSweepTests(PostgresFixture fixture)
             INSERT INTO "ChatLogBackfillRunEmotes" ("RunId", "EmoteId", "SevenTvEmoteId", "Name", "CreatedRow", "SlotId", "CreatedSlot")
             SELECT r."Id", 'e1{k}', '7a{k}', 'Snap', false, 's-snap{k}', false
             FROM "ChatLogBackfillRuns" r WHERE r."RequestedByLogin" = 'run{k}';
+            INSERT INTO "ChatLogBackfillRuns"
+                ("ChannelId", "Status", "RequestedMonths", "WindowFrom", "WindowTo", "WeeksTotal", "EmoteSetId", "ArchiveBaseUrl",
+                 "RequestedByTwitchUserId", "RequestedByLogin", "RequestedAtUtc")
+            VALUES ('c{k}', 'running', 1, '2026-07-01', '2026-08-05', 5, 'SETB', 'https://logs.cyex.app/', '42', 'active{k}', now());
+            INSERT INTO "ChatLogBackfillRunEmotes" ("RunId", "EmoteId", "SevenTvEmoteId", "Name", "CreatedRow", "SlotId", "CreatedSlot")
+            SELECT r."Id", 'e1{k}', '7a{k}', 'Active', false, 's-active{k}', false
+            FROM "ChatLogBackfillRuns" r WHERE r."RequestedByLogin" = 'active{k}';
             """);
 #pragma warning restore EF1002
     }
