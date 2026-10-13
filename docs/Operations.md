@@ -1006,9 +1006,13 @@ matters:
    ```sql
    SELECT count(*) AS lock_holders FROM pg_locks
    WHERE locktype = 'advisory' AND objsubid = 1 AND granted
+     AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
      AND classid::bigint = (hashtext('emotepurge:chatlog-backfill')::bigint >> 32) & 4294967295
      AND objid::bigint = hashtext('emotepurge:chatlog-backfill')::bigint & 4294967295;
    ```
+
+   The `database` filter matters on a shared cluster: advisory locks are listed for every database, and without
+   the filter a session of another database is counted (1 instead of 0 in the acceptance run).
 
    A row left on `running` is expected after this and is harmless: step 5 closes it.
 3. **Remove the placeholder rows the backfill created (optional, restricted).** This runs **before**
@@ -1027,7 +1031,10 @@ matters:
      AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."EmoteId" = e."Id" AND u."Source" = 0);
    ```
 
-   The vote predicates are what keep a ballot's history intact: `Vote.Emote` cascades.
+   The vote predicates are what keep a ballot's history intact: `Vote.Emote` cascades. **This step is global**:
+   it covers every channel, and deleting a placeholder row takes its slots along by cascade (5 old placeholders
+   of other runs and their slots in the acceptance run). There is no per-channel variant; to leave a channel
+   alone, add `AND e."ChannelId" <> '<channel-id>'` to the statement.
 3b. **Remove the slots the backfill created (optional, restricted; slot-aware images only).** Run it right
    after step 3 and before step 4, for the same reason as step 3: the run's snapshot is the only proof
    which slots the backfill created (`CreatedSlot`). It deletes exactly the slots that are archived with
@@ -1060,9 +1067,11 @@ matters:
    DELETE FROM "ChatLogBackfillCoverage" WHERE "ChannelId" = '<channel-id>';
    ```
 
-   The caption disappears with the coverage rows. The per-channel variant removes all imported rows and the
-   coverage of that channel from every run and every set; steps 3, 3b and 5 are global and are not scoped
-   to the channel.
+   The caption disappears with the coverage rows. The global variant removes **all** `Source = 1` rows and the
+   coverage of **all** channels, including those of runs that have nothing to do with the rollback (104,000
+   older imported rows on the acceptance copy). For a single channel use the per-channel variant, which removes
+   all imported rows and the coverage of that channel from every run and every set; steps 3, 3b and 5 are
+   global and are not scoped to the channel.
 5. **Close the runs that are still open:**
 
    ```sql
@@ -1098,6 +1107,247 @@ Seeds that a flag-off enqueue created for active emotes are not archived: they r
 seeds without rows after the switch. They are inert (no numbers, no cards, no permanent 409) and are
 swept after #379 removes the flag-off branches.
 
+### Switching the slot flag on (#379, phase 1)
+
+The images that contain the slot code already run with the flag off; this window only flips the flag, there is no
+migration and no new image. Plan one short window with api and worker stopped together, outside big streams. The SQL
+below is read-only unless it says otherwise; table and column names are those of the schema. The statements of
+"Populations" and the WAL check were run on copies of the development database in the flag-off state (the acceptance
+run and a separate runbook test, both 2026-10-13). Run them against the production database through the tunnel described under
+"Prod-Migration" in `CLAUDE.md` (bash; passwords as placeholders, never in a file). The commands below that read
+`psql "$C"` expect the connection string in a shell variable of the same shell, set once before the window, for
+example `C='host=localhost port=15432 dbname=emotepurge user=emotepurge'` (psql then prompts for the password).
+
+**Admission order for backfill runs.** A run enqueued while the flag is off binds an unsettled seed, which nothing
+after the switch can follow reliably. So: **close the enqueue first, then drain, then count, then switch**, and keep
+the backfill off for as long as the slot flag is off, also after a rollback below. (`ChatLogBackfill:Enabled=false`
+closes the enqueue too, but takes the cancel route away; stopping the api closes only the enqueue.)
+
+1. **Close:** stop the api.
+2. **Drain:** let the worker finish its run or stop it; close runs that are still open with the statement of
+   "Rolling back" under "Chat-log backfill", step 5.
+3. **Count runs**, with api and worker both stopped:
+   `SELECT count(*) FROM "ChatLogBackfillRuns" WHERE "Status" IN ('queued', 'running', 'paused');` must be 0.
+4. **Count seeds without rows**, also with both stopped: unsettled seeds that carry no usage row (an enqueue with the
+   flag off can leave them) are expected to be 0; otherwise name them and decide before switching:
+   `SELECT count(*) FROM "EmoteSlots" s WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id");`
+5. **Switch:** start the new configuration of api and worker together.
+
+A run that slips through anyway is not counted wrongly. In phase 1 the worker follows a settle that moved its
+snapshot rows: `SnapshotChanged` makes it re-read the snapshot, move the aggregates of the block to their rows' new
+slots and hand the block in once more (log line "the snapshot changed under block"). Only a block it cannot follow
+fails the run with `worker_error`; after the removal of the flag-off branches (part B) that is the whole safety net.
+
+**Preconditions** for the switch-on: the running images contain the slot code (`migrations list` shows nothing
+pending, see M2 and M3 below; that proves the database state, not the running images, so check the image version
+separately: inspect the running api and worker containers' image tag or revision label), `ChatLogBackfill__Enabled` is `false` in the stack, and the write-ahead-log cost has been
+accepted: the WAL check below passes (under the threshold of roughly 2 MiB/min for your row count; all WAL figures here are MiB, 1 MiB = 1,048,576 bytes).
+
+**WAL check before the switch (read-only).** With the flag on, every 60-second tick locks every reconcile target
+row of every active channel `FOR NO KEY UPDATE`, also when nothing changes. The rows that tick locks are the
+emote rows of channels with `IsBotActive` that are live, not archived, or own an active settled slot; before the
+switch no slot is settled, and a placeholder row is archived by definition, so the count is the not-archived
+emote rows (live entries that are not yet in the table are created by the first tick and are a small addition):
+
+```sql
+SELECT count(*) AS locked_rows FROM "Emotes" e JOIN "Channels" c ON c."Id" = e."ChannelId"
+WHERE c."IsBotActive" AND NOT e."IsArchived";   -- predicate of RowLocks.LockEmotesForReconcileAsync, before the switch
+SELECT setting::int AS c_seconds FROM pg_settings WHERE name = 'checkpoint_timeout';   -- C, in seconds
+```
+
+Measured on a copy with `pg_walinspect` (acceptance run of #379): 54 bytes per locked row and tick without
+full-page images, 539 bytes per row on the first tick after a checkpoint (full-page images, once per checkpoint
+cycle). So, per row and minute, with tick interval `I` = `SevenTv:ResyncIntervalSeconds` (60) and checkpoint
+interval `C` in seconds:
+
+`B/row/min = 54 * (60/I) + 486 * (60/C)`
+
+At `I = 60` and `C = 300` that is 151 bytes per row and minute; 2 MiB/min (2,097,152 bytes) is reached at about
+**13,900 locked rows** (about 38,800 if full-page images are left out). Put the production `C` into the formula; `wal_compression` was off
+on the copy, and the figures rest on five ticks without and one tick with full-page images. **Below the threshold:
+go on. Above it: do not switch the flag on;** either bring forward the follow-up "Slot reconcile: plan before
+locking rows (dry run)" (#411) or raise `SevenTv:ResyncIntervalSeconds` (a raise helps only the 54-byte part).
+
+
+1. **Check the #406 precondition (read-only).** The UTF-8 name order of #403/#406 must be deployed, and no settled
+   slot may exist yet while the flag is off:
+
+   ```sh
+   psql 'host=localhost port=15432 dbname=emotepurge user=emotepurge password=<PROD-PW>' -c 'BEGIN READ ONLY' \
+    -c 'SELECT count(*) FILTER (WHERE NOT "SeedUnsettled") AS own, count(*) FILTER (WHERE NOT "SeedUnsettled" AND NOT "IsArchived") AS own_active FROM "EmoteSlots"' \
+    -c 'ROLLBACK'
+   ```
+
+   `own = 0` is what counts. (PR #406 adds a second query for active own slots whose names straddle the UTF-16/UTF-8
+   boundary; it filters on own active slots and therefore returns no row when `own = 0`.) Anything else: stop and
+   compare the names by hand under both orders.
+2. **Measure before (read-only).** Fix a date `D0` (the UTC date of the measurement; do not measure between 23:55 and
+   00:05 UTC) and write the result of each population below to a file, **as id lists** (settle ids; unchanged ids with
+   `md5(s::text)`; all slots with `md5(s::text)`), plus `pg_current_wal_lsn()` with the time and the
+   number of reconcile targets (the emote rows of the active sets of active channels, which one tick locks).
+3. **Back up** with `scripts/backup-postgres.sh`.
+4. **Stop worker and api** (both, before either starts with the flag on); `SELECT count(*) FROM pg_stat_activity WHERE datname = 'emotepurge' AND pid <> pg_backend_pid();` returns 0 (Npgsql leaves `application_name` empty, so a filter on `EmotePurge%` matches nothing; count by database and leave out your own psql session).
+5. **Set** `SEVENTV_SLOT_RECONCILE_ENABLED=true` in your stack's environment and bring both up together. Note the time.
+6. **Check the effective configuration in both containers**, not the stack setting: `printenv SevenTv__SlotReconcile__Enabled`
+   in the api container and in the worker container must print `true`. Anything else: stop and correct before going on.
+7. **Verify within five minutes**, against the populations below:
+   - the **settle population** has no unsettled seed left, except channels whose worker log says
+     `settle deferred: v4 dates missing for N emotes` (not a lasting state; if it has not cleared after three ticks, investigate that channel before going on);
+   - the **unchanged population**, bound to the seed ids of the measurement before (see "Populations"): every id is
+     byte-equal, except seeds whose classification turned, which are listed with the reason;
+   - the **preservation population** is exact;
+   - an emote under two aliases now shows two cards on the usage page, the old total on the original alias and a small
+     number on the new one. Every query for "active slots" or for emotes with more than one slot filters
+     `NOT "SeedUnsettled"` as well, because unsettled seeds of other sets are not archived. Count:
+     `SELECT count(*) FROM (SELECT "EmoteId" FROM "EmoteSlots" WHERE NOT "IsArchived" AND NOT "SeedUnsettled" GROUP BY 1 HAVING count(*) > 1) t;`
+     (3 for `handofblood` in the acceptance run);
+   - the log line "<channel>: N active emotes are not counted until their unsettled seed of the active set is settled."
+     is gone: at 0 the worker logs instead "<channel>: every active emote with a slot is counted again — no unsettled
+     seed of the active set is left." (except deferred channels);
+   - today's counts are growing: count the rows of today before and after a few minutes
+     (`SELECT count(*), sum("UseCount") FROM "UsageStats" WHERE "Date" = '<D0>';`, with `D0` the current UTC date), and
+     the worker log has no line "Usage flush failed" and no line "Usage flush has failed" (a successful flush logs
+     nothing; `usage.flushed` is a Redis live event, not a log line).
+8. **Day 1 (logs, read-only):** `AmbiguousDelta` reasons per kind (only with the EventAPI on; `seed-of-active-set`
+   only at the start, `rename-with-siblings` is the common lasting one); WAL over ten ticks against the value before;
+   `/totals` latency on the largest channel; the first real delete run of a slot card sends `alias` and `entries`, and
+   `sync-deleted` answers 200; the leave observation of an emote removed after the 30-minute window.
+
+**Populations.** Every comparison names its population; do not widen one:
+
+- **Settle population:** unsettled seeds with usage rows of the active set of an active channel whose first sync after
+  the switch **succeeded** (`LastSyncFailureReason` empty, `LastSyncedAtUtc` after the switch) and whose emote is
+  active afterwards, i.e. present in the live set. Only here "unsettled → 0" is required. The count (this is the
+  tested form; the acceptance run read 788 before and 0 after):
+
+  ```sql
+  SELECT count(*) FROM "EmoteSlots" s
+  JOIN "Emotes" e ON e."Id" = s."EmoteId" JOIN "Channels" c ON c."Id" = e."ChannelId"
+  WHERE s."SeedUnsettled" AND c."IsBotActive" AND NOT e."IsArchived"
+    AND EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id" AND u."EmoteSetId" = c."ActiveEmoteSetId");
+  ```
+
+  Right after the switch, add the channel condition for the "after" reading: `AND c."LastSyncFailureReason" IS NULL
+  AND c."LastSyncedAtUtc" > '<UTC time from step 5>+00'` (the column is `timestamptz`; without the `+00` the literal is
+  read in the session's time zone). Channels that fail it are not in the population; name them
+  and look at their worker log. Take the "before" reading just before stopping the processes (it can drift by a
+  few seeds: 788 became 790 in the acceptance run because two emotes were counted for the first time).
+- **Unchanged population:** unsettled seeds that are **not** in the settle population: seeds of emotes that are absent
+  (archived, with historical rows in the active set; they stay unsettled on purpose and leave no deferral line),
+  seeds of other sets, seeds of channels without `IsBotActive`. **The population is the list of ids from the
+  measurement before, not the predicate evaluated again afterwards:** the predicate reads mutable parent state
+  (`Emotes.IsArchived`, `Channels.IsBotActive`, `Channels.ActiveEmoteSetId`), and the first sync can flip it. An emote
+  that left the live set between the two readings is archived by the sync (`ArchivedAt` set) and its unsettled seed is
+  left standing, so it moves from the settle to the unchanged side of the predicate; an archived emote that came back
+  is un-archived (`ArchivedAt` null, `LastEnteredSetAtUtc` set) and moves the other way. Count and checksum of the
+  predicate would then differ without any defect. The rules, per id:
+  - an id that was **unchanged before** is byte-equal now (`md5(s::text)` per id); the only exception is a seed whose
+    parent is settle-classified now (live emote, active channel, rows of the active set): it moved inward and may be
+    settled;
+  - an id that was in the **settle population before** and is still byte-equal (not settled) must have left the settle
+    classification (emote no longer live or channel inactive: moved outward, nothing to settle) or belong to a
+    deferred channel; a seed that is byte-equal, still settle-classified and not deferred is a failed settle.
+
+  Before (in the stopped window, with the settle ids and the all-slots file of step 2):
+
+  ```sh
+  psql "$C" -X -q -v ON_ERROR_STOP=1 -At -F ' ' > unchanged_vorher.txt <<'SQL'
+  BEGIN READ ONLY;
+  SELECT s."Id", md5(s::text) FROM "EmoteSlots" s
+  JOIN "Emotes" e ON e."Id" = s."EmoteId" JOIN "Channels" c ON c."Id" = e."ChannelId"
+  WHERE s."SeedUnsettled"
+    AND NOT (c."IsBotActive" AND NOT e."IsArchived"
+             AND EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id" AND u."EmoteSetId" = c."ActiveEmoteSetId"))
+  ORDER BY s."Id" COLLATE "C";
+  ROLLBACK;
+  SQL
+  ```
+
+  After, take `slots_nachher.txt` with the same statement as the all-slots file (`SELECT s."Id", md5(s::text) FROM
+  "EmoteSlots" s`), then compare on the workstation and let the database explain each id that differs; nothing is
+  written on production (the ids go in as an array literal):
+
+  ```sh
+  LC_ALL=C sort slots_nachher.txt > n.txt
+  LC_ALL=C comm -23 unchanged_vorher.txt n.txt | cut -d' ' -f1 > a_ids.txt     # unchanged before, differs or gone now
+  LC_ALL=C sort slots_vorher.txt | grep -F -f settle_ids_vorher.txt | LC_ALL=C comm -12 - n.txt | cut -d' ' -f1 > b_ids.txt   # settle before, still byte-equal
+  for g in A B; do
+  psql "$C" -X -v ON_ERROR_STOP=1 -v grp=$g -v ids="{$(paste -sd, ${g,,}_ids.txt)}" <<'SQL'
+  BEGIN READ ONLY;
+  SELECT CASE WHEN s."Id" IS NULL THEN 'DEFECT: slot gone'
+              WHEN :'grp' = 'A' AND t.settle_class_now THEN 'explained: moved inward (parent live again)'
+              WHEN :'grp' = 'A' THEN 'DEFECT: changed without a settle classification'
+              WHEN t.settle_class_now THEN 'NOT SETTLED: fine only for a deferred channel'
+              ELSE 'explained: moved outward (parent archived or channel inactive)' END AS verdict,
+         :'grp' AS grp, i.id, ch."ChannelName", e."Name" AS emote, s."SeedUnsettled" AS unsettled_now,
+         e."IsArchived", e."ArchivedAt", e."LastEnteredSetAtUtc", ch."IsBotActive", ch."ActiveEmoteSetId", t.settle_class_now
+  FROM unnest(:'ids'::text[]) AS i(id)
+  LEFT JOIN "EmoteSlots" s ON s."Id" = i.id
+  LEFT JOIN "Emotes" e ON e."Id" = s."EmoteId"
+  LEFT JOIN "Channels" ch ON ch."Id" = e."ChannelId"
+  LEFT JOIN LATERAL (SELECT ch."IsBotActive" AND NOT e."IsArchived"
+                            AND EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id" AND u."EmoteSetId" = ch."ActiveEmoteSetId") AS settle_class_now) t ON true
+  ORDER BY 1, i.id;
+  ROLLBACK;
+  SQL
+  done
+  ```
+
+  Required: no row whose verdict starts with `DEFECT`; `NOT SETTLED` only for channels with a deferral line in the
+  worker log (same count); the `explained` rows are listed in the report with their channel (they are the emotes that
+  entered or left the live set between the two readings). Tested on a copy of the development database with a vanished
+  emote (outward), a returning emote (inward) and a changed seed outside the settle population (reported as `DEFECT`).
+  The old count and checksum of the predicate may stay as a summary but are no longer the check: they differ whenever a
+  seed moves between the sides. For a stricter check, diff the whole table: only settle-population seeds and newly
+  created slots may differ (791 changed rows and 172 new ones in the acceptance run, nothing else).
+
+- **Preservation population:** `UsageStats` rows with `"Date" < D0`. Per `("EmoteId", "EmoteSetId")` the row count and
+  the sums of `UseCount`, `BotUseCount` and `SharedChatUseCount`, before and after, must be equal (three counters per
+  pair). The contract is per `(EmoteId, EmoteSetId)`. The per-slot form is the stricter second check: seeds keep
+  their slot id when settled in place, so it was equal in the acceptance run as well; a difference there that
+  the per-pair form does not show is a seed that moved its rows onto an existing target and needs a look:
+
+  ```sql
+  SELECT "EmoteId", "EmoteSetId", count(*), sum("UseCount"), sum("BotUseCount"), sum("SharedChatUseCount")
+  FROM "UsageStats" WHERE "Date" < '<D0>' GROUP BY 1, 2 ORDER BY 1, 2;
+
+  SELECT "SlotId", "EmoteSetId", count(*), sum("UseCount"), sum("BotUseCount"), sum("SharedChatUseCount")
+  FROM "UsageStats" WHERE "Date" < '<D0>' GROUP BY 1, 2 ORDER BY 1, 2;
+  ```
+
+  The flush only writes today's row, the backfill is off, and retention deletes `UsageStats` rows only through a channel
+  cascade (a channel removed during the check is dropped from the comparison and named). Today's growth (`"Date" = D0`)
+  is watched separately and not compared.
+
+**Rollback (phase 1).** If the backfill was switched on after phase 1, take it down **first**, in the order of
+admission: stop the api (a temporary lock only, it closes the enqueue while you drain), empty the open runs (cancel them
+or close them with the statement of "Rolling back" under "Chat-log backfill", step 5), and with both processes stopped
+count the open runs and the seeds without rows (steps 3 and 4 above): both must be 0. Then, **before any process
+starts with the slot flag off**, set `CHAT_LOG_BACKFILL_ENABLED=false` in the stack environment (it reaches api and
+worker; stopping the api is not enough, because the enqueue endpoint checks only `ChatLogBackfill:Enabled`, so an api
+restarted with the backfill flag still true would accept runs again while the slot flag is off). Only then switch the
+slot flag off: stop worker and api; set `SEVENTV_SLOT_RECONCILE_ENABLED=false`; bring both up; check with `printenv` in
+both containers that `SevenTv__SlotReconcile__Enabled` is `false` **and** `ChatLogBackfill__Enabled` is `false`. The backfill stays off as long as
+the slot flag is off (admission order above), so nothing is enqueued while the flag is off. The numbers
+stay right: slots stay settled, the flag-off counting writes to the oldest slot with rows of the (emote, set) pair and
+the readers sum per emote. The slot inventory goes stale while off and heals on the next run with the flag on, by the
+add date. One consequence: with the flag on, two slots of one emote can have a row on the same day, so the `Down` of
+the usage-key migration (M2) and of the snapshot-key migration (M3) need their collapse statements first, as described
+below; do not expect a lossless `Down` after a phase with the flag on.
+
+**Known limits** (accepted for the switch-on; documented so they are not rediscovered as bugs):
+
+- Re-adding an entry whose slot is still active on our side (a delete report that never succeeded and a restore after
+  it, a lagging 7TV REST, a fan-out entry without a slot id in a channel where the set is active) yields a new slot at
+  0; the old slot is archived and keeps its history, but the card does not continue it.
+- `/totals` and `/series` read the slot snapshot and the aggregates in separate read-committed statements: a settle or
+  rebind that commits in between can show one emote with 0 uses in a single response; the next response is right. Follow-up: #412.
+- A report that fans out into a channel holding only a seed of the emote, or only archived slots, loses its leave inside
+  the credibility window.
+- The write-ahead-log cost of the 60-second tick (a row lock on every reconcile target, also when nothing changes) is
+  carried while the locked-row count stays below the threshold of the WAL check above; compare the measured WAL with
+  the figure before the switch. The follow-up #411 (plan before locking) removes it.
+
 ### Usage key switch (M2, #373)
 
 From #373 on, usage is counted per slot: the flush writes `UsageStats.SlotId` and upserts on
@@ -1116,8 +1366,7 @@ no longer exists, so every flush fails. The flag above is independent of M2 and 
 
 **Window**, short, with the first deploy that contains #373:
 
-1. Announce it outside big streams. Stop **worker and api**; `pg_stat_activity` shows no
-   `EmotePurge%` session any more.
+1. Announce it outside big streams. Stop **worker and api**; `SELECT count(*) FROM pg_stat_activity WHERE datname = 'emotepurge' AND pid <> pg_backend_pid();` returns 0 (Npgsql leaves `application_name` empty, so a filter on `EmotePurge%` matches nothing; count by database and leave out your own psql session).
 2. Back up with `scripts/backup-postgres.sh`.
 3. Precondition: `SELECT count(*) FROM "ChatLogBackfillRuns" WHERE "Status" IN ('queued', 'running', 'paused');`
    returns 0. Otherwise cancel those runs first (see "Chat-log backfill"); M2 would abort on them.
@@ -1225,7 +1474,7 @@ start with a pending migration).
 
 **Window**, short and of its own, with the first deploy that contains #375:
 
-1. Announce it. Stop **worker and api**; `pg_stat_activity` shows no `EmotePurge%` session any more.
+1. Announce it. Stop **worker and api**; `SELECT count(*) FROM pg_stat_activity WHERE datname = 'emotepurge' AND pid <> pg_backend_pid();` returns 0 (Npgsql leaves `application_name` empty, so a filter on `EmotePurge%` matches nothing; count by database and leave out your own psql session).
 2. Back up with `scripts/backup-postgres.sh`.
 3. Precondition: `SELECT count(*) FROM "ChatLogBackfillRuns";` and
    `SELECT count(*) FROM "ChatLogBackfillRunEmotes";` both return 0 on production (the backfill has never
