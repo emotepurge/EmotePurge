@@ -1323,7 +1323,7 @@
         "votingExport": "Das ist ein Export einer Abstimmung, kein Purge-Protokoll. Ein importierbares Protokoll entsteht erst bei einem Löschlauf und wird direkt danach zum Download angeboten.",
         "transferRun": "Das ist das Protokoll eines Übertragungslaufs (Rückweg-Datei oder Ergebnisprotokoll), keine Emote-Liste zum Kopieren — solche Dateien dienen nur der Wiederherstellung entfernter Emotes.",
         "wrongVersion": "Die Datei stammt aus einer neueren EmotePurge-Version.",
-        "invalidEntryTarget": "Das Protokoll enthält einen Eintrag mit fehlendem oder ungültigem Hinzufügedatum oder Slot — so lässt es sich nicht sicher wiederherstellen.",
+        "invalidEntryTarget": "Das Protokoll enthält einen Eintrag mit fehlendem oder ungültigem Namen, Hinzufügedatum oder Slot — so lässt es sich nicht sicher wiederherstellen.",
         "noRows": "Die Datei enthält keine importierbaren Emotes.",
         "noRestorableRows": "Das Protokoll enthält keine erfolgreich gelöschten Emotes zum Wiederherstellen.",
         "transferRunNoRows": "Diese Übertragungsdatei enthält keine entfernten Emotes.",

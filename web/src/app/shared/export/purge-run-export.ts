@@ -1,6 +1,6 @@
 import {
   SevenTvEntryGeneration,
-  parseStrictEntryDate,
+  isValidEntryGeneration,
 } from '../../core/seven-tv/seven-tv-entry-target';
 import { RunItemStatus, RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
 import { CsvColumn, toCsv } from './csv';
@@ -308,13 +308,16 @@ export type ProtocolParseResult =
  * constants' docs).
  *
  * Version 4 (Plan-378 4.8, S6, T-6) is read **strictly**: a row with `addedAt` or `slotId` is an
- * entry row, and its target must be whole — `addedAt` valid per `parseStrictEntryDate` (`Date.parse`
- * alone takes values the report endpoint refuses), `slotId` absent or a non-empty string, exactly one
- * alias. One malformed target refuses the **whole file** (`invalidEntryTarget`) instead of quietly
- * restoring that row per id, which would bring the entry back without the generation that leads the
- * server to its slot. A version 4 file without any entry target is not one this app writes (a run
- * without one stays version 3), and is refused like an unknown version. In versions 1–3 neither
- * field is read.
+ * entry row, and its target must be whole — exactly one alias, and the target valid per
+ * `isValidEntryGeneration`, the very check the restore applies before queueing (a non-empty alias,
+ * `slotId` absent or non-empty, `addedAt` valid per `parseStrictEntryDate`; `Date.parse` alone takes
+ * values the report endpoint refuses). One malformed target refuses the **whole file**
+ * (`invalidEntryTarget`) instead of quietly restoring that row per id, which would bring the entry
+ * back without the generation that leads the server to its slot — or, for an empty alias, dropping
+ * the row later without a word. A version 4 file without any entry target is not one this app
+ * writes (a run without one stays version 3), and is refused with the same `invalidEntryTarget`: the
+ * file claims entry targets and holds none, which is not a matter of a newer app. In versions 1–3
+ * neither field is read.
  *
  * `meta` (and with it `meta.counts`) is passed through unvalidated beyond `emoteSetId` above — a
  * v1 or v2 file has no `counts.unknown` at all, so it comes back `undefined` at runtime despite the
@@ -380,7 +383,7 @@ export function parsePurgeRunProtocol(text: string): ProtocolParseResult {
       }
     }
     if (entries.size === 0) {
-      return { ok: false, errorKey: 'restore.import.errors.wrongVersion' };
+      return { ok: false, errorKey: 'restore.import.errors.invalidEntryTarget' };
     }
   }
 
@@ -459,7 +462,10 @@ function readProtocolRow(value: unknown): PurgeRunRow | null {
 
 /** The entry target of one version 4 row (Plan-378 4.8): `undefined` for a row without one (no
  *  `addedAt`, no `slotId` — an id row), `null` for a malformed one, which refuses the file. The
- *  alias is the row's one alias; the add date is passed on verbatim, never reformatted. */
+ *  alias is the row's one alias; the add date is passed on verbatim, never reformatted. Judged by
+ *  `isValidEntryGeneration`, the restore's own check, so the two cannot drift apart: an empty alias
+ *  (`name: ""`, which `readProtocolRow` turns into `aliases: [""]`) refuses the file here instead of
+ *  being dropped by the restore later. */
 function readEntryTarget(
   row: Record<string, unknown>,
   parsed: PurgeRunRow,
@@ -468,14 +474,15 @@ function readEntryTarget(
   if (slotId === undefined && addedAt === undefined) {
     return undefined;
   }
-  const date = parseStrictEntryDate(addedAt);
-  const slotValid = slotId === undefined || (typeof slotId === 'string' && slotId.length > 0);
-  if (date === null || !slotValid || parsed.aliases.length !== 1) {
+  if (parsed.aliases.length !== 1) {
     return null;
   }
-  return {
-    ...(slotId === undefined ? {} : { slotId: slotId as string }),
+  // Untrusted values typed as the target only to be checked: `isValidEntryGeneration` tests every
+  // field's type itself.
+  const target = {
+    ...(slotId === undefined ? {} : { slotId }),
     alias: parsed.aliases[0],
-    addedAt: date,
-  };
+    addedAt,
+  } as SevenTvEntryGeneration;
+  return isValidEntryGeneration(target) ? target : null;
 }

@@ -292,7 +292,9 @@ describe('parsePurgeRunProtocol', () => {
     });
   });
 
-  it.each([99, PURGE_RUN_FORMAT_VERSION + 1])(
+  // The first version past the newest known one: since Plan-378 that is the entry format's
+  // successor, version 4 being a known one now.
+  it.each([99, PURGE_RUN_ENTRY_FORMAT_VERSION + 1])(
     'rejects an unknown format version (%i)',
     (version) => {
       const future = purgeRunJson(protocol()).replace(
@@ -674,6 +676,13 @@ describe('purge protocol with entry rows (version 4)', () => {
       'two aliases on one entry',
       (row: Record<string, unknown>) => (row['aliases'] = ['hob44', 'ome44']),
     ],
+    [
+      'an empty alias',
+      (row: Record<string, unknown>) => {
+        row['name'] = '';
+        row['aliases'] = [''];
+      },
+    ],
   ])('refuses the whole version 4 file for %s, never restoring the row per id', (_label, edit) => {
     expect(parsePurgeRunProtocol(withFirstRow(edit))).toEqual({
       ok: false,
@@ -696,9 +705,10 @@ describe('purge protocol with entry rows (version 4)', () => {
   it('refuses a version 4 file without any entry target — this app never writes one', () => {
     const file = purgeRunJson(protocol()).replace('"formatVersion": 3', '"formatVersion": 4');
 
+    // Not "a newer version": the file claims entry targets and holds none.
     expect(parsePurgeRunProtocol(file)).toEqual({
       ok: false,
-      errorKey: 'restore.import.errors.wrongVersion',
+      errorKey: 'restore.import.errors.invalidEntryTarget',
     });
   });
 
