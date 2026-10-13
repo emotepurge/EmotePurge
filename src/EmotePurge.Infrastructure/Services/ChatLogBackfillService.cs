@@ -18,8 +18,9 @@ namespace EmotePurge.Infrastructure.Services;
 /// the enqueue (<c>FOR NO KEY UPDATE</c> by id, then the requester's user row <c>FOR SHARE</c>, then the
 /// placeholder upsert, then the members' emote rows <c>FOR NO KEY UPDATE</c> for the slot binding, then
 /// its inserts), the leave (<c>FOR NO KEY UPDATE</c>, then the run), and the block commit
-/// (<c>FOR KEY SHARE</c> on the channel, then the block's emote rows <c>FOR SHARE</c> before the snapshot's
-/// slot ids are read, before any usage, coverage or run row; slot plan #373 E11/E11a). The block commit's
+/// (<c>FOR KEY SHARE</c> on the channel, then the block's emote rows <c>FOR SHARE</c> before the block's
+/// slots are checked against the snapshot, before any usage, coverage or run row; slot plan #373
+/// E11/E11a, #375 E9). The block commit's
 /// explicit <c>KEY SHARE</c> is what keeps it from deadlocking with a purge: without it, the usage
 /// insert would hold <c>KEY SHARE</c> on emote rows before the coverage insert asked for the channel,
 /// while the purge holds the channel <c>FOR UPDATE</c> and waits for those emote rows.
@@ -406,11 +407,13 @@ public sealed class ChatLogBackfillService(
 
         var emotes = await db.ChatLogBackfillRunEmotes.AsNoTracking()
             .Where(e => e.RunId == runId)
-            .Select(e => new ChatLogBackfillSnapshotEmote(e.EmoteId, e.Name, e.AddedToSetDay))
+            .Select(e => new ChatLogBackfillSnapshotEmote(e.SlotId, e.EmoteId, e.Name, e.AddedToSetDay))
             .ToListAsync(cancellationToken);
 
-        // Ordinal in C#, not the database's collation (D11).
-        return new ChatLogBackfillSnapshot(emoteSetId, emotes.OrderBy(e => e.EmoteId, StringComparer.Ordinal).ToList());
+        // Ordinal in C#, not the database's collation (D11); one row per slot, so the slot breaks ties.
+        return new ChatLogBackfillSnapshot(
+            emoteSetId,
+            emotes.OrderBy(e => e.EmoteId, StringComparer.Ordinal).ThenBy(e => e.SlotId, StringComparer.Ordinal).ToList());
     }
 
     public async Task<ChatLogBackfillBlockResult> ReplaceBlockAsync(
@@ -462,22 +465,30 @@ public sealed class ChatLogBackfillService(
             return new ChatLogBackfillBlockResult.ChannelGone();
         }
 
-        // The flush's own rule (D25): an aggregate for an emote that no longer exists (hard-deleted
-        // after the click — the snapshot has no FK), or whose snapshot slot no longer exists, is
-        // dropped with a warning, never a failure.
-        var emoteIds = rows.Select(r => r.EmoteId).Distinct(StringComparer.Ordinal).ToList();
-        var slotOfEmote = await LockAndResolveSnapshotSlotsAsync(runId, run.ChannelId, emoteIds, cancellationToken);
-        if (slotOfEmote.Count < emoteIds.Count)
+        // Pairs before existence (slot plan #375, E9): every aggregate must be a snapshot row of the run
+        // — checked for the whole block before anything is written, so a foreign pair can never be
+        // dropped silently while the delete, the coverage and the progress below go ahead. Only then the
+        // flush's own rule (D25): an aggregate for an emote that no longer exists (hard-deleted after
+        // the click — the snapshot has no FK), or whose slot no longer exists, is dropped with a
+        // warning, never a failure.
+        var existing = await LockAndCheckSnapshotRowsAsync(runId, run.ChannelId, rows, cancellationToken);
+        if (existing is null)
+        {
+            logger.LogWarning(
+                "Chat-log backfill run {RunId}: the snapshot no longer holds a slot of block {From:yyyy-MM-dd}..{To:yyyy-MM-dd} — nothing written.",
+                runId, blockFrom, blockToExclusive);
+            return new ChatLogBackfillBlockResult.SnapshotChanged();
+        }
+
+        if (existing.Count < rows.Count)
         {
             logger.LogWarning(
                 "Chat-log backfill run {RunId}: {Count} aggregates for emotes or snapshot slots that no longer exist dropped.",
-                runId, emoteIds.Count - slotOfEmote.Count);
+                runId, rows.Count - existing.Count);
         }
 
         // Rows with all three counts at 0 are not written (the flush only writes days with usage).
-        var kept = rows
-            .Where(r => slotOfEmote.ContainsKey(r.EmoteId) && (r.UseCount > 0 || r.BotUseCount > 0 || r.SharedChatUseCount > 0))
-            .ToList();
+        var kept = existing.Where(r => r.UseCount > 0 || r.BotUseCount > 0 || r.SharedChatUseCount > 0).ToList();
 
         // 1. Every imported row of the channel in the block, archived emotes and any set id included:
         // an imported day belongs to one set, the newest run's (OD-A). Live rows are never touched.
@@ -493,12 +504,12 @@ public sealed class ChatLogBackfillService(
         try
         {
             // 2. Plain insert, no ON CONFLICT: a unique violation can only be a live row on an imported
-            // day — an invariant broken (D3), never a merge. Whichever unique index of UsageStats is in
-            // force decides the cell: (EmoteId, EmoteSetId, Date) before M2, (SlotId, EmoteSetId, Date)
-            // from M2 on (slot plan #373, E11).
+            // cell — an invariant broken (D3), never a merge. The cell is (SlotId, EmoteSetId, Date), the
+            // unique key since M2: "live or imported" holds per slot, so another slot of the same emote
+            // may carry a live row on the same day (slot plan #375).
             if (kept.Count > 0)
             {
-                await InsertAggregatesAsync(kept, slotOfEmote, run.EmoteSetId, cancellationToken);
+                await InsertAggregatesAsync(kept, run.EmoteSetId, cancellationToken);
             }
 
             // 3. The block's days are covered, whether or not anything matched (Fix 3, D45).
@@ -1009,49 +1020,72 @@ public sealed class ChatLogBackfillService(
     }
 
     /// <summary>
-    /// The snapshot slot of every aggregate's emote, keyed by <c>Emote.Id</c> (slot plan #373, §4 and
-    /// E11a). Locks the channel's emote rows among <paramref name="emoteIds"/> <c>FOR SHARE</c> through
-    /// <see cref="RowLocks"/> — after the channel <c>KEY SHARE</c> the caller holds — and only then
-    /// reads the run's snapshot, so a settle that moves the snapshot rows from a seed to its target
-    /// (holding those emote rows <c>FOR NO KEY UPDATE</c>) is either committed before the read or waits
-    /// for this block's commit. An emote is missing from the result when it is gone or not the
-    /// channel's, when the snapshot has no row for it, or when that slot no longer exists or belongs to
-    /// another emote. (A null <c>SlotId</c> of a run from before #373 cannot reach here since M3.)
+    /// The two checks of a block's aggregates against the run's snapshot (slot plan #375, E9). Locks the
+    /// channel's emote rows among the aggregates' emotes <c>FOR SHARE</c> through <see cref="RowLocks"/>
+    /// — after the channel <c>KEY SHARE</c> the caller holds — and only then reads the run's snapshot
+    /// rows for the aggregates' slots and emotes, so a settle that rebinds snapshot rows from a seed to
+    /// its target (holding those emote rows <c>FOR NO KEY UPDATE</c>) is either committed before the
+    /// read or waits for this block's commit (plan #373 E11a).
+    /// <para>
+    /// <b>Pairs, for the whole block:</b> a slot the snapshot holds under another emote, or an emote
+    /// without any snapshot row (another channel's, say), throws <see cref="ArgumentException"/>; a slot
+    /// the snapshot does not hold for an emote it does hold is a rebound row and answers <c>null</c>.
+    /// The server does not guess where such an aggregate belongs — "the emote has one snapshot row"
+    /// proves no seed-to-target origin. <b>Existence (D25):</b> of the rest, an aggregate is returned
+    /// only when its emote is still the channel's and its slot still exists under that emote.
+    /// </para>
     /// </summary>
-    private async Task<Dictionary<string, string>> LockAndResolveSnapshotSlotsAsync(
-        long runId, string channelId, IReadOnlyCollection<string> emoteIds, CancellationToken cancellationToken)
+    private async Task<List<ChatLogBackfillAggregate>?> LockAndCheckSnapshotRowsAsync(
+        long runId, string channelId, IReadOnlyList<ChatLogBackfillAggregate> rows, CancellationToken cancellationToken)
     {
-        if (emoteIds.Count == 0)
+        if (rows.Count == 0)
         {
-            return new Dictionary<string, string>(StringComparer.Ordinal);
+            return [];
         }
 
+        var emoteIds = rows.Select(r => r.EmoteId).Distinct(StringComparer.Ordinal).ToList();
+        var slotIds = rows.Select(r => r.SlotId).Distinct(StringComparer.Ordinal).ToList();
         var ofChannel = await db.Emotes
             .Where(e => e.ChannelId == channelId && emoteIds.Contains(e.Id))
             .Select(e => e.Id)
             .ToListAsync(cancellationToken);
-        var locked = (await db.LockEmotesForShareByIdsAsync(ofChannel, cancellationToken)).ToArray();
+        var locked = (await db.LockEmotesForShareByIdsAsync(ofChannel, cancellationToken)).ToHashSet(StringComparer.Ordinal);
 
         var snapshot = await db.ChatLogBackfillRunEmotes.AsNoTracking()
-            .Where(e => e.RunId == runId && locked.Contains(e.EmoteId))
-            .Select(e => new { e.EmoteId, e.SlotId })
+            .Where(e => e.RunId == runId && (slotIds.Contains(e.SlotId) || emoteIds.Contains(e.EmoteId)))
+            .Select(e => new { e.SlotId, e.EmoteId })
             .ToListAsync(cancellationToken);
-        var slotIds = snapshot.Select(e => e.SlotId).Distinct(StringComparer.Ordinal).ToList();
+
+        // (RunId, SlotId) is the key since M3: one emote per slot of a run.
+        var emoteOfSnapshotSlot = snapshot.ToDictionary(e => e.SlotId, e => e.EmoteId, StringComparer.Ordinal);
+        var snapshotEmotes = snapshot.Select(e => e.EmoteId).ToHashSet(StringComparer.Ordinal);
+        var foreignPairs = rows.Count(r => emoteOfSnapshotSlot.TryGetValue(r.SlotId, out var emoteId)
+            ? !string.Equals(emoteId, r.EmoteId, StringComparison.Ordinal)
+            : !snapshotEmotes.Contains(r.EmoteId));
+        if (foreignPairs > 0)
+        {
+            throw new ArgumentException(
+                $"{foreignPairs} aggregates name a slot and an emote that are not one snapshot row of run {runId}.", nameof(rows));
+        }
+
+        if (rows.Any(r => !emoteOfSnapshotSlot.ContainsKey(r.SlotId)))
+        {
+            return null;
+        }
+
         var ownerOfSlot = await db.EmoteSlots.AsNoTracking()
             .Where(s => slotIds.Contains(s.Id))
             .Select(s => new { s.Id, s.EmoteId })
             .ToDictionaryAsync(s => s.Id, s => s.EmoteId, StringComparer.Ordinal, cancellationToken);
 
-        return snapshot
-            .Where(e => ownerOfSlot.TryGetValue(e.SlotId, out var owner) && string.Equals(owner, e.EmoteId, StringComparison.Ordinal))
-            .ToDictionary(e => e.EmoteId, e => e.SlotId, StringComparer.Ordinal);
+        return rows
+            .Where(r => locked.Contains(r.EmoteId)
+                && ownerOfSlot.TryGetValue(r.SlotId, out var owner)
+                && string.Equals(owner, r.EmoteId, StringComparison.Ordinal))
+            .ToList();
     }
 
-    private async Task InsertAggregatesAsync(
-        IReadOnlyList<ChatLogBackfillAggregate> rows,
-        IReadOnlyDictionary<string, string> slotOfEmote,
-        string emoteSetId,
-        CancellationToken cancellationToken)
+    private async Task InsertAggregatesAsync(IReadOnlyList<ChatLogBackfillAggregate> rows, string emoteSetId, CancellationToken cancellationToken)
     {
         const string sql = """
             INSERT INTO "UsageStats" ("SlotId", "EmoteId", "EmoteSetId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount", "Source")
@@ -1065,7 +1099,7 @@ public sealed class ChatLogBackfillService(
             [
                 new NpgsqlParameter("emoteSetId", NpgsqlDbType.Text) { Value = emoteSetId },
                 new NpgsqlParameter("source", NpgsqlDbType.Integer) { Value = (int)UsageStatSource.ChatLogArchive },
-                new NpgsqlParameter("slotIds", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = rows.Select(r => slotOfEmote[r.EmoteId]).ToArray() },
+                new NpgsqlParameter("slotIds", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = rows.Select(r => r.SlotId).ToArray() },
                 new NpgsqlParameter("emoteIds", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = rows.Select(r => r.EmoteId).ToArray() },
                 new NpgsqlParameter("dates", NpgsqlDbType.Array | NpgsqlDbType.Date) { Value = rows.Select(r => r.Date).ToArray() },
                 new NpgsqlParameter("useCounts", NpgsqlDbType.Array | NpgsqlDbType.Integer) { Value = rows.Select(r => r.UseCount).ToArray() },
@@ -1198,6 +1232,7 @@ public sealed class ChatLogBackfillService(
 
     // A block the worker hands in must stay inside itself: a cell outside would escape the delete and
     // the coverage of this block (and one on or after the counting start would collide with live rows).
+    // One aggregate per slot and day — two slots of one emote on the same day are two cells (#375).
     private static void ValidateBlock(DateOnly blockFrom, DateOnly blockToExclusive, IReadOnlyList<ChatLogBackfillAggregate> rows)
     {
         if (blockFrom >= blockToExclusive)
@@ -1208,14 +1243,19 @@ public sealed class ChatLogBackfillService(
         var seen = new HashSet<(string, DateOnly)>();
         foreach (var row in rows)
         {
+            if (string.IsNullOrEmpty(row.SlotId) || string.IsNullOrEmpty(row.EmoteId))
+            {
+                throw new ArgumentException("Every aggregate names a slot and an emote.", nameof(rows));
+            }
+
             if (row.Date < blockFrom || row.Date >= blockToExclusive)
             {
                 throw new ArgumentOutOfRangeException(nameof(rows), $"Aggregate day {row.Date:yyyy-MM-dd} lies outside the block.");
             }
 
-            if (!seen.Add((row.EmoteId, row.Date)))
+            if (!seen.Add((row.SlotId, row.Date)))
             {
-                throw new ArgumentException("One aggregate per emote and day.", nameof(rows));
+                throw new ArgumentException("One aggregate per slot and day.", nameof(rows));
             }
         }
     }

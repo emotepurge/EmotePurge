@@ -142,7 +142,7 @@ public partial class ChatLogBackfillServiceTests
             var service = CreateService(db);
             Assert.IsType<ChatLogBackfillBlockResult.Committed>(await service.ReplaceBlockAsync(
                 claim.RunId, d0, d0.AddDays(7),
-                [new ChatLogBackfillAggregate(knownId, d0, 3, 1, 2), new ChatLogBackfillAggregate(newId, d0.AddDays(2), 5, 0, 0)],
+                [new ChatLogBackfillAggregate(slotOf[knownId], knownId, d0, 3, 1, 2), new ChatLogBackfillAggregate(slotOf[newId], newId, d0.AddDays(2), 5, 0, 0)],
                 100, 5, isLastBlock: false));
         }
 
@@ -151,7 +151,7 @@ public partial class ChatLogBackfillServiceTests
             var service = CreateService(db);
             Assert.IsType<ChatLogBackfillBlockResult.Committed>(await service.ReplaceBlockAsync(
                 claim.RunId, d0.AddDays(7), claim.WindowTo,
-                [new ChatLogBackfillAggregate(knownId, d0.AddDays(8), 7, 2, 1)],
+                [new ChatLogBackfillAggregate(slotOf[knownId], knownId, d0.AddDays(8), 7, 2, 1)],
                 100, 5, isLastBlock: true));
         }
 

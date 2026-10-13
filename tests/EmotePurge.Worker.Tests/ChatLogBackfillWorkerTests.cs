@@ -79,9 +79,9 @@ public class ChatLogBackfillWorkerTests
             {
                 Assert.Equal(
                     [
-                        new ChatLogBackfillAggregate("e1", new DateOnly(2026, 9, 1), 1, 0, 0),
-                        new ChatLogBackfillAggregate("e1", new DateOnly(2026, 9, 2), 1, 0, 0),
-                        new ChatLogBackfillAggregate("e2", new DateOnly(2026, 9, 1), 1, 0, 0)
+                        new ChatLogBackfillAggregate("s1", "e1", new DateOnly(2026, 9, 1), 1, 0, 0),
+                        new ChatLogBackfillAggregate("s1", "e1", new DateOnly(2026, 9, 2), 1, 0, 0),
+                        new ChatLogBackfillAggregate("s2", "e2", new DateOnly(2026, 9, 1), 1, 0, 0)
                     ],
                     c.Rows);
                 Assert.Equal(4096, c.Bytes);
@@ -1191,6 +1191,140 @@ public class ChatLogBackfillWorkerTests
             Assert.Equal([2], resetsAtFailures);
             Assert.Equal(ChatLogBackfillWorker.TransportFailureErrorCode, run.ErrorCode);
         }
+    }
+
+    // ---------------------------------------------------------------- Per slot (slot plan #375, AK 23–24, E9)
+
+    // AK 23–24: two snapshot rows of one emote are two slots; one message naming both aliases counts once
+    // for each, and the block hands in two aggregates of the same emote and day.
+    [Fact]
+    public async Task TwoSlotsOfOneEmote_AreCountedApart_AndTheBlockCarriesBothAggregatesOfOneDay()
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(
+            WindowFrom,
+            WindowFrom.AddDays(7),
+            snapshot: [new ChatLogBackfillSnapshotEmote("s-old", "e1", "ome44", null), new ChatLogBackfillSnapshotEmote("s-new", "e1", "hob44", null)]);
+        rig.Archive.Handler = async (request, onMessage, _) =>
+        {
+            var at = request.FromUtc.AddHours(12);
+            await onMessage(Message(at, "u1", "ome44 hob44"));
+            await onMessage(Message(at, "u2", "ome44"));
+            return FakeArchive.Complete(bytes: 100, messages: 2);
+        };
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Completed);
+
+        var commit = Assert.Single(run.Commits);
+        Assert.Equal(
+            [
+                new ChatLogBackfillAggregate("s-new", "e1", WindowFrom, 1, 0, 0),
+                new ChatLogBackfillAggregate("s-old", "e1", WindowFrom, 2, 0, 0)
+            ],
+            commit.Rows);
+    }
+
+    // E9: a settle rebinds the run's snapshot row (e1, Kappa) from s1 to s1b while block 1 is read. The
+    // block comes back SnapshotChanged; the worker re-reads the snapshot, moves the aggregate to s1b and
+    // hands the same block in again without a second archive request; block 2 counts on s1b directly.
+    [Fact]
+    public async Task ASnapshotChangedBlock_IsMovedToTheNewSlots_AndHandedInOnceMore_WithoutASecondRequest()
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(14));
+        rig.Archive.Handler = async (request, onMessage, _) =>
+        {
+            await onMessage(Message(request.FromUtc.AddHours(12), "u1", "Kappa PogU"));
+            if (request.FromUtc.Day == 1)
+            {
+                run.Snapshot = [new ChatLogBackfillSnapshotEmote("s1b", "e1", "Kappa", null), new ChatLogBackfillSnapshotEmote("s2", "e2", "PogU", null)];
+            }
+
+            return FakeArchive.Complete(bytes: 300, messages: 1);
+        };
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Completed);
+
+        Assert.Equal(2, rig.Archive.Requests.Count);
+        Assert.Collection(
+            run.Commits,
+            c => Assert.Equal(
+                [new ChatLogBackfillAggregate("s1b", "e1", WindowFrom, 1, 0, 0), new ChatLogBackfillAggregate("s2", "e2", WindowFrom, 1, 0, 0)],
+                c.Rows),
+            c => Assert.Equal(
+                [new ChatLogBackfillAggregate("s1b", "e1", WindowFrom.AddDays(7), 1, 0, 0), new ChatLogBackfillAggregate("s2", "e2", WindowFrom.AddDays(7), 1, 0, 0)],
+                c.Rows));
+        Assert.Equal((600L, 2L), (run.BytesReceived, run.MessagesRead));
+        var calls = rig.Store.Instances[0].Calls;
+        Assert.Equal(3, calls.Count(c => c == nameof(IChatLogBackfillService.ReplaceBlockAsync)));
+        Assert.Equal(2, calls.Count(c => c == nameof(IChatLogBackfillService.GetSnapshotAsync)));
+        Assert.Null(run.ErrorCode);
+    }
+
+    // E9: the worker follows a changed snapshot only through the block's own rows. A row that is gone,
+    // or a SnapshotChanged while no row of the block moved, fails the run as worker_error — booking the
+    // block's bytes — without handing the block in again and without another request.
+    [Theory]
+    [InlineData("row gone")]
+    [InlineData("row unchanged")]
+    public async Task ASnapshotChangeTheWorkerCannotFollow_FailsTheRunAsWorkerError(string change)
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(14));
+        rig.Archive.Handler = async (request, onMessage, _) =>
+        {
+            await onMessage(Message(request.FromUtc.AddHours(12), "u1", "Kappa"));
+            return FakeArchive.Complete(bytes: 300, messages: 1);
+        };
+        rig.Store.ReplaceOverride = r =>
+        {
+            if (change == "row gone")
+            {
+                r.Snapshot = [new ChatLogBackfillSnapshotEmote("s2", "e2", "PogU", null)];
+            }
+
+            return new ChatLogBackfillBlockResult.SnapshotChanged();
+        };
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Failed);
+
+        Assert.Equal(ChatLogBackfillWorker.WorkerErrorCode, run.ErrorCode);
+        Assert.Empty(run.Commits);
+        Assert.Equal(300, run.BytesReceived);
+        Assert.Single(rig.Archive.Requests);
+        Assert.Equal(1, rig.Store.Instances[0].Calls.Count(c => c == nameof(IChatLogBackfillService.ReplaceBlockAsync)));
+    }
+
+    // E9: one more hand-in per block, not a loop — a second SnapshotChanged for the same block fails the run.
+    [Fact]
+    public async Task ASecondSnapshotChangeForTheSameBlock_FailsTheRunAsWorkerError()
+    {
+        await using var rig = new BackfillRig();
+        var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(14));
+        rig.Archive.Handler = async (request, onMessage, _) =>
+        {
+            await onMessage(Message(request.FromUtc.AddHours(12), "u1", "Kappa"));
+            return FakeArchive.Complete(bytes: 300, messages: 1);
+        };
+        var generation = 0;
+        rig.Store.ReplaceOverride = r =>
+        {
+            generation++;
+            r.Snapshot = [new ChatLogBackfillSnapshotEmote($"s1-{generation}", "e1", "Kappa", null), new ChatLogBackfillSnapshotEmote("s2", "e2", "PogU", null)];
+            return new ChatLogBackfillBlockResult.SnapshotChanged();
+        };
+
+        await rig.StartAsync();
+        await rig.DriveUntilAsync(() => run.Status == ChatLogBackfillRunStatus.Failed);
+
+        Assert.Equal(ChatLogBackfillWorker.WorkerErrorCode, run.ErrorCode);
+        Assert.Empty(run.Commits);
+        Assert.Single(rig.Archive.Requests);
+        Assert.Equal(2, rig.Store.Instances[0].Calls.Count(c => c == nameof(IChatLogBackfillService.ReplaceBlockAsync)));
+        Assert.Contains(rig.Logger.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("changed again", StringComparison.Ordinal));
     }
 
     private static int MonitorCalls(BackfillRig rig) => rig.Store.Instances.Skip(1).Sum(i => i.Calls.Count);

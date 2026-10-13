@@ -31,11 +31,14 @@ public partial class ChatLogBackfillServiceTests
         var e1 = await SeedEmoteAsync(channel, "e1", "E1");
         var e2 = await SeedEmoteAsync(channel, "e2", "E2", archived: true);
         var e3 = await SeedEmoteAsync(channel, "e3", "E3");
+        var e4 = await SeedEmoteAsync(channel, "e4", "E4");
         var foreignEmote = await SeedEmoteAsync(other, "o1", "O1");
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, pauseCount: 2, blockAttempts: 1, windowFrom: BlockFrom);
-        var slots = await BindSnapshotAsync(run, e1, e2, e3);
+        var slots = await BindSnapshotAsync(run, e1, e2, e3, e4);
         await using (var db = CreateDbContext())
         {
+            // e4 is hard-deleted after the click: its snapshot row stays (no FK), its slot goes with it.
+            await db.Emotes.Where(e => e.Id == e4.Id).ExecuteDeleteAsync();
             await db.ChatLogBackfillRuns.Where(r => r.Id == run.Id)
                 .ExecuteUpdateAsync(s => s.SetProperty(r => r.BytesReceived, 100L).SetProperty(r => r.MessagesRead, 10L));
             db.UsageStats.AddRange(
@@ -57,10 +60,10 @@ public partial class ChatLogBackfillServiceTests
             result = await CreateService(db, logger: logger).ReplaceBlockAsync(
                 run.Id, BlockFrom, BlockTo,
                 [
-                    new ChatLogBackfillAggregate(e1.Id, new DateOnly(2026, 6, 1), 2, 1, 0),
-                    new ChatLogBackfillAggregate(e2.Id, new DateOnly(2026, 6, 7), 0, 0, 4),
-                    new ChatLogBackfillAggregate(e3.Id, new DateOnly(2026, 6, 3), 0, 0, 0),         // all zero: not written
-                    new ChatLogBackfillAggregate("hard-deleted-emote", new DateOnly(2026, 6, 3), 1, 0, 0), // dropped
+                    new ChatLogBackfillAggregate(slots[e1.Id], e1.Id, new DateOnly(2026, 6, 1), 2, 1, 0),
+                    new ChatLogBackfillAggregate(slots[e2.Id], e2.Id, new DateOnly(2026, 6, 7), 0, 0, 4),
+                    new ChatLogBackfillAggregate(slots[e3.Id], e3.Id, new DateOnly(2026, 6, 3), 0, 0, 0), // all zero: not written
+                    new ChatLogBackfillAggregate(slots[e4.Id], e4.Id, new DateOnly(2026, 6, 3), 1, 0, 0), // hard-deleted: dropped
                 ],
                 bytes: 1000, messages: 50, isLastBlock: false);
         }
@@ -106,13 +109,13 @@ public partial class ChatLogBackfillServiceTests
         var channel = await SeedChannelAsync("bfrerun", createdAt: new DateTime(2026, 6, 8, 0, 0, 0, DateTimeKind.Utc));
         var e1 = await SeedEmoteAsync(channel, "e1", "E1");
         var first = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, emoteSetId: SetB, weeksTotal: 1, windowFrom: BlockFrom);
-        await BindSnapshotAsync(first, e1);
+        var firstSlots = await BindSnapshotAsync(first, e1);
         var liveBefore = await LiveFingerprintAsync(channel);
 
         await using (var db = CreateDbContext())
         {
             var committed = await CreateService(db).ReplaceBlockAsync(
-                first.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(e1.Id, BlockFrom, 4, 0, 0)], 10, 1, isLastBlock: true);
+                first.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(firstSlots[e1.Id], e1.Id, BlockFrom, 4, 0, 0)], 10, 1, isLastBlock: true);
             Assert.Equal(new ChatLogBackfillBlockResult.Committed(new ChatLogBackfillTransition(ChatLogBackfillRunStatus.Completed, 0, 0, null)), committed);
         }
 
@@ -121,7 +124,7 @@ public partial class ChatLogBackfillServiceTests
         await using (var db = CreateDbContext())
         {
             await CreateService(db).ReplaceBlockAsync(
-                second.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(e1.Id, BlockFrom, 4, 0, 0)], 10, 1, isLastBlock: true);
+                second.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(secondSlots[e1.Id], e1.Id, BlockFrom, 4, 0, 0)], 10, 1, isLastBlock: true);
         }
 
         await using var verify = CreateDbContext();
@@ -142,7 +145,7 @@ public partial class ChatLogBackfillServiceTests
         var channel = await SeedChannelAsync("bfreplacecancel", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
         var e1 = await SeedEmoteAsync(channel, "e1", "E1");
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Cancelled, windowFrom: BlockFrom);
-        await BindSnapshotAsync(run, e1);
+        var slots = await BindSnapshotAsync(run, e1);
         await using (var db = CreateDbContext())
         {
             db.UsageStats.Add(Imported(e1, SetC, new DateOnly(2026, 6, 2), 9));
@@ -153,7 +156,7 @@ public partial class ChatLogBackfillServiceTests
         await using (var db = CreateDbContext())
         {
             Assert.IsType<ChatLogBackfillBlockResult.RunNotActive>(await CreateService(db).ReplaceBlockAsync(
-                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(e1.Id, BlockFrom, 1, 0, 0)], 10, 1, isLastBlock: false));
+                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(slots[e1.Id], e1.Id, BlockFrom, 1, 0, 0)], 10, 1, isLastBlock: false));
         }
 
         await using var verify = CreateDbContext();
@@ -191,7 +194,7 @@ public partial class ChatLogBackfillServiceTests
         await using (var db = CreateDbContext())
         {
             Assert.IsType<ChatLogBackfillBlockResult.LiveRowConflict>(await CreateService(db).ReplaceBlockAsync(
-                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(e1.Id, new DateOnly(2026, 6, 3), 2, 0, 0)], 10, 1, isLastBlock: false));
+                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(slots[e1.Id], e1.Id, new DateOnly(2026, 6, 3), 2, 0, 0)], 10, 1, isLastBlock: false));
         }
 
         Assert.Equal(before, await UsageFingerprintAsync(channel));
@@ -201,10 +204,9 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal((ChatLogBackfillRunStatus.Running, 0, 0L), (after.Status, after.WeeksDone, after.BytesReceived));
     }
 
-    // Plan #373 §4, the boundary the M2 switch moves: the 23505 now comes from the slot index, so a live
-    // row of another slot of the same emote on the imported cell no longer conflicts — the import row
-    // lands next to it on the snapshot's slot. With the flag off this cannot arise (one slot per pair
-    // carries rows, E6a); with the flag on it is the known limit until child 5.
+    // Plan #373 §4 and plan #375 §3: the cell is (SlotId, EmoteSetId, Date), so a live row of another
+    // slot of the same emote on the imported day does not conflict — the import row lands next to it on
+    // the aggregate's slot. "Live or imported" holds per slot; that is the contract since child 5.
     [Fact]
     public async Task ReplaceBlock_WithALiveRowOfAnotherSlotOfTheSameEmote_WritesTheImportRowNextToIt()
     {
@@ -223,7 +225,7 @@ public partial class ChatLogBackfillServiceTests
         await using (var db = CreateDbContext())
         {
             Assert.IsType<ChatLogBackfillBlockResult.Committed>(await CreateService(db).ReplaceBlockAsync(
-                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(e1.Id, new DateOnly(2026, 6, 3), 2, 0, 0)], 10, 1, isLastBlock: false));
+                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(slots[e1.Id], e1.Id, new DateOnly(2026, 6, 3), 2, 0, 0)], 10, 1, isLastBlock: false));
         }
 
         await using var verify = CreateDbContext();
@@ -258,9 +260,11 @@ public partial class ChatLogBackfillServiceTests
         await using var db = CreateDbContext();
         var service = CreateService(db);
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-            service.ReplaceBlockAsync(1, BlockFrom, BlockTo, [new ChatLogBackfillAggregate("e", BlockTo, 1, 0, 0)], 0, 0, false));
+            service.ReplaceBlockAsync(1, BlockFrom, BlockTo, [new ChatLogBackfillAggregate("s", "e", BlockTo, 1, 0, 0)], 0, 0, false));
         await Assert.ThrowsAsync<ArgumentException>(() => service.ReplaceBlockAsync(
-            1, BlockFrom, BlockTo, [new ChatLogBackfillAggregate("e", BlockFrom, 1, 0, 0), new ChatLogBackfillAggregate("e", BlockFrom, 2, 0, 0)], 0, 0, false));
+            1, BlockFrom, BlockTo, [new ChatLogBackfillAggregate("s", "e", BlockFrom, 1, 0, 0), new ChatLogBackfillAggregate("s", "e", BlockFrom, 2, 0, 0)], 0, 0, false));
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.ReplaceBlockAsync(1, BlockFrom, BlockTo, [new ChatLogBackfillAggregate("", "e", BlockFrom, 1, 0, 0)], 0, 0, false));
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.ReplaceBlockAsync(1, BlockFrom, BlockFrom, [], 0, 0, false));
     }
 
@@ -272,15 +276,15 @@ public partial class ChatLogBackfillServiceTests
         var channel = await SeedChannelAsync("bfreplacetwice", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
         var e1 = await SeedEmoteAsync(channel, "e1", "E1");
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, windowFrom: BlockFrom);
-        await BindSnapshotAsync(run, e1);
+        var slot = (await BindSnapshotAsync(run, e1))[e1.Id];
 
         await using (var db = CreateDbContext())
         {
             var service = CreateService(db);
             Assert.IsType<ChatLogBackfillBlockResult.Committed>(await service.ReplaceBlockAsync(
-                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(e1.Id, BlockFrom, 3, 0, 0)], 10, 1, isLastBlock: false));
+                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(slot, e1.Id, BlockFrom, 3, 0, 0)], 10, 1, isLastBlock: false));
             Assert.IsType<ChatLogBackfillBlockResult.RunNotActive>(await service.ReplaceBlockAsync(
-                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(e1.Id, BlockFrom, 99, 0, 0)], 10, 1, isLastBlock: false));
+                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(slot, e1.Id, BlockFrom, 99, 0, 0)], 10, 1, isLastBlock: false));
         }
 
         await using var verify = CreateDbContext();
@@ -298,7 +302,7 @@ public partial class ChatLogBackfillServiceTests
         var e1 = await SeedEmoteAsync(channel, "e1", "E1");
         // Window Jun 1 – Jun 18 (17 days): blocks Jun 1–8, Jun 8–15, Jun 15–18.
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, windowFrom: BlockFrom);
-        await BindSnapshotAsync(run, e1);
+        var slot = (await BindSnapshotAsync(run, e1))[e1.Id];
         await using (var db = CreateDbContext())
         {
             await db.ChatLogBackfillRuns.Where(r => r.Id == run.Id).ExecuteUpdateAsync(s => s.SetProperty(r => r.WindowTo, new DateOnly(2026, 6, 18)));
@@ -320,7 +324,7 @@ public partial class ChatLogBackfillServiceTests
             {
                 var day = from < to ? from : BlockFrom;
                 Assert.IsType<ChatLogBackfillBlockResult.RunNotActive>(await service.ReplaceBlockAsync(
-                    run.Id, from, to, [new ChatLogBackfillAggregate(e1.Id, day, 1, 0, 0)], 10, 1, last));
+                    run.Id, from, to, [new ChatLogBackfillAggregate(slot, e1.Id, day, 1, 0, 0)], 10, 1, last));
             }
         }
 
@@ -342,30 +346,31 @@ public partial class ChatLogBackfillServiceTests
         }
     }
 
-    // An aggregate naming another channel's emote is dropped like a deleted one, never written.
+    // Sol-P2-1 (i), plan #375 E9: an aggregate pairing a valid snapshot slot with another channel's emote
+    // is no snapshot row of the run. Pairs are checked for the whole block before anything is written, so
+    // the block throws — it is not dropped silently while the block's delete, coverage and progress go on.
     [Fact]
-    public async Task ReplaceBlock_DropsAnAggregateOfAnotherChannelsEmote()
+    public async Task ReplaceBlock_WithASnapshotSlotPairedWithAnotherChannelsEmote_Throws_AndWritesNothing()
     {
         var channel = await SeedChannelAsync("bfreplaceforeign", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
         var other = await SeedChannelAsync("bfreplaceforeign2");
         var own = await SeedEmoteAsync(channel, "e1", "E1");
         var foreignEmote = await SeedEmoteAsync(other, "o1", "O1");
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, windowFrom: BlockFrom);
-        await BindSnapshotAsync(run, own);
-        var logger = new RecordingLogger<ChatLogBackfillService>();
+        var slots = await BindSnapshotAsync(run, own);
+        var before = await BlockStateAsync(channel, run);
 
         await using (var db = CreateDbContext())
         {
-            Assert.IsType<ChatLogBackfillBlockResult.Committed>(await CreateService(db, logger: logger).ReplaceBlockAsync(
+            await Assert.ThrowsAsync<ArgumentException>(() => CreateService(db).ReplaceBlockAsync(
                 run.Id, BlockFrom, BlockTo,
-                [new ChatLogBackfillAggregate(own.Id, BlockFrom, 2, 0, 0), new ChatLogBackfillAggregate(foreignEmote.Id, BlockFrom, 5, 0, 0)],
+                [new ChatLogBackfillAggregate(slots[own.Id], own.Id, BlockFrom, 2, 0, 0), new ChatLogBackfillAggregate(slots[own.Id], foreignEmote.Id, new DateOnly(2026, 6, 2), 5, 0, 0)],
                 10, 1, isLastBlock: false));
         }
 
+        Assert.Equal(before, await BlockStateAsync(channel, run));
         await using var verify = CreateDbContext();
-        Assert.Equal(2, (await verify.UsageStats.AsNoTracking().SingleAsync(u => u.EmoteId == own.Id)).UseCount);
         Assert.False(await verify.UsageStats.AnyAsync(u => u.EmoteId == foreignEmote.Id));
-        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("1 aggregates", StringComparison.Ordinal));
     }
 
     // ---------------------------------------------------------------- Pause, attempts, failure (EPIC AC 28, AC 30)
@@ -768,6 +773,28 @@ public partial class ChatLogBackfillServiceTests
 
     private static UsageStat Imported(Emote emote, string emoteSetId, DateOnly date, int useCount) =>
         new() { EmoteId = emote.Id, EmoteSetId = emoteSetId, Date = date, UseCount = useCount, Source = UsageStatSource.ChatLogArchive };
+
+    // Everything a rejected block must leave alone (plan #375, 7.4): the channel's usage rows (imported
+    // ones of earlier runs included), its coverage, and the run's progress and booked bytes/messages.
+    private async Task<string> BlockStateAsync(Channel channel, ChatLogBackfillRun run)
+    {
+        await using var db = CreateDbContext();
+        var coverage = await db.ChatLogBackfillCoverage.AsNoTracking()
+            .Where(d => d.ChannelId == channel.Id)
+            .OrderBy(d => d.Day)
+            .Select(d => $"{d.Day:yyyy-MM-dd}/{d.EmoteSetId}/{d.RunId}")
+            .ToListAsync();
+        var progress = await db.ChatLogBackfillRuns.AsNoTracking()
+            .Where(r => r.Id == run.Id)
+            .Select(r => $"{r.Status}/{r.WeeksDone}/{r.BytesReceived}/{r.MessagesRead}")
+            .SingleAsync();
+        var slotted = await db.UsageStats.AsNoTracking()
+            .Where(u => u.Emote.ChannelId == channel.Id)
+            .OrderBy(u => u.Id)
+            .Select(u => $"{u.Id}/{u.SlotId}")
+            .ToListAsync();
+        return $"{await UsageFingerprintAsync(channel)}|{string.Join(",", slotted)}|{string.Join(",", coverage)}|{progress}";
+    }
 
     // EPIC AC 4: the channel's live rows, as one digest.
     private async Task<string?> LiveFingerprintAsync(Channel channel) => await UsageDigestAsync(channel, liveOnly: true);
