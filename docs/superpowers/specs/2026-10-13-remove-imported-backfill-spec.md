@@ -263,6 +263,8 @@ Inhalt:
 - Fehler der Anfrage als `app-notice-banner variant="error"` direkt unter dem Knopf (Muster Cancel), geleert beim nächsten Versuch.
 - Nach Erfolg: Ansage im vorhandenen `role="status"`-Bereich („Importierte Daten entfernt: {{days}} Tage.“), dann verschwindet der Abschnitt mit dem Refetch.
 
+> **Nachtrag 2026-10-13 (umgesetzter Stand, ersetzt die Zeile oben):** Nach 200 bleibt die Überschrift stehen; Liste und Knopf werden durch einen Bestätigungssatz („Importierte Daten entfernt: {{days}} Tage.“) ersetzt, der den Fokus bekommt (`tabindex="-1"`, WCAG 2.4.3 — der auslösende Knopf verschwindet sonst mit dem Abschnitt). Die Live-Region schweigt zur Entfernung; gesprochen wird der Satz einmal durch den Fokuswechsel. Der Satz bleibt über den Refetch hinweg stehen und wird bei Kanalwechsel oder neuem Lauf zurückgesetzt (Commit f9e89af2, DECISIONS #384). Ist die Ansicht beim Eintreffen der Antwort schon zerstört, entfällt der Fokus.
+
 Die Lauf-Historie bleibt (D14).
 
 ### 10.3 Bestätigungsdialog
@@ -362,7 +364,7 @@ Eigene Testklasse, eigene Seeding-Helfer über `Fixtures/` (die `ChatLogBackfill
 13. Ein neuer Lauf desselben Sets/Fensters nach dem Entfernen läuft ohne doppelte `Emote`-Zeile durch (S13).
 14. Erwartung ≠ aktuelle Coverage (Tag mehr/weniger, Set, Host, Überlappung) → 409 `backfill_remove_scope_changed`, nichts geschrieben; gleiche Tagesmenge in anderer Zerlegung → Erfolg (S17).
 15. Nutzungsseite ohne Neuladen: Beschriftung zurück auf „Wir zählen seit …“, Summen ohne importierte Tage, Vor-Zählbeginn-Warnung und „Gesamt“-Preset folgen wieder dem Zählbeginn.
-16. Settings-Tab: Abschnitt „Importierte Daten“ unter dem Backfill-Abschnitt, nur mit Coverage; gesperrt mit Grund bei aktivem Lauf; gesperrt bis zum abgeschlossenen Post-Cancel-Read; Dialog nennt Intervalle mit Sets und das Bleibende; Abbrechen sendet nichts; eine Coverage-Änderung hinter dem Dialog verlangt eine neue Bestätigung; 409 zeigt den jeweiligen Fehlertext; Erfolg wird angesagt und der Abschnitt verschwindet; Start und Entfernen sperren sich gegenseitig, solange eine Anfrage läuft.
+16. Settings-Tab: Abschnitt „Importierte Daten“ unter dem Backfill-Abschnitt, nur mit Coverage; gesperrt mit Grund bei aktivem Lauf; gesperrt bis zum abgeschlossenen Post-Cancel-Read; Dialog nennt Intervalle mit Sets und das Bleibende; Abbrechen sendet nichts; eine Coverage-Änderung hinter dem Dialog verlangt eine neue Bestätigung; 409 zeigt den jeweiligen Fehlertext; Erfolg: Bestätigungssatz ersetzt Liste und Knopf unter derselben Überschrift und nimmt den Fokus, die Live-Region schweigt dazu (Nachtrag 2026-10-13, s. §10.2); Start und Entfernen sperren sich gegenseitig, solange eine Anfrage läuft.
 17. Regel 7: beide Codes in `ApiErrorCodes`, `api-error.ts`, de, en; `api-error-locales.spec.ts` grün.
 18. Ballots und Export zeigen danach die Summen ohne importierte Tage (D30 liest `UsageStats` live; kein Code, nur Prüfung).
 19. Keine Migration: `dotnet ef migrations list` zeigt nach dem PR dieselbe Liste wie davor; kein neuer Eintrag unter `Migrations/`.

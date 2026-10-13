@@ -185,6 +185,7 @@ gleich (ordinal, wie die DB).
   rechnet ihn neu). Die Erfolgsansage braucht einen eigenen Zustand `removalAnnouncement` (Tageszahl), der **im selben** Live-Bereich
   angezeigt wird und Vorrang vor der Lauf-Ansage hat, bis ein neuer aktiver Lauf erscheint oder der Kanal wechselt. Er muss den Refetch
   überleben, der den Abschnitt entfernt (der Live-Bereich liegt außerhalb des Abschnitts). Plural über `pluralKey`.
+  *Nachtrag 2026-10-13 (umgesetzt):* nicht im Live-Bereich, sondern als fokussierter Bestätigungssatz (`tabindex="-1"`) anstelle von Liste und Knopf unter derselben Überschrift; die Live-Region schweigt zur Entfernung. Zurückgesetzt bei Kanalwechsel/neuem Lauf (s. Spec §10.2).
 - **Datum:** Anzeige-Ende = `to − 1 Tag`, formatiert wie die Lauf-Fenster (vorhandene Hilfsfunktion der Komponente benutzen, nicht neu
   schreiben); `countingSince` im Dialog aus `status.countingSince`.
 - **Markup:** eigene `<section aria-labelledby>` mit `h3`, nach „Letzter Lauf“, im selben Komponententemplate; Knopf `appButton="danger"`
