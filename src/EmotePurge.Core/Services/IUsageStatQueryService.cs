@@ -77,6 +77,14 @@ public record EmoteUsageDto(string EmoteName, DateOnly Date, int UseCount);
 /// ascending, unknown last, then name), ordinal distinct, without this row's own name. Always empty in
 /// emote mode.
 /// </param>
+/// <param name="FirstSeenAtShared">
+/// <c>true</c> only for a slot row with an authoritative date (<see cref="FirstSeenAtFromRest"/>) when at
+/// least one <em>other</em> own slot of the same emote — settled, active or archived, with or without rows
+/// in any set — carries the same authoritative <c>AddedAt</c>. Computed over the emote's whole slot list,
+/// not over the rows of this response, so a twin that has no rows under the viewed set still counts. A
+/// date shared this way does not identify one slot; the reader must not bind by it. Always <c>false</c> in
+/// emote mode and for a provisional or undated slot row. Appears on <c>/totals</c> only.
+/// </param>
 public record EmoteUsageContextDto(
     string EmoteId,
     string? SlotId,
@@ -90,7 +98,8 @@ public record EmoteUsageContextDto(
     bool FirstSeenAtFromRest,
     bool IsArchived,
     IReadOnlyList<string> NameTwinEmoteSetIds,
-    IReadOnlyList<string> SiblingNames);
+    IReadOnlyList<string> SiblingNames,
+    bool FirstSeenAtShared = false);
 
 public record EmoteDailyUsageDto(DateOnly Date, int UseCount);
 

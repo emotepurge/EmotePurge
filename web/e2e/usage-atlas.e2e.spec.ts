@@ -3,6 +3,7 @@ import { Page, expect, test } from './support/test';
 import {
   AUTH_USER,
   MockEmoteUsage,
+  MockSlotSeries,
   emitLive,
   installLiveStub,
   mockActiveEmoteSet,
@@ -1327,5 +1328,282 @@ test.describe('set view (#200, K4)', () => {
     await page.getByRole('button', { name: 'Erneut versuchen' }).click();
     await expect(page.getByRole('button', { name: /^Spooky ·/ })).toBeVisible();
     await expect(page.getByText('Das gewählte Set konnte nicht geladen werden')).toHaveCount(0);
+  });
+});
+
+/**
+ * Emote slots (#365, #377): one emote under two names in a set is two cards in slot mode. The
+ * flag-off world these mocks default to is covered by the whole rest of the suite; here the server
+ * answers with slot rows.
+ */
+test.describe('emote slot cards (#365, #377)', () => {
+  const CHANNEL = 'sensitron';
+  const ACTIVE_SET_ID = 'set-1';
+  const OTHER_SET_ID = 'set-2';
+  const SHARED_7TV_ID = '7tv-ome';
+
+  const slotRows: MockEmoteUsage[] = [
+    {
+      emoteId: 'e-ome',
+      emoteName: 'ome44',
+      sevenTvEmoteId: SHARED_7TV_ID,
+      imageUrl: 'https://cdn.7tv.app/emote/ome/2x.webp',
+      totalUseCount: 50,
+      lastUsedDate: '2026-07-14',
+      slotId: 'slot-ome',
+      firstSeenAtFromRest: true,
+      siblingNames: ['hob44'],
+    },
+    {
+      emoteId: 'e-ome',
+      emoteName: 'hob44',
+      sevenTvEmoteId: SHARED_7TV_ID,
+      imageUrl: 'https://cdn.7tv.app/emote/ome/2x.webp',
+      totalUseCount: 20,
+      lastUsedDate: '2026-07-14',
+      slotId: 'slot-hob',
+      firstSeenAtFromRest: true,
+      siblingNames: ['ome44'],
+    },
+    {
+      emoteId: 'e-plain',
+      emoteName: 'plainOne',
+      sevenTvEmoteId: '7tv-plain',
+      imageUrl: 'https://cdn.7tv.app/emote/plain/2x.webp',
+      totalUseCount: 5,
+      lastUsedDate: '2026-07-14',
+    },
+  ];
+
+  // The page asks for a slot row's curve whenever it has a count and the series answer holds no
+  // entry for its slot (a mode mismatch), so every counted slot gets its own entry.
+  const slotSeries = [
+    { slotId: 'slot-ome', sevenTvEmoteId: SHARED_7TV_ID, name: 'ome44', days: [[10, 50]] },
+    { slotId: 'slot-hob', sevenTvEmoteId: SHARED_7TV_ID, name: 'hob44', days: [[10, 20]] },
+  ] as MockSlotSeries[];
+
+  function watchConsole(page: Page): string[] {
+    const problems: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error' || message.type() === 'warning') {
+        problems.push(`${message.type()}: ${message.text()}`);
+      }
+    });
+    page.on('pageerror', (error) => problems.push(`pageerror: ${error.message}`));
+    return problems;
+  }
+
+  test('the active view shows the two names of one emote as two cards that name each other, are found by either name and are marked independently (AK 34, 35; no NG0955)', async ({
+    page,
+  }) => {
+    const consoleProblems = watchConsole(page);
+    await mockLegalAvailability(page);
+    await mockTags(page, CHANNEL);
+    await mockUsageChannelSeries(page, CHANNEL, {}, [], slotSeries);
+    // The set picker asks for the channel's sets; unanswered, the dev proxy's 502 lands in the
+    // console this test asserts to be clean.
+    await mockChannelEmoteSetList(page, CHANNEL, {
+      activeEmoteSetId: ACTIVE_SET_ID,
+      sets: [{ id: ACTIVE_SET_ID, name: 'Hauptset' }],
+    });
+
+    await openAtlas(page, slotRows);
+
+    const ome = page.getByRole('button', { name: /^ome44 · .*Auch im Set als hob44/ });
+    const hob = page.getByRole('button', { name: /^hob44 · .*Auch im Set als ome44/ });
+    await expect(ome).toBeVisible();
+    await expect(hob).toBeVisible();
+    // The scrim glyph counts the siblings and carries the sentence as its tooltip; the emote-mode
+    // "×n" never shows on a slot card.
+    await expect(ome.getByText('+1', { exact: true })).toBeVisible();
+    await expect(ome.locator('[title="Auch im Set als hob44"]')).toHaveCount(1);
+    await expect(ome.getByText(/^×\d/)).toHaveCount(0);
+
+    // Marking one card leaves its sibling (same 7TV id, same emote row) alone.
+    await ome.click();
+    await expect(ome).toHaveAttribute('aria-pressed', 'true');
+    await expect(hob).toHaveAttribute('aria-pressed', 'false');
+    await hob.click();
+    await expect(hob).toHaveAttribute('aria-pressed', 'true');
+    await ome.click();
+    await expect(ome).toHaveAttribute('aria-pressed', 'false');
+    await expect(hob).toHaveAttribute('aria-pressed', 'true');
+
+    // The search matches the name of the card, not of the emote: hob44 finds exactly one card.
+    await page.getByPlaceholder('Name suchen…').fill('hob44');
+    await expect(hob).toBeVisible();
+    await expect(page.getByRole('button', { name: /^ome44 ·/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^plainOne ·/ })).toHaveCount(0);
+
+    expect(consoleProblems, consoleProblems.join('\n')).toEqual([]);
+  });
+
+  test('the drilldown of a slot card asks for its slot, that of an emote-mode card for its emote (AK 34)', async ({
+    page,
+  }) => {
+    await mockLegalAvailability(page);
+    await mockTags(page, CHANNEL);
+    await mockUsageChannelSeries(page, CHANNEL, { '7tv-plain': [[10, 5]] }, [], slotSeries);
+    const dailyQueries: URLSearchParams[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.endsWith(`/channels/${CHANNEL}/usage-stats/daily`)) {
+        dailyQueries.push(url.searchParams);
+      }
+    });
+    await mockUsageDaily(page, CHANNEL, [{ date: '2026-07-14', useCount: 20 }]);
+    await openAtlas(page, slotRows);
+
+    await page.getByRole('button', { name: /^hob44 ·/ }).hover();
+    await page.getByRole('button', { name: 'Details zu hob44 anzeigen' }).click();
+    await expect(page.getByRole('dialog')).toContainText('hob44');
+    await expect.poll(() => dailyQueries.length).toBe(1);
+    expect(dailyQueries[0].get('slotId')).toBe('slot-hob');
+    expect(dailyQueries[0].has('emoteId')).toBe(false);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.getByRole('button', { name: /^plainOne ·/ }).hover();
+    await page.getByRole('button', { name: 'Details zu plainOne anzeigen' }).click();
+    await expect(page.getByRole('dialog')).toContainText('plainOne');
+    await expect.poll(() => dailyQueries.length).toBe(2);
+    expect(dailyQueries[1].get('emoteId')).toBe('e-plain');
+    expect(dailyQueries[1].has('slotId')).toBe(false);
+    await page.keyboard.press('Escape');
+  });
+
+  test('a non-active view binds the counted slot to its live entry, shows the sibling entry as a card without counts and keeps two entries of one instant apart (D21, S1; no NG0955)', async ({
+    page,
+  }) => {
+    const consoleProblems = watchConsole(page);
+    const tie = '2026-10-03T08:00:00.000Z';
+    await mockLegalAvailability(page);
+    await mockTags(page, CHANNEL);
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: CHANNEL, isBroadcaster: true, isTracked: true, isBotActive: true },
+    ]);
+    await mockChannelPermissions(page, CHANNEL);
+    await mockChannelStatus(page, CHANNEL);
+    await mockActiveEmoteSet(page, CHANNEL, ACTIVE_SET_ID, { capacity: 1000, occupiedSlots: 10 });
+    await mockChannelEmoteSetList(page, CHANNEL, {
+      activeEmoteSetId: ACTIVE_SET_ID,
+      sets: [
+        { id: ACTIVE_SET_ID, name: 'Hauptset' },
+        { id: OTHER_SET_ID, name: 'Halloween' },
+      ],
+    });
+    await mockImportCoverage(page, CHANNEL);
+    // One counted slot row, dated as its live entry. The sibling name is not in the row: in a
+    // non-active view it comes from the live member list.
+    await mockUsageTotals(page, CHANNEL, [
+      {
+        ...slotRows[0],
+        totalUseCount: 30,
+        firstSeenAt: '2026-10-01T10:00:00.000Z',
+        siblingNames: [],
+      },
+    ]);
+    await mockUsageChannelSeries(page, CHANNEL, {}, [], [{ ...slotSeries[0], days: [[10, 30]] }]);
+    await mockTrackedEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: OTHER_SET_ID,
+      emoteSetName: 'Halloween',
+      capacity: 500,
+      totalCount: 4,
+      emotes: [
+        { sevenTvEmoteId: SHARED_7TV_ID, name: 'ome44', addedAt: '2026-10-01T10:00:00.000Z' },
+        { sevenTvEmoteId: SHARED_7TV_ID, name: 'hob44', addedAt: '2026-10-02T10:00:00.000Z' },
+        { sevenTvEmoteId: '7tv-tie', name: 'tieA', addedAt: tie },
+        { sevenTvEmoteId: '7tv-tie', name: 'tieB', addedAt: tie },
+      ],
+    });
+
+    await page.goto(`/channels/${CHANNEL}/usage-stats?emoteSetId=${OTHER_SET_ID}`);
+    await expect(page.getByRole('heading', { name: 'Emote-Nutzung' })).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
+
+    // Instead of one "2 Plätze im Set" cell: the counted slot and the entry nobody counted yet.
+    await expect(page.getByText(/Plätze im Set/)).toHaveCount(0);
+    const ome = page.getByRole('button', { name: /^ome44 · .*Auch im Set als hob44/ });
+    const hob = page.getByRole('button', {
+      name: /^hob44 · keine Zählungen unter diesem Set.*Auch im Set als ome44/,
+    });
+    await expect(ome).toBeVisible();
+    await expect(hob).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Keine Zählungen', exact: true })).toBeVisible();
+
+    // Two uncounted entries of one 7TV id and one instant are still two cells, marked one by one.
+    const tieA = page.getByRole('button', { name: /^tieA ·/ });
+    const tieB = page.getByRole('button', { name: /^tieB ·/ });
+    await expect(tieA).toBeVisible();
+    await expect(tieB).toBeVisible();
+    await tieA.click();
+    await expect(tieA).toHaveAttribute('aria-pressed', 'true');
+    await expect(tieB).toHaveAttribute('aria-pressed', 'false');
+
+    expect(consoleProblems, consoleProblems.join('\n')).toEqual([]);
+  });
+
+  test('a re-added slot comes back with a new date and a higher count: the same card stays marked and inspected, now under observation (D7, AK 46)', async ({
+    page,
+  }) => {
+    await mockLegalAvailability(page);
+    await mockTags(page, CHANNEL);
+    await mockUsageChannelSeries(page, CHANNEL, {}, [], slotSeries);
+    let calls = 0;
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockMyChannels(page, [
+      { channelName: CHANNEL, isBroadcaster: true, isTracked: true, isBotActive: true },
+    ]);
+    await mockChannelPermissions(page, CHANNEL);
+    await mockChannelStatus(page, CHANNEL);
+    await mockActiveEmoteSet(page, CHANNEL, ACTIVE_SET_ID, { capacity: 1000, occupiedSlots: 10 });
+    await mockImportCoverage(page, CHANNEL);
+    await page.route(`**/api/channels/${CHANNEL}/usage-stats/totals**`, (route) => {
+      calls += 1;
+      const resumed = calls > 1;
+      const rows = slotRows.slice(0, 2).map((row) => ({
+        ...row,
+        lastUsedDate: row.lastUsedDate ?? null,
+        previousWindowUseCount: 0,
+        firstSeenAt:
+          row.slotId === 'slot-hob'
+            ? resumed
+              ? new Date().toISOString()
+              : '2026-06-01T00:00:00Z'
+            : null,
+        totalUseCount: row.slotId === 'slot-hob' && resumed ? 27 : row.totalUseCount,
+        firstSeenAtShared: false,
+        isArchived: false,
+        nameTwinEmoteSetIds: [],
+      }));
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(rows),
+      });
+    });
+
+    await page.goto(`/channels/${CHANNEL}/usage-stats`);
+    await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
+    const hob = page.getByRole('button', { name: /^hob44 ·/ });
+    await hob.click();
+    await expect(hob).toHaveAttribute('aria-pressed', 'true');
+    const sidecar = page.getByRole('complementary');
+    await expect(sidecar).toContainText('20');
+    await expect(sidecar).not.toContainText('Neu · heute');
+
+    await page.getByRole('button', { name: 'Aktualisieren' }).click();
+    await expect.poll(() => calls).toBe(2);
+
+    await expect(hob).toHaveAttribute('aria-pressed', 'true');
+    await expect(sidecar).toContainText('27');
+    await expect(sidecar).toContainText('Neu · heute');
+    await expect(page.getByText('Auswahl bereinigt')).toHaveCount(0);
   });
 });

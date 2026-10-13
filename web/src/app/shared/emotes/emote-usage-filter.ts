@@ -4,6 +4,9 @@ import { isUnderObservation } from './emote-context';
 
 interface FilterableEmote {
   emoteName: string;
+  // Optional: only a ballot row can stand for several aliases of one emote; the name search then
+  // matches any of them. Other hosts leave it out and match `emoteName` alone.
+  emoteNames?: readonly string[];
   // The key tags are stored by (rule 8: not the internal Emote.Id).
   sevenTvEmoteId: string;
   // null = usage withheld/unknown (non-manager voting view). Usage bounds never match null —
@@ -27,6 +30,10 @@ function globToRegExp(pattern: string): RegExp {
   // the user opts in by actually typing `*`/`?`; a bare query stays an unanchored substring match.
   const hasWildcard = trimmed.includes('*') || trimmed.includes('?');
   return hasWildcard ? new RegExp(`^${escaped}$`, 'i') : new RegExp(escaped, 'i');
+}
+
+function matchesName(regex: RegExp, item: FilterableEmote): boolean {
+  return regex.test(item.emoteName) || (item.emoteNames?.some((name) => regex.test(name)) ?? false);
 }
 
 /**
@@ -69,7 +76,7 @@ export class EmoteUsageFilter<T extends FilterableEmote> {
     return items.filter((item) => {
       if (min !== null && (item.totalUseCount === null || item.totalUseCount < min)) return false;
       if (max !== null && (item.totalUseCount === null || item.totalUseCount > max)) return false;
-      if (nameRegex && !nameRegex.test(item.emoteName)) return false;
+      if (nameRegex && !matchesName(nameRegex, item)) return false;
       if (tagKeys && !tagKeys.has(item.sevenTvEmoteId)) return false;
       if (hideObserved && isUnderObservation(item.firstSeenAt ?? null, now)) return false;
       return true;

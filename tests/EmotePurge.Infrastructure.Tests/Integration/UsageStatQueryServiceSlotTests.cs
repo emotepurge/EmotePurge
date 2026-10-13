@@ -259,6 +259,80 @@ public class UsageStatQueryServiceSlotTests(PostgresFixture fixture)
         Assert.Empty(off.NameTwinEmoteSetIds);
     }
 
+    // F6 (plan #377 2.12), non-active view: only one of two own slots with the same authoritative date has
+    // rows under the viewed set. The filtered totals hide the twin; the flag is how the reader still knows.
+    [Fact]
+    public async Task On_NonActiveView_ATwinWithoutRowsInTheSet_StillFlagsTheVisibleRow()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slotread_shared_hidden");
+        var emote = await SeedEmoteAsync(db, channel, "x", "ome44", firstSeenAt: T0);
+        var a = await SeedSlotAsync(db, emote, "ome44", T1);
+        await SeedSlotAsync(db, emote, "hob44", T1);
+        await AddUsageAsync(db, emote, a, SetB, (From, 100));
+
+        var row = Assert.Single(await Service(db, on: true).GetUsageContextAsync(channel.ChannelName, From, To, SetB));
+
+        Assert.Equal(a.Id, row.SlotId);
+        Assert.Equal(100, row.TotalUseCount);
+        Assert.True(row.FirstSeenAtShared);
+    }
+
+    [Fact]
+    public async Task On_NonActiveView_TwinsWithRowsInTheSet_AreBothFlagged()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slotread_shared_both");
+        var emote = await SeedEmoteAsync(db, channel, "x", "ome44", firstSeenAt: T0);
+        var a = await SeedSlotAsync(db, emote, "ome44", T1);
+        var b = await SeedSlotAsync(db, emote, "hob44", T1);
+        await AddUsageAsync(db, emote, a, SetB, (From, 100));
+        await AddUsageAsync(db, emote, b, SetB, (From, 7));
+
+        var totals = await Service(db, on: true).GetUsageContextAsync(channel.ChannelName, From, To, SetB);
+
+        Assert.Equal(2, totals.Count);
+        Assert.All(totals, t => Assert.True(t.FirstSeenAtShared));
+    }
+
+    [Fact]
+    public async Task On_NonActiveView_DifferentDates_AreNotFlagged()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slotread_shared_distinct");
+        var emote = await SeedEmoteAsync(db, channel, "x", "ome44", firstSeenAt: T0);
+        var a = await SeedSlotAsync(db, emote, "ome44", T1);
+        var b = await SeedSlotAsync(db, emote, "hob44", T2);
+        await AddUsageAsync(db, emote, a, SetB, (From, 100));
+        await AddUsageAsync(db, emote, b, SetB, (From, 7));
+
+        var totals = await Service(db, on: true).GetUsageContextAsync(channel.ChannelName, From, To, SetB);
+
+        Assert.Equal(2, totals.Count);
+        Assert.All(totals, t => Assert.False(t.FirstSeenAtShared));
+    }
+
+    [Fact]
+    public async Task Off_SlotsSharingADate_AreNeverFlagged_AndOnTheActiveViewTheRuleIsTheSame()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "slotread_shared_off");
+        var emote = await SeedEmoteAsync(db, channel, "x", "ome44", firstSeenAt: T0);
+        var a = await SeedSlotAsync(db, emote, "ome44", T1);
+        var b = await SeedSlotAsync(db, emote, "hob44", T1);
+        await AddUsageAsync(db, emote, a, SetA, (From, 3));
+        await AddUsageAsync(db, emote, b, SetA, (From, 4));
+
+        var off = await Service(db, on: false).GetUsageContextAsync(channel.ChannelName, From, To);
+        var on = await Service(db, on: true).GetUsageContextAsync(channel.ChannelName, From, To);
+
+        var offRow = Assert.Single(off);
+        Assert.Null(offRow.SlotId);
+        Assert.False(offRow.FirstSeenAtShared);
+        Assert.Equal(2, on.Count);
+        Assert.All(on, t => Assert.True(t.FirstSeenAtShared));
+    }
+
     private static UsageStatQueryService Service(AppDbContext db, bool on) =>
         new(db, new SlotReconcileOptions { Enabled = on });
 

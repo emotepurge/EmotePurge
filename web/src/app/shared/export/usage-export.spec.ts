@@ -21,6 +21,10 @@ function usageRow(overrides: Partial<EmoteUsageTotalDto> = {}): EmoteUsageTotalD
     firstSeenAt: '2026-06-01T00:00:00Z',
     isArchived: false,
     nameTwinEmoteSetIds: [],
+    slotId: null,
+    firstSeenAtFromRest: false,
+    siblingNames: [],
+    firstSeenAtShared: false,
     ...overrides,
   };
 }
@@ -74,6 +78,23 @@ describe('usageExportFilename', () => {
     expect(usageExportFilename(input({ emoteSetId: null }), 'csv')).toBe(
       'emotepurge_sensitron_usage_2026-07-01_2026-08-01.csv',
     );
+  });
+});
+
+describe('usage export rows per card (D25)', () => {
+  it('writes one CSV row per slot card, so two cards of the same 7TV id stay two rows', () => {
+    const csv = usageCsv(
+      input({
+        rows: [
+          usageRow({ slotId: 'slot-ome', totalUseCount: 30 }),
+          usageRow({ slotId: 'slot-hob', totalUseCount: 12 }),
+        ],
+      }),
+    );
+    const lines = csv.replace(/^﻿/, '').trimEnd().split('\r\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[1]).toBe('PogU,01ABC,30,12,2026-08-01,2026-06-01T00:00:00Z,rising');
+    expect(lines[2]).toBe('PogU,01ABC,12,12,2026-08-01,2026-06-01T00:00:00Z,rising');
   });
 });
 

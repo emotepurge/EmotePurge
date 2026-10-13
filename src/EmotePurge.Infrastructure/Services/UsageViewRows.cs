@@ -104,7 +104,8 @@ internal static class UsageViewRows
                     // the filters above, so this is always false there.
                     slot.IsArchived || emote.IsArchived,
                     SiblingNames(slot, shown),
-                    [slot.Id]));
+                    [slot.Id],
+                    SharesAuthoritativeDate(slot, emoteSlots)));
             }
         }
 
@@ -128,13 +129,27 @@ internal static class UsageViewRows
     }
 
     /// <summary>
+    /// Plan #377 2.12 (F6) <c>firstSeenAtShared</c>: a slot with an authoritative date shares it when another
+    /// own slot of the emote (<paramref name="emoteSlots"/> is the whole list — archived slots included, shown
+    /// or not) carries the same stored instant, as <c>EmoteSlotReconcilePlanner.BindByDate</c> compares it.
+    /// An unsettled seed has no date identity (E7) and never counts; a provisional or undated slot has none
+    /// either, so it is never flagged.
+    /// </summary>
+    private static bool SharesAuthoritativeDate(UsageViewSlot slot, List<UsageViewSlot> emoteSlots) =>
+        slot is { AddedAtFromRest: true, AddedAt: not null }
+        && emoteSlots.Any(o => !string.Equals(o.Id, slot.Id, StringComparison.Ordinal)
+                               && !o.SeedUnsettled
+                               && o.AddedAtFromRest
+                               && o.AddedAt == slot.AddedAt);
+
+    /// <summary>
     /// R1/R2: exactly today's row — no slot id, the emote's name and <c>FirstSeenAt</c>, never "from REST",
     /// no siblings, <c>IsArchived</c> from the emote (always false in the active view, whose base set is
     /// unarchived) — carrying every slot of the emote with rows in X, so its numbers are the emote's whole
     /// count in X.
     /// </summary>
     private static UsageViewRow EmoteModeRow(UsageViewEmote emote, List<string> slotsWithRows) =>
-        new(emote.Id, null, emote.Name, emote.FirstSeenAt, false, emote.IsArchived, [], slotsWithRows);
+        new(emote.Id, null, emote.Name, emote.FirstSeenAt, false, emote.IsArchived, [], slotsWithRows, false);
 
     /// <summary>
     /// Plan 2.2 <c>siblingNames</c>: the names of the other rows of the same emote in this view, in the D2
@@ -166,7 +181,8 @@ internal sealed record UsageViewSlot(
 /// One row of the usage view (plan 2.2/2.3). <see cref="SlotId"/> <c>null</c> = emote mode. The display
 /// fields are final (<see cref="Name"/> is the wire's <c>emoteName</c>/<c>name</c>, <see cref="FirstSeenAt"/>
 /// the wire's <c>firstSeenAt</c>); <see cref="AggregateSlotIds"/> are the slots whose usage rows in X the
-/// row's numbers are the sum of — possibly none (a zero-filled row).
+/// row's numbers are the sum of — possibly none (a zero-filled row). <see cref="FirstSeenAtShared"/> is the
+/// wire's <c>firstSeenAtShared</c> (plan #377 2.12); only <c>/totals</c> sends it.
 /// </summary>
 internal sealed record UsageViewRow(
     string EmoteId,
@@ -176,4 +192,5 @@ internal sealed record UsageViewRow(
     bool FirstSeenAtFromRest,
     bool IsArchived,
     IReadOnlyList<string> SiblingNames,
-    IReadOnlyList<string> AggregateSlotIds);
+    IReadOnlyList<string> AggregateSlotIds,
+    bool FirstSeenAtShared);

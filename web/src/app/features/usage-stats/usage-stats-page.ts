@@ -115,6 +115,7 @@ import {
   liveDaysFrom,
   NO_LIVE_INFO_KEY,
   offsetsToDates,
+  seriesDrift,
   seriesPeak,
 } from '../../shared/emotes/usage-series';
 import {
@@ -274,6 +275,14 @@ const SYNC_PROBE_DELAYS_MS = [2000, 8000, 30000];
 // reason keeps up for as long as it stays open.
 const SYNC_FAILURE_RECHECK_INTERVAL_MS = 60000;
 
+// Minimum spacing between two of the series refetches a drift triggers (plan 377, 2.11). With the
+// slot flag on, a slot used for the first time after the series loaded reads as stale too, and the
+// usage flush that reports it comes every 30 s — without a floor, a busy channel would spend a permit
+// of the 40/min InteractiveRead bucket on every flush. 60 s to match the backend's periodic resync,
+// the same floor as the recheck above: slots settle in its REST reconcile, so asking more often
+// than it runs can hardly see a fresher answer.
+const SERIES_REFETCH_MIN_INTERVAL_MS = 60000;
+
 // Buckets in the distribution strip. Around a hundred is what fits across the content width at one
 // readable bar plus gutter — enough to show where the curve's knee sits, few enough that each bar
 // stays a bar rather than a hairline.
@@ -325,6 +334,85 @@ function isCounted(emote: EmoteUsageTotal): emote is CountedEmote {
 
 function byName(a: EmoteUsageTotal, b: EmoteUsageTotal): number {
   return a.emoteName.localeCompare(b.emoteName, undefined, { sensitivity: 'base' });
+}
+
+/**
+ * The key a `/series` entry and a grid row meet on (plan 377, F4): the slot for a slot card and a
+ * slot entry, the 7TV id for an emote-mode row and an emote-mode entry. Read the same way on both
+ * sides, so the two can never disagree about which form applies.
+ */
+function seriesJoinKey(item: { slotId: string | null; sevenTvEmoteId: string }): string {
+  return item.slotId ?? item.sevenTvEmoteId;
+}
+
+/** The (channel, set, range) a `/totals` or `/series` request was made for, as sent. */
+interface SeriesScope {
+  readonly channelName: string;
+  readonly emoteSetId: string | null;
+  readonly from: string;
+  readonly to: string;
+}
+
+function seriesScopeKey(scope: SeriesScope | null): string | null {
+  return scope && `${scope.channelName}|${scope.emoteSetId ?? ''}|${scope.from}|${scope.to}`;
+}
+
+/** The 7TV ids of `emotes`, each once, in first-appearance order — what every per-emote write
+ *  (tags, ballots) sends when two slot cards of one emote are marked (plan 377, 2.5). */
+function selectedSevenTvIds(emotes: readonly EmoteUsageTotal[]): string[] {
+  return [...new Set(emotes.map((emote) => emote.sevenTvEmoteId))];
+}
+
+/** A card that stands for one set entry next to its siblings: a slot card, or a live member keyed
+ *  per entry in a slot response (plan 377, 2.3) — never an emote-mode row or a grouped member. */
+function isPerEntryCard(emote: EmoteUsageTotal): boolean {
+  return emote.slotId !== null || emote.slotKey.startsWith('live:');
+}
+
+/**
+ * The names the delete confirmation lists for one 7TV id shown as slot cards (plan 377, 2.6, F3):
+ * the first marked card's name, then the names of every `'live'` card of the id in D2 order (add
+ * date ascending, unknown last, then name ordinal), then any further alias the run records — so the
+ * confirmation names every entry the run's one `REMOVE` takes. Ordinal distinct.
+ */
+function confirmationNamesFor(
+  markedName: string,
+  cards: readonly EmoteUsageTotal[],
+  aliases: readonly string[],
+): string[] {
+  const instantOf = (iso: string | null): number | null => {
+    const ms = iso ? Date.parse(iso) : Number.NaN;
+    return Number.isNaN(ms) ? null : ms;
+  };
+  const byD2 = cards
+    .flatMap((emote) =>
+      emote.aliases.map((name) => ({ name, instant: instantOf(emote.firstSeenAt) })),
+    )
+    .sort((a, b) => {
+      if (a.instant !== b.instant) {
+        if (a.instant === null) {
+          return 1;
+        }
+        return b.instant === null ? -1 : a.instant - b.instant;
+      }
+      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    })
+    .map((entry) => entry.name);
+  return [...new Set([markedName, ...byD2, ...aliases])];
+}
+
+/** `emotes` grouped by 7TV id, groups in first-appearance order, cards in their given order. */
+function groupBySevenTvId(emotes: readonly EmoteUsageTotal[]): Map<string, EmoteUsageTotal[]> {
+  const groups = new Map<string, EmoteUsageTotal[]>();
+  for (const emote of emotes) {
+    const group = groups.get(emote.sevenTvEmoteId);
+    if (group) {
+      group.push(emote);
+    } else {
+      groups.set(emote.sevenTvEmoteId, [emote]);
+    }
+  }
+  return groups;
 }
 
 function sortableLastUsed(lastUsedDate: string | null): number {
@@ -524,8 +612,11 @@ export class UsageStatsPage {
    * (`liveMembers`); until then `viewLoading()` keeps the skeleton up (8.3), and without a readable
    * list the rows stay the DB rows alone.
    *
-   * Keyed by `sevenTvEmoteId` everywhere below (7.2): a live member without a counted row has no
-   * `Emote.Id` at all, and two of those must still be two distinct cells (NG0955, AK 54/55).
+   * Keyed by `slotKey` everywhere below (plan 377, 2.3): the `slotId` of a slot card, the 7TV id of
+   * an emote-mode row or a grouped live member (as before slots), a `live:` key per entry for a
+   * live member without a counted row in a slot response. A live member without a counted row has
+   * no `Emote.Id` at all, and two of those must still be two distinct cells (NG0955, AK 54/55);
+   * two slot cards of one emote share their 7TV id and must still be two cells (AK 34).
    */
   protected readonly emotes = computed<EmoteUsageTotal[]>(() => {
     const rows = this.totalsRows();
@@ -1395,12 +1486,13 @@ export class UsageStatsPage {
     () => packAtlasRows<EmoteUsageTotal, AtlasGroupKey>(this.atlasGroups(), this.columns()).rows,
   );
 
-  /** Fill-bar width per 7TV id — precomputed per band peak so the template stays a lookup. */
+  /** Fill-bar width per card (`slotKey`) — precomputed per band peak so the template stays a
+   *  lookup. */
   protected readonly fillPercents = computed(() => {
     const map = new Map<string, number>();
     for (const band of this.bands()) {
       for (const emote of band.items) {
-        map.set(emote.sevenTvEmoteId, usageFillPercent(emote.totalUseCount, band.peak));
+        map.set(emote.slotKey, usageFillPercent(emote.totalUseCount, band.peak));
       }
     }
     return map;
@@ -1440,12 +1532,13 @@ export class UsageStatsPage {
   );
 
   /** Position in the set's usage ranking — the inspector's "#003", stable across sort changes.
-   *  Counted rows only: a row without counts has no place in a ranking by counts. */
+   *  Counted rows only: a row without counts has no place in a ranking by counts. Per card
+   *  (`slotKey`): two slot cards of one emote hold two places (D1). */
   private readonly usageRank = computed(() => {
     const ranks = new Map<string, number>();
     [...this.countedEmotes()]
       .sort((a, b) => b.totalUseCount - a.totalUseCount)
-      .forEach((emote, index) => ranks.set(emote.sevenTvEmoteId, index + 1));
+      .forEach((emote, index) => ranks.set(emote.slotKey, index + 1));
     return ranks;
   });
 
@@ -1459,12 +1552,14 @@ export class UsageStatsPage {
   // 1) — selectedItems() resolves against the latter, so a filter change can no longer make a
   // marked-but-hidden row unresolvable to the delete/export/vote-session run that reads it.
   //
-  // Keyed by the 7TV id, not `Emote.Id` (spec #200, 7.2, AK 54): a set view's live member without a
-  // counted row has no Guid, and keying on a `null` would fold every such row into one selection
-  // entry. The class itself is untouched — it has always been generic over its key.
+  // Keyed by the card's `slotKey` (plan 377, 2.3), not `Emote.Id` (spec #200, 7.2, AK 54): a set
+  // view's live member without a counted row has no Guid, and keying on a `null` would fold every
+  // such row into one selection entry; nor the 7TV id alone, which two slot cards of one emote
+  // share (AK 34). For an emote-mode row the key still is the 7TV id, so with the flag off nothing
+  // changes. The class itself is untouched — it has always been generic over its key.
   protected readonly selection = new ListSelection(
     this.atlasOrder,
-    (emote) => emote.sevenTvEmoteId,
+    (emote) => emote.slotKey,
     this.emotes,
   );
 
@@ -1636,10 +1731,8 @@ export class UsageStatsPage {
     if (keys === null || this.usageFilter.tagId() === null) {
       return [];
     }
-    return this.selection
-      .selectedItems()
-      .map((emote) => emote.sevenTvEmoteId)
-      .filter((id) => keys.has(id));
+    // Distinct: a tag holds an emote per 7TV id (D3), two slot cards of it are one entry.
+    return selectedSevenTvIds(this.selection.selectedItems()).filter((id) => keys.has(id));
   });
 
   /** The removal button's count; at 0 it is disabled. */
@@ -1680,7 +1773,7 @@ export class UsageStatsPage {
    * a row that no longer exists. Falls back to the busiest emote so the line is never empty —
    * before the first hover, the top of the set is the honest thing to be looking at.
    */
-  // Held by 7TV id, like the selection (7.2).
+  // Held by `slotKey`, like the selection (plan 377, 2.3).
   private readonly inspectedId = signal<string | null>(null);
   protected readonly inspected = linkedSignal<
     {
@@ -1709,15 +1802,13 @@ export class UsageStatsPage {
       if (pending) {
         return previous?.value ?? null;
       }
-      return (
-        (id ? order.find((emote) => emote.sevenTvEmoteId === id) : undefined) ?? order[0] ?? null
-      );
+      return (id ? order.find((emote) => emote.slotKey === id) : undefined) ?? order[0] ?? null;
     },
   });
 
   protected readonly inspectedRank = computed(() => {
     const emote = this.inspected();
-    return emote ? (this.usageRank().get(emote.sevenTvEmoteId) ?? null) : null;
+    return emote ? (this.usageRank().get(emote.slotKey) ?? null) : null;
   });
 
   protected readonly inspectedBand = computed<AtlasGroupKey>(() => {
@@ -1747,12 +1838,55 @@ export class UsageStatsPage {
    * response covers the whole set — so the refetch would cost the most and show the least. The
    * curve therefore states the range as of the last range change, exactly like the drilldown
    * dialog's own cached series has always done.
+   *
+   * Two exceptions, both only possible with the slot flag on (plan 377, 2.11): an emote whose rows
+   * moved to slots (or back) since the series loaded, and a slot row with uses the series has no
+   * entry for. Either would draw a flat line under a positive count, so the series is fetched once
+   * more past the cache — see `refetchDriftedSeries`. With the flag off neither can occur.
    */
   private readonly channelSeries = signal<ChannelUsageSeries | null>(null);
   protected readonly seriesFailed = signal(false);
   protected readonly seriesPending = computed(
     () => this.channelSeries() === null && !this.seriesFailed(),
   );
+  /** The request `channelSeries` answers, written with it. */
+  private readonly seriesScope = signal<SeriesScope | null>(null);
+
+  /**
+   * Where the rows on screen and the held series disagree (`seriesDrift`) — `null` unless both
+   * describe the same (channel, set, range): rows of a new range against the old range's series are
+   * not a drift, just a reload still under way.
+   */
+  private readonly heldSeriesDrift = computed(() => {
+    const series = this.channelSeries();
+    const scope = seriesScopeKey(this.seriesScope());
+    if (!series || scope === null || scope !== seriesScopeKey(this.totalsScope())) {
+      return null;
+    }
+    return seriesDrift(this.totalsRows(), series.emotes);
+  });
+
+  /** The ids and slots of `heldSeriesDrift` as lookups for the cards. */
+  private readonly driftedSeriesKeys = computed(() => {
+    const drift = this.heldSeriesDrift();
+    return {
+      ids: new Set(drift?.mismatchedIds ?? []),
+      slots: new Set(drift?.staleSlotIds ?? []),
+    };
+  });
+
+  /** Whether the bounded series refetch is in flight or a `load()` series request is — the latest
+   *  one only, see `latestSeries`. A plain field: nothing reads it reactively. */
+  private seriesInFlight = false;
+
+  /** The drift signatures already refetched for, since the last `load()`. */
+  private readonly seriesRefetchSignatures = new Set<string>();
+
+  /** When the last drift refetch went out (`Date.now()`), for `SERIES_REFETCH_MIN_INTERVAL_MS`. */
+  private lastSeriesRefetchAt: number | null = null;
+
+  /** The deferred re-check for a drift that arose inside the minimum spacing. */
+  private seriesRefetchTimer: ReturnType<typeof setTimeout> | null = null;
 
   // "Last asked wins" for the two range-dependent readouts. Both are fired from an effect and from
   // event handlers, so two can be in flight at once — a range change on top of an unfinished load,
@@ -1842,6 +1976,10 @@ export class UsageStatsPage {
     null,
   );
 
+  /** The request the rows in `totalsRows` answer, as sent — written with them, and compared with
+   *  `seriesScope` before the two are checked against each other (`heldSeriesDrift`). */
+  private readonly totalsScope = signal<SeriesScope | null>(null);
+
   /** The channel for which an active-set request is in flight or has already answered, success or
    *  failure. A plain field, not a signal: writing it must never itself retrigger load()'s effect —
    *  only reading channelName()/from()/to()/rangeResolved() should. A signal here would double-fire
@@ -1885,12 +2023,14 @@ export class UsageStatsPage {
     return this.setStatusFailedChannel() === this.channelName() && this.importCoverageSettled();
   });
 
-  // Keyed by 7TV id (spec 6.5 step 1, 7.2): `/series` still carries `emoteId` beside it, but a set
-  // view's row need not have one.
+  // Keyed by `slotId ?? sevenTvEmoteId` (plan 377, F4): a slot entry joins its slot card, an
+  // emote-mode entry the emote-mode row of its 7TV id — equivalent to a join by `emoteId`, since a
+  // 7TV id has either one emote-mode row or only slot rows in one response, but a set view's row
+  // need not have an `Emote.Id` at all (spec 6.5 step 1, 7.2).
   private readonly seriesByEmote = computed(
     () =>
       new Map(
-        this.channelSeries()?.emotes.map((entry) => [entry.sevenTvEmoteId, entry.days]) ?? [],
+        this.channelSeries()?.emotes.map((entry) => [seriesJoinKey(entry), entry.days]) ?? [],
       ),
   );
 
@@ -1924,17 +2064,24 @@ export class UsageStatsPage {
     const series = this.channelSeries();
     const emote = this.inspected();
     // A row without counts under the shown set has no curve either: zero-filling it would draw a
-    // flat baseline, i.e. claim "counted, never used" — the one statement E17 rules out.
-    if (!series || !emote || emote.totalUseCount === null) {
+    // flat baseline, i.e. claim "counted, never used" — the one statement E17 rules out. The same
+    // for a row the held series cannot speak for (plan 377, 2.11): it shows as loading instead.
+    if (!series || !emote || emote.totalUseCount === null || this.isCurveDrifted(emote)) {
       return [];
     }
     // An emote absent from the response had no usage in the range — the same statement its absent
     // days would make, one level up. Zero-filling here is what turns that into a flat baseline.
     return fillOffsetSeries(
-      this.seriesByEmote().get(emote.sevenTvEmoteId) ?? [],
+      this.seriesByEmote().get(seriesJoinKey(emote)) ?? [],
       series.from,
       series.to,
     );
+  });
+
+  /** The sidecar's curve skeleton: the series is loading, or cannot yet speak for this row. */
+  protected readonly inspectedCurvePending = computed(() => {
+    const emote = this.inspected();
+    return this.seriesPending() || (emote !== null && this.isCurveDrifted(emote));
   });
 
   /**
@@ -2001,36 +2148,66 @@ export class UsageStatsPage {
   // id and the protocol writes `emoteId: null` for it. A #74 duplicate cell is one row with both
   // aliases — one `REMOVE` takes both entries (Sonde 5, branch A), and the protocol keeps both names
   // so the restore can re-add each.
-  protected readonly selectedForDelete = computed<DeletableEmote[]>(() =>
-    this.selection.selectedItems().flatMap((emote) =>
-      emote.membership === 'live'
-        ? [
-            {
-              emoteId: emote.emoteId ?? undefined,
-              sevenTvEmoteId: emote.sevenTvEmoteId,
-              name: emote.emoteName,
-              aliases: emote.aliases,
-              // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl
-              // überlebt Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the
-              // dock's own hiddenSelectedCount is built from, so the two numbers can never disagree.
-              hidden: !this.selection.isVisible(emote),
-            },
-          ]
-        : [],
-    ),
-  );
+  //
+  // One entry per 7TV id, not per card (plan 377, 2.6 — the transition until #378 deletes per
+  // slot): a `REMOVE` without an alias takes every entry of the id, so marking one of two slot
+  // cards deletes both, and the protocol must name both for the restore. `aliases` is therefore the
+  // union over every `'live'` card of the id in `emotes()`, marked or not — their own names and the
+  // siblings they report. `name` is the first marked card's, `emoteId` the first Guid of the id, and
+  // the entry counts as hidden only when every marked card of the id is. With the flag off there is
+  // one card per id, and this is exactly the per-row mapping it always was.
+  protected readonly selectedForDelete = computed<DeletableEmote[]>(() => {
+    const liveById = groupBySevenTvId(this.emotes().filter((emote) => emote.membership === 'live'));
+    const markedById = groupBySevenTvId(
+      this.selection.selectedItems().filter((emote) => emote.membership === 'live'),
+    );
+    return [...markedById].map(([sevenTvEmoteId, marked]) => {
+      const idCards = liveById.get(sevenTvEmoteId) ?? marked;
+      const cards = [...marked, ...idCards];
+      const aliases = [
+        ...new Set(cards.flatMap((emote) => [...emote.aliases, ...emote.siblingNames])),
+      ];
+      return {
+        emoteId: cards.find((emote) => emote.emoteId !== null)?.emoteId ?? undefined,
+        sevenTvEmoteId,
+        name: marked[0].emoteName,
+        aliases,
+        // Every name the run takes, for the confirmation (plan 377, 2.6, F3) — only for an id
+        // shown as slot cards, so with the flag off the confirmation lists exactly what it did,
+        // and an emote-mode duplicate cell (`×2`) still names only its own name there.
+        ...(idCards.some(isPerEntryCard)
+          ? { confirmationNames: confirmationNamesFor(marked[0].emoteName, idCards, aliases) }
+          : {}),
+        // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl überlebt
+        // Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the dock's own
+        // hiddenSelectedCount is built from, so the two numbers cannot disagree for an id with one card
+        // (with several cards per id they count different things). An unmarked
+        // sibling that the filter hides does not make the entry hidden.
+        hidden: marked.every((emote) => !this.selection.isVisible(emote)),
+      };
+    });
+  });
 
   /**
    * How many slots of the shown set deleting the marked rows would free (spec 8.2, AK 58): a #74
    * duplicate cell is one row but two set entries, and one `REMOVE` takes both (Sonde 5, branch A).
    * `'left'` rows occupy no slot of the set any more and free none. In the active set's view every
    * `slotCount` is 1, so this is the selection size, exactly as before.
+   *
+   * Summed per marked 7TV id over **every** `'live'` card of that id (plan 377, 2.6): the run
+   * deletes per id until #378, so marking one of two slot cards frees both slots. With one card per
+   * id (the flag off) this is the same sum as before.
    */
-  protected readonly pendingRemovalSlots = computed(() =>
-    this.selection
-      .selectedItems()
-      .reduce((sum, emote) => sum + (emote.membership === 'live' ? emote.slotCount : 0), 0),
-  );
+  protected readonly pendingRemovalSlots = computed(() => {
+    const markedIds = new Set(
+      this.selection
+        .selectedItems()
+        .flatMap((emote) => (emote.membership === 'live' ? [emote.sevenTvEmoteId] : [])),
+    );
+    return this.emotes()
+      .filter((emote) => emote.membership === 'live' && markedIds.has(emote.sevenTvEmoteId))
+      .reduce((sum, emote) => sum + emote.slotCount, 0);
+  });
 
   /**
    * Capacity and occupied slots of the shown set, for the slot bar and the dock's projection. The
@@ -2061,12 +2238,17 @@ export class UsageStatsPage {
    * Every row of the active set's view has a Guid, so nothing is ever dropped here — this is only
    * ever read for that view (`openCreateVoteSession`), never for a non-active one, which builds a
    * SET-session ballot from `voteBallotSevenTvEmoteIds` instead (spec 6.9, K6).
+   *
+   * Distinct (plan 377, 2.5): two slot cards of one emote share its Guid, and a ballot holds an
+   * emote once — the server dedupes as well, but the button and the dialog count what is sent.
    */
-  private readonly voteBallotEmoteIds = computed(() =>
-    this.selection
-      .selectedItems()
-      .flatMap((emote) => (emote.emoteId !== null ? [emote.emoteId] : [])),
-  );
+  private readonly voteBallotEmoteIds = computed(() => [
+    ...new Set(
+      this.selection
+        .selectedItems()
+        .flatMap((emote) => (emote.emoteId !== null ? [emote.emoteId] : [])),
+    ),
+  ]);
 
   /**
    * The ballot a SET-session created from the selection would carry: 7TV emote ids, the same live
@@ -2080,12 +2262,16 @@ export class UsageStatsPage {
    * against the *live* membership (spec section 9 step 2) — one stale id in the request would fail
    * the entire create with 400 `emote_ids_invalid`, silently dropping every other selected emote
    * along with it.
+   *
+   * Distinct, for the same reason as `voteBallotEmoteIds` (plan 377, 2.5).
    */
-  private readonly voteBallotSevenTvEmoteIds = computed(() =>
-    this.selection
-      .selectedItems()
-      .flatMap((emote) => (emote.membership === 'live' ? [emote.sevenTvEmoteId] : [])),
-  );
+  private readonly voteBallotSevenTvEmoteIds = computed(() => [
+    ...new Set(
+      this.selection
+        .selectedItems()
+        .flatMap((emote) => (emote.membership === 'live' ? [emote.sevenTvEmoteId] : [])),
+    ),
+  ]);
 
   /**
    * The size of the ballot `openCreateVoteSession` would actually send for the view shown right
@@ -2279,19 +2465,29 @@ export class UsageStatsPage {
    * drops `left` rows; this stays as defense in depth, because copying one would put an emote into
    * the target that the source set no longer holds. Same rule as `selectedForDelete` and
    * `voteBallotSevenTvEmoteIds`; the dialog's counts and the copied rows read this one source.
+   *
+   * Deduplicated per 7TV id **before** the capture (plan 377, 2.5, A6): two slot cards of one emote
+   * are one emote to copy, and the dialog has to count what the run will copy — the run's own
+   * dedupe (`startImportFromChoice`) only comes after the dialog. The first card's name wins.
    */
-  private readonly importableSelection = computed(() =>
-    this.selection
-      .selectedItems()
-      .filter((emote) => emote.membership === 'live')
-      .map(toImportRow),
+  private readonly importableSelection = computed(
+    () =>
+      dedupeImportRows(
+        this.selection
+          .selectedItems()
+          .filter((emote) => emote.membership === 'live')
+          .map(toImportRow),
+      ).rows,
   );
 
   /** `importableSelection`'s counterpart for the "visible" scope (the grid as filtered). */
-  private readonly importableVisible = computed(() =>
-    this.atlasOrder()
-      .filter((emote) => emote.membership === 'live')
-      .map(toImportRow),
+  private readonly importableVisible = computed(
+    () =>
+      dedupeImportRows(
+        this.atlasOrder()
+          .filter((emote) => emote.membership === 'live')
+          .map(toImportRow),
+      ).rows,
   );
 
   /** Wording for the dock's hidden-by-filter secondary line (Konzept "Auswahl überlebt Suche und
@@ -2642,6 +2838,9 @@ export class UsageStatsPage {
 
     this.destroyRef.onDestroy(() => {
       this.syncPoll?.unsubscribe();
+      if (this.seriesRefetchTimer !== null) {
+        clearTimeout(this.seriesRefetchTimer);
+      }
       this.resetSelectionPrunedFeedback();
       this.resetTagFeedback();
       // Leaving the page must give the reservation back immediately — otherwise a switch to a
@@ -2762,8 +2961,8 @@ export class UsageStatsPage {
 
   // See VoteSessionDetailPage.trackRow for the full reasoning: rows() rebuilds fresh row arrays on
   // every recompute, so tracking by index (not identity) keeps the row views stable and avoids
-  // rebuilding every cell — the inner @for (… track emote.sevenTvEmoteId) still reconciles row
-  // content correctly on a resize (DECISIONS 2026-08-30; the inner key is the 7TV id since #200).
+  // rebuilding every cell — the inner @for (… track emote.slotKey) still reconciles row content
+  // correctly on a resize (DECISIONS 2026-08-30; the inner key is the card's slotKey since #377).
   protected trackRow(index: number): number {
     return index;
   }
@@ -2841,12 +3040,12 @@ export class UsageStatsPage {
   }
 
   protected inspect(emote: EmoteUsageTotal): void {
-    this.inspectedId.set(emote.sevenTvEmoteId);
+    this.inspectedId.set(emote.slotKey);
   }
 
   /** Pointer or focus landing on a cell makes it both the inspected row and the grid's tab stop. */
   protected onCellFocus(emote: EmoteUsageTotal, index: number): void {
-    this.inspectedId.set(emote.sevenTvEmoteId);
+    this.inspectedId.set(emote.slotKey);
     this.activeIndex.set(index);
   }
 
@@ -2876,7 +3075,7 @@ export class UsageStatsPage {
    * focus handler alone would leave the same gap on a desktop browser.
    */
   protected onCellClick(emote: EmoteUsageTotal, index: number, event: MouseEvent): void {
-    this.inspectedId.set(emote.sevenTvEmoteId);
+    this.inspectedId.set(emote.slotKey);
     this.activeIndex.set(index);
 
     // On a coarse pointer the cell has only one meaning left. Returning before the selection call
@@ -2935,7 +3134,7 @@ export class UsageStatsPage {
   }
 
   protected fillPercent(emote: EmoteUsageTotal): number {
-    return this.fillPercents().get(emote.sevenTvEmoteId) ?? 0;
+    return this.fillPercents().get(emote.slotKey) ?? 0;
   }
 
   /** Compact figure printed onto the sprite — "9,4k" fits a 64 px cell, "9412" does not. */
@@ -3063,16 +3262,27 @@ export class UsageStatsPage {
     // E20), so the run's row is asked first: the panel read the set's live entries before the run
     // (`readLiveAliasesFromActiveSet`) and recorded every alias the `REMOVE` took. Summed over the
     // rows on screen before they are dropped.
+    //
+    // Per 7TV id, not per card (plan 377, 2.6, A8): two slot cards of one id are two entries that
+    // the run's one row already counts with its two aliases — taking the larger of the two numbers
+    // per card would free four. With one card per id (the flag off) this is the sum it always was.
     const runAliasCounts = new Map(
       run.result.items.map((item) => [item.sevenTvEmoteId, item.aliases?.length ?? 0]),
     );
-    const freedSlots = this.emotes()
-      .filter((emote) => emote.membership === 'live' && deleted.has(emote.sevenTvEmoteId))
-      .reduce(
-        (sum, emote) =>
-          sum + Math.max(emote.slotCount, runAliasCounts.get(emote.sevenTvEmoteId) ?? 0),
-        0,
-      );
+    const cardSlotsById = new Map<string, number>();
+    for (const emote of this.emotes()) {
+      if (emote.membership === 'live' && deleted.has(emote.sevenTvEmoteId)) {
+        cardSlotsById.set(
+          emote.sevenTvEmoteId,
+          (cardSlotsById.get(emote.sevenTvEmoteId) ?? 0) + emote.slotCount,
+        );
+      }
+    }
+    const freedSlots = [...cardSlotsById].reduce(
+      (sum, [sevenTvEmoteId, cardSlots]) =>
+        sum + Math.max(cardSlots, runAliasCounts.get(sevenTvEmoteId) ?? 0),
+      0,
+    );
     this.totalsRows.update((items) => items.filter((item) => !deleted.has(item.sevenTvEmoteId)));
     // Freed slots are shown right away rather than waiting for the channel.synced round trip the
     // bookkeeping call triggers — the emptied bar is the feedback the delete was run for. The
@@ -3147,7 +3357,8 @@ export class UsageStatsPage {
       return;
     }
     const channelName = this.channelName();
-    const sevenTvEmoteIds = this.selection.selectedItems().map((emote) => emote.sevenTvEmoteId);
+    // Distinct (plan 377, 2.5): a tag is per 7TV id (D3), two slot cards of one emote are one id.
+    const sevenTvEmoteIds = selectedSevenTvIds(this.selection.selectedItems());
     const shown = this.shownSetId();
     // Only for a non-active set: the active-set body stays exactly as before.
     const emoteSetId = shown !== null && shown !== this.activeEmoteSetId() ? shown : undefined;
@@ -3225,6 +3436,8 @@ export class UsageStatsPage {
       from: this.from(),
       to: this.to(),
       emoteId: emote.emoteId,
+      // A slot card asks its slot's own series, an emote-mode row the emote's (plan 377, 2.9).
+      slotId: emote.slotId ?? null,
       sevenTvEmoteId: emote.sevenTvEmoteId,
       // The set these numbers were counted under, frozen into the dialog (F4, AK 64) — the set of
       // the rows on screen, not a dropdown value that may already be moving.
@@ -3739,13 +3952,97 @@ export class UsageStatsPage {
   ): void {
     this.channelSeries.set(null);
     this.seriesFailed.set(false);
+    // load() is the only caller: a fresh series may refetch for any drift again (plan 377, 2.11).
+    this.seriesRefetchSignatures.clear();
+    const scope: SeriesScope = { channelName, emoteSetId, from, to };
+    this.seriesInFlight = true;
     this.usageStatService
       .getChannelSeries(channelName, from, to, emoteSetId)
       .pipe(this.latestSeries)
       .subscribe({
-        next: (series) => this.channelSeries.set(series),
-        error: () => this.seriesFailed.set(true),
+        next: (series) => this.adoptSeries(series, scope),
+        error: () => {
+          this.seriesInFlight = false;
+          this.seriesFailed.set(true);
+        },
       });
+  }
+
+  private adoptSeries(series: ChannelUsageSeries, scope: SeriesScope): void {
+    this.seriesInFlight = false;
+    this.channelSeries.set(series);
+    this.seriesScope.set(scope);
+    this.refetchDriftedSeries();
+  }
+
+  /**
+   * The one refetch a drift between rows and series may cause (plan 377, 2.11) — an emote that
+   * settled into slots after the series loaded, or a slot with uses the series has no entry for.
+   * Runs whenever either side lands, and from its own timer.
+   *
+   * Bounded three ways: at most once per signature (scope plus the drifted ids and slots) until the
+   * next `load()`; never while a series request is in flight, whose answer is checked instead; and
+   * at least `SERIES_REFETCH_MIN_INTERVAL_MS` after the previous refetch — a drift arising inside
+   * that spacing is checked again when it has passed. A drift that outlives its refetch (the two
+   * answers still offset) keeps its rows loading until a new signature or `load()`. A failed
+   * refetch leaves the held series in place and is not retried for the same signature.
+   */
+  private refetchDriftedSeries(): void {
+    const drift = this.heldSeriesDrift();
+    const scope = this.seriesScope();
+    if (
+      !drift ||
+      !scope ||
+      this.seriesInFlight ||
+      (drift.mismatchedIds.length === 0 && drift.staleSlotIds.length === 0)
+    ) {
+      return;
+    }
+    const signature = [
+      seriesScopeKey(scope),
+      drift.mismatchedIds.join(','),
+      drift.staleSlotIds.join(','),
+    ].join('#');
+    if (this.seriesRefetchSignatures.has(signature)) {
+      return;
+    }
+    const wait =
+      this.lastSeriesRefetchAt === null
+        ? 0
+        : this.lastSeriesRefetchAt + SERIES_REFETCH_MIN_INTERVAL_MS - Date.now();
+    if (wait > 0) {
+      this.seriesRefetchTimer ??= setTimeout(() => {
+        this.seriesRefetchTimer = null;
+        this.refetchDriftedSeries();
+      }, wait);
+      return;
+    }
+    this.seriesRefetchSignatures.add(signature);
+    this.lastSeriesRefetchAt = Date.now();
+    this.seriesInFlight = true;
+    this.usageStatService
+      .getChannelSeries(scope.channelName, scope.from, scope.to, scope.emoteSetId, {
+        refresh: true,
+      })
+      .pipe(this.latestSeries)
+      .subscribe({
+        next: (series) => this.adoptSeries(series, scope),
+        error: () => {
+          this.seriesInFlight = false;
+        },
+      });
+  }
+
+  /** Whether the held series cannot speak for this card's curve (`heldSeriesDrift`). */
+  private isCurveDrifted(emote: EmoteUsageTotal): boolean {
+    if (emote.totalUseCount === null) {
+      return false;
+    }
+    const drifted = this.driftedSeriesKeys();
+    return (
+      drifted.ids.has(emote.sevenTvEmoteId) ||
+      (emote.slotId !== null && drifted.slots.has(emote.slotId))
+    );
   }
 
   // A transient inline status rather than a toast — there is no toast service (see
@@ -4020,6 +4317,7 @@ export class UsageStatsPage {
           // shows the previous channel's emotes (see totalsChannel's declaration).
           this.totalsChannel.set(channelName);
           this.totalsRange.set({ from, to });
+          this.totalsScope.set({ channelName, emoteSetId, from, to });
           // The rows on screen are now the answer to the latest request — an error left by an
           // earlier one (a failed set switch that a later reload recovered from) no longer describes
           // them, and would otherwise keep `setSwitchFailed` and the banner up over good rows.
@@ -4051,6 +4349,7 @@ export class UsageStatsPage {
             this.selection.clear();
           }
           this.endLoadingFor(loadAtRequest);
+          this.refetchDriftedSeries();
         },
         // 401 is not handled here — apiAuthInterceptor resets the session and redirects for every
         // /api/ call in the app.

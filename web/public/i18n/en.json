@@ -1060,6 +1060,7 @@
       "noCounts": "no counts under this set",
       "leftBadge": "No longer in the set",
       "slots": "{{count}} slots in the set: {{aliases}}",
+      "alsoAs": "Also in the set as {{names}}",
       "nameTwin": "Under this name, “{{sets}}” holds a different emote.",
       "facts": {
         "countedRange": "In the selected range, this set has counts from {{from}} to {{to}}.",

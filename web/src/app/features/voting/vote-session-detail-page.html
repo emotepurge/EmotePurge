@@ -110,7 +110,7 @@
       <div
         class="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border py-2 text-xs text-fg-muted lg:hidden pointer-coarse:hidden"
       >
-        <span class="font-medium text-fg">{{ emote.emoteName }}</span>
+        <span class="font-medium text-fg">{{ displayName(emote) }}</span>
         @if (!emote.eligible) {
           <span class="text-warning-fg">{{ 'voting.detail.archivedBadge' | transloco }}</span>
         }
@@ -266,11 +266,11 @@
                       ? (drilldownLabelKey(emote)
                         | transloco
                           : {
-                              name: emote.emoteName,
+                              name: displayName(emote),
                               count: formatUseCount(emote.totalUseCount),
                             })
                       : rowAction(emote) === 'select'
-                        ? emote.emoteName +
+                        ? displayName(emote) +
                           (isDeparted(emote)
                             ? ' · ' + ('usageStats.setView.leftBadge' | transloco)
                             : '')
@@ -468,7 +468,7 @@
               />
             </span>
             <div class="min-w-0">
-              <p class="text-sm font-semibold break-all text-fg">{{ emote.emoteName }}</p>
+              <p class="text-sm font-semibold break-all text-fg">{{ displayName(emote) }}</p>
               @if (!emote.eligible) {
                 <p class="mt-0.5 text-[11px] text-warning-fg">
                   {{ 'voting.detail.archivedBadge' | transloco }}

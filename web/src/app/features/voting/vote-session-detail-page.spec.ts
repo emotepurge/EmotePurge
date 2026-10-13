@@ -1444,3 +1444,109 @@ describe('VoteSessionDetailPage — export button and low-participation notice a
     expect(noticeWithText('voting.detail.lowParticipation')).toBeNull();
   });
 });
+
+describe('VoteSessionDetailPage — a ballot row naming several aliases of one emote (#377)', () => {
+  let fixture: ComponentFixture<VoteSessionDetailPage>;
+  let component: VoteSessionDetailPage;
+  let httpMock: HttpTestingController;
+
+  const CHANNEL = 'sensitron';
+  const SESSION_ID = '7';
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+
+    fixture = TestBed.createComponent(VoteSessionDetailPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', CHANNEL);
+    fixture.componentRef.setInput('sessionId', SESSION_ID);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Real template (the sprite needs a non-empty image URL, NG02952); the permissions rxResource
+  // settles through a microtask, hence the zero-delay round trip before the final detectChanges.
+  async function mount(emotes: VoteSessionResult[]): Promise<void> {
+    flushByPath(
+      httpMock,
+      `/api/channels/${CHANNEL}/vote-sessions/${SESSION_ID}/results`,
+      results(emotes),
+    );
+    flushByPath(httpMock, `/api/channels/${CHANNEL}`, {
+      channelId: 'c1',
+      channelName: CHANNEL,
+      isBotActive: true,
+      activeEmoteSetId: 'set-1',
+    });
+    flushByPath(httpMock, `/api/channels/${CHANNEL}/permissions`, {
+      canManage: true,
+      canViewUsageStats: true,
+      isGlobalAdmin: false,
+      isTracked: true,
+      isBotActive: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  function cellLabels(): string[] {
+    const cells: Element[] = Array.from(
+      fixture.nativeElement.querySelectorAll('.app-sprite-cell[role="button"]'),
+    );
+    return cells.map((cell) => cell.getAttribute('aria-label') ?? '');
+  }
+
+  const IMAGE = 'https://cdn.7tv.app/emote/1/1x.webp';
+
+  it('names the row by every alias and finds it by any of them', async () => {
+    await mount([
+      resultEmote('a', {
+        emoteName: 'ome44',
+        emoteNames: ['ome44', 'hob44'],
+        imageUrl: IMAGE,
+      }),
+      resultEmote('b', { imageUrl: IMAGE }),
+    ]);
+
+    expect(cellLabels()).toEqual(['ome44 / hob44', 'Emoteb']);
+    expect(fixture.nativeElement.textContent).toContain('ome44 / hob44');
+
+    component['usageFilter'].setNameFilter('hob44');
+    fixture.detectChanges();
+
+    expect(cellLabels()).toEqual(['ome44 / hob44']);
+  });
+
+  it('shows the plain name when emoteNames is missing or has a single entry', async () => {
+    await mount([
+      resultEmote('a', { imageUrl: IMAGE }),
+      resultEmote('b', { emoteNames: ['Emoteb'], imageUrl: IMAGE }),
+    ]);
+
+    expect(cellLabels()).toEqual(['Emotea', 'Emoteb']);
+  });
+});

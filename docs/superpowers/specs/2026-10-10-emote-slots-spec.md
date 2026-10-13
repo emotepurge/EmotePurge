@@ -101,7 +101,7 @@ Betreiber-Entscheidungen (D0–D4, D7) und Orchestrator-Vorgaben (O1–O6) sind 
 | **D19** (R3/R5) | **Drei Migrationen, ein Fenster.** M1 additiv (Kind 1). M2 nicht-additiv im PR aller UsageStats-Schreiber: Flush, Zähler, Map sowie Backfill-Insert mit SlotId aus dem Snapshot (Kind 3). Kind 3 enthält außerdem die einfache Slot-Bindung und Snapshot-SlotId-Befüllung für den bisherigen Eintrag je Emote. M3 und die Erweiterung auf mehrere Slots je Emote folgen mit dem Backfill-Schreiber in Kind 5. Prod wendet alle drei im Wartungsfenster an (api/worker gestoppt, Backup, von Hand, beide Images gemeinsam hoch). | Codex R1 Befund 8, R2 Befund 7, Runde 3 Befund 7. AK 44, 56. |
 | **D20** | **Harness unverändert, `harness-3`.** Liest `EmoteLifetimeDto` je Emote (D13) und Summen je `(EmoteId, Date)`; Abweichung (ein Alias) als Grenze des geschlossenen Instruments in DECISIONS. | Backfill nutzt keinen Harness-Code. **Vom Betreiber bestätigt (2026-10-10).** |
 | **D21** (R3/R5) | **Frontend-Schlüssel slotId**; Klasse-3-Zeile `live:${sevenTvEmoteId}#${addedAt ?? name}`. **Bindung je Versuch:** beforeStep bindet über (sevenTvEmoteId, addedAt) an eine frische Live-Liste. Hat das Emote dort mindestens zwei Einträge, wird die Liste vor jedem Mutationsversuch einschließlich Retries neu gelesen; bei höchstens einem Eintrag gilt weiter die Erneuerung nach mehr als 5 s. Abweichender Name → renamed, fehlender Eintrag → departed, provisorische Zeilen werden nie gelöscht. Gesendet wird nur der soeben verifizierte Alias. | Codex R1/R2 und Runde 3 Befund 1. AK 38, 51; D33 begrenzt sich auf den Request-Umlauf nach diesem Read. |
-| **D22** | **`mergeSetView`** joint datierte Zeilen über `(sevenTvEmoteId, addedAt)`, provisorische über den Namen; alles Unerklärte ist `'left'` bzw. Klasse 3 je Eintrag. `slotCount`/`aliases` entfallen; neu `siblingNames`. | Keine 1:1-Vermutung mehr nötig: die Live-Liste trägt `addedAt`. |
+| **D22** | **`mergeSetView`** joint datierte Zeilen über `(sevenTvEmoteId, addedAt)`, provisorische über den Namen; alles Unerklärte ist `'left'` bzw. Klasse 3 je Eintrag. `slotCount`/`aliases` entfallen; neu `siblingNames`. *Kind 7, Betreiber 2026-10-12:* Klasse 3 je Eintrag nur in einer Antwort mit Slot-Zeilen, `slotCount`/`aliases` bleiben mit enger Bedeutung, der Zeitpunkt-Join bindet namensunabhängig nur Einzel ↔ Einzel mit Beleg — Regeln in §9.1. | Keine 1:1-Vermutung mehr nötig: die Live-Liste trägt `addedAt`. |
 | **D23** | **Geschwister-Hinweis:** Scrim-Glyph `+{{n}}`, `title`, Inspector, Sidecar, `aria-label` mit `usageStats.setView.alsoAs`; ersetzt `×{{slotCount}}`/`setView.slots`. | UI-Designsprache §2.5 (wie `≈`). |
 | **D24** | `/daily` je Slot (`slotId`) oder je Emote (`emoteId`, Summe); `/series` eine Entry je Slot (+`slotId`, `name`, additiv); `/totals` eine Zeile je Slot (+`slotId`, `firstSeenAtFromRest`, `siblingNames`). | Abschnitt 5. |
 | **D25** | Export eine Zeile je Slot; `seven_tv_emote_id` nicht mehr eindeutig; `import-source-parser`/`toImportRow` dedupe nach ID (erste Zeile). Voting-Export unverändert. | Import-Queue bleibt je ID (K2). |
@@ -184,8 +184,17 @@ EmoteUsageContextDto(
   DateTime? FirstSeenAt /* Slot.AddedAt bzw. Emote.FirstSeenAt */, bool FirstSeenAtFromRest /* Emote-Modus: false */,
   bool IsArchived /* Slot oder Emote archiviert; Emote-Modus: Emote.IsArchived */,
   IReadOnlyList<string> NameTwinEmoteSetIds /* je Slot-Name; Emote-Modus: über Emote.Name */,
-  IReadOnlyList<string> SiblingNames /* andere Zeilen desselben Emotes in dieser Antwort, D2-Ordnung; Emote-Modus: leer */)
+  IReadOnlyList<string> SiblingNames /* andere Zeilen desselben Emotes in dieser Antwort, D2-Ordnung; Emote-Modus: leer */,
+  bool FirstSeenAtShared /* Kind 7, Betreiber 2026-10-12: nur /totals; siehe unten */)
 ```
+
+**`FirstSeenAtShared` (Kind 7, Betreiber 2026-10-12, F6).** `true` genau dann, wenn die Zeile eine Slot-Modus-Zeile mit
+`FirstSeenAtFromRest = true` ist und mindestens ein **anderer eigener** Slot desselben Emotes (kein unsettled Seed, aktiv oder
+archiviert, mit oder ohne Zeilen in irgendeinem Set) `AddedAtFromRest = true` und denselben gespeicherten `AddedAt` trägt
+(Vergleich wie `BindByDate`). Berechnet über den vollständigen Slot-Bestand des Emotes, nicht über die gezeigten Zeilen — ein
+gleichzeitiger Zwilling ohne Zeilen im angesehenen nicht aktiven Set bleibt so sichtbar. Emote-Modus, provisorische oder
+undatierte Zeilen: immer `false`. Gilt in der aktiven und der nicht aktiven Ansicht nach derselben Regel; `/series` sendet das
+Feld nicht.
 
 **Modus je Emote im angefragten Set X.** Flag `SevenTv:SlotReconcile:Enabled` aus: **jedes** Emote im Emote-Modus — die
 Antwort ist die von vor den Slots, nur um die neuen Felder mit ihren Aus-Werten ergänzt (`SlotId` `null`,
@@ -353,10 +362,28 @@ Abgelöste Stellen der Backfill-Spec: `:153`, `:222-226`, `:316-317`, `:348`, `:
 
 ### 9.1 Modell
 
-- `EmoteUsageTotalDto`: + `slotId`, + `firstSeenAtFromRest`, + `siblingNames`; `emoteName` = Slot-Name, `firstSeenAt` = Slot-Datum.
-- `EmoteUsageTotal`: − `slotCount`, − `aliases`; + `slotId: string | null`, + `firstSeenAtFromRest`, + `siblingNames`, + `slotKey` (= `slotId` oder `live:${sevenTvEmoteId}#${addedAt ?? name}`).
-- `EmoteSeriesEntry`: + `slotId`, + `name`. `EmoteUsageSeries`: + `slotId: string | null`.
-- `mergeSetView` (D22): Zeile mit `firstSeenAtFromRest` ↔ Live-Eintrag über `(sevenTvEmoteId, addedAt)`; Zeile ohne ↔ über `(sevenTvEmoteId, name)`; Rest `'left'` bzw. Klasse 3 je Live-Eintrag; `siblingNames` aktiv aus dem DTO, nicht-aktiv aus den anderen Live-Einträgen derselben ID.
+*Kind 7, Betreiber 2026-10-12 (Plan 377, F1, F2, F4, F6; Text ersetzt).* Die Spec kannte den Emote-Modus (Kind 6, Plan-376 R2) nicht;
+mit Flag aus ist jede Zeile im Emote-Modus, und auch mit Flag an bleibt er für Emotes mit unsettled Seed bestehen.
+
+- `EmoteUsageTotalDto`: + `slotId`, + `firstSeenAtFromRest`, + `siblingNames`, + `firstSeenAtShared` (§5.1); `emoteName` = Slot-Name,
+  `firstSeenAt` = Slot-Datum (Emote-Modus: Emote-Name/-Datum). Fehlt ein Feld (ältere Api), liest der Join es als Aus-Wert
+  (`slotId null`, `siblingNames []`, `firstSeenAtFromRest false`), `firstSeenAtShared` dagegen wie `true`.
+- `EmoteUsageTotal`: + `slotId: string | null`, + `firstSeenAtFromRest`, + `siblingNames`, + `slotKey`. `slotCount`/`aliases`
+  **bleiben** (F1), mit enger Bedeutung: Zahl bzw. Namen der Set-Einträge, die **diese eine Karte** zusammenfasst (Emote-Modus-Zeile der
+  nicht aktiven Ansicht, Klasse 3 gruppiert), sonst `1` bzw. `[emoteName]`. `siblingNames` nur an Slot-Zeilen und Klasse 3 je Eintrag;
+  `siblingNames` nicht leer ⇒ `slotCount 1`.
+- `slotKey` (F4, Sol S1): Slot-Zeile `slotId`; Emote-Modus-Zeile und Klasse 3 gruppiert `sevenTvEmoteId` (bitgleich zu vorher);
+  Klasse 3 je Eintrag `live:${id}#${addedAt}`, bei Zeitpunkt-Gleichstand mit einem anderen Eintrag derselben ID
+  `live:${id}#${addedAt}#${name}`, undatiert `live:${id}##${name}` — die Form wird über die vollständige Live-Liste bestimmt.
+- `EmoteSeriesEntry`: + `slotId`, + `name`. `EmoteUsageSeries`: + `slotId: string | null`. Serien-Join über `slotId ?? sevenTvEmoteId` (F4).
+- `ForeignEmoteRow`: + optional `addedAt` (ISO-UTC, `null`/fehlend = 7TV nennt keins).
+- `mergeSetView` (D22): **Modus der Antwort** = mindestens eine Zeile mit `slotId` (F2). Aktive Ansicht 1:1, `siblingNames` aus dem DTO.
+  Nicht aktive Ansicht, jeder Live-Eintrag höchstens einmal: (1) Emote-Modus-Zeilen binden alle Einträge ihrer ID wie bisher (`×n`);
+  (2) datierte Slot-Zeilen über den Zeitpunkt in Millisekunden (`Date.parse`, nie Zeichenkette), Gruppen je (ID, Zeitpunkt) vorab auf
+  beiden Seiten wie `BindByDate` — namensunabhängig nur Einzel ↔ Einzel und nur mit `firstSeenAtShared = false` (F6), sonst gleichnamig
+  (Sol S2, R2-1); (3) übrige Slot-Zeilen gleichnamig — provisorische jeden Eintrag, datierte nur einen undatierten; (4) Rest `'left'`
+  bzw. Klasse 3 — je Eintrag nur in einer Antwort mit Slot-Zeilen, sonst je ID gruppiert (F2); `siblingNames` aus den anderen
+  Live-Einträgen derselben ID in D2-Ordnung, `'left'`-Slot-Zeilen behalten die DTO-Liste.
 
 ### 9.2 Seite
 
@@ -367,7 +394,7 @@ Abgelöste Stellen der Backfill-Spec: `:153`, `:222-226`, `:316-317`, `:348`, `:
 | Bänder, `deadCount`, `totalUses`, Pareto, `emoteCountKey` | je Zeile = je Slot (D1); Wortlaut „Emotes" bleibt |
 | Tag-Filter / `assignTags` / `tagUnassignIds` | Filter unverändert (ID); Zuweisung distinct IDs |
 | Vote-Erstellung | distinct `emoteId`/`sevenTvEmoteId`, `voteBallotSize` = distinct |
-| Karte (D23) | `aria-label` + `alsoAs`; Scrim `+{{n}}`; Inspector/Sidecar `alsoAs`; `setView.slots` entfällt |
+| Karte (D23) | `aria-label` + `alsoAs`; Scrim `+{{n}}`; Inspector/Sidecar `alsoAs`; `setView.slots` entfällt nicht (*Kind 7, Betreiber 2026-10-12*): Emote-Modus-Zeilen mit `slotCount > 1` behalten `×n` und „n Plätze im Set“ an allen vier Stellen, `+n`/`alsoAs` gilt nur für Slot-Zeilen mit `siblingNames`; beide Marker schließen sich je Zeile aus (Regeln in §9.1) |
 | „Neu"/„Im Set seit"/Trend | lesen das Slot-Datum (keine Codeänderung außer DTO); `hideObserved` je Slot |
 | Drilldown | `slotId`; Cache `channel|scope|slot:<id>|…` bzw. `emote:<id>`; 7TV-Link je Emote |
 | Suche | unverändert — findet je Slot |

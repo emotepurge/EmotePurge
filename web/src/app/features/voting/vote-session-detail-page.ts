@@ -736,6 +736,17 @@ export class VoteSessionDetailPage {
   }
 
   /**
+   * What the row is called on screen: every name the ballot entry stands for ("ome44 / hob44" when
+   * one 7TV id sits in the set under two aliases). Display only; the drilldown title, the delete
+   * name and the ballot logic keep `emoteName`. A response without `emoteNames` reads as before.
+   */
+  protected displayName(emote: VoteSessionResult): string {
+    return emote.emoteNames && emote.emoteNames.length > 1
+      ? emote.emoteNames.join(' / ')
+      : emote.emoteName;
+  }
+
+  /**
    * `cellAction()` downgraded to `'none'` for a row whose own drilldown `canDrilldown` rejects —
    * the page-wide action still applies to every other row. Drives the cell's role/tabindex/
    * aria-haspopup/aria-label bindings and `onCardActivate` below, so a row without a chartable

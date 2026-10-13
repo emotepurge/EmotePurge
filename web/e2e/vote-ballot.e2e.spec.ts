@@ -199,6 +199,29 @@ test.describe('vote ballot', () => {
     await expect(keepButton(page, 0)).toHaveAttribute('aria-pressed', 'false');
   });
 
+  test('an emote under two names in the set is one ballot row that carries both names and is found by either (#365)', async ({
+    page,
+  }) => {
+    // The name filter only appears once the ballot outgrows two grid rows (13+ emotes).
+    await openBallot(page, [
+      { emoteId: 'e1', emoteName: 'ome44', emoteNames: ['ome44', 'hob44'] },
+      { emoteId: 'e2', emoteName: 'Sadge' },
+      ...Array.from({ length: 12 }, (_, i) => ({ emoteId: `f${i}`, emoteName: `filler${i}` })),
+    ]);
+
+    const row = page.getByRole('button', { name: 'ome44 / hob44', exact: true });
+    await expect(row).toBeVisible();
+
+    const search = page.getByPlaceholder('Name suchen…');
+    await search.fill('hob44');
+    await expect(row).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sadge', exact: true })).toHaveCount(0);
+
+    await search.fill('ome44');
+    await expect(row).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sadge', exact: true })).toHaveCount(0);
+  });
+
   test('sprite DOM nodes survive the reload a vote triggers (no rebuild-on-reload regression)', async ({
     page,
   }) => {

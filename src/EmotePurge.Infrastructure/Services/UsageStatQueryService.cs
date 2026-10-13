@@ -152,7 +152,8 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
                     row.FirstSeenAtFromRest,
                     row.IsArchived,
                     nameTwinSetIds[index],
-                    row.SiblingNames);
+                    row.SiblingNames,
+                    row.FirstSeenAtShared);
                 return (Dto: dto, Position: emotePosition[row.EmoteId], Index: index);
             })
             .OrderByDescending(r => r.Dto.TotalUseCount)

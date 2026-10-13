@@ -426,6 +426,10 @@
                 | transloco: { count: emote.slotCount, aliases: emote.aliases.join(', ') }
             }}
           </span>
+        } @else if (emote.siblingNames.length > 0) {
+          <span>{{
+            'usageStats.setView.alsoAs' | transloco: { names: emote.siblingNames.join(', ') }
+          }}</span>
         }
         @if (emote.nameTwinEmoteSetIds.length > 0) {
           <span>{{
@@ -781,7 +785,7 @@
               >
                 <!-- Keyed by the 7TV id (spec #200, 7.2): a set view's live member without a counted
                      row has no Emote.Id, and two of those tracked by a null would collide (NG0955). -->
-                @for (emote of row.items; track emote.sevenTvEmoteId; let i = $index) {
+                @for (emote of row.items; track emote.slotKey; let i = $index) {
                   <!-- Wrapper, not a nested button: the history trigger has to sit ON the cell, and a
                      <button> inside a <button> is invalid HTML. Both are siblings inside a
                      positioned box instead, so the trigger overlays the cell without nesting. -->
@@ -832,7 +836,11 @@
                             ('usageStats.setView.slots'
                               | transloco
                                 : { count: emote.slotCount, aliases: emote.aliases.join(', ') })
-                          : '') +
+                          : emote.siblingNames.length > 0
+                            ? ' · ' +
+                              ('usageStats.setView.alsoAs'
+                                | transloco: { names: emote.siblingNames.join(', ') })
+                            : '') +
                         (emote.nameTwinEmoteSetIds.length > 0
                           ? ' · ' +
                             ('usageStats.setView.nameTwin'
@@ -861,7 +869,11 @@
                        label and the inspector already say them in words; the title is the pointer
                        user's tooltip (spec 8.2 — slot count with both aliases for a #74 duplicate;
                        the name-twin mark naming the other set, E24). -->
-                      @if (emote.slotCount > 1 || emote.nameTwinEmoteSetIds.length > 0) {
+                      @if (
+                        emote.slotCount > 1 ||
+                        emote.siblingNames.length > 0 ||
+                        emote.nameTwinEmoteSetIds.length > 0
+                      ) {
                         <span
                           class="absolute right-0 bottom-0 flex gap-0.5 px-1 font-mono text-[9px] leading-[1.4] font-medium"
                           [style.background-color]="'var(--ep-sprite-scrim)'"
@@ -885,6 +897,14 @@
                                     : { count: emote.slotCount, aliases: emote.aliases.join(', ') }
                               "
                               >×{{ emote.slotCount }}</span
+                            >
+                          } @else if (emote.siblingNames.length > 0) {
+                            <span
+                              [title]="
+                                'usageStats.setView.alsoAs'
+                                  | transloco: { names: emote.siblingNames.join(', ') }
+                              "
+                              >+{{ emote.siblingNames.length }}</span
                             >
                           }
                         </span>
@@ -1044,7 +1064,7 @@
                 </p>
               }
             </div>
-          } @else if (seriesPending()) {
+          } @else if (inspectedCurvePending()) {
             <!-- Same outline as the chart it stands in for, caption lines included (design doc 6.1). -->
             <div class="flex flex-col gap-1">
               <div class="app-skeleton h-12"></div>
@@ -1107,6 +1127,12 @@
               {{
                 'usageStats.setView.slots'
                   | transloco: { count: emote.slotCount, aliases: emote.aliases.join(', ') }
+              }}
+            </p>
+          } @else if (emote.siblingNames.length > 0) {
+            <p class="text-xs text-fg-muted">
+              {{
+                'usageStats.setView.alsoAs' | transloco: { names: emote.siblingNames.join(', ') }
               }}
             </p>
           }

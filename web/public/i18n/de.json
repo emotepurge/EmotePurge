@@ -1060,6 +1060,7 @@
       "noCounts": "keine Zählungen unter diesem Set",
       "leftBadge": "Nicht mehr im Set",
       "slots": "{{count}} Plätze im Set: {{aliases}}",
+      "alsoAs": "Auch im Set als {{names}}",
       "nameTwin": "Unter diesem Namen liegt in „{{sets}}“ ein anderes Emote.",
       "facts": {
         "countedRange": "Im gewählten Zeitraum liegen für dieses Set Zählungen vom {{from}} bis {{to}} vor.",

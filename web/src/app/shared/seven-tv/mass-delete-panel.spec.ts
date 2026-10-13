@@ -1767,6 +1767,68 @@ describe('MassDeletePanel — hidden-by-filter names reach the delete-confirm di
     dialogData = captureDialogData(EMOTES, { activeSetId: null });
     expect(dialogData.isActiveSet).toBe(false);
   });
+
+  // --- Confirmation names (plan 377, 2.6, operator decision F3; Codex Sol S3, R2-2) -------------
+
+  it('lists every confirmation name of an entry — a marked slot card and its unmarked, filtered-out sibling — and lifts the cap', () => {
+    dialogData = captureDialogData([
+      { emoteId: 'a', sevenTvEmoteId: '7tv-a', name: 'Alpha', hidden: false },
+      {
+        emoteId: 'x',
+        sevenTvEmoteId: '7tv-x',
+        name: 'hob44',
+        aliases: ['hob44', 'ome44'],
+        confirmationNames: ['hob44', 'ome44'],
+        // The marked card is on screen; only its sibling is filtered out.
+        hidden: false,
+      },
+      { emoteId: 'h', sevenTvEmoteId: '7tv-h', name: 'HiddenOne', hidden: true },
+    ]);
+
+    expect(dialogData.emotes()).toEqual(['Alpha', 'hob44', 'ome44']);
+    expect(dialogData.hiddenEmotes()).toEqual(['HiddenOne']);
+    expect(dialogData.emotesUncapped?.()).toBe(true);
+  });
+
+  it('lists exactly each entry name and keeps the cap when no entry carries confirmation names', () => {
+    dialogData = captureDialogData(buildEmotes());
+
+    expect(dialogData.emotes()).toEqual(
+      Array.from({ length: 60 }, (_, index) => `Visible${index}`),
+    );
+    expect(dialogData.hiddenEmotes()).toEqual(HIDDEN_NAMES);
+    expect(dialogData.emotesUncapped?.() ?? false).toBe(false);
+  });
+
+  it('shows a co-deleted sibling that becomes the 51st visible name, uncapped (R2-2)', () => {
+    const ordinary: DeletableEmote[] = Array.from({ length: 49 }, (_, index) => ({
+      emoteId: `v${index}`,
+      sevenTvEmoteId: `7tv-v${index}`,
+      name: `Visible${index}`,
+      hidden: false,
+    }));
+    dialogData = captureDialogData([
+      ...ordinary,
+      {
+        emoteId: 'x',
+        sevenTvEmoteId: '7tv-x',
+        name: 'SlotMarked',
+        aliases: ['SlotMarked', 'SiblingFiltered'],
+        confirmationNames: ['SlotMarked', 'SiblingFiltered'],
+        hidden: false,
+      },
+    ]);
+
+    const dialogFixture = TestBed.createComponent(DeleteConfirmDialog);
+    dialogFixture.detectChanges();
+    const host: HTMLElement = dialogFixture.nativeElement;
+
+    const listed = Array.from(host.querySelectorAll('ul')[0].querySelectorAll('li')).map((li) =>
+      li.textContent?.trim(),
+    );
+    expect(listed).toHaveLength(51);
+    expect(listed.slice(-2)).toEqual(['SlotMarked', 'SiblingFiltered']);
+  });
 });
 
 /**

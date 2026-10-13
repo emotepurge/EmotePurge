@@ -149,6 +149,9 @@ export interface DeleteFlowRequest {
    *  the caller's very signals live. */
   visibleEmoteNames: Signal<string[]>;
   hiddenEmoteNames: Signal<string[]>;
+  /** Whether the dialog shows the visible list without its 50-name cap (plan 377, 2.6) — handed
+   *  through as it is. Omitted keeps the cap. */
+  visibleEmoteNamesUncapped?: Signal<boolean>;
   /** The host page's own lock reason (spec #200, 8.3), `null` for no lock — re-read at confirm
    *  time. */
   hostLockReasonKey: Signal<string | null>;
@@ -326,6 +329,9 @@ function openConfirmDialogAfterCheck(
   const data: DeleteConfirmDialogData = {
     emotes: request.visibleEmoteNames,
     hiddenEmotes: request.hiddenEmoteNames,
+    ...(request.visibleEmoteNamesUncapped
+      ? { emotesUncapped: request.visibleEmoteNamesUncapped }
+      : {}),
     warning: setWarning.asReadonly(),
     warningLoading: warningLoading.asReadonly(),
     setName: request.setName() ?? frozenSetId,

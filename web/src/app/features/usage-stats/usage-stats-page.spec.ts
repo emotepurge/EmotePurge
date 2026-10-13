@@ -72,7 +72,11 @@ import { EmoteTagEntry, EmoteTagSummary } from '../../core/tags/emote-tag.model'
 import { ImportCoverage } from '../../core/usage/import-coverage.model';
 import { ImportCoverageService } from '../../core/usage/import-coverage.service';
 import { mergeSetView } from '../../core/usage-stats/merge-set-view';
-import { EmoteUsageTotal, EmoteUsageTotalDto } from '../../core/usage-stats/usage-stat.model';
+import {
+  EmoteSeriesEntry,
+  EmoteUsageTotal,
+  EmoteUsageTotalDto,
+} from '../../core/usage-stats/usage-stat.model';
 import { UsageStatService } from '../../core/usage-stats/usage-stat.service';
 import { EmoteDrilldownData } from '../../shared/emotes/emote-drilldown-dialog';
 import { CSV_MIME } from '../../shared/export/csv';
@@ -223,7 +227,25 @@ function emote(id: string, name: string, totalUseCount = 10): EmoteUsageTotalDto
     firstSeenAt: null,
     isArchived: false,
     nameTwinEmoteSetIds: [],
+    slotId: null,
+    firstSeenAtFromRest: false,
+    siblingNames: [],
+    firstSeenAtShared: false,
   };
+}
+
+/**
+ * A slot-mode `/totals` row (plan 377, 2.1): `emote(id, …)` with a `slotId`, so every slot of one
+ * emote shares its Guid (`id`) and its 7TV id (`7tv-${id}`).
+ */
+function slotRow(
+  id: string,
+  slotId: string,
+  name: string,
+  totalUseCount = 10,
+  overrides: Partial<EmoteUsageTotalDto> = {},
+): EmoteUsageTotalDto {
+  return { ...emote(id, name, totalUseCount), slotId, ...overrides };
 }
 
 /**
@@ -5415,6 +5437,82 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       expect(asked[0].request.params.get('refresh')).toBe('true');
     });
   });
+
+  // Plan 377 (child 7), T3: a non-active view of a slot response (a `/totals` row with a `slotId`).
+  describe('slot cards in a non-active view (plan 377, T3)', () => {
+    const TIE = '2026-04-01T00:00:00.000Z';
+
+    function dated(sevenTvEmoteId: string, name: string, addedAt: string): ForeignEmoteRow {
+      return { ...member(sevenTvEmoteId, name), addedAt };
+    }
+
+    function card(slotKey: string): EmoteUsageTotal {
+      const row = component['emotes']().find((candidate) => candidate.slotKey === slotKey);
+      if (!row) {
+        throw new Error(`no card ${slotKey}`);
+      }
+      return row;
+    }
+
+    it('marks and inspects two uncounted entries of one emote at the same instant independently (S1)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [
+          slotRow('x', 'slot-ome', 'ome44', 30, {
+            firstSeenAt: '2026-03-01T00:00:00.000Z',
+            firstSeenAtFromRest: true,
+          }),
+        ],
+        members: memberList([
+          dated('7tv-x', 'ome44', '2026-03-01T00:00:00.000Z'),
+          dated('7tv-y', 'PumpA', TIE),
+          dated('7tv-y', 'PumpB', TIE),
+        ]),
+      });
+      const keyA = `live:7tv-y#${TIE}#PumpA`;
+      const keyB = `live:7tv-y#${TIE}#PumpB`;
+
+      component['selection'].onRowClick(card(keyA), { shiftKey: false } as MouseEvent);
+      expect(component['selection'].selectedKeys()).toEqual([keyA]);
+      expect(component['selection'].isSelected(card(keyB))).toBe(false);
+
+      component['inspect'](card(keyB));
+      expect(component['inspected']()?.emoteName).toBe('PumpB');
+      component['inspect'](card(keyA));
+      expect(component['inspected']()?.emoteName).toBe('PumpA');
+    });
+
+    it('puts an emote on a set-session ballot once when both its slot cards are marked (plan 377, 2.5)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [slotRow('x', 'slot-ome', 'ome44', 30), slotRow('x', 'slot-hob', 'hob44', 10)],
+        members: memberList([member('7tv-x', 'ome44'), member('7tv-x', 'hob44')]),
+      });
+      for (const key of ['slot-ome', 'slot-hob']) {
+        component['selection'].onRowClick(card(key), { shiftKey: false } as MouseEvent);
+      }
+
+      expect(component['voteBallotSevenTvEmoteIds']()).toEqual(['7tv-x']);
+      expect(component['voteBallotSize']()).toBe(1);
+    });
+
+    it('gives an emote-mode duplicate cell (×2) no confirmation names, so its confirmation reads as before (F3 flag-off guard)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('d', 'Dupe', 5)],
+        members: memberList([
+          member('7tv-d', 'Dupe'),
+          member('7tv-d', 'DupeAlias'),
+          member('7tv-e', 'Echo'),
+        ]),
+      });
+      component['selection'].onRowClick(card('7tv-d'), { shiftKey: false } as MouseEvent);
+
+      const [entry] = component['selectedForDelete']();
+      expect(entry.aliases).toEqual(['Dupe', 'DupeAlias']);
+      expect('confirmationNames' in entry).toBe(false);
+    });
+  });
 });
 
 /**
@@ -6898,6 +6996,27 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(component['tagUnassignCount']()).toBe(1);
   });
 
+  it('assigns and removes an emote once when both its slot cards are marked (plan 377, 2.5)', async () => {
+    await open({
+      tags: [tag(4, 'Stronghold')],
+      totals: [
+        slotRow('a', 'slot-a1', 'PeepoA'),
+        slotRow('a', 'slot-a2', 'PeepoAlias'),
+        emote('b', 'PeepoB'),
+      ],
+    });
+    for (const row of component['emotes']()) {
+      component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    }
+    openSpy.mockReturnValue({ closed: of(undefined) });
+
+    component['assignTags']();
+    expect(openSpy.mock.calls[0][1].data.sevenTvEmoteIds).toEqual(['7tv-a', '7tv-b']);
+
+    await chooseTag(4, ['7tv-a']);
+    expect(component['tagUnassignCount']()).toBe(1);
+  });
+
   it('after "Tag zuweisen…": hands the dialog the marked ids, acknowledges for 4 s, reloads the tags and keeps the selection', async () => {
     await open({ tags: [tag(4, 'Stronghold')] });
     mark('7tv-a', '7tv-b');
@@ -8134,5 +8253,738 @@ describe('UsageStatsPage — imported numbers keep their source without a tracki
 
       expect(component['importCaption']()).not.toBeNull();
     });
+  });
+});
+
+/**
+ * Plan 377 (emote slots, child 7), T3: the page keys every card by `slotKey` (2.3). With the slot
+ * reconcile flag on, one emote under two names arrives as two slot rows sharing a 7TV id and a
+ * Guid; each must be a card of its own for the selection, the inspector, the rank, the fill bar,
+ * the curve and the drilldown. Emote-mode rows keep the 7TV id as their key (F4), which the
+ * unchanged blocks above guard.
+ */
+describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+  let openSpy: ReturnType<typeof vi.fn>;
+
+  const OLD_DATE = '2026-01-05T10:00:00.000Z';
+  const ome = (count = 30, overrides: Partial<EmoteUsageTotalDto> = {}) =>
+    slotRow('x', 'slot-ome', 'ome44', count, {
+      siblingNames: ['hob44'],
+      firstSeenAt: OLD_DATE,
+      firstSeenAtFromRest: true,
+      ...overrides,
+    });
+  const hob = (count = 10, overrides: Partial<EmoteUsageTotalDto> = {}) =>
+    slotRow('x', 'slot-hob', 'hob44', count, {
+      siblingNames: ['ome44'],
+      firstSeenAt: '2026-02-05T10:00:00.000Z',
+      firstSeenAtFromRest: true,
+      ...overrides,
+    });
+  const other = () => emote('y', 'Other', 20);
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    vi.useFakeTimers();
+    openSpy = vi.fn();
+
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+        { provide: Dialog, useValue: { open: openSpy } as unknown as Dialog },
+      ],
+    });
+
+    TestBed.overrideComponent(UsageStatsPage, {
+      set: { template: '<div #sheet></div><div #stickyBar></div>' },
+    });
+
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** Mounts channel 'a' on its active set with the given rows and series entries. Both "since"
+   *  dates are set so a later usage burst asks for nothing but the totals (see the #94 block). */
+  function mount(totals: EmoteUsageTotalDto[], seriesEmotes: EmoteSeriesEntry[] = []): void {
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
+      setStatus({
+        activeEmoteSetId: 'set-a',
+        capacity: 600,
+        occupiedSlots: 10,
+        trackedSince: '2026-01-01T00:00:00Z',
+        botsExcludedSince: '2026-01-02T00:00:00Z',
+        sharedChatSeparatedSince: '2026-01-02T00:00:00Z',
+      }),
+    );
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: seriesEmotes,
+    });
+  }
+
+  function silentReload(totals: EmoteUsageTotalDto[]): void {
+    FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+  }
+
+  function card(slotKey: string): EmoteUsageTotal {
+    const row = component['emotes']().find((candidate) => candidate.slotKey === slotKey);
+    if (!row) {
+      throw new Error(`no card ${slotKey}`);
+    }
+    return row;
+  }
+
+  function click(slotKey: string): void {
+    component['selection'].onRowClick(card(slotKey), { shiftKey: false } as MouseEvent);
+  }
+
+  function seriesEntry(
+    sevenTvEmoteId: string,
+    slotId: string | null,
+    name: string,
+    days: [number, number][],
+  ): EmoteSeriesEntry {
+    return { sevenTvEmoteId, emoteId: sevenTvEmoteId.slice(4), slotId, name, days };
+  }
+
+  it('shows two slot rows of one emote as two cards, each with its own rank, band and fill bar, and a name search finds exactly one (AK 34)', () => {
+    mount([ome(), other(), hob()]);
+
+    expect(component['atlasOrder']().map((row) => row.slotKey)).toEqual([
+      'slot-ome',
+      '7tv-y',
+      'slot-hob',
+    ]);
+    const banded = component['bands']().flatMap((band) => band.items.map((row) => row.slotKey));
+    expect(banded.filter((key) => key === 'slot-ome')).toHaveLength(1);
+    expect(banded.filter((key) => key === 'slot-hob')).toHaveLength(1);
+    expect([...component['fillPercents']().keys()].sort()).toEqual([
+      '7tv-y',
+      'slot-hob',
+      'slot-ome',
+    ]);
+
+    component['inspect'](card('slot-ome'));
+    expect(component['inspectedRank']()).toBe(1);
+    component['inspect'](card('slot-hob'));
+    expect(component['inspectedRank']()).toBe(3);
+    expect(component['inspected']()?.emoteName).toBe('hob44');
+
+    component['usageFilter'].setNameFilter('hob44');
+    expect(component['atlasOrder']().map((row) => row.slotKey)).toEqual(['slot-hob']);
+  });
+
+  it('marks one slot card without marking its sibling', () => {
+    mount([ome(), hob()]);
+
+    click('slot-ome');
+
+    expect(component['selection'].selectedKeys()).toEqual(['slot-ome']);
+    expect(component['selection'].isSelected(card('slot-hob'))).toBe(false);
+  });
+
+  it('keeps the inspector on the slot card across a silent reload', () => {
+    mount([ome(), hob()]);
+    component['inspect'](card('slot-hob'));
+
+    silentReload([ome(), hob(12)]);
+
+    expect(component['inspected']()?.slotKey).toBe('slot-hob');
+    expect(component['inspected']()?.totalUseCount).toBe(12);
+  });
+
+  it("draws each slot card's curve from its own slot entry and an emote-mode row's from the entry without a slot", () => {
+    mount(
+      [ome(), hob(), other()],
+      [
+        seriesEntry('7tv-x', 'slot-ome', 'ome44', [[0, 5]]),
+        seriesEntry('7tv-x', 'slot-hob', 'hob44', [[1, 7]]),
+        seriesEntry('7tv-y', null, 'Other', [[2, 9]]),
+      ],
+    );
+    const firstDays = () =>
+      component['inspectedPoints']()
+        .slice(0, 3)
+        .map((point) => point.useCount);
+
+    component['inspect'](card('slot-ome'));
+    expect(firstDays()).toEqual([5, 0, 0]);
+    component['inspect'](card('slot-hob'));
+    expect(firstDays()).toEqual([0, 7, 0]);
+    component['inspect'](card('7tv-y'));
+    expect(firstDays()).toEqual([0, 0, 9]);
+  });
+
+  it("hands a slot card's slotId to the drilldown, and none for an emote-mode row (plan 377, 2.9)", () => {
+    mount([ome(), other()]);
+    openSpy.mockReturnValue({ closed: of(undefined) });
+
+    component['openDrilldown'](card('slot-ome'));
+    component['openDrilldown'](card('7tv-y'));
+
+    const slotData = openSpy.mock.calls[0][1].data as EmoteDrilldownData;
+    expect(slotData.slotId).toBe('slot-ome');
+    expect(slotData.emoteId).toBe('x');
+    const emoteData = openSpy.mock.calls[1][1].data as EmoteDrilldownData;
+    expect(emoteData.slotId).toBeNull();
+    expect(emoteData.emoteId).toBe('y');
+  });
+
+  it('keeps a resumed slot on the same card — still marked and inspected, with its new date and the higher count (D7, AK 46)', () => {
+    mount([ome(30), hob()]);
+    click('slot-ome');
+    component['inspect'](card('slot-ome'));
+    expect(component['isUnderObservation'](card('slot-ome'))).toBe(false);
+
+    // The slot left the set and came back: same slotId, a fresh 7TV date, the count kept going.
+    silentReload([ome(45, { firstSeenAt: new Date().toISOString() }), hob()]);
+
+    expect(component['selection'].selectedKeys()).toEqual(['slot-ome']);
+    const resumed = component['inspected']();
+    expect(resumed?.slotKey).toBe('slot-ome');
+    expect(resumed?.totalUseCount).toBe(45);
+    expect(component['isUnderObservation'](resumed!)).toBe(true);
+  });
+
+  // --- 7TV ids, once each (plan 377, 2.5/2.6) ----------------------------------------------------
+
+  it('puts an emote on a null-session ballot once when both its slot cards are marked, and counts it once', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    click('slot-hob');
+
+    expect(component['voteBallotEmoteIds']()).toEqual(['x']);
+    expect(component['voteBallotSize']()).toBe(1);
+  });
+
+  it('captures an emote once for the copy flow, so the dialog counts what the run copies (A6)', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    click('slot-hob');
+
+    expect(component['importShortcutSelectionCount']()).toBe(1);
+    expect(component['importableSelection']().map((row) => [row.sevenTvEmoteId, row.name])).toEqual(
+      [['7tv-x', 'ome44']],
+    );
+    expect(component['importableVisible']().map((row) => row.sevenTvEmoteId)).toEqual([
+      '7tv-x',
+      '7tv-y',
+    ]);
+  });
+
+  it('hands the delete run one entry per 7TV id, naming both slots when only one card is marked', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-hob');
+
+    expect(component['selectedForDelete']()).toEqual([
+      {
+        emoteId: 'x',
+        sevenTvEmoteId: '7tv-x',
+        name: 'hob44',
+        aliases: ['hob44', 'ome44'],
+        confirmationNames: ['hob44', 'ome44'],
+        hidden: false,
+      },
+    ]);
+  });
+
+  it('names the unmarked sibling a filter hides in the confirmation, marked card first, and keeps the entry visible (F3, S3)', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-hob');
+    // Hides 'ome44' (and 'Other'); the marked 'hob44' stays on screen.
+    component['usageFilter'].setNameFilter('hob44');
+
+    const [entry] = component['selectedForDelete']();
+    expect(entry.hidden).toBe(false);
+    // Marked first, although 'ome44' entered the set earlier (D2 order would put it first).
+    expect(entry.confirmationNames).toEqual(['hob44', 'ome44']);
+  });
+
+  it('marks the entry hidden only when its marked card is the one the filter hides', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-hob');
+    component['usageFilter'].setNameFilter('ome44');
+
+    const [entry] = component['selectedForDelete']();
+    expect(entry.hidden).toBe(true);
+    expect(entry.confirmationNames).toEqual(['hob44', 'ome44']);
+  });
+
+  it('projects both slots of the emote as freed when one of its two cards is marked', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+
+    expect(component['pendingRemovalSlots']()).toBe(2);
+    expect(component['projectedSlots']()).toEqual({ projected: 8, capacity: 600 });
+  });
+
+  it('frees two slots, not four, and drops both cards when a run with both aliases deletes the emote (A8)', () => {
+    mount([ome(), hob(), other()]);
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId: 'set-a',
+      channelName: 'a',
+      targetOwnerTwitchId: null,
+      result: {
+        doneKeys: ['7tv-x'],
+        items: [
+          {
+            key: '7tv-x',
+            emoteId: 'x',
+            sevenTvEmoteId: '7tv-x',
+            name: 'ome44',
+            aliases: ['ome44', 'hob44'],
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+
+    component['onDeleted'](['7tv-x']);
+
+    expect(component['emotes']().map((row) => row.slotKey)).toEqual(['7tv-y']);
+    expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 8 });
+  });
+
+  // --- series drift: settle and stale slots (plan 377, 2.11, T3b) -------------------------------
+
+  describe('series drift (plan 377, 2.11)', () => {
+    const SERIES_URL = '/api/channels/a/usage-stats/series';
+    const takeSeriesRequests = () => httpMock.match((req) => req.url === SERIES_URL);
+    const seriesBody = (emotes: EmoteSeriesEntry[]) => ({
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes,
+    });
+    const firstDays = () =>
+      component['inspectedPoints']()
+        .slice(0, 3)
+        .map((point) => point.useCount);
+
+    it('settles over live events without a manual refresh: no flat curve, one refetch past the cache, then a curve per slot (S4)', () => {
+      mount([emote('x', 'ome44', 40), other()], [seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]);
+
+      // The emote settles; the next usage flush brings its slot rows, the held series is still keyed
+      // by the 7TV id.
+      silentReload([ome(30), hob(10), other()]);
+      component['inspect'](card('slot-ome'));
+
+      expect(component['inspectedPoints']()).toEqual([]);
+      expect(component['inspectedCurvePending']()).toBe(true);
+      const [refetch, ...more] = takeSeriesRequests();
+      expect(more).toHaveLength(0);
+      // Same channel, set and range as the cached answer — only a bypass reaches the wire.
+      expect(refetch.request.params.get('from')).toBe('2026-01-01');
+
+      refetch.flush(
+        seriesBody([
+          seriesEntry('7tv-x', 'slot-ome', 'ome44', [[0, 5]]),
+          seriesEntry('7tv-x', 'slot-hob', 'hob44', [[1, 7]]),
+        ]),
+      );
+
+      expect(component['inspectedCurvePending']()).toBe(false);
+      expect(firstDays()).toEqual([5, 0, 0]);
+      component['inspect'](card('slot-hob'));
+      expect(firstDays()).toEqual([0, 7, 0]);
+      expect(takeSeriesRequests()).toHaveLength(0);
+    });
+
+    it('asks only once for a mismatch that outlives the refetch, and keeps showing it as loading', () => {
+      mount([emote('x', 'ome44', 40)], [seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]);
+      silentReload([ome(30), hob(10)]);
+      // The answers are offset: the refetch still reads the emote before its settle.
+      takeSeriesRequests()[0].flush(seriesBody([seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]));
+
+      expect(takeSeriesRequests()).toHaveLength(0);
+      silentReload([ome(31), hob(10)]);
+      vi.advanceTimersByTime(120_000);
+      expect(takeSeriesRequests()).toHaveLength(0);
+      component['inspect'](card('slot-hob'));
+      expect(component['inspectedPoints']()).toEqual([]);
+      expect(component['inspectedCurvePending']()).toBe(true);
+    });
+
+    it('asks once more when a further emote settles', () => {
+      mount(
+        [emote('x', 'ome44', 40), other()],
+        [
+          seriesEntry('7tv-x', null, 'ome44', [[0, 40]]),
+          seriesEntry('7tv-y', null, 'Other', [[0, 20]]),
+        ],
+      );
+      silentReload([ome(30), hob(10), other()]);
+      takeSeriesRequests()[0].flush(
+        seriesBody([
+          seriesEntry('7tv-x', 'slot-ome', 'ome44', [[0, 30]]),
+          seriesEntry('7tv-x', 'slot-hob', 'hob44', [[0, 10]]),
+          seriesEntry('7tv-y', null, 'Other', [[0, 20]]),
+        ]),
+      );
+      vi.advanceTimersByTime(60_000);
+
+      silentReload([ome(30), hob(10), slotRow('y', 'slot-y', 'Other', 20)]);
+
+      expect(takeSeriesRequests()).toHaveLength(1);
+    });
+
+    it('keeps the flat curve and asks nothing for a slot without uses next to a sibling with uses', () => {
+      mount([ome(30), hob(0)], [seriesEntry('7tv-x', 'slot-ome', 'ome44', [[0, 30]])]);
+
+      component['inspect'](card('slot-hob'));
+
+      expect(component['inspectedCurvePending']()).toBe(false);
+      expect(firstDays()).toEqual([0, 0, 0]);
+      expect(takeSeriesRequests()).toHaveLength(0);
+    });
+
+    it('never asks again on emote-mode totals, the slot flag being off (flag-off guard)', () => {
+      mount([emote('x', 'Ome', 40), other()], [seriesEntry('7tv-y', null, 'Other', [[0, 20]])]);
+
+      silentReload([emote('x', 'Ome', 45), emote('y', 'Other', 25), emote('z', 'Fresh', 3)]);
+      vi.advanceTimersByTime(120_000);
+      silentReload([emote('x', 'Ome', 46), emote('y', 'Other', 25), emote('z', 'Fresh', 4)]);
+      vi.advanceTimersByTime(120_000);
+
+      expect(takeSeriesRequests()).toHaveLength(0);
+    });
+
+    it('keeps the flat curve and asks nothing for an emote-mode row with uses but no entry', () => {
+      mount([emote('x', 'Ome', 40), other()], [seriesEntry('7tv-y', null, 'Other', [[0, 20]])]);
+
+      component['inspect'](card('7tv-x'));
+
+      expect(component['inspectedCurvePending']()).toBe(false);
+      expect(firstDays()).toEqual([0, 0, 0]);
+      expect(takeSeriesRequests()).toHaveLength(0);
+    });
+
+    it('reads a slot row with uses but no entry as stale: no flat curve, one refetch, a second stale state only after 60 s (R2-3)', () => {
+      // The series answered between the endpoint's view and day reads: the emote is missing.
+      mount([other()], [seriesEntry('7tv-y', null, 'Other', [[0, 20]])]);
+
+      silentReload([other(), ome(30)]);
+      component['inspect'](card('slot-ome'));
+
+      expect(component['inspectedPoints']()).toEqual([]);
+      expect(component['inspectedCurvePending']()).toBe(true);
+      const requests = takeSeriesRequests();
+      expect(requests).toHaveLength(1);
+      // Still offset: the refetch does not know the slot either.
+      requests[0].flush(seriesBody([seriesEntry('7tv-y', null, 'Other', [[0, 20]])]));
+      expect(takeSeriesRequests()).toHaveLength(0);
+
+      // A second stale slot within 60 s of the refetch: nothing yet…
+      silentReload([other(), ome(31), hob(4)]);
+      expect(takeSeriesRequests()).toHaveLength(0);
+      // …and exactly one once the minimum spacing has passed.
+      vi.advanceTimersByTime(60_000);
+      expect(takeSeriesRequests()).toHaveLength(1);
+    });
+
+    it('lets a load() overtake an unfinished drift refetch: the newer answer wins and nothing stays in flight', () => {
+      mount([emote('x', 'ome44', 40)], [seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]);
+      silentReload([ome(30), hob(10)]);
+      const [refetch] = takeSeriesRequests();
+
+      component['load']('a', '2026-01-01', '2026-09-08', true, null, false);
+      const [fresh, ...more] = takeSeriesRequests();
+      expect(more).toHaveLength(0);
+      expect(fresh).not.toBe(refetch);
+      if (!refetch.cancelled) {
+        refetch.flush(seriesBody([seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]));
+      }
+      fresh.flush(
+        seriesBody([
+          seriesEntry('7tv-x', 'slot-ome', 'ome44', [[0, 5]]),
+          seriesEntry('7tv-x', 'slot-hob', 'hob44', [[1, 7]]),
+        ]),
+      );
+
+      component['inspect'](card('slot-ome'));
+      expect(component['inspectedCurvePending']()).toBe(false);
+      expect(firstDays()).toEqual([5, 0, 0]);
+      expect(component['seriesInFlight']).toBe(false);
+      expect(takeSeriesRequests()).toHaveLength(0);
+    });
+
+    it('keeps the held series and does not retry the same signature after a failed refetch', () => {
+      mount([emote('x', 'ome44', 40)], [seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]);
+      silentReload([ome(30), hob(10)]);
+      takeSeriesRequests()[0].error(new ProgressEvent('error'));
+
+      silentReload([ome(31), hob(10)]);
+      vi.advanceTimersByTime(120_000);
+
+      expect(takeSeriesRequests()).toHaveLength(0);
+      expect(component['channelSeries']()).not.toBeNull();
+      component['inspect'](card('slot-hob'));
+      expect(component['inspectedCurvePending']()).toBe(true);
+    });
+
+    it('asks nothing once the page is destroyed while a deferred drift check is waiting', () => {
+      mount(
+        [emote('x', 'ome44', 40), other()],
+        [
+          seriesEntry('7tv-x', null, 'ome44', [[0, 40]]),
+          seriesEntry('7tv-y', null, 'Other', [[0, 20]]),
+        ],
+      );
+      silentReload([ome(30), hob(10), other()]);
+      // Still offset: the answer keeps the emote in emote mode.
+      takeSeriesRequests()[0].flush(
+        seriesBody([
+          seriesEntry('7tv-x', null, 'ome44', [[0, 40]]),
+          seriesEntry('7tv-y', null, 'Other', [[0, 20]]),
+        ]),
+      );
+      // A further drift inside the minimum spacing parks a timer.
+      silentReload([ome(30), hob(10), slotRow('y', 'slot-y', 'Other', 20)]);
+      expect(takeSeriesRequests()).toHaveLength(0);
+
+      fixture.destroy();
+      vi.advanceTimersByTime(120_000);
+
+      expect(takeSeriesRequests()).toHaveLength(0);
+    });
+  });
+});
+
+/**
+ * Plan 377 (emote slots, child 7), T4: the card markers. Real template, because the point is what a
+ * reader of the page is told: a slot card says "also in the set as <siblings>" (`+n`), an
+ * emote-mode duplicate says "n slots in the set" (`×n`), and no row says both (F1, 2.7).
+ */
+describe('UsageStatsPage — slot card markers (plan 377, T4)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  const IMAGE = 'https://cdn.7tv.app/emote/x/1x.webp';
+
+  function member(sevenTvEmoteId: string, name: string): ForeignEmoteRow {
+    return {
+      sevenTvEmoteId,
+      name,
+      defaultName: name,
+      imageUrl: IMAGE,
+      topAllTime: null,
+      trending: null,
+    };
+  }
+
+  function memberList(emotes: ForeignEmoteRow[]): ForeignEmoteSetResponse {
+    return {
+      channelName: 'a',
+      sevenTvUserId: null,
+      emoteSetId: 'set-b',
+      emoteSetName: 'Halloween',
+      capacity: 1000,
+      totalCount: emotes.length,
+      truncated: false,
+      emotes,
+    };
+  }
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  async function openView(
+    totals: EmoteUsageTotalDto[],
+    members: ForeignEmoteRow[] = [],
+  ): Promise<void> {
+    await TestBed.inject(Router).navigate([], { queryParams: { emoteSetId: 'set-b' } });
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock.expectOne('/api/channels/a/emote-sets').flush(
+      emoteSetList([
+        emoteSet({
+          id: 'set-a',
+          isActive: true,
+          observations: [{ fromUtc: '2026-01-01T00:00:00Z', toUtc: null }],
+        }),
+        emoteSet({ id: 'set-b', name: 'Halloween', isActive: false, observations: [] }),
+      ]),
+    );
+    await settle();
+    flushByPath(
+      httpMock,
+      '/api/channels/a/usage-stats/totals',
+      totals.map((row) => ({ ...row, imageUrl: IMAGE })),
+    );
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', {
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    httpMock
+      .match((request) => LIVE_LIST_URL.test(request.url))
+      .forEach((request) => request.flush(memberList(members)));
+    await settle();
+  }
+
+  function inspectCard(slotKey: string): void {
+    const row = component['emotes']().find((candidate) => candidate.slotKey === slotKey);
+    component['inspect'](row!);
+    fixture.detectChanges();
+  }
+
+  const pageText = () => (fixture.nativeElement as HTMLElement).textContent ?? '';
+
+  it('names the sibling slots in the inspector of a slot card, and not the emote-mode sentence', async () => {
+    // protects=a slot card tells its reader the emote also stands under another name;
+    // fails_when=the inspector shows the slots sentence, or neither sentence, for a slot card;
+    // no_claim=the wording (keys stand in for it).
+    await openView(
+      [slotRow('x', 'slot-ome', 'ome44', 30), slotRow('x', 'slot-hob', 'hob44', 10)],
+      [member('7tv-x', 'ome44'), member('7tv-x', 'hob44'), member('7tv-x', 'ome45')],
+    );
+    inspectCard('slot-ome');
+
+    const text = pageText();
+    expect(text).toContain('usageStats.setView.alsoAs');
+    expect(text).not.toContain('usageStats.setView.slots');
+  });
+
+  it('gives an emote-mode duplicate the slots sentence and never the also-as sentence (flag-off guard)', async () => {
+    await openView(
+      [emote('d', 'Dupe', 5)],
+      [member('7tv-d', 'Dupe'), member('7tv-d', 'DupeAlias')],
+    );
+    inspectCard('7tv-d');
+
+    const text = pageText();
+    expect(text).toContain('usageStats.setView.slots');
+    expect(text).not.toContain('usageStats.setView.alsoAs');
+  });
+
+  it('puts the also-as sentence into the accessible name of a slot card only, and the slots sentence into a duplicate only, each at most once', async () => {
+    await openView(
+      [
+        slotRow('x', 'slot-ome', 'ome44', 30),
+        slotRow('x', 'slot-hob', 'hob44', 10),
+        emote('d', 'Dupe', 5),
+        emote('y', 'Plain', 3),
+      ],
+      [
+        member('7tv-x', 'ome44'),
+        member('7tv-x', 'hob44'),
+        member('7tv-d', 'Dupe'),
+        member('7tv-d', 'DupeAlias'),
+        member('7tv-y', 'Plain'),
+      ],
+    );
+
+    const labels = Array.from(
+      (fixture.nativeElement as HTMLElement).querySelectorAll('button[data-atlas-index]'),
+    ).map((cell) => cell.getAttribute('aria-label') ?? '');
+    const alsoAs = labels.filter((label) => label.includes('usageStats.setView.alsoAs'));
+    const slots = labels.filter((label) => label.includes('usageStats.setView.slots'));
+
+    expect(alsoAs).toHaveLength(2);
+    expect(slots).toHaveLength(1);
+    expect(slots[0]).toContain('Dupe');
+    expect(labels.filter((label) => label.includes('alsoAs') && label.includes('slots'))).toEqual(
+      [],
+    );
+  });
+
+  it('hides the +n glyph from screen readers, since the cell label already says it', async () => {
+    await openView(
+      [
+        slotRow('x', 'slot-ome', 'ome44', 30),
+        slotRow('x', 'slot-hob', 'hob44', 20),
+        slotRow('x', 'slot-ome5', 'ome45', 10),
+      ],
+      [member('7tv-x', 'ome44'), member('7tv-x', 'hob44'), member('7tv-x', 'ome45')],
+    );
+
+    const glyph = Array.from(
+      (fixture.nativeElement as HTMLElement).querySelectorAll(
+        'button[data-atlas-index] span[title]',
+      ),
+    ).find((node) => node.textContent?.trim() === '+2');
+    expect(glyph).toBeDefined();
+    expect(glyph!.closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(glyph!.getAttribute('title')).toBe('usageStats.setView.alsoAs');
   });
 });
