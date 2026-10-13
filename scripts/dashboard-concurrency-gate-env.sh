@@ -169,7 +169,7 @@ export GATE_ADMIN_COOKIE_FILE
 unset PG_PASSWORD POSTGRES_PASSWORD ConnectionStrings__DefaultConnection Redis__ConnectionString Auth__Twitch__TokenEncryptionKey
 "$SCRIPT_DIR/dashboard-concurrency-gate.sh"
 set +e
-node "$SCRIPT_DIR/dashboard-concurrency-gate-eval.mjs" "$OUT"
+GATE_CSV_DIR="$(dirname "$OUT")" node "$SCRIPT_DIR/dashboard-concurrency-gate-eval.mjs" "$OUT"
 evaluation=$?
 set -e
 EVALUATED=1
