@@ -79,6 +79,7 @@ public class EmoteRoutePolicyTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/{channelName}/backfill", RateLimitPolicyNames.InteractiveRead)]
     [InlineData("POST", "/api/channels/{channelName}/backfill", RateLimitPolicyNames.TrackedEmoteSetPreview)]
     [InlineData("DELETE", "/api/channels/{channelName}/backfill", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/channels/{channelName}/backfill/imported/remove", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("GET", "/api/channels/{channelName}/usage-stats/import-coverage", RateLimitPolicyNames.InteractiveRead)]
     public void EmoteGroupRoute_CarriesTheExpectedRateLimitPolicy(string method, string routePattern, string expectedPolicy)
     {

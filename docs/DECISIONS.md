@@ -29,7 +29,7 @@ was the operator procedure in `docs/Operations.md` ("Chat-log backfill" → "Rol
 `docs/superpowers/specs/2026-10-13-remove-imported-backfill-spec.md`; plan:
 `docs/plans/Plan-384-Remove-Imported-Backfill.md`.
 
-Decision (this entry covers the service; the route and the UI follow in the same branch):
+Decision (this entry covers the service and the route; the UI follows in the same branch):
 
 - **A service of its own** (D2): `IChatLogImportRemovalService` in Core, `ChatLogImportRemovalService` and
   the SQL texts in `ChatLogImportRemovalSql` in Infrastructure. Not a method on `IChatLogBackfillService`:
@@ -90,6 +90,17 @@ Decision (this entry covers the service; the route and the UI follow in the same
   fresh ballot row with it. The rollback procedure's step 3 is safe only because api and worker are
   stopped there. These rows stay invisible without usage and are reused by a later run or the reconcile;
   steps 3 and 3b of the operator procedure still find them through the unchanged snapshot provenance.
+- **The route** (`POST /api/channels/{channelName}/backfill/imported/remove`): POST because the confirmed
+  coverage travels in the body and a DELETE body does not survive every intermediary. Filter
+  `ChannelManagementAuthorizationFilter` (no 7TV editor), policy `Bookkeeping`, no new filter and no change
+  of a group's filter order. Handler order: flag (404 `backfill_disabled`, after the filter) → audit actor
+  (401) → body (400 `invalid_request_body`) → service. A body that cannot be bound fails earlier, in
+  parameter binding, with the same 400. Beyond the spec the handler also refuses a null list entry, a
+  missing field, an empty or longer-than-200-character set id or host, an empty interval and more than 400
+  intervals; the set id and the host get no format check, since a wrong value can only end in
+  `ScopeChanged`, never in a deletion. Answers: `Removed`/`NothingToRemove` → 200 with exactly
+  `removedUsageRows` and `removedCoverageDays`; `RunActive` → 409 `backfill_remove_run_active`;
+  `ScopeChanged` → 409 `backfill_remove_scope_changed`; `NotFound` → 404 `channel_not_found`.
 - **Correct for the slot flag on only**: the removal is reachable only with `ChatLogBackfill:Enabled`, which
   requires the slot flag; the service does not read `SlotReconcileOptions` (#379 part B removes the type).
 
