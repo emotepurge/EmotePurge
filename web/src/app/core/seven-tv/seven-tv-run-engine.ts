@@ -181,7 +181,9 @@ export interface RunOperation {
    * in flight does — the hook's own answer, however it resolves, is simply never observed.
    *
    * Omitted means every attempt proceeds straight away, with no detour through this hook at all —
-   * delete, restore and import, none of which set it, are unaffected byte-for-byte.
+   * restore, import and a delete run of id rows only, none of which set it, are unaffected
+   * byte-for-byte. A delete run with an entry row sets it to bind every attempt to a read of the set
+   * (Plan-378 4.4).
    */
   beforeStep?(setId: string, emote: RunQueueEmote, step: number): Observable<StepGate>;
 
@@ -598,7 +600,9 @@ export class SevenTvRunEngine {
    *  observed (a second, synchronous one is dropped, so a double emission cannot send the request
    *  twice), and unsubscribing right after means a hook that never completes on its own does not
    *  keep this chain alive. Without a hook this *is* `runOne`, with no detour, so an operation that
-   *  never sets `beforeStep` runs exactly as it did before this method existed. */
+   *  never sets `beforeStep` runs exactly as it did before this method existed. The undo's recheck
+   *  and the slot delete's binding (Plan-378 4.4) rely on every retry passing through here: a retry
+   *  path that bypassed this method would send a request no hook had let through. */
   private runGatedOne(
     setId: string,
     emote: RunQueueEmote,

@@ -1084,6 +1084,11 @@
       },
       "loadFailedTitle": "The chosen set could not be loaded",
       "retry": "Try again"
+    },
+    "delete": {
+      "renamedSinceLoad": "{{name}} was renamed to {{newName}} since the page loaded — not deleted.",
+      "departedSinceLoad": "{{name}} has left this set since the page loaded — not deleted.",
+      "noAlias": "{{name}} no longer has a name of its own in 7TV and cannot be deleted on its own — not deleted."
     }
   },
   "sevenTvSync": {

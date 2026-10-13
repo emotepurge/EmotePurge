@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import { RunQueueItem, RunResult } from './seven-tv-run-engine';
 import { SevenTvSetEntries } from './seven-tv-set-entries';
-import { settleDeleteResult, settleRestoreResult, unknownCount } from './seven-tv-run-settlement';
+import {
+  EntryBaseline,
+  entryTimeKey,
+  freezeBaselineGroup,
+  mergeIntoBaseline,
+  settleDeleteResult,
+  settleRestoreResult,
+  unknownCount,
+} from './seven-tv-run-settlement';
 
 function queueItem(overrides: Partial<RunQueueItem> & Pick<RunQueueItem, 'key'>): RunQueueItem {
   return {
@@ -446,5 +454,77 @@ describe('unknownCount', () => {
   it('returns 0 for an empty list and for a list with no unknown rows', () => {
     expect(unknownCount([])).toBe(0);
     expect(unknownCount([queueItem({ key: '1', status: 'done' })])).toBe(0);
+  });
+});
+
+// Plan-378 4.4 step 5 (S2, A6): the comparison baseline of a slot delete run.
+describe('mergeIntoBaseline', () => {
+  const T1 = '2026-10-13T08:00:00.000Z';
+  const T2 = '2026-10-13T09:00:00Z';
+  const T3 = '2026-10-13T10:00:00Z';
+
+  function aliasesOf(baseline: EntryBaseline, id = 'x'): Record<string, (string | null)[]> {
+    return Object.fromEntries(
+      [...(baseline.get(id) ?? new Map()).values()].map((group) => [group.addedAt, group.aliases]),
+    );
+  }
+
+  it('compares add dates in milliseconds, whatever the number of fraction digits', () => {
+    expect(entryTimeKey('2026-10-13T08:00:00Z')).toBe(entryTimeKey('2026-10-13T08:00:00.000000Z'));
+    expect(entryTimeKey(null)).toBe(entryTimeKey('not a date'));
+    expect(entryTimeKey(null)).not.toBe(entryTimeKey(T1));
+  });
+
+  it('takes each read as it is while the run has removed nothing of the emote yet', () => {
+    const baseline: EntryBaseline = new Map();
+    mergeIntoBaseline(baseline, 'x', [
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T2 },
+    ]);
+    // b left before the run touched the emote — none of the run's requests can have taken it.
+    mergeIntoBaseline(baseline, 'x', [{ alias: 'a', addedAt: T1 }]);
+
+    expect(aliasesOf(baseline)).toEqual({ [T1]: ['a'] });
+  });
+
+  it('accumulates once a removal of the emote was let through and never forgets an entry', () => {
+    const baseline: EntryBaseline = new Map();
+    mergeIntoBaseline(baseline, 'x', [
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T2 },
+      { alias: 'c', addedAt: T3 },
+    ]);
+    freezeBaselineGroup(baseline, 'x', entryTimeKey(T1));
+    // The next read misses b (and a, which the run removed): both stay in the baseline.
+    mergeIntoBaseline(baseline, 'x', [{ alias: 'c', addedAt: T3 }]);
+    // An entry another editor added since joins it.
+    mergeIntoBaseline(baseline, 'x', [
+      { alias: 'c', addedAt: T3 },
+      { alias: 'd', addedAt: '2026-10-13T11:00:00Z' },
+    ]);
+
+    expect(aliasesOf(baseline)).toEqual({
+      [T1]: ['a'],
+      [T2]: ['b'],
+      [T3]: ['c'],
+      '2026-10-13T11:00:00Z': ['d'],
+    });
+  });
+
+  it('takes a later alias of a known, unfrozen date as a rename, but keeps a frozen date as it was', () => {
+    const baseline: EntryBaseline = new Map();
+    mergeIntoBaseline(baseline, 'x', [
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T1 },
+      { alias: 'c', addedAt: T2 },
+    ]);
+    freezeBaselineGroup(baseline, 'x', entryTimeKey(T1));
+    mergeIntoBaseline(baseline, 'x', [
+      { alias: 'z', addedAt: T1 },
+      { alias: 'a', addedAt: T1 },
+      { alias: 'cc', addedAt: T2 },
+    ]);
+
+    expect(aliasesOf(baseline)).toEqual({ [T1]: ['a', 'b'], [T2]: ['cc'] });
   });
 });

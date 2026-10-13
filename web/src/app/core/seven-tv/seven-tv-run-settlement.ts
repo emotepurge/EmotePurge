@@ -1,5 +1,5 @@
 import { RunQueueItem, RunResult } from './seven-tv-run-engine';
-import { SevenTvSetEntries } from './seven-tv-set-entries';
+import { SevenTvSetEntries, SevenTvSetEntry } from './seven-tv-set-entries';
 
 /**
  * How long the settle re-read of the target set may take before the rows it was meant to clear up
@@ -101,6 +101,83 @@ export function unknownCount(items: readonly RunQueueItem[]): number {
   return items.filter((item) => item.status === 'unknown').length;
 }
 
+/**
+ * One add date (generation) of one emote in a slot delete run's comparison baseline (Plan-378 4.4
+ * step 5) — the entries of that emote the run has seen at that date. More than one alias only in a
+ * D4 tie (two entries of one id with the same `addedAt`).
+ */
+export interface EntryBaselineGroup {
+  /** The add date as the first read that saw it carried it, verbatim — `null` when 7TV sent none. */
+  readonly addedAt: string | null;
+  /** The aliases of the entries at this date, as 7TV listed them (`null` for an aliasless one). */
+  aliases: (string | null)[];
+  /** Set once the run let its first own `REMOVE` at this date through. From then on later reads
+   *  no longer change the group's aliases (Plan-378 4.5, T-3): in a tie the alias each entry had
+   *  right before the run's first removal there is what tells a sibling apart from a stranger. */
+  frozen: boolean;
+}
+
+/** A slot delete run's comparison baseline: per 7TV id of an entry row, its baseline groups keyed
+ *  by {@link entryTimeKey}. Lives in the run's own closure, never on a record. */
+export type EntryBaseline = Map<string, Map<string, EntryBaselineGroup>>;
+
+/** The key two add dates are compared by: milliseconds via `Date.parse`, never the string (the wire
+ *  paths print a different number of fraction digits) — `'null'` for a missing or unparsable date,
+ *  which is a value of its own and never equals a real date. */
+export function entryTimeKey(addedAt: string | null): string {
+  const time = addedAt === null ? Number.NaN : Date.parse(addedAt);
+  return Number.isNaN(time) ? 'null' : String(time);
+}
+
+/**
+ * Takes one complete read's entries of `sevenTvEmoteId` into `baseline` (Plan-378 4.4 step 5, S2,
+ * A6), in place.
+ *
+ * As long as the run has let no `REMOVE` of this emote through (no group of it is `frozen`), the
+ * read simply replaces what the baseline held for it: the baseline is "the emote's entries in the
+ * last read before its removal", and an entry that went before the run touched the emote cannot
+ * have been taken by one of its requests — a removal only ever reaches entries of its own id.
+ *
+ * From the first such `REMOVE` on, the baseline only **accumulates** and is never overwritten: a
+ * date the baseline lacks is added (an entry another editor added since), a known date keeps its
+ * entries even when the read no longer shows them (that is exactly what the run must not forget),
+ * and a known, not yet frozen date with at least as many entries as before takes the read's aliases
+ * — a rename after the fact, not a new entry.
+ */
+export function mergeIntoBaseline(
+  baseline: EntryBaseline,
+  sevenTvEmoteId: string,
+  entries: readonly SevenTvSetEntry[],
+): void {
+  const read = groupByTime(entries);
+  const known = baseline.get(sevenTvEmoteId);
+  if (known === undefined || ![...known.values()].some((group) => group.frozen)) {
+    baseline.set(sevenTvEmoteId, read);
+    return;
+  }
+  for (const [key, group] of read) {
+    const existing = known.get(key);
+    if (existing === undefined) {
+      known.set(key, group);
+    } else if (!existing.frozen && group.aliases.length >= existing.aliases.length) {
+      existing.aliases = group.aliases;
+    }
+  }
+}
+
+/** Marks the baseline group of (`sevenTvEmoteId`, `timeKey`) as having had an own `REMOVE` let
+ *  through — see {@link EntryBaselineGroup.frozen}. A date the baseline does not know is left alone. */
+export function freezeBaselineGroup(
+  baseline: EntryBaseline,
+  sevenTvEmoteId: string,
+  timeKey: string,
+): void {
+  const group = baseline.get(sevenTvEmoteId)?.get(timeKey);
+  if (group !== undefined) {
+    group.frozen = true;
+  }
+}
+
 /** `entries` is usable for clearing a row up only when it is a full read — a read that stopped
  *  short (`complete: false`) has itself only partial knowledge of the set, which is not enough to
  *  positively confirm anything either way (Plan-275 Festlegung 7/8). */
@@ -164,4 +241,18 @@ function asDone(item: RunQueueItem): RunQueueItem {
 
 function doneKeysOf(items: readonly RunQueueItem[]): string[] {
   return items.filter((item) => item.status === 'done').map((item) => item.key);
+}
+
+function groupByTime(entries: readonly SevenTvSetEntry[]): Map<string, EntryBaselineGroup> {
+  const groups = new Map<string, EntryBaselineGroup>();
+  for (const entry of entries) {
+    const key = entryTimeKey(entry.addedAt);
+    const group = groups.get(key);
+    if (group === undefined) {
+      groups.set(key, { addedAt: entry.addedAt, aliases: [entry.alias], frozen: false });
+    } else {
+      group.aliases.push(entry.alias);
+    }
+  }
+  return groups;
 }

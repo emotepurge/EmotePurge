@@ -5,6 +5,7 @@ import {
   MonoTypeOperatorFunction,
   Observable,
   catchError,
+  defer,
   map,
   of,
   retry,
@@ -27,16 +28,21 @@ import {
   RunResult,
   SevenTvMutation,
   SevenTvRunEngine,
+  StepGate,
 } from './seven-tv-run-engine';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
 import {
   CANCEL_SETTLE_GRACE_MS,
+  EntryBaseline,
   SET_ENTRIES_READ_TIMEOUT_MS,
+  entryTimeKey,
+  freezeBaselineGroup,
+  mergeIntoBaseline,
   settleDeleteResult,
   unknownCount,
 } from './seven-tv-run-settlement';
-import { SevenTvSetEntries, loadSevenTvSetEntries } from './seven-tv-set-entries';
+import { SevenTvSetEntries, SevenTvSetEntry, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
   SyncReportOutcome,
@@ -91,6 +97,25 @@ export function timeoutReportAttempt<T>(): MonoTypeOperatorFunction<T> {
  *  those are (docs/UI-Designsprache.md §4.5) — there is no run or queue for a dismiss button to
  *  attach to. */
 export const ABORTED_DELETE_NOTICE_MS = 8000;
+
+/** How long a slot delete run reuses its last read of the set before an entry row's attempt
+ *  (Plan-378 4.4 rule 2 b, D21) — measured from the read's request start, which is conservative.
+ *  Only for an emote the read shows with a single entry; one with two or more is read afresh before
+ *  every attempt, whatever the age (rule 2 c, D33, AK 51). */
+export const ENTRY_READ_REUSE_MS = 5000;
+
+/** Time budget of the read in front of an entry row's attempt (Plan-378 4.4 rule 3). The engine
+ *  gives a `beforeStep` hook no deadline, so the read brings its own — the same 20 s as the undo's
+ *  recheck (`RECHECK_READ_TIMEOUT_MS`), and like that one its own constant: a gate in front of a
+ *  mutation, not a settlement after the run. A read that runs out is a read failure (fail-closed). */
+export const ENTRY_BINDING_READ_TIMEOUT_MS = 20_000;
+
+/** After this many failed or incomplete binding reads in a row, every remaining entry row is
+ *  skipped without another read (Plan-378 4.4 rule 1, the mirror of the undo's
+ *  `MAX_CONSECUTIVE_RECHECK_FAILURES`); id rows keep running. */
+export const MAX_CONSECUTIVE_ENTRY_READ_FAILURES = 3;
+
+const PROCEED: StepGate = { kind: 'proceed' };
 
 /** v4 dropped the `action` enum in favour of one field per operation; the emote travels inside the
  *  `EmoteSetEmoteId` input object rather than as a sibling argument, and variable types are `Id!`
@@ -156,6 +181,33 @@ const REMOVE_OPERATION: RunOperation = {
         },
   transportLossIsUnknown: true,
 };
+
+/**
+ * What one slot delete run keeps between the attempts of its entry rows (Plan-378 4.4) — in the
+ * run's own closure, never on the engine or a record (the pattern of `SevenTvUndoService`'s
+ * `createOperation`). Exists only for a run with at least one entry row.
+ */
+interface EntryRunContext {
+  /** The 7TV ids of the run's entry rows — the only emotes the baseline follows. */
+  readonly entryEmoteIds: ReadonlySet<string>;
+  /** The comparison baseline per emote (4.4 step 5) — see `mergeIntoBaseline`. */
+  readonly baseline: EntryBaseline;
+  /** Row key → the entry an attempt of that row was let through for. Dropped again when a later
+   *  attempt of the same row (after a rate-limit pause) is skipped. */
+  readonly attempted: Map<string, { sevenTvEmoteId: string; timeKey: string; alias: string }>;
+  /** The last complete read and when its request started; `null` before the first one. */
+  held: { read: SevenTvSetEntries; startedAt: number } | null;
+  consecutiveReadFailures: number;
+  /** What the last failed read was — the reason every row skipped after three in a row carries. */
+  lastReadFailure: 'unavailable' | 'truncated';
+}
+
+/** How an entry row's live entries at its add date decide its attempt (Plan-378 4.4 step 4). */
+type EntryBinding =
+  | { kind: 'proceed' }
+  | { kind: 'departed' }
+  | { kind: 'renamed'; newName: string }
+  | { kind: 'noAlias' };
 
 /** The public input contract for a delete/restore run — deliberately its own interface, not an
  *  alias of the engine's `RunQueueEmote`: a caller here never has to think about a queue `key`.
@@ -238,6 +290,7 @@ export class SevenTvDeleteService {
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   private readonly emoteTagService = inject(EmoteTagService);
   private readonly httpClient = inject(HttpClient);
+  private readonly translocoService = inject(TranslocoService);
 
   /** Own engine instance (not a shared singleton), so `isRunning` can never mean "the *other*
    *  service is busy". All pacing/backoff/token mechanics live there — see SevenTvRunEngine. */
@@ -463,10 +516,14 @@ export class SevenTvDeleteService {
     // `onComplete` — however unlikely — always finds its record already registered, rather than
     // updating a run the lifecycle does not know about yet, which would then never close.
     this.lifecycle.open(started);
+    const queue = toDeleteQueue(emotes);
+    // A run of id rows only (every run with the flag off) gets no hook at all — the operation, its
+    // requests and its reads are byte for byte what they were (Plan-378 1).
+    const context = createEntryRunContext(queue);
     const engineStarted = this.engine.start(
       setId,
-      toDeleteQueue(emotes),
-      REMOVE_OPERATION,
+      queue,
+      context === null ? REMOVE_OPERATION : this.createEntryOperation(context),
       (result) => this.onRunComplete(runId, result),
     );
     if (!engineStarted) {
@@ -556,6 +613,127 @@ export class SevenTvDeleteService {
     }
 
     this.reportTagRemoval(current.runId);
+  }
+
+  /**
+   * The operation of a run with at least one entry row: the removal itself is `REMOVE_OPERATION`'s,
+   * plus a `beforeStep` hook that binds every attempt of an entry row to a read of the set
+   * (Plan-378 4.4, D21). The engine asks the hook again before every rate-limit retry, so a retry is
+   * bound afresh too (A4); should a future transport retry ever bypass `runGatedOne`, the binding
+   * would go with it. Id rows pass straight through, without a read.
+   */
+  private createEntryOperation(context: EntryRunContext): RunOperation {
+    return {
+      ...REMOVE_OPERATION,
+      beforeStep: (setId, emote) =>
+        emote.entry ? this.bindBeforeRemove(context, setId, emote, emote.entry) : of(PROCEED),
+    };
+  }
+
+  /**
+   * The gate in front of one attempt of an entry row (Plan-378 4.4, rules 1 to 4). Reads the set
+   * afresh when nothing is held yet, when the held read started more than `ENTRY_READ_REUSE_MS` ago,
+   * or when it shows the row's emote with two or more entries (AK 51); otherwise binds against the
+   * held read. Never throws and never errors: every failure is a skip with its reason, so no
+   * request ever goes out unbound.
+   */
+  private bindBeforeRemove(
+    context: EntryRunContext,
+    setId: string,
+    emote: RunQueueEmote,
+    entry: SevenTvEntryTarget,
+  ): Observable<StepGate> {
+    if (context.consecutiveReadFailures >= MAX_CONSECUTIVE_ENTRY_READ_FAILURES) {
+      return of(this.skipEntry(context, emote, readFailureKey(context.lastReadFailure), {}));
+    }
+    const held = context.held;
+    const fresh =
+      held === null ||
+      Date.now() - held.startedAt > ENTRY_READ_REUSE_MS ||
+      (held.read.entriesById?.get(emote.sevenTvEmoteId)?.length ?? 0) >= 2;
+    const read$ = fresh ? this.readForBinding(context, setId) : of(held.read);
+    return read$.pipe(
+      map((read) =>
+        read === null
+          ? this.skipEntry(context, emote, readFailureKey(context.lastReadFailure), {})
+          : this.gateEntry(context, emote, entry, read),
+      ),
+    );
+  }
+
+  /** One read of the set with add dates, bounded by `ENTRY_BINDING_READ_TIMEOUT_MS`. A complete
+   *  read resets the failure count, joins the baseline and becomes the held read; a failed,
+   *  timed-out or incomplete one counts as a failure and answers `null`. */
+  private readForBinding(
+    context: EntryRunContext,
+    setId: string,
+  ): Observable<SevenTvSetEntries | null> {
+    return defer(() => {
+      const startedAt = Date.now();
+      return loadSevenTvSetEntries(this.httpClient, setId, { withAddedAt: true }).pipe(
+        timeout(ENTRY_BINDING_READ_TIMEOUT_MS),
+        map((read) => {
+          if (!read.complete) {
+            return failBindingRead(context, 'truncated');
+          }
+          context.consecutiveReadFailures = 0;
+          for (const sevenTvEmoteId of context.entryEmoteIds) {
+            mergeIntoBaseline(
+              context.baseline,
+              sevenTvEmoteId,
+              read.entriesById?.get(sevenTvEmoteId) ?? [],
+            );
+          }
+          context.held = { read, startedAt };
+          return read;
+        }),
+        catchError(() => of(failBindingRead(context, 'unavailable'))),
+      );
+    });
+  }
+
+  /** Classifies the row against `read` (4.4 step 4) and answers the engine. A row let through is
+   *  recorded as attempted and freezes its baseline date; a skipped one is no longer attempted. */
+  private gateEntry(
+    context: EntryRunContext,
+    emote: RunQueueEmote,
+    entry: SevenTvEntryTarget,
+    read: SevenTvSetEntries,
+  ): StepGate {
+    const binding = bindEntry(entry, read.entriesById?.get(emote.sevenTvEmoteId) ?? []);
+    switch (binding.kind) {
+      case 'proceed': {
+        const timeKey = entryTimeKey(entry.addedAt);
+        context.attempted.set(emote.key, {
+          sevenTvEmoteId: emote.sevenTvEmoteId,
+          timeKey,
+          alias: entry.alias,
+        });
+        freezeBaselineGroup(context.baseline, emote.sevenTvEmoteId, timeKey);
+        return PROCEED;
+      }
+      case 'renamed':
+        return this.skipEntry(context, emote, 'usageStats.delete.renamedSinceLoad', {
+          name: entry.alias,
+          newName: binding.newName,
+        });
+      case 'noAlias':
+        return this.skipEntry(context, emote, 'usageStats.delete.noAlias', { name: entry.alias });
+      case 'departed':
+        return this.skipEntry(context, emote, 'usageStats.delete.departedSinceLoad', {
+          name: entry.alias,
+        });
+    }
+  }
+
+  private skipEntry(
+    context: EntryRunContext,
+    emote: RunQueueEmote,
+    translationKey: string,
+    params: Record<string, string>,
+  ): StepGate {
+    context.attempted.delete(emote.key);
+    return { kind: 'skip', errorMessage: this.translocoService.translate(translationKey, params) };
   }
 
   /**
@@ -899,4 +1077,59 @@ function toDeleteQueue(emotes: readonly DeleteQueueEmote[]): RunQueueEmote[] {
     });
   }
   return [...rows.values()];
+}
+
+/** The per-run state of a slot delete run, or `null` for a run without an entry row. */
+function createEntryRunContext(queue: readonly RunQueueEmote[]): EntryRunContext | null {
+  const entryEmoteIds = new Set(
+    queue.filter((row) => row.entry !== undefined).map((row) => row.sevenTvEmoteId),
+  );
+  if (entryEmoteIds.size === 0) {
+    return null;
+  }
+  return {
+    entryEmoteIds,
+    baseline: new Map(),
+    attempted: new Map(),
+    held: null,
+    consecutiveReadFailures: 0,
+    lastReadFailure: 'unavailable',
+  };
+}
+
+function failBindingRead(context: EntryRunContext, reason: 'unavailable' | 'truncated'): null {
+  context.consecutiveReadFailures += 1;
+  context.lastReadFailure = reason;
+  return null;
+}
+
+function readFailureKey(reason: 'unavailable' | 'truncated'): string {
+  return `massDelete.memberRead.${reason}`;
+}
+
+/**
+ * The binding table of Plan-378 4.4 step 4: the row's emote's live entries at the row's add date
+ * (compared in milliseconds) decide. One entry under the row's alias, or a D4 tie with one entry
+ * under it, lets the attempt through — and it then sends exactly that alias, just verified (D21).
+ * One entry under another alias is a rename; one without an alias is skipped fail-closed, because a
+ * removal without an alias would take every entry of the id and whether one with the default name
+ * hits an aliasless entry is not established. No entry, or a tie without the alias (D4: a rename
+ * inside a tie reads as remove plus add), means the entry has left.
+ */
+function bindEntry(entry: SevenTvEntryTarget, live: readonly SevenTvSetEntry[]): EntryBinding {
+  if (!entry.alias) {
+    // Never reached from the page (a card always has a name) — but a request for one entry must
+    // never go out without an alias, which 7TV would read as "every entry of the id".
+    return { kind: 'noAlias' };
+  }
+  const timeKey = entryTimeKey(entry.addedAt);
+  const atTime = live.filter((candidate) => entryTimeKey(candidate.addedAt) === timeKey);
+  if (atTime.some((candidate) => candidate.alias === entry.alias)) {
+    return { kind: 'proceed' };
+  }
+  if (atTime.length !== 1) {
+    return { kind: 'departed' };
+  }
+  const alias = atTime[0].alias;
+  return alias ? { kind: 'renamed', newName: alias } : { kind: 'noAlias' };
 }

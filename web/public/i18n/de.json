@@ -1084,6 +1084,11 @@
       },
       "loadFailedTitle": "Das gewählte Set konnte nicht geladen werden",
       "retry": "Erneut versuchen"
+    },
+    "delete": {
+      "renamedSinceLoad": "{{name}} wurde seit dem Laden der Seite in {{newName}} umbenannt — nicht gelöscht.",
+      "departedSinceLoad": "{{name}} ist seit dem Laden der Seite nicht mehr in diesem Set — nicht gelöscht.",
+      "noAlias": "{{name}} hat in 7TV keinen eigenen Namen mehr und lässt sich nicht einzeln löschen — nicht gelöscht."
     }
   },
   "sevenTvSync": {
