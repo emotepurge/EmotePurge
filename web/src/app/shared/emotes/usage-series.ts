@@ -121,7 +121,10 @@ export function seriesDrift(
       stale.add(row.slotId);
     }
   }
-  return { mismatchedIds: [...mismatched].sort(), staleSlotIds: [...stale].sort() };
+  return {
+    mismatchedIds: [...mismatched].sort(compareOrdinal),
+    staleSlotIds: [...stale].sort(compareOrdinal),
+  };
 }
 
 /**
@@ -369,4 +372,10 @@ function rangeDates(from: string, to: string): string[] {
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+/** Ordinal (code-unit) order; the ids are ASCII identifiers, so no locale applies. */
+function compareOrdinal(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
 }
