@@ -31,9 +31,9 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
 
     private static SevenTvEmoteSetDelta Delta(
         IReadOnlyList<SevenTvEmote>? pushed = null,
-        IReadOnlyList<SevenTvEmote>? updated = null,
+        IReadOnlyList<SevenTvEmoteRename>? updated = null,
         IReadOnlyList<string>? pulledIds = null) =>
-        new(pushed ?? [], updated ?? [], pulledIds ?? []);
+        new(pushed ?? [], updated ?? [], (pulledIds ?? []).Select(id => new SevenTvPulledEntry(id)).ToList());
 
     private static SevenTvSyncService CreateService(Persistence.AppDbContext db, EmoteMatchCache cache) =>
         new(db, Substitute.For<ISevenTvApiClient>(), cache, new DuplicateEmoteNameTracker(),
@@ -235,7 +235,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var service = CreateService(db, cache);
 
         var result = await service.ApplyEmoteSetUpdateAsync(
-            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmote("e1", "newname", "https://cdn/e1.webp")]));
+            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", null, "newname", "https://cdn/e1.webp")]));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1");
@@ -338,7 +338,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var service = CreateService(db, cache);
 
         var result = await service.ApplyEmoteSetUpdateAsync(
-            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmote("e1", "pic_renamed", "")]));
+            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", null, "pic_renamed", "")]));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1");
@@ -799,11 +799,12 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
     }
 
     [Fact]
-    public async Task ApplyEmoteSetUpdate_NoOpDispatch_StaysNoChange_EvenWhenItCouldBackfill()
+    public async Task ApplyEmoteSetUpdate_NoOpRename_StaysNoChange_AndLeavesFirstSeenAtNull()
     {
-        // The dispatch path decides NoChange vs Applied by asking the ChangeTracker, so it must not
-        // backfill at all — the periodic resync fills the same gap within a tick without turning a
-        // no-op dispatch into a live event for every open page.
+        // A rename carries no push date, so the dispatch has nothing to backfill FirstSeenAt from. The
+        // dispatch path decides NoChange vs Applied by asking the ChangeTracker, so a no-op rename must
+        // not touch the row — the periodic resync fills the gap without turning a no-op dispatch into
+        // a live event for every open page.
         await using var db = fixture.CreateDbContext();
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_firstseen_dispatch", ("e1", "stable", false));
@@ -812,7 +813,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var result = await service.ApplyEmoteSetUpdateAsync(
             channel.ChannelName,
             SetId,
-            Delta(updated: [new SevenTvEmote("e1", "stable", SeededImageUrl("e1"), new DateTime(2026, 2, 3, 17, 0, 0, DateTimeKind.Utc))]));
+            Delta(updated: [new SevenTvEmoteRename("e1", null, "stable", SeededImageUrl("e1"))]));
 
         Assert.Equal(SevenTvDeltaOutcome.NoChange, result.Outcome);
         Assert.Null(await db.Emotes

@@ -31,6 +31,8 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
     private const string LeaveUpsert = "INSERT INTO \"EmoteSetLeaveObservations\"";
     private const string RestartLine = "restarting the save";
     private const string DeadlockLine = "deadlock victim";
+    private const string SlotJoin = "JOIN \"EmoteSlots\"";
+    private const string DeltaRetryLine = "retrying once";
     private static readonly AuditActor Actor = new("tw_slot_admin", "slot_admin");
 
     // (1) AK 27, REST half: a second observation of the same entry under a new name waits for the
@@ -441,7 +443,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext([hook]);
 
         var result = await CreateService(db, ApiReturning(channel, SetA), slotsEnabled)
-            .ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, new SevenTvEmoteSetDelta([Live("z", "Zebra", null)], [], ["x"]));
+            .ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, new SevenTvEmoteSetDelta([Live("z", "Zebra", null)], [], [new SevenTvPulledEntry("x")]));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         Assert.True((await EmoteAsync(setup, channel, "x")).IsArchived);
@@ -459,6 +461,9 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
 
         Assert.Equal(2, hook.Count(t => t.Contains("FOR NO KEY UPDATE", StringComparison.Ordinal)));
         Assert.True(channelLock >= 0 && channelLock < emoteLock && emoteLock < leave && leave < update);
+        // Plan #374 3.2 step 2: the slots of the dispatch's emotes are read behind the emote lock.
+        var slotRead = hook.IndexOf(t => t.Contains(SlotJoin, StringComparison.Ordinal));
+        Assert.True(emoteLock < slotRead && slotRead < leave);
     }
 
     // Z8 recovery, both flag states: a dispatch chosen as a deadlock victim runs once more on a cleared
@@ -482,7 +487,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         var logger = new RecordingLogger<SevenTvSyncService>();
         await using var db = fixture.CreateDbContext([hook]);
         var service = CreateService(db, ApiReturning(channel, SetA), slotsEnabled, logger: logger);
-        var delta = new SevenTvEmoteSetDelta([Live("z", "Zebra", null)], [], ["x"]);
+        var delta = new SevenTvEmoteSetDelta([Live("z", "Zebra", null)], [], [new SevenTvPulledEntry("x")]);
 
         if (twice)
         {
@@ -499,6 +504,148 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         Assert.Equal(twice, !(await EmoteAsync(setup, channel, "x")).IsArchived);
         Assert.Equal(twice ? 0 : 1, await setup.Emotes.CountAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "z"));
         Assert.Equal(twice ? 0 : 1, await setup.EmoteSetLeaveObservations.CountAsync(o => o.ChannelId == channel.Id));
+    }
+
+    // Plan #374 E2/E9, the delta's lock coverage: a writer without the channel lock (a ballot or backfill
+    // upsert) creates the row of a pushed id after the delta has read the dispatch's row ids and locked
+    // them. The read behind the lock sees a row it does not hold, so the attempt starts over once, locks
+    // that row as well and applies the push onto it — one slot, no duplicate row.
+    [Fact]
+    public async Task DeltaCoverageMiss_RetriesOnce_AndPushesOntoTheConcurrentRow()
+    {
+        await using var setup = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(setup, "slot_c_delta_coverage");
+        var r = await SeedEmoteAsync(setup, channel, "r", "Ray", firstSeenAt: T1);
+        var ray = await SeedSlotAsync(setup, r, "Ray", T1);
+        var hook = new CommandHook(
+            text => text.Contains(EmoteIdLock, StringComparison.Ordinal),
+            async occurrence =>
+            {
+                if (occurrence != 1)
+                {
+                    return;
+                }
+
+                await using var second = fixture.CreateDbContext();
+                await ArchivedEmoteRowUpsert.EnsureRowsAsync(
+                    second, channel.Id, [new ArchivedEmoteRow("n", "Neo", Url("n"), null)], DateTime.UtcNow, CancellationToken.None);
+            });
+        var logger = new RecordingLogger<SevenTvSyncService>();
+        await using var db = fixture.CreateDbContext([hook]);
+
+        var result = await CreateService(db, ApiReturning(channel, SetA), slotsEnabled: true, logger: logger)
+            .ApplyEmoteSetUpdateAsync(
+                channel.ChannelName, SetA,
+                new SevenTvEmoteSetDelta([Live("n", "Neo", null)], [new SevenTvEmoteRename("r", "Ray", "Ray2", Url("r"))], []));
+
+        Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
+        Assert.Single(Lines(logger, "appeared between its row lock and its read"));
+        Assert.Single(Lines(logger, DeltaRetryLine));
+        Assert.Equal(2, hook.Count(t => t.Contains(ChannelLock, StringComparison.Ordinal)));
+        var n = await EmoteAsync(setup, channel, "n");
+        Assert.Equal((false, false), (n.IsArchived, n.IsPlaceholder));
+        Assert.Equal(1, await setup.Emotes.CountAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "n"));
+        var neo = Assert.Single(await SlotsAsync(setup, n.Id));
+        Assert.Equal(("Neo", false, false), (neo.Name, neo.AddedAtFromRest, neo.IsArchived));
+        Assert.Equal("Ray2", (await SlotAsync(setup, ray.Id)).Name);
+    }
+
+    // Plan #374 E9: a concurrent insert of a pushed id's emote row right before the delta's save fails it
+    // on IX_Emotes_ChannelId_SevenTvEmoteId; the single retry reads that row and pushes onto it.
+    [Fact]
+    public async Task DeltaEmoteKeyConflict_RetriesOnce_AndPushesOntoTheConcurrentRow()
+    {
+        await using var setup = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(setup, "slot_c_delta_emote_key");
+        var r = await SeedEmoteAsync(setup, channel, "r", "Ray", firstSeenAt: T1);
+        await SeedSlotAsync(setup, r, "Ray", T1);
+        var hook = new SaveHook(async (_, call) =>
+        {
+            if (call != 1)
+            {
+                return;
+            }
+
+            await using var other = fixture.CreateDbContext();
+            await ArchivedEmoteRowUpsert.EnsureRowsAsync(
+                other, channel.Id, [new ArchivedEmoteRow("n", "Neo", Url("n"), null)], DateTime.UtcNow, CancellationToken.None);
+        });
+        var logger = new RecordingLogger<SevenTvSyncService>();
+        await using var db = fixture.CreateDbContext([hook]);
+
+        var result = await CreateService(db, ApiReturning(channel, SetA), slotsEnabled: true, logger: logger)
+            .ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, new SevenTvEmoteSetDelta([Live("n", "Neo", null)], [], []));
+
+        Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
+        Assert.Equal(2, hook.Calls);
+        Assert.Single(Lines(logger, "was inserted concurrently — retrying once"));
+        var n = await EmoteAsync(setup, channel, "n");
+        Assert.False(n.IsArchived);
+        Assert.Equal("Neo", Assert.Single(await SlotsAsync(setup, n.Id)).Name);
+    }
+
+    // Plan #374 E9: deadlock, coverage miss and emote key conflict share ONE retry — a second failure of
+    // either kind propagates, and nothing of the dispatch is written.
+    [Theory]
+    [InlineData("deadlock")]
+    [InlineData("key")]
+    public async Task DeltaEmoteKeyConflict_ThenASecondFailure_Propagates(string second)
+    {
+        await using var setup = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(setup, $"slot_c_delta_twice_{second}");
+        var r = await SeedEmoteAsync(setup, channel, "r", "Ray", firstSeenAt: T1);
+        await SeedSlotAsync(setup, r, "Ray", T1);
+        var hook = new SaveHook((_, call) => throw (call == 1 || second == "key"
+            ? new DbUpdateException("emote key", new PostgresException(
+                "duplicate key", "ERROR", "ERROR", PostgresErrorCodes.UniqueViolation, constraintName: "IX_Emotes_ChannelId_SevenTvEmoteId"))
+            : new PostgresException("deadlock detected", "ERROR", "ERROR", PostgresErrorCodes.DeadlockDetected)));
+        var logger = new RecordingLogger<SevenTvSyncService>();
+        await using var db = fixture.CreateDbContext([hook]);
+        var service = CreateService(db, ApiReturning(channel, SetA), slotsEnabled: true, logger: logger);
+
+        var thrown = await Assert.ThrowsAnyAsync<Exception>(() => service.ApplyEmoteSetUpdateAsync(
+            channel.ChannelName, SetA, new SevenTvEmoteSetDelta([Live("n", "Neo", null)], [], [])));
+
+        Assert.Equal(second == "key" ? PostgresErrorCodes.UniqueViolation : PostgresErrorCodes.DeadlockDetected, FindPostgresException(thrown).SqlState);
+        Assert.Equal(2, hook.Calls);
+        Assert.Single(Lines(logger, DeltaRetryLine));
+        Assert.False(await setup.Emotes.AnyAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "n"));
+    }
+
+    // Plan #374 section 6, flush phase 1: the flush's usage insert holds FOR KEY SHARE on the slot and
+    // emote rows it references. The delta's emote lock (FOR NO KEY UPDATE) and its non-key slot updates
+    // (rename; archive of the last slot and its emote) are compatible with it — the delta finishes while
+    // the flush is still open, and both commit.
+    [Theory]
+    [InlineData("rename")]
+    [InlineData("pull")]
+    public async Task DeltaAgainstAnOpenFlushInsert_DoesNotWait(string change)
+    {
+        await using var setup = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(setup, $"slot_c_delta_flush_{change}");
+        var keeper = await SeedEmoteAsync(setup, channel, "k", "Keeper", firstSeenAt: T0);
+        await SeedSlotAsync(setup, keeper, "Keeper", T0);
+        var r = await SeedEmoteAsync(setup, channel, "r", "Ray", firstSeenAt: T1);
+        var ray = await SeedSlotAsync(setup, r, "Ray", T1);
+
+        await using var flush = fixture.CreateDbContext();
+        await using var flushTx = await flush.Database.BeginTransactionAsync();
+        flush.UsageStats.Add(new UsageStat { EmoteId = r.Id, SlotId = ray.Id, EmoteSetId = SetA, Date = new DateOnly(2026, 10, 12), UseCount = 1 });
+        await flush.SaveChangesAsync();
+
+        await using var db = fixture.CreateDbContext();
+        var delta = change == "rename"
+            ? new SevenTvEmoteSetDelta([], [new SevenTvEmoteRename("r", "Ray", "Ray2", Url("r"))], [])
+            : new SevenTvEmoteSetDelta([], [], [new SevenTvPulledEntry("r", "Ray")]);
+        var result = await CreateService(db, ApiReturning(channel, SetA), slotsEnabled: true)
+            .ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, delta)
+            .WaitAsync(TimeSpan.FromSeconds(15));
+        await flushTx.CommitAsync();
+
+        Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
+        var slot = await SlotAsync(setup, ray.Id);
+        Assert.Equal(change == "rename" ? ("Ray2", false) : ("Ray", true), (slot.Name, slot.IsArchived));
+        Assert.Equal((1, 1), (await UsageBySlotAsync(setup, r.Id, SetA))[ray.Id]);
     }
 
     // (10) E28: renamed while the 7TV call is in flight, with a warm cache under the old login that

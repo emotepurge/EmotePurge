@@ -822,7 +822,7 @@ public class SevenTvSyncServiceLeaveObservationTests(PostgresFixture fixture)
         db.Emotes.AsNoTracking().SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == sevenTvEmoteId);
 
     private static SevenTvEmoteSetDelta Delta(IReadOnlyList<SevenTvEmote>? pushed = null, IReadOnlyList<string>? pulledIds = null) =>
-        new(pushed ?? [], [], pulledIds ?? []);
+        new(pushed ?? [], [], (pulledIds ?? []).Select(id => new SevenTvPulledEntry(id)).ToList());
 
     private static string ImageUrl(string sevenTvId) => $"https://cdn.7tv.app/emote/{sevenTvId}/2x.webp";
 

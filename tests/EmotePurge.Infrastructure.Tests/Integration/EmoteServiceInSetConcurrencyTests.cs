@@ -201,7 +201,11 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
         Assert.Empty(Lines(syncLogger, DeadlockLine));
         Assert.Empty(ReportLines(reportLogger, DeadlockLine));
         Assert.True((await EmoteAsync(setup, channel, Reported)).IsArchived);
-        Assert.False((await EmoteAsync(setup, channel, Newcomer)).IsArchived);
+        var newcomer = await EmoteAsync(setup, channel, Newcomer);
+        Assert.False(newcomer.IsArchived);
+        // Plan #374 7.4, the slot writes: the push slot and the sync's dated entry are one slot, whichever
+        // side came first (bound by name, or a no-op push onto the sync's slot).
+        Assert.Single(await SlotsAsync(setup, newcomer.Id), s => !s.IsArchived);
         Assert.Equal(1, await LeaveRowsAsync(setup, channel, set));
         if (contender == "report")
         {
@@ -760,7 +764,7 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
     private static Task<SevenTvDeltaResult> StartDelta(
         AppDbContext db, Channel channel, string set, RecordingLogger<SevenTvSyncService> logger) =>
         CreateService(db, ApiReturning(channel, set), slotsEnabled: true, logger: logger)
-            .ApplyEmoteSetUpdateAsync(channel.ChannelName, set, new SevenTvEmoteSetDelta([Live(Newcomer, "Newcomer", null)], [], [Reported]));
+            .ApplyEmoteSetUpdateAsync(channel.ChannelName, set, new SevenTvEmoteSetDelta([Live(Newcomer, "Newcomer", null)], [], [new SevenTvPulledEntry(Reported)]));
 
     private static EmoteService CreateReportService(AppDbContext db, bool slotsEnabled, RecordingLogger<EmoteService> logger) =>
         new(
