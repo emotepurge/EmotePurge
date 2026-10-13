@@ -24,6 +24,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Ak56_EnqueueOfAnUnknownEmote_CreatesOneBaseSlot_AndTheBlockWritesExactlyThatSlot()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bfak56", createdAt: NowUtc.AddDays(-5));
         await SeedUserAsync();
         await using (var empty = CreateDbContext())
@@ -78,6 +79,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Enqueue_BindsTheSlotCarryingRowsOfTheSet_AndCreatesASeedWhereOnlyAnotherSetHasOne()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bfbindbase");
         await SeedUserAsync();
         var known = await SeedEmoteAsync(channel, "e-known", "Known");
@@ -115,6 +117,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Enqueue_BindsADatedEntryToTheAuthoritativeSlotOfExactlyThatDate()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bfbinddated");
         await SeedUserAsync();
         var added = new DateTime(2026, 4, 20, 9, 0, 0, 123, DateTimeKind.Utc);
@@ -153,6 +156,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Enqueue_AFollowUpRunOfTheSameSetReusesTheRowlessSeed_AnotherSetGetsItsOwn()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bfbindreuse");
         await SeedUserAsync();
         PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));
@@ -185,6 +189,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Enqueue_ReusesAnOrphanedSeedWithCountsStillBufferedUnderIt_SoThePairKeepsOneSlot()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bforphanseed", createdAt: NowUtc.AddDays(-20), activeSetId: SetB);
         await SeedUserAsync();
         var emote = await SeedEmoteAsync(channel, "e1", "E1");
@@ -261,6 +266,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Enqueue_AndAFlushCreatingTheSameSeed_EndWithOneSeed_WhenTheFlushStartsFirst()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bfseedflushfirst", activeSetId: SetB);
         await SeedUserAsync();
         var emote = await SeedEmoteAsync(channel, "e1", "E1");
@@ -299,6 +305,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Enqueue_AndAFlushCreatingTheSameSeed_EndWithOneSeed_WhenTheEnqueueStartsFirst()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bfseedenqfirst", activeSetId: SetB);
         await SeedUserAsync();
         var emote = await SeedEmoteAsync(channel, "e1", "E1");
@@ -482,6 +489,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Settle_OntoAnExistingTarget_MergesTheBlocksRows_AndTheNextBlockWritesOnTheTarget()
     {
+        PinFlagOff();
         var (channel, emote, target, seed, claim) = await EnqueueNextToRestSlotAsync("bfsettleseq");
         var collidingLive = new UsageStat
         {
@@ -553,6 +561,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Settle_FirstHoldingTheEmoteRow_TheWaitingBlockSeesTheReboundSnapshot_AndIsWrittenOnTheTargetWhenHandedInAgain()
     {
+        PinFlagOff();
         var (channel, emote, target, seed, claim) = await EnqueueNextToRestSlotAsync("bfsettlefirst");
         await ReplaceBlockOfAsync(claim, 0, new ChatLogBackfillAggregate(seed, emote.Id, claim.WindowFrom, 3, 0, 0));
 
@@ -601,6 +610,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Block_FirstHoldingTheEmoteRow_TheWaitingSettleMovesTheBlocksFreshRowsAndTheSnapshot()
     {
+        PinFlagOff();
         var (channel, emote, target, seed, claim) = await EnqueueNextToRestSlotAsync("bfblockfirst");
 
         var atInsert = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -640,6 +650,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Settle_InPlace_LeavesTheSnapshotUnchanged()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bfsettleinplace", createdAt: NowUtc.AddDays(-20), activeSetId: SetB);
         await SeedUserAsync();
         var emote = await SeedEmoteAsync(channel, "x", "A");

@@ -159,6 +159,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Off_Enqueue_PublishesNoChannelSynced()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bfmultioffsync");
         await SeedUserAsync();
         var emote = await SeedEmoteAsync(channel, "X", "A");
@@ -336,6 +337,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Off_ActivePreviewWithAnUnsettledSeedOfTheActiveSet_IsNo409_AndBindsTheSeed()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bfmultioff");
         await SeedUserAsync();
         var emote = await SeedEmoteAsync(channel, "X", "XNow");

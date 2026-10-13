@@ -103,7 +103,7 @@ public partial class ChatLogBackfillServiceTests
         var first = CreateService(dbA).EnqueueAsync(channel.ChannelName, SetB, 6, Today, Actor);
         var second = CreateService(dbB).EnqueueAsync(channel.ChannelName, SetB, 3, Today, Actor);
         await bothEntered.Task;
-        release.SetResult(PreviewOf(SetB, Member("n1", "BNew1", null), Member("n2", "BNew2", null)));
+        release.SetResult(PreviewOf(SetB, Member("n1", "BNew1", EntryT1), Member("n2", "BNew2", EntryT1)));
 
         var outcomes = (await Task.WhenAll(first, second)).Select(r => r.Status).OrderBy(s => s).ToArray();
         Assert.Equal([ChatLogBackfillEnqueueStatus.Enqueued, ChatLogBackfillEnqueueStatus.AlreadyActive], outcomes);
@@ -201,7 +201,7 @@ public partial class ChatLogBackfillServiceTests
     {
         var channel = await SeedChannelAsync("bfraceuserlate");
         await SeedUserAsync();
-        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));
+        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", EntryT1));
 
         var atUpsert = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -233,6 +233,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task LockRace_LeaveWhileTheEnqueueHoldsTheChannel_WaitsAndCancelsTheNewRun()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bflockleave");
         await SeedUserAsync();
         PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));
@@ -266,6 +267,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task LockRace_DispatchInsertingTheSameEmoteWhileTheEnqueueHoldsTheChannel_DoesNotDeadlock()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bflockdispatch");
         await SeedUserAsync();
         await SeedEmoteAsync(channel, "a1", "A1");
@@ -302,6 +304,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task LockRace_FullResyncWhileTheEnqueueHoldsTheChannel_AdoptsThePlaceholder()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bflocksync");
         await SeedUserAsync();
         await SeedEmoteAsync(channel, "a1", "A1");
@@ -338,6 +341,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task LockRace_OppositeKeyOrderDeadlock_IsRetried_AndTheEnqueueAdoptsTheOtherWritersRows()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bflockdeadlock");
         await SeedUserAsync();
         PreviewReturns(SetB, "Set B", Member("a", "AliasA", null), Member("z", "AliasZ", null));
@@ -372,6 +376,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task LockRace_ARunCommittedPastTheRecheck_LosesOnThePartialUniqueIndex()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bflockindex");
         await SeedUserAsync();
         PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));

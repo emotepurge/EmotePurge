@@ -52,6 +52,10 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
     private readonly ITrackedEmoteSetMembershipService _membership = Substitute.For<ITrackedEmoteSetMembershipService>();
     private readonly IForeignEmoteSetService _foreign = Substitute.For<IForeignEmoteSetService>();
 
+    // xUnit builds one instance per case: a case that asserts the flag-off snapshot and binding behaviour
+    // calls PinFlagOff() first; CreateService and CreateSyncService read this.
+    private bool _slotsEnabled = true;
+
     public async Task InitializeAsync()
     {
         await DatabaseGate.WaitAsync();
@@ -98,6 +102,7 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
     [Fact]
     public async Task Enqueue_SnapshotsTheChosenSet_CreatesPlaceholdersForMissingMembers_AndLeavesExistingRowsAlone()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bfenqueue");
         await SeedUserAsync();
         var active = await SeedEmoteAsync(channel, "e-active", "ActiveName");
@@ -172,6 +177,7 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
     [Fact]
     public async Task Snapshot_IsUnchanged_AfterTheChannelsEmotesAndActiveSetChange()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bfsnapshotfrozen");
         await SeedUserAsync();
         await SeedEmoteAsync(channel, "e-active", "ActiveName");
@@ -306,7 +312,7 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
         await SeedUserAsync();
         var createdAt = NowUtc.AddDays(-60);
         var countingStart = DateOnly.FromDateTime(createdAt);
-        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));
+        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", EntryT1));
 
         var oneMonth = await SeedChannelAsync("bfwindow1", createdAt: createdAt);
         Assert.Equal(ChatLogBackfillEnqueueStatus.WindowEmpty, (await EnqueueAsync(oneMonth, SetB, months: 1)).Status);
@@ -348,6 +354,7 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
     [Fact]
     public async Task Enqueue_DuplicateSevenTvId_KeepsTheLastAlias_LikeTheReconcile()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bfdupe", activeSetId: SetB);
         await SeedUserAsync();
         PreviewReturns(SetB, "Set B", Member("dup1", "FirstAlias", null), Member("other1", "Other", null), Member("dup1", "LastAlias", null));
@@ -407,7 +414,7 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
     {
         var channel = await SeedChannelAsync("bfpurgedafter");
         await SeedUserAsync();
-        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null), Member("n2", "BNew2", null));
+        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", EntryT1), Member("n2", "BNew2", EntryT1));
         _publisher.PublishAsync(BotCommands.Channel, Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(async _ =>
             {
@@ -430,7 +437,7 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
     {
         var channel = await SeedChannelAsync("bfpublishfails");
         await SeedUserAsync();
-        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));
+        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", EntryT1));
         _publisher.PublishAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromException(new InvalidOperationException("redis down")));
         var logger = new RecordingLogger<ChatLogBackfillService>();
@@ -614,12 +621,14 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
 
     private AppDbContext CreateDbContext() => fixture.CreateDbContext(DatabaseName);
 
+    private void PinFlagOff() => _slotsEnabled = false;
+
     private ChatLogBackfillService CreateService(
         AppDbContext db,
         ChatLogArchiveOptions? archiveOptions = null,
         ILogger<ChatLogBackfillService>? logger = null,
         ChatLogBackfillOptions? backfillOptions = null,
-        bool slotsEnabled = false) =>
+        bool? slotsEnabled = null) =>
         new(
             db,
             _publisher,
@@ -630,7 +639,7 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
             archiveOptions ?? new ChatLogArchiveOptions { BaseUrl = ArchiveUrl },
             _clock,
             logger ?? NullLogger<ChatLogBackfillService>.Instance,
-            new SlotReconcileOptions { Enabled = slotsEnabled });
+            new SlotReconcileOptions { Enabled = slotsEnabled ?? _slotsEnabled });
 
     private async Task<ChatLogBackfillEnqueueResult> EnqueueAsync(Channel channel, string emoteSetId, int months)
     {
@@ -857,12 +866,12 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
         Assert.NotNull(result);
     }
 
-    private static SevenTvSyncService CreateSyncService(AppDbContext db, ISevenTvApiClient apiClient) =>
+    private SevenTvSyncService CreateSyncService(AppDbContext db, ISevenTvApiClient apiClient) =>
         new(db, apiClient, new EmoteMatchCache(), new DuplicateEmoteNameTracker(),
             new ChannelEmoteSetObservationService(db), new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(),
             new BroadcasterChannelLockService(db), new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
-            NullLogger<SevenTvSyncService>.Instance);
+            NullLogger<SevenTvSyncService>.Instance, slotReconcile: new SlotReconcileOptions { Enabled = _slotsEnabled });
 
     private static ISevenTvApiClient RestAnswering(Channel channel, string emoteSetId, params SevenTvEmote[] liveEmotes)
     {

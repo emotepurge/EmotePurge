@@ -113,6 +113,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task ReplaceBlock_AfterASettleReboundTheSnapshot_IsSnapshotChanged_AndTheReReadBlockLandsOnTheTarget()
     {
+        PinFlagOff();
         var (channel, emote, target, seed, claim) = await EnqueueNextToRestSlotAsync("bfslotsettle");
         await ReplaceBlockOfAsync(claim, 0, new ChatLogBackfillAggregate(seed, emote.Id, claim.WindowFrom, 3, 0, 0));
         await SettleAsync(channel, logger: null);

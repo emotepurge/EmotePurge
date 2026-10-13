@@ -582,7 +582,8 @@ public class SwitchUsageStatsToSlotKeyMigrationTests(PostgresFixture fixture)
             new ChatLogBackfillOptions(),
             new ChatLogArchiveOptions { BaseUrl = "https://logs.cyex.app/" },
             TimeProvider.System,
-            NullLogger<ChatLogBackfillService>.Instance);
+            NullLogger<ChatLogBackfillService>.Instance,
+            slotReconcile: SlotFlag.On);
 
     private static string CellSql(string date) =>
         $"""

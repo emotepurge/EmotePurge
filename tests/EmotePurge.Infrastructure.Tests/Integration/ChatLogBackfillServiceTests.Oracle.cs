@@ -17,6 +17,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Oracle_FlagOff_TwoEntriesOfOneEmote_OneSnapshotRowWithTheLastEntry_OnTheExistingBaseSlot()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bforacle1");
         await SeedUserAsync();
         var emote = await SeedEmoteAsync(channel, "X", "XNow");
@@ -50,6 +51,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Oracle_FlagOff_TwoEntriesOfAnUnknownEmote_CreateOneEmoteAndOneSlot_MarkedCreated()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bforacle2");
         await SeedUserAsync();
         var older = new DateTime(2026, 4, 20, 9, 0, 0, DateTimeKind.Utc);
@@ -74,6 +76,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Oracle_FlagOff_InactiveSetPreview_BindsTheSetsExistingSlot_AndChangesNoSlot()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bforacle3");
         await SeedUserAsync();
         var emote = await SeedEmoteAsync(channel, "X", "XNow");
@@ -107,6 +110,7 @@ public partial class ChatLogBackfillServiceTests
     [Fact]
     public async Task Oracle_FlagOff_RunWritesExactlyTheAggregatesAsUsageRows_AndCompletesWithFullCoverage()
     {
+        PinFlagOff();
         var channel = await SeedChannelAsync("bforacle4", createdAt: NowUtc.AddDays(-20));
         await SeedUserAsync();
         var known = await SeedEmoteAsync(channel, "k1", "Known");
