@@ -1761,6 +1761,8 @@ test.describe('emote slot delete runs (#378)', () => {
     const syncDeleted = await mockSyncDeletedInSet(page, ACTIVE_SET_ID);
 
     await openAtlas(page, slotRows);
+    const slotBar = page.getByRole('progressbar', { name: 'Auslastung des Emote-Sets' });
+    await expect(slotBar).toHaveAttribute('aria-valuenow', '10');
     await deleteSlotCard(page, 'hob44', syncDeleted);
 
     const removeIndex = backend.requests.findIndex((request) => request.kind === 'removeEmote');
@@ -1786,6 +1788,9 @@ test.describe('emote slot delete runs (#378)', () => {
 
     await expect(cell(page, 'hob44')).toHaveCount(0);
     await expect(cell(page, 'ome44')).toBeVisible();
+    // One entry left the set, so the slot bar frees exactly one slot — not the id's two.
+    await expect(slotBar).toHaveAttribute('aria-valuenow', '9');
+    await expect(page.getByText('9 von 1000 Slots belegt')).toBeVisible();
     expect(backend.live.map((entry) => entry.alias)).toEqual(['ome44', 'plainOne']);
   });
 
@@ -1846,6 +1851,8 @@ test.describe('emote slot delete runs (#378)', () => {
   test('restore waits for the removal report: after a failed report the dock says so instead of offering it, and a successful retry brings the button (R4 a)', async ({
     page,
   }) => {
+    // The report's two automatic retries (2 s, then 4 s) run on the page clock, not in real time.
+    await page.clock.install();
     await mockRunSurroundings(page, true);
     await mockSevenTvSetBackend(page, slotLive);
     const answer: MockSyncInSetAnswer = { status: 500 };
@@ -1854,11 +1861,18 @@ test.describe('emote slot delete runs (#378)', () => {
     await openAtlas(page, slotRows);
     await deleteSlotCard(page, 'hob44', syncDeleted);
 
-    // Two automatic retries (2 s, then 4 s) come first, so the failure takes a few real seconds.
+    // Each failed attempt arms the next retry only once its answer is in, so the clock moves on in
+    // steps until all three attempts have been sent rather than in one jump that could come too early.
+    await expect
+      .poll(async () => {
+        await page.clock.runFor(1_000);
+        return syncDeleted.length;
+      })
+      .toBe(3);
     const lock = page.getByText(
       'Wiederherstellen geht erst, wenn der Lösch-Bericht angekommen ist.',
     );
-    await expect(lock).toBeVisible({ timeout: 20_000 });
+    await expect(lock).toBeVisible();
     await expect(page.getByText('Rückmeldung an EmotePurge fehlgeschlagen')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Emotes wiederherstellen' })).toHaveCount(0);
 
