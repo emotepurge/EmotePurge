@@ -349,7 +349,7 @@ test.describe('channel settings tab (chat-log backfill, start half)', () => {
 
     await expect(page.getByText('Fehlgeschlagen')).toBeVisible();
     await expect(page.getByText('Das Archiv war nicht erreichbar')).toBeVisible();
-    await expect(page.getByText('Set: Other (10 Emotes)')).toBeVisible();
+    await expect(page.getByText('Set: Other (10 Einträge)')).toBeVisible();
     await expect(page.getByText('Zeitraum: 08.07.2026 – 07.10.2026')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Backfill abbrechen' })).toHaveCount(0);
   });

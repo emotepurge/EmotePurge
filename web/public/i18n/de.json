@@ -2331,8 +2331,8 @@
     "waitUntil": "Das Archiv hat uns gebeten, bis {{ time }} zu warten.",
     "runWindow": "Zeitraum: {{ from }} – {{ to }}",
     "runSet": {
-      "one": "Set: {{ set }} ({{ count }} Emote)",
-      "other": "Set: {{ set }} ({{ count }} Emotes)"
+      "one": "Set: {{ set }} ({{ count }} Eintrag)",
+      "other": "Set: {{ set }} ({{ count }} Einträge)"
     },
     "requestedBy": "Angefordert von {{ login }}",
     "finishedAt": "Beendet am {{ time }}",
