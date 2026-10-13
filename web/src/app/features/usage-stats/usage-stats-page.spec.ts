@@ -5543,6 +5543,29 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       expect(component['pendingRemovalSlots']()).toBe(1);
     });
 
+    it('holds an uncounted entry 7TV gave no date out of the run and names it in the pending-sync line (R1 a)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [
+          slotRow('x', 'slot-ome', 'ome44', 30, {
+            firstSeenAt: '2026-03-01T00:00:00.000Z',
+            firstSeenAtFromRest: true,
+          }),
+        ],
+        members: memberList([
+          dated('7tv-x', 'ome44', '2026-03-01T00:00:00.000Z'),
+          member('7tv-x', 'hob44'),
+        ]),
+      });
+      component['selection'].onRowClick(card('live:7tv-x##hob44'), {
+        shiftKey: false,
+      } as MouseEvent);
+
+      expect(component['selectedForDelete']()).toEqual([]);
+      expect(component['pendingRemovalSlots']()).toBe(0);
+      expect(component['pendingSyncNames']()).toEqual(['hob44']);
+    });
+
     it('reloads instead of editing the rows when a slot delete ran in a non-active view', async () => {
       await openView({
         emoteSetId: 'set-b',
@@ -8691,6 +8714,49 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     expect(component['emotes']().map((row) => row.slotKey)).toEqual(['slot-hob']);
     expect(card('slot-hob').siblingNames).toEqual([]);
     expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 8 });
+  });
+
+  // --- held out of the run (plan 378, 4.9, A10; spec D11) ----------------------------------------
+
+  it('holds a provisional slot card out of the run before the confirmation and names it in the pending-sync line', () => {
+    mount([ome(), hob(10, { firstSeenAtFromRest: false }), other()]);
+    click('slot-hob');
+    click('slot-ome');
+
+    expect(component['selectedForDelete']().map((row) => row.entry?.cardKey)).toEqual(['slot-ome']);
+    expect(component['pendingRemovalSlots']()).toBe(1);
+    expect(component['pendingSyncNames']()).toEqual(['hob44']);
+    expect(component['pendingSyncKey']()).toBe('usageStats.delete.pendingSync.one');
+    // The announcer speaks exactly what the dock shows.
+    expect(component['dockPendingSyncNames']()).toEqual(['hob44']);
+  });
+
+  it('leaves the run empty, and so the delete button off, when only held cards are marked', () => {
+    mount([ome(0, { firstSeenAtFromRest: false }), hob(10, { firstSeenAtFromRest: false })]);
+    click('slot-ome');
+    click('slot-hob');
+
+    expect(component['selectedForDelete']()).toEqual([]);
+    expect(component['pendingRemovalSlots']()).toBe(0);
+    expect(component['pendingSyncNames']()).toEqual(['ome44', 'hob44']);
+    expect(component['pendingSyncKey']()).toBe('usageStats.delete.pendingSync.other');
+  });
+
+  it('holds a dated slot card out fail-closed when its add date is one the Api would reject (T-6)', () => {
+    mount([ome(), hob(10, { firstSeenAt: '2026-02-31T10:00:00.000Z' })]);
+    click('slot-hob');
+
+    expect(component['selectedForDelete']()).toEqual([]);
+    expect(component['pendingSyncNames']()).toEqual(['hob44']);
+  });
+
+  it('names nothing in the pending-sync line while every marked card can be deleted', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-hob');
+    click('7tv-y');
+
+    expect(component['pendingSyncNames']()).toEqual([]);
+    expect(component['dockPendingSyncNames']()).toEqual([]);
   });
 
   // Still the id path (plan 378, 4.9): a run that removes per id — a tag removal — can meet an

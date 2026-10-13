@@ -157,6 +157,7 @@ import { actionDockHasContent } from '../../shared/seven-tv/action-dock';
 import {
   DockOutcomeAnnouncer,
   hiddenByFilterNoticeKey,
+  pendingSyncNoticeKey,
 } from '../../shared/seven-tv/dock-outcome-announcer';
 import { ImportFlowDeps, startImportFlow } from '../../shared/seven-tv/import-flow';
 import { ImportProgressSection } from '../../shared/seven-tv/import-progress-section';
@@ -2286,6 +2287,33 @@ export class UsageStatsPage {
       };
     });
   });
+
+  /**
+   * The names of the marked cards held out of the delete run (plan 378, 4.9, A10): a slot card 7TV
+   * has not dated yet (spec D11 — the next reconciliation dates it), an uncounted entry 7TV gave no
+   * date, or a card whose date fails the strict check. They are held **before** the confirmation —
+   * the confirmation, the delete button's count and the projection name only what the run takes —
+   * and the dock names them in a line of their own, so a marked card never drops out unexplained.
+   * In the order of `emotes()`, like the run's rows; never re-sorted here.
+   */
+  protected readonly pendingSyncNames = computed(() =>
+    this.markedDeleteRows().flatMap(({ card, row }) =>
+      row.kind === 'held' ? [card.emoteName] : [],
+    ),
+  );
+
+  /** Wording for the dock's pending-sync line — the same helper the announcer uses, so the shown
+   *  and the spoken sentence cannot drift apart. */
+  protected readonly pendingSyncKey = computed(() =>
+    pendingSyncNoticeKey(this.pendingSyncNames().length),
+  );
+
+  /** `pendingSyncNames()` as `DockOutcomeAnnouncer` speaks it: empty whenever the dock's line is not
+   *  on screen — the same gates as `dockHiddenSelectedCount` (the dock's `!isCoarse()`, the marking
+   *  half's set gate) — so spoken and shown stay the same statement (docs/UI-Designsprache.md §4.5). */
+  protected readonly dockPendingSyncNames = computed(() =>
+    !this.isCoarse() && this.selectedEmoteSetId() !== null ? this.pendingSyncNames() : [],
+  );
 
   /**
    * How many slots of the shown set deleting the marked rows would free (spec 8.2, AK 58; D27), per
