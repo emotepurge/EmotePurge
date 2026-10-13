@@ -2180,7 +2180,8 @@ export class UsageStatsPage {
           : {}),
         // Feeds the delete-confirm dialog's hidden-by-filter block (Konzept "Auswahl überlebt
         // Suche und Filter" 2.1) — `isVisible` reads the same atlasOrder() the dock's own
-        // hiddenSelectedCount is built from, so the two numbers can never disagree. An unmarked
+        // hiddenSelectedCount is built from, so the two numbers cannot disagree for an id with one card
+        // (with several cards per id they count different things). An unmarked
         // sibling that the filter hides does not make the entry hidden.
         hidden: marked.every((emote) => !this.selection.isVisible(emote)),
       };
