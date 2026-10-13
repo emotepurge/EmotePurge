@@ -1240,8 +1240,8 @@ describe('BackfillSection', () => {
       expect(fixture.componentInstance['removeErrorKey']()).toBeNull();
     });
 
-    it('announces the removed days ahead of the last run, takes the section off at once, and keeps the announcement through the refetch', async () => {
-      // The run was seen running, so its outcome is on the live region before the removal.
+    it('replaces the section with a confirmation that takes the focus, kept through the refetch and spoken once', async () => {
+      // The run was seen running, so its outcome is already in the live region.
       getStatus.mockReturnValue(of(status({ coverage: COVERAGE, activeRun: RUNNING })));
       const fixture = await create();
       getStatus.mockReturnValue(
@@ -1254,33 +1254,72 @@ describe('BackfillSection', () => {
       getStatus.mockReturnValue(after);
 
       removeButton(fixture)?.click();
+      await flush(fixture);
 
-      const transloco = TestBed.inject(TranslocoService);
-      const announced = transloco.translate('backfill.remove.announceDone.other', { count: 183 });
+      const confirmed = TestBed.inject(TranslocoService).translate(
+        'backfill.remove.announceDone.other',
+        { count: 183 },
+      );
+      const section = importedSection(fixture);
+      const focused = document.activeElement as HTMLElement | null;
       expect(fixture.componentInstance.importedIntervals()).toEqual([]);
-      expect(importedSection(fixture)).toBeNull();
-      expect(liveRegionText(fixture)).toBe(announced);
+      expect(removeButton(fixture)).toBeNull();
+      expect(section?.contains(focused)).toBe(true);
+      expect(focused?.textContent?.trim()).toBe(confirmed);
+      // Focus reads it out; the live region does not say it a second time.
+      expect(liveRegionText(fixture)).toBe(en.backfill.announce.completed);
       expect(getStatus).toHaveBeenCalledTimes(3);
 
       after.next(status({ coverage: [], lastRun: { ...RUNNING, status: 'completed' } }));
       await fixture.whenStable();
 
-      expect(importedSection(fixture)).toBeNull();
-      expect(liveRegionText(fixture)).toBe(announced);
+      expect(importedSection(fixture)?.textContent).toContain(confirmed);
+      expect(document.activeElement?.textContent?.trim()).toBe(confirmed);
     });
 
-    it('gives the live region back to the run once a new run shows up', async () => {
+    it('confirms "already removed" when the answer has nothing left to remove', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      removeImported.mockReturnValue(of({ removedUsageRows: 0, removedCoverageDays: 0 }));
+      const fixture = await create();
+
+      removeButton(fixture)?.click();
+      await fixture.whenStable();
+
+      expect(document.activeElement?.textContent?.trim()).toBe(
+        en.backfill.remove.announceNothingLeft,
+      );
+    });
+
+    it('drops the confirmation once a new run shows up, and the live region speaks the run', async () => {
       getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
       const fixture = await create();
       removeButton(fixture)?.click();
-      expect(fixture.componentInstance['removalAnnouncement']()).not.toBeNull();
+      await fixture.whenStable();
+      expect(importedSection(fixture)).not.toBeNull();
 
       getStatus.mockReturnValue(of(status({ activeRun: RUNNING })));
       fixture.componentInstance['statusResource'].reload();
       await fixture.whenStable();
 
       expect(fixture.componentInstance['removalAnnouncement']()).toBeNull();
+      expect(importedSection(fixture)).toBeNull();
       expect(liveRegionText(fixture)).toBe('Backfill Running: 3 of 14 weeks.');
+    });
+
+    it('drops the confirmation when the channel changes', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const fixture = await create();
+      removeButton(fixture)?.click();
+      await fixture.whenStable();
+      expect(importedSection(fixture)).not.toBeNull();
+
+      getStatus.mockReturnValue(of(status()));
+      fixture.componentRef.setInput('channelName', 'other');
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      expect(fixture.componentInstance['removalAnnouncement']()).toBeNull();
+      expect(importedSection(fixture)).toBeNull();
     });
 
     it('ignores the answer of a removal issued for a channel the user has since left', async () => {

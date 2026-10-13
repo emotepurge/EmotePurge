@@ -1,6 +1,18 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, effect, inject, input, linkedSignal, untracked } from '@angular/core';
+import {
+  afterNextRender,
+  Component,
+  computed,
+  effect,
+  ElementRef,
+  inject,
+  Injector,
+  input,
+  linkedSignal,
+  untracked,
+  viewChild,
+} from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { catchError, map, of } from 'rxjs';
@@ -209,12 +221,10 @@ interface SetView {
 
       <!-- Permanently mounted (UI-Designsprache §4.5): a region that appears together with its text
            is not announced, and a run's start and end are exactly what it is for. -->
-      <!-- A removal's outcome takes precedence over the run's: it is the newer news, and it has to
-           outlive the refetch that unmounts the imported-data section below. -->
+      <!-- A removal's outcome is not spoken here: focus moves onto its visible confirmation below,
+           which reads it out once. Saying it here as well would make it heard twice. -->
       <p class="sr-only" role="status">
-        @if (removalAnnouncement(); as removal) {
-          {{ removal.key | transloco: { count: removal.count } }}
-        } @else if (announcement(); as announced) {
+        @if (announcement(); as announced) {
           {{
             announced.key
               | transloco
@@ -380,7 +390,18 @@ interface SetView {
       }
     </section>
 
-    @if (importedIntervals().length > 0) {
+    @if (removalAnnouncement(); as removal) {
+      <!-- Replaces the section it reports on, under the same heading, so the trigger that vanished
+           with it hands focus to the outcome rather than to <body>. -->
+      <section class="flex flex-col gap-4" aria-labelledby="backfill-imported-heading">
+        <h3 id="backfill-imported-heading" class="text-base font-semibold">
+          {{ 'backfill.remove.title' | transloco }}
+        </h3>
+        <p #removalConfirmation tabindex="-1" class="text-sm">
+          {{ removal.key | transloco: { count: removal.count } }}
+        </p>
+      </section>
+    } @else if (importedIntervals().length > 0) {
       <section class="flex flex-col gap-4" aria-labelledby="backfill-imported-heading">
         <h3 id="backfill-imported-heading" class="text-base font-semibold">
           {{ 'backfill.remove.title' | transloco }}
@@ -424,6 +445,7 @@ export class BackfillSection {
   private readonly languageService = inject(LanguageService);
   private readonly transloco = inject(TranslocoService);
   private readonly dialog = inject(Dialog);
+  private readonly injector = inject(Injector);
 
   /** How many status reads have been issued so far; the next one gets this number plus one. */
   private readsIssued = 0;
@@ -657,8 +679,9 @@ export class BackfillSection {
   });
 
   /**
-   * The live region's sentence after a removal. Outlives the refetch that empties the coverage (and
-   * with it the imported-data section); goes with the channel and when a new run shows up.
+   * The outcome of the last removal, shown in place of the imported-data section and focused once.
+   * Outlives the refetch that empties the coverage; goes with the channel and when a new run shows
+   * up, like the rest of the removal's state — no control of its own to dismiss it.
    */
   protected readonly removalAnnouncement = linkedSignal<string, BackfillRemovalAnnouncement | null>(
     {
@@ -666,6 +689,9 @@ export class BackfillSection {
       computation: () => null,
     },
   );
+
+  /** The rendered confirmation, the focus target after a successful removal. */
+  private readonly removalConfirmation = viewChild<ElementRef<HTMLElement>>('removalConfirmation');
 
   readonly canStart = computed(
     () =>
@@ -968,6 +994,11 @@ export class BackfillSection {
         }
         this.removeRequest.set(null);
         this.removalAnnouncement.set(backfillRemovalAnnouncement(result));
+        // The dialog has handed focus back to the trigger, which goes now: hand it on to the
+        // outcome that takes the section's place.
+        afterNextRender(() => this.removalConfirmation()?.nativeElement.focus(), {
+          injector: this.injector,
+        });
         // After the commit nothing imported is left: take it off screen at once, so a second click
         // in the window before the refetch lands cannot send a second POST.
         this.status.update(

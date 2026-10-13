@@ -111,10 +111,11 @@ Decision (this entry covers the service and the route; the UI follows in the sam
   same captured intervals, and the confirmation sends only while the canonical key of the current
   intervals (channel + `from|to|emoteSetId|archiveHost` in status order) is still the captured one —
   otherwise nothing goes out and the section shows the `backfill_remove_scope_changed` sentence; the next
-  click shows the new scope. Start and Remove lock each other while either request is in flight. The
-  success sentence has its own state in the section's permanent live region and takes precedence over the
-  run's announcement until a new run shows up or the channel changes, so it outlives the refetch that
-  unmounts the section.
+  click shows the new scope. Start and Remove lock each other while either request is in flight. After a
+  200 the section is replaced, under the same heading, by a plain confirmation sentence that takes the
+  focus (`tabindex="-1"`, WCAG 2.4.3: the trigger vanishes with the section); it stays until a new run
+  shows up or the channel changes, so it outlives the refetch that empties the coverage. It is spoken
+  once, by the focus move — the section's permanent live region does not repeat it.
 - **Post-cancel read by read generation, for Start as much as for Remove** (Sol-1 of the plan review):
   every status read is numbered when its GET goes out, and after the cancel's 204 both stay locked until a
   read numbered after the 204 has settled (answer or failure). The former check ("the resource value
