@@ -14,8 +14,10 @@ internal static class SeedSettleWrites
 {
     /// <summary>
     /// The usage half of a settle onto an existing target (plan #372 2.4 "target exists", plan #373
-    /// E10): the seed's rows of the active set go to the target as a merge, not a plain re-key. A row
-    /// whose (set, day) cell the target already has is added onto the target's row — all three counters,
+    /// E10): the seed's rows of one set — <paramref name="emoteSetId"/>, the active set for the REST
+    /// settle, the previewed set for the backfill enqueue (plan #375 2.3, D12) — go to the target as a
+    /// merge, not a plain re-key. A row whose (set, day) cell the target already has is added onto the
+    /// target's row — all three counters,
     /// <c>Source</c> live if either row is live (the rule of
     /// <c>EmoteSlotRollbackSql.CollapseUsageStatsSql</c>) — and deleted; every other row just changes its
     /// <c>SlotId</c> and keeps its id. A plain re-key would hit the unique slot index
@@ -27,7 +29,7 @@ internal static class SeedSettleWrites
     /// rows merged away.
     /// </summary>
     public static async Task<(int Moved, int Merged)> MoveSeedUsageAsync(
-        AppDbContext db, SlotUsageRebind rebind, string activeEmoteSetId, CancellationToken cancellationToken)
+        AppDbContext db, SlotUsageRebind rebind, string emoteSetId, CancellationToken cancellationToken)
     {
         // One statement: the CTE adds each colliding seed row onto its target row and hands back the
         // seed row's id, the outer DELETE removes exactly those. The slot index makes the join 1:1.
@@ -41,8 +43,8 @@ internal static class SeedSettleWrites
                      "Source" = CASE WHEN t."Source" = {(int)UsageStatSource.Live} OR s."Source" = {(int)UsageStatSource.Live}
                                      THEN {(int)UsageStatSource.Live} ELSE t."Source" END
                  FROM "UsageStats" s
-                 WHERE s."SlotId" = {rebind.FromSeedId} AND s."EmoteSetId" = {activeEmoteSetId}
-                   AND t."SlotId" = {rebind.ToSlotId} AND t."EmoteSetId" = {activeEmoteSetId}
+                 WHERE s."SlotId" = {rebind.FromSeedId} AND s."EmoteSetId" = {emoteSetId}
+                   AND t."SlotId" = {rebind.ToSlotId} AND t."EmoteSetId" = {emoteSetId}
                    AND t."Date" = s."Date"
                  RETURNING s."Id"
              )
@@ -53,7 +55,7 @@ internal static class SeedSettleWrites
             cancellationToken);
 
         var moved = await db.UsageStats
-            .Where(u => u.SlotId == rebind.FromSeedId && u.EmoteSetId == activeEmoteSetId)
+            .Where(u => u.SlotId == rebind.FromSeedId && u.EmoteSetId == emoteSetId)
             .ExecuteUpdateAsync(setters => setters.SetProperty(u => u.SlotId, rebind.ToSlotId), cancellationToken);
         return (moved, merged);
     }

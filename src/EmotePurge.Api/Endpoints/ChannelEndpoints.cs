@@ -569,6 +569,8 @@ public static class ChannelEndpoints
                 return Results.Conflict(new { errorCode = ApiErrorCodes.BackfillSetEmpty });
             case ChatLogBackfillEnqueueStatus.SetTruncated:
                 return Results.Conflict(new { errorCode = ApiErrorCodes.BackfillSetTruncated });
+            case ChatLogBackfillEnqueueStatus.SlotsUnsettled:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.BackfillSlotsUnsettled });
             case ChatLogBackfillEnqueueStatus.SevenTvUnavailable:
                 if (result.RetryAfter is { } retryAfter)
                 {

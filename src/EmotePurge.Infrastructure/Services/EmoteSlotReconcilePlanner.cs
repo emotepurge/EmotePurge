@@ -577,7 +577,7 @@ internal sealed record SlotState(
     }
 }
 
-/// <summary>Move the usage rows of the active set from a settled seed onto <paramref name="ToSlotId"/> (§6.3 "target exists").</summary>
+/// <summary>Move the usage rows of the settled set (REST: the active set; backfill: the previewed set) from a settled seed onto <paramref name="ToSlotId"/> (§6.3 "target exists").</summary>
 internal sealed record SlotUsageRebind(string FromSeedId, string ToSlotId);
 
 /// <summary>D13: the values for <c>Emote.Name</c> and <c>Emote.FirstSeenAt</c>; <c>FirstSeenAt</c> may be <c>null</c>.</summary>

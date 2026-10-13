@@ -618,7 +618,8 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
         AppDbContext db,
         ChatLogArchiveOptions? archiveOptions = null,
         ILogger<ChatLogBackfillService>? logger = null,
-        ChatLogBackfillOptions? backfillOptions = null) =>
+        ChatLogBackfillOptions? backfillOptions = null,
+        bool slotsEnabled = false) =>
         new(
             db,
             _publisher,
@@ -628,7 +629,8 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
             backfillOptions ?? new ChatLogBackfillOptions(),
             archiveOptions ?? new ChatLogArchiveOptions { BaseUrl = ArchiveUrl },
             _clock,
-            logger ?? NullLogger<ChatLogBackfillService>.Instance);
+            logger ?? NullLogger<ChatLogBackfillService>.Instance,
+            new SlotReconcileOptions { Enabled = slotsEnabled });
 
     private async Task<ChatLogBackfillEnqueueResult> EnqueueAsync(Channel channel, string emoteSetId, int months)
     {

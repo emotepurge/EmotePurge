@@ -267,6 +267,7 @@ public class ChatLogBackfillEndpointsTests : IClassFixture<ApiFactory>
         { ChatLogBackfillEnqueueStatus.SetNotMember, HttpStatusCode.NotFound, ApiErrorCodes.EmoteSetNotFound },
         { ChatLogBackfillEnqueueStatus.SetEmpty, HttpStatusCode.Conflict, ApiErrorCodes.BackfillSetEmpty },
         { ChatLogBackfillEnqueueStatus.SetTruncated, HttpStatusCode.Conflict, ApiErrorCodes.BackfillSetTruncated },
+        { ChatLogBackfillEnqueueStatus.SlotsUnsettled, HttpStatusCode.Conflict, ApiErrorCodes.BackfillSlotsUnsettled },
         { ChatLogBackfillEnqueueStatus.SevenTvUnavailable, HttpStatusCode.ServiceUnavailable, ApiErrorCodes.ForeignChannelSevenTvUnavailable },
     };
 

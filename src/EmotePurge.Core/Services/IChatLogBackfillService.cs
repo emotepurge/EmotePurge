@@ -154,7 +154,14 @@ public enum ChatLogBackfillEnqueueStatus
     SetNotMember,
     SetEmpty,
     SetTruncated,
-    SevenTvUnavailable
+    SevenTvUnavailable,
+
+    /// <summary>
+    /// Only with the slot flag on (slot plan #375 2.4, spec 5.6): a preview entry cannot be bound to a
+    /// slot yet — an emote has an unsettled seed of the active set, or an entry is undated where the
+    /// binding needs its date. Nothing is written; the next REST reconcile or v4 overlay resolves it.
+    /// </summary>
+    SlotsUnsettled
 }
 
 /// <summary>
