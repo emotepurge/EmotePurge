@@ -1165,7 +1165,7 @@ At `I = 60` and `C = 300` that is 151 bytes per row and minute; 2 MiB/min (2,097
 on the copy, and the figures rest on five ticks without and one tick with full-page images. **Below the threshold:
 go on. Above it: do not switch the flag on;** either bring forward the follow-up "Slot reconcile: plan before
 locking rows (dry run)" (#411) or raise `SevenTv:ResyncIntervalSeconds` (a raise helps only the 54-byte part).
-Production at the time of writing (2 channels, about 960 rows) costs about 0.14 MiB/min.
+
 
 1. **Check the #406 precondition (read-only).** The UTF-8 name order of #403/#406 must be deployed, and no settled
    slot may exist yet while the flag is off:
