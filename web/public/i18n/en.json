@@ -2262,7 +2262,7 @@
       "backfill_set_empty": "This emote set has no emotes, so there is nothing to look for.",
       "backfill_set_truncated": "This emote set is too large to read completely, so the backfill cannot be started for it.",
       "backfill_channel_identity_changed": "The channel changed while your request was running. Please reload and try again.",
-      "backfill_slots_unsettled": "This channel's emotes are being rearranged right now. Please try again in a minute."
+      "backfill_slots_unsettled": "The emote slots of this set are not fully matched yet. This usually clears after the next sync. If it persists, an emote in the set has no add date."
     }
   },
   "backfill": {
