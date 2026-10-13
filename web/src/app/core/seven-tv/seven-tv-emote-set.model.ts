@@ -133,6 +133,21 @@ export interface SyncInSetBody {
   sevenTvEmoteIds: string[];
   expectedChannelName: string | null;
   targetOwnerTwitchId: string | null;
+  /** The set entries the report names one by one (#365 child 6 contract, D32) — every one's id is
+   *  also in `sevenTvEmoteIds`. **Omitted**, never sent empty, when the report names no entry: the
+   *  server then keeps the behaviour from before slots, per id. */
+  entries?: SyncInSetEntry[];
+}
+
+/** One entry of a set-centric report: which entry of the id, in which generation. */
+export interface SyncInSetEntry {
+  sevenTvEmoteId: string;
+  alias: string;
+  /** The usage slot the entry belongs to. Absent for an entry without one (a card of the unslotted
+   *  class) — the server skips such an entry instead of falling back to the whole emote. */
+  slotId?: string;
+  /** The entry's add date — its generation — verbatim as the row carried it, never reformatted. */
+  addedAt: string;
 }
 
 /**

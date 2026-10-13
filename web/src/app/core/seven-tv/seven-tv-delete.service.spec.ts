@@ -2755,4 +2755,103 @@ describe('SevenTvDeleteService', () => {
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
   });
+  // Plan-378 4.6 (D32, AK 37, 41): the report names removed entries with their generation.
+  describe('reporting removed slots', () => {
+    const T_MICRO = '2026-10-13T10:00:14.902123+02:00';
+    const SLOTLESS: DeleteQueueEmote = {
+      sevenTvEmoteId: '7tv-z',
+      name: 'zzz',
+      entry: { alias: 'zzz', addedAt: T_MICRO, cardKey: 'live:7tv-z#zzz' },
+    };
+
+    function reportBody(request: { request: { body: unknown } }) {
+      return request.request.body as Record<string, unknown>;
+    }
+
+    it('sends a mixed body: every removed id once, and an entry per removed entry row with its date verbatim', () => {
+      const B = entryRow('7tv-x', 'bbb', T2);
+      service.startDelete('set-1', 'sensitron', [EMOTES[1], A, B, SLOTLESS], 'sensitron', null);
+
+      answerRemove(); // the id row, without a read
+      answerRead([
+        { id: '7tv-x', alias: 'aaa', addedAt: T1 },
+        { id: '7tv-x', alias: 'bbb', addedAt: T2 },
+        { id: '7tv-z', alias: 'zzz', addedAt: '2026-10-13T08:00:14.902Z' },
+      ]);
+      answerRemove();
+      answerRead([
+        { id: '7tv-x', alias: 'bbb', addedAt: T2 },
+        { id: '7tv-z', alias: 'zzz', addedAt: '2026-10-13T08:00:14.902Z' },
+      ]);
+      answerRemove();
+      // zzz: a single entry, the held read is fresh — and its date matches in milliseconds.
+      answerRemove();
+
+      const request = httpMock.expectOne(SYNC_ENDPOINT);
+      expect(reportBody(request)).toEqual({
+        sevenTvEmoteIds: ['7tv-2', '7tv-x', '7tv-z'],
+        expectedChannelName: 'sensitron',
+        targetOwnerTwitchId: null,
+        entries: [
+          { sevenTvEmoteId: '7tv-x', alias: 'aaa', slotId: 'slot-aaa', addedAt: T1 },
+          { sevenTvEmoteId: '7tv-x', alias: 'bbb', slotId: 'slot-bbb', addedAt: T2 },
+          // An entry without a slot carries none, and its date travels exactly as the row had it.
+          { sevenTvEmoteId: '7tv-z', alias: 'zzz', addedAt: T_MICRO },
+        ],
+      });
+      // Counted against the distinct ids: three reported, three archived → succeeded.
+      request.flush(
+        deletedAnswer({
+          channels: [{ channelName: 'sensitron', archivedCount: 3, notFoundIds: [] }],
+        }),
+      );
+      expect(service.syncReport()).toBe('succeeded');
+    });
+
+    it('omits the entries field when no entry row was removed', () => {
+      service.startDelete('set-1', 'sensitron', [EMOTES[1], A], 'sensitron', null);
+
+      answerRemove();
+      answerRead([{ id: '7tv-x', alias: 'aa2', addedAt: T1 }]);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      const body = reportBody(httpMock.expectOne(SYNC_ENDPOINT));
+      expect(body['sevenTvEmoteIds']).toEqual(['7tv-2']);
+      expect(body).not.toHaveProperty('entries');
+    });
+
+    it('sends the identical body on every automatic attempt and on a manual retry', () => {
+      service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+      answerRead([{ id: '7tv-x', alias: 'aaa', addedAt: T1 }]);
+      answerRemove();
+
+      const bodies: unknown[] = [];
+      const first = httpMock.expectOne(SYNC_ENDPOINT);
+      bodies.push(first.request.body);
+      first.flush(null, { status: 500, statusText: 'Server Error' });
+      for (const attempt of [1, 2]) {
+        vi.advanceTimersByTime(2000 * attempt);
+        const again = httpMock.expectOne(SYNC_ENDPOINT);
+        bodies.push(again.request.body);
+        again.flush(null, { status: 500, statusText: 'Server Error' });
+      }
+      flushFallbackResync();
+      expect(service.syncReport()).toBe('failed');
+
+      service.retrySyncReport();
+      const retry = httpMock.expectOne(SYNC_ENDPOINT);
+      bodies.push(retry.request.body);
+      retry.flush(deletedAnswer());
+
+      expect(bodies[0]).toEqual({
+        sevenTvEmoteIds: ['7tv-x'],
+        expectedChannelName: 'sensitron',
+        targetOwnerTwitchId: null,
+        entries: [{ sevenTvEmoteId: '7tv-x', alias: 'aaa', slotId: 'slot-aaa', addedAt: T1 }],
+      });
+      for (const body of bodies.slice(1)) {
+        expect(body).toEqual(bodies[0]);
+      }
+    });
+  });
 });

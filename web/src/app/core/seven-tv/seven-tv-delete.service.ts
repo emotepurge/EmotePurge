@@ -18,7 +18,11 @@ import {
 import { ChannelService } from '../channels/channel.service';
 import { EmoteTagService } from '../tags/emote-tag.service';
 import { SevenTvEntryTarget } from './seven-tv-entry-target';
-import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
+import {
+  SyncDeletedInSetResponse,
+  SyncInSetBody,
+  SyncInSetEntry,
+} from './seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import {
   RunItemStatus,
@@ -613,7 +617,8 @@ export class SevenTvDeleteService {
       return;
     }
 
-    this.reportDeleted(current.runId, current.result.doneKeys);
+    // Derived from the result on the record, never from the page: the body is the first one's.
+    this.reportDeleted(current.runId, deletedReportOf(current.result));
   }
 
   /** Manual retry for the removal report of the shown run (#201 T-C) — sends the same body again,
@@ -863,7 +868,7 @@ export class SevenTvDeleteService {
     }
 
     if (reportsDeleted) {
-      this.reportDeleted(runId, result.doneKeys, () => this.fallbackResync(settled));
+      this.reportDeleted(runId, deletedReportOf(result), () => this.fallbackResync(settled));
     } else if (unknownCount(result.items) > 0) {
       this.fallbackResync(settled);
     }
@@ -874,7 +879,10 @@ export class SevenTvDeleteService {
     }
   }
 
-  /** No resync of its own on an answer (spec 6.5): the backend resyncs every channel the report
+  /** Sends `sync-deleted` with `report` — see {@link deletedReportOf}; the first report and every
+   *  retry derive it from the same settled result, so a retry sends the identical body (AK 41).
+   *
+   *  No resync of its own on an answer (spec 6.5): the backend resyncs every channel the report
    *  touched (E17), and the page lives off the resulting `channel.synced`. `afterFailure` runs once
    *  the report has failed for good — only the first report of a run passes one, never a manual
    *  retry (addendum N1).
@@ -892,7 +900,7 @@ export class SevenTvDeleteService {
    *  lifecycle's one-way door leaves the phase alone, and `reportsPending` (`syncReport ===
    *  'pending'`) is what keeps a `closed`-but-pending record in the map until this new attempt
    *  also reaches an end state. */
-  private reportDeleted(runId: string, sevenTvEmoteIds: string[], afterFailure?: () => void): void {
+  private reportDeleted(runId: string, report: DeletedReport, afterFailure?: () => void): void {
     const run = this.patchRun(runId, { syncReport: 'pending', syncReportReason: null });
     if (run === null) {
       // Unreachable in practice: called right after the update that put the run into `reporting`,
@@ -902,9 +910,10 @@ export class SevenTvDeleteService {
 
     this.emoteSetService
       .reportDeletedInSet(run.setId, {
-        sevenTvEmoteIds,
+        sevenTvEmoteIds: report.sevenTvEmoteIds,
         expectedChannelName: run.expectedChannelName,
         targetOwnerTwitchId: run.targetOwnerTwitchId,
+        ...(report.entries === undefined ? {} : { entries: report.entries }),
       })
       .pipe(
         timeoutReportAttempt(),
@@ -916,7 +925,7 @@ export class SevenTvDeleteService {
         // its `status` reads `undefined`, so neither branch of the 401/403 check matches):
         // uncritical, because a retried `sync-deleted` call is idempotent either way.
         map((answer: SyncDeletedInSetResponse) =>
-          classifySyncInSetResponse(answer, sevenTvEmoteIds.length),
+          classifySyncInSetResponse(answer, report.sevenTvEmoteIds.length),
         ),
         // A 429 is the realistic case: sync-deleted shares a rate-limit budget with other calls, and
         // a swallowed 429 used to look exactly like success. A 401 (session expired during a long
@@ -947,7 +956,8 @@ export class SevenTvDeleteService {
   /**
    * The removal report of a tag removal (#201 T-C, spec 7.2/8): `POST …/tags/{tagId}/placements/
    * removed` with the registered `operationId`, the run's own set and owner, the activation and
-   * snapshot from the preview, `removedIds` = the run's `doneKeys` and `keptIds` derived from the
+   * snapshot from the preview, `removedIds` = the run's `doneKeys` of id rows (a tag removal has no
+   * other rows; an entry key is never a 7TV id) and `keptIds` derived from the
    * **run result** (`deriveTagKeptIds`): the unticked own placements plus every ticked one without a
    * `done` row — a removal 7TV did not confirm is still in the set, and the server must not forget
    * it. Same transport rules as `sync-deleted`: one `timeoutReportAttempt` per attempt, automatic
@@ -977,7 +987,7 @@ export class SevenTvDeleteService {
         targetOwnerTwitchId: run.targetOwnerTwitchId,
         activationOperationId: tag.activationOperationId,
         snapshot: tag.snapshot,
-        removedIds: run.result.doneKeys,
+        removedIds: doneIdRowKeys(run.result),
         keptIds: deriveTagKeptIds(tag, run.result),
       })
       .pipe(
@@ -1121,6 +1131,49 @@ function toDeleteQueue(emotes: readonly DeleteQueueEmote[]): RunQueueEmote[] {
     });
   }
   return [...rows.values()];
+}
+
+/** The part of a `sync-deleted` body a run's result decides. */
+type DeletedReport = Pick<SyncInSetBody, 'sevenTvEmoteIds' | 'entries'>;
+
+/**
+ * The `sync-deleted` body of a settled result (Plan-378 4.6, D32, AK 37): `sevenTvEmoteIds` are the
+ * distinct 7TV ids of the `done` rows in queue order — id rows and entry rows mixed, an entry row by
+ * its row's id, never by its `${id}#${cardKey}` key — so the server still counts `archivedCount`
+ * against reported ids. `entries` names every `done` entry row with its alias, its slot (absent for
+ * an entry without one) and its add date verbatim; it is omitted when there is none, so a run of id
+ * rows sends exactly what it always sent.
+ */
+function deletedReportOf(result: RunResult): DeletedReport {
+  const rowsByKey = new Map(result.items.map((item) => [item.key, item]));
+  const sevenTvEmoteIds: string[] = [];
+  const entries: SyncInSetEntry[] = [];
+  for (const key of result.doneKeys) {
+    const row = rowsByKey.get(key);
+    // A key without its row cannot come from this service; it is reported as today, as an id.
+    const sevenTvEmoteId = row?.sevenTvEmoteId ?? key;
+    if (!sevenTvEmoteIds.includes(sevenTvEmoteId)) {
+      sevenTvEmoteIds.push(sevenTvEmoteId);
+    }
+    if (row?.entry) {
+      entries.push({
+        sevenTvEmoteId,
+        alias: row.entry.alias,
+        ...(row.entry.slotId === undefined ? {} : { slotId: row.entry.slotId }),
+        addedAt: row.entry.addedAt,
+      });
+    }
+  }
+  return entries.length > 0 ? { sevenTvEmoteIds, entries } : { sevenTvEmoteIds };
+}
+
+/** The `doneKeys` of id rows only — a 7TV id each. A tag removal runs id rows only, so for it this
+ *  is its `doneKeys` unchanged; an entry row's key would never be a 7TV id. */
+function doneIdRowKeys(result: RunResult): string[] {
+  const entryKeys = new Set(
+    result.items.filter((item) => item.entry !== undefined).map((item) => item.key),
+  );
+  return result.doneKeys.filter((key) => !entryKeys.has(key));
 }
 
 /** The per-run state of a slot delete run, or `null` for a run without an entry row. */
