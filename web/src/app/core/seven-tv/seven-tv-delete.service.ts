@@ -36,10 +36,15 @@ import {
   CANCEL_SETTLE_GRACE_MS,
   EntryBaseline,
   SET_ENTRIES_READ_TIMEOUT_MS,
+  UnexpectedEntryRemoval,
+  entryPostCheckOwed,
   entryTimeKey,
+  findUnexpectedRemovals,
   freezeBaselineGroup,
   mergeIntoBaseline,
+  mergeUnexpectedRemovals,
   settleDeleteResult,
+  settleEntryDeleteRun,
   unknownCount,
 } from './seven-tv-run-settlement';
 import { SevenTvSetEntries, SevenTvSetEntry, loadSevenTvSetEntries } from './seven-tv-set-entries';
@@ -195,6 +200,9 @@ interface EntryRunContext {
   /** Row key → the entry an attempt of that row was let through for. Dropped again when a later
    *  attempt of the same row (after a rate-limit pause) is skipped. */
   readonly attempted: Map<string, { sevenTvEmoteId: string; timeKey: string; alias: string }>;
+  /** Unexpected removals a binding read already noticed (4.4 step 6) — kept even when the re-read
+   *  after the run fails, merged with what that re-read finds. */
+  earlyUnexpected: UnexpectedEntryRemoval[];
   /** The last complete read and when its request started; `null` before the first one. */
   held: { read: SevenTvSetEntries; startedAt: number } | null;
   consecutiveReadFailures: number;
@@ -282,6 +290,17 @@ export interface DeleteRunInfo extends RunRecordBase {
   tagRemovalReport?: SyncReportState;
   /** Projected by `tagRemovalReportReason`. */
   tagRemovalReportReason?: SyncReportReason | null;
+  /** Slot delete runs only (Plan-378 4.5, D33, AK 40): entries of an emote the run removed from
+   *  that are gone from the set although none of the run's own removals accounts for them —
+   *  possibly taken by one of its requests (another editor renamed between the read and the
+   *  request), possibly by someone else. Set in the same update as `result` (empty when there are
+   *  none), never reported to the server: the run did not confirm them, and REST or an EventAPI pull
+   *  reconciles them. Absent on a run without entry rows. */
+  unexpectedRemovals?: readonly UnexpectedEntryRemoval[];
+  /** Slot delete runs only: the run owed the post-check, but its re-read failed, ran out or came
+   *  back incomplete — nobody can tell whether other entries were affected. Set with `result`, no
+   *  second attempt. Absent on a run without entry rows. */
+  postCheckUnavailable?: boolean;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -524,7 +543,7 @@ export class SevenTvDeleteService {
       setId,
       queue,
       context === null ? REMOVE_OPERATION : this.createEntryOperation(context),
-      (result) => this.onRunComplete(runId, result),
+      (result) => this.onRunComplete(runId, result, context),
     );
     if (!engineStarted) {
       // Refused (already running, empty list, no token) — take the just-opened record back and
@@ -662,8 +681,9 @@ export class SevenTvDeleteService {
   }
 
   /** One read of the set with add dates, bounded by `ENTRY_BINDING_READ_TIMEOUT_MS`. A complete
-   *  read resets the failure count, joins the baseline and becomes the held read; a failed,
-   *  timed-out or incomplete one counts as a failure and answers `null`. */
+   *  read resets the failure count, is checked against the baseline for entries gone without an own
+   *  removal (4.4 step 6), joins the baseline and becomes the held read; a failed, timed-out or
+   *  incomplete one counts as a failure and answers `null`. */
   private readForBinding(
     context: EntryRunContext,
     setId: string,
@@ -677,6 +697,7 @@ export class SevenTvDeleteService {
             return failBindingRead(context, 'truncated');
           }
           context.consecutiveReadFailures = 0;
+          noteEarlyUnexpectedRemovals(context, read);
           for (const sevenTvEmoteId of context.entryEmoteIds) {
             mergeIntoBaseline(
               context.baseline,
@@ -741,11 +762,14 @@ export class SevenTvDeleteService {
    * there is no early return for a run that is no longer shown; its confirmed removals are
    * reported all the same).
    *
-   * Without an `unknown` row the snapshot settles at once, exactly as before #275. With one, the
-   * run is `settling` (Plan-275 Festlegung 2) and its `result` stays `null` (Festlegung 10) while
-   * the set is read once, tokenless (Festlegung 6): after `CANCEL_SETTLE_GRACE_MS` when the run
-   * ended through this service's own `cancel()` (Festlegung 5 — 7TV may still be finishing the
-   * aborted `REMOVE`), at once after a plain transport loss. A read that fails or runs out of
+   * Without an `unknown` row and without an owed post-check the snapshot settles at once, exactly
+   * as before #275. Otherwise the run is `settling` (Plan-275 Festlegung 2) and its `result` stays
+   * `null` (Festlegung 10) while the set is read once, tokenless (Festlegung 6): after
+   * `CANCEL_SETTLE_GRACE_MS` when the run ended through this service's own `cancel()` (Festlegung 5
+   * — 7TV may still be finishing the aborted `REMOVE`), at once otherwise. A slot delete run
+   * (`context`) owes that read also when a removal of an entry row went out and its emote's
+   * baseline holds more entries than such removals (Plan-378 4.5, T-4), and reads with add dates; a
+   * run of id rows reads as it always did. A read that fails or runs out of
    * `SET_ENTRIES_READ_TIMEOUT_MS` is `null`; an incomplete one confirms nothing
    * (`settleDeleteResult`). Every path ends in `settleRun`, so the run always
    * leaves `settling` (Festlegung 19, P6). The snapshot waits in this closure, not on the engine: the
@@ -755,18 +779,20 @@ export class SevenTvDeleteService {
    * `finish()` builds this very result from it; nothing shows that queue any more, so it is
    * cleared here.
    */
-  private onRunComplete(runId: string, result: RunResult): void {
+  private onRunComplete(runId: string, result: RunResult, context: EntryRunContext | null): void {
     const afterCancel = this.cancelInProgress;
-    const hasUnknown = unknownCount(result.items) > 0;
-    const settling = hasUnknown
+    const needsRead =
+      unknownCount(result.items) > 0 ||
+      (context !== null && entryPostCheckOwed(result, context.baseline));
+    const settling = needsRead
       ? this.lifecycle.update(runId, (run) => ({ ...run, phase: 'settling' }))
       : null;
     if (!this.lifecycle.isShown(runId)) {
       this.engine.reset();
     }
 
-    if (!hasUnknown) {
-      this.settleRun(runId, result, null);
+    if (!needsRead) {
+      this.settleRun(runId, result, null, context);
       return;
     }
     if (settling === null) {
@@ -774,12 +800,16 @@ export class SevenTvDeleteService {
       return;
     }
 
-    const read = loadSevenTvSetEntries(this.httpClient, settling.setId).pipe(
+    const read = (
+      context === null
+        ? loadSevenTvSetEntries(this.httpClient, settling.setId)
+        : loadSevenTvSetEntries(this.httpClient, settling.setId, { withAddedAt: true })
+    ).pipe(
       timeout(SET_ENTRIES_READ_TIMEOUT_MS),
       catchError(() => of(null)),
     );
     (afterCancel ? timer(CANCEL_SETTLE_GRACE_MS).pipe(switchMap(() => read)) : read).subscribe(
-      (entries) => this.settleRun(runId, result, entries),
+      (entries) => this.settleRun(runId, result, entries, context),
     );
   }
 
@@ -789,7 +819,9 @@ export class SevenTvDeleteService {
    * as it was — and publishes that outcome. `result`, `phase: 'reporting'` and the report state
    * move together in one update, so the lifecycle's auto-close guard never sees a `reporting`
    * record whose report has not been marked `pending` yet: a run with nothing to report goes
-   * straight to `closed`.
+   * straight to `closed`. A slot delete run settles its entry rows per entry and adds its
+   * unexpected removals and `postCheckUnavailable` in that same update (Plan-378 4.5) — no reader
+   * ever sees a result without them.
    *
    * The report names the settled `doneKeys` only; a row still `unknown` is never reported
    * (Festlegung 12). What becomes of such a row (Festlegung 13, D6): next to a report, nothing
@@ -798,8 +830,14 @@ export class SevenTvDeleteService {
    * Without a report, `fallbackResync` asks for that resync directly, for `expectedChannelName`
    * only.
    */
-  private settleRun(runId: string, snapshot: RunResult, entries: SevenTvSetEntries | null): void {
-    const result = settleDeleteResult(snapshot, entries);
+  private settleRun(
+    runId: string,
+    snapshot: RunResult,
+    entries: SevenTvSetEntries | null,
+    context: EntryRunContext | null,
+  ): void {
+    const entrySettlement = context === null ? null : settleEntryRun(snapshot, entries, context);
+    const result = entrySettlement?.result ?? settleDeleteResult(snapshot, entries);
     const reportsDeleted = result.doneKeys.length > 0;
     const settled = this.lifecycle.update(runId, (run) => ({
       ...run,
@@ -812,6 +850,12 @@ export class SevenTvDeleteService {
       ...(run.tag === undefined
         ? {}
         : { tagRemovalReport: 'pending', tagRemovalReportReason: null }),
+      ...(entrySettlement === null
+        ? {}
+        : {
+            unexpectedRemovals: entrySettlement.unexpectedRemovals,
+            postCheckUnavailable: entrySettlement.postCheckUnavailable,
+          }),
     }));
     if (settled === null) {
       // Unreachable: a run is only ever dropped once it is closed, and it cannot close before this.
@@ -1091,9 +1135,65 @@ function createEntryRunContext(queue: readonly RunQueueEmote[]): EntryRunContext
     entryEmoteIds,
     baseline: new Map(),
     attempted: new Map(),
+    earlyUnexpected: [],
     held: null,
     consecutiveReadFailures: 0,
     lastReadFailure: 'unavailable',
+  };
+}
+
+/**
+ * Early collateral detection (Plan-378 4.4 step 6, S2): before a binding read joins the baseline,
+ * every emote the run has already let a removal through for is checked against it — an entry of the
+ * baseline gone from the read that no attempted own removal accounts for is noted at once, so it
+ * cannot be forgotten later, whatever the re-read after the run finds or fails to find. An attempt
+ * counts as own here even before its answer is in; the re-read after the run then judges by the
+ * rows' final states.
+ */
+function noteEarlyUnexpectedRemovals(context: EntryRunContext, read: SevenTvSetEntries): void {
+  for (const sevenTvEmoteId of context.entryEmoteIds) {
+    const groups = context.baseline.get(sevenTvEmoteId);
+    if (groups === undefined || ![...groups.values()].some((group) => group.frozen)) {
+      continue;
+    }
+    const own = new Map<string, string[]>();
+    for (const attempt of context.attempted.values()) {
+      if (attempt.sevenTvEmoteId === sevenTvEmoteId) {
+        own.set(attempt.timeKey, [...(own.get(attempt.timeKey) ?? []), attempt.alias]);
+      }
+    }
+    context.earlyUnexpected = mergeUnexpectedRemovals(
+      context.earlyUnexpected,
+      findUnexpectedRemovals(
+        sevenTvEmoteId,
+        groups,
+        read.entriesById?.get(sevenTvEmoteId) ?? [],
+        own,
+      ),
+    );
+  }
+}
+
+/** The settled outcome of a slot delete run: its rows per entry, the unexpected removals noticed
+ *  early and by the re-read, and whether an owed post-check could not run (Plan-378 4.5). */
+function settleEntryRun(
+  snapshot: RunResult,
+  entries: SevenTvSetEntries | null,
+  context: EntryRunContext,
+): {
+  result: RunResult;
+  unexpectedRemovals: UnexpectedEntryRemoval[];
+  postCheckUnavailable: boolean;
+} {
+  const settled = settleEntryDeleteRun(snapshot, entries, context.baseline);
+  return {
+    result: settled.result,
+    unexpectedRemovals: mergeUnexpectedRemovals(
+      context.earlyUnexpected,
+      settled.unexpectedRemovals ?? [],
+    ),
+    postCheckUnavailable:
+      settled.unexpectedRemovals === null && entryPostCheckOwed(snapshot, context.baseline),
   };
 }
 

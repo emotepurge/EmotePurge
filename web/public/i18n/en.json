@@ -1088,7 +1088,12 @@
     "delete": {
       "renamedSinceLoad": "{{name}} was renamed to {{newName}} since the page loaded — not deleted.",
       "departedSinceLoad": "{{name}} has left this set since the page loaded — not deleted.",
-      "noAlias": "{{name}} no longer has a name of its own in 7TV and cannot be deleted on its own — not deleted."
+      "noAlias": "{{name}} no longer has a name of its own in 7TV and cannot be deleted on its own — not deleted.",
+      "unexpectedRemoval": {
+        "one": "{{names}} is now missing from the set although the run did not delete it — a deletion may have removed this entry as well.",
+        "other": "{{names}} are now missing from the set although the run did not delete them — a deletion may have removed these entries as well."
+      },
+      "postCheckUnavailable": "Could not check whether other entries were affected — look at the set in 7TV."
     }
   },
   "sevenTvSync": {

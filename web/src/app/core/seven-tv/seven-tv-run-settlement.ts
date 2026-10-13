@@ -178,6 +178,177 @@ export function freezeBaselineGroup(
   }
 }
 
+/** An entry of an emote a slot delete run removed from that is gone from the set although none of
+ *  the run's own removals accounts for it (Plan-378 4.5, D33, AK 40) — possibly taken by one of the
+ *  run's requests, possibly by another editor. Named from the comparison baseline. */
+export interface UnexpectedEntryRemoval {
+  sevenTvEmoteId: string;
+  /** The entry's alias in the baseline — `null` for an aliasless entry. */
+  alias: string | null;
+  /** The entry's add date as read, verbatim — `null` when 7TV sent none. */
+  addedAt: string | null;
+}
+
+/**
+ * The counting rule of Plan-378 4.5 (S5, T-3) for one emote: which entries of its baseline `groups`
+ * are missing from `live` although none of the run's own removals accounts for them. `own` holds,
+ * per {@link entryTimeKey}, the aliases of the run's own removals at that date that may have taken
+ * their entry.
+ *
+ * Without a tie (one baseline entry at a date) the count decides: the entry is expected unless an
+ * own removal went to that date, and it is missing only when the read has no entry at that date at
+ * all — a renamed entry is still told apart by its own date. In a D4 tie the alias decides: every
+ * baseline entry no own removal named is expected, and counts as present only when an entry at that
+ * date carries its baseline alias; an entry under an unknown alias meets no expectation (a rename
+ * inside a tie is remove plus add). The price is a false alarm for a legitimate rename inside a tie
+ * by someone else — hence "possibly" in the dock.
+ */
+export function findUnexpectedRemovals(
+  sevenTvEmoteId: string,
+  groups: ReadonlyMap<string, EntryBaselineGroup>,
+  live: readonly SevenTvSetEntry[],
+  own: ReadonlyMap<string, readonly string[]>,
+): UnexpectedEntryRemoval[] {
+  const liveByTime = new Map<string, (string | null)[]>();
+  for (const entry of live) {
+    const key = entryTimeKey(entry.addedAt);
+    liveByTime.set(key, [...(liveByTime.get(key) ?? []), entry.alias]);
+  }
+  const missing: UnexpectedEntryRemoval[] = [];
+  for (const [key, group] of groups) {
+    const ownAliases = own.get(key) ?? [];
+    const liveAliases = liveByTime.get(key) ?? [];
+    const named = (alias: string | null) => ({ sevenTvEmoteId, alias, addedAt: group.addedAt });
+    if (group.aliases.length <= 1) {
+      const expected = group.aliases.length - ownAliases.length;
+      if (expected > 0 && liveAliases.length < expected) {
+        missing.push(...group.aliases.map(named));
+      }
+      continue;
+    }
+    const expected = [...group.aliases];
+    for (const alias of ownAliases) {
+      const index = expected.indexOf(alias);
+      if (index >= 0) {
+        expected.splice(index, 1);
+      }
+    }
+    missing.push(...expected.filter((alias) => !liveAliases.includes(alias)).map(named));
+  }
+  return missing;
+}
+
+/** `found` appended to `known`, without an entry `known` already names (same emote, date and
+ *  alias) — so a removal the run noticed early is never listed twice. */
+export function mergeUnexpectedRemovals(
+  known: readonly UnexpectedEntryRemoval[],
+  found: readonly UnexpectedEntryRemoval[],
+): UnexpectedEntryRemoval[] {
+  const keyOf = (removal: UnexpectedEntryRemoval) =>
+    `${removal.sevenTvEmoteId}\u0000${entryTimeKey(removal.addedAt)}\u0000${removal.alias ?? ''}`;
+  const seen = new Set(known.map(keyOf));
+  const merged = [...known];
+  for (const removal of found) {
+    if (!seen.has(keyOf(removal))) {
+      seen.add(keyOf(removal));
+      merged.push(removal);
+    }
+  }
+  return merged;
+}
+
+/**
+ * Whether a slot delete run owes the post-check (Plan-378 4.5, T-4): for at least one emote an
+ * entry row's removal actually went out — its row is `done` or `unknown`; a skipped or failed row
+ * does not count — and the emote's baseline holds more entries than such removals. A marked row
+ * that was skipped is itself an entry that should still be there, so it does not suppress the
+ * check; a run whose entry rows were all skipped sent nothing and owes none.
+ */
+export function entryPostCheckOwed(result: RunResult, baseline: EntryBaseline): boolean {
+  for (const [sevenTvEmoteId, sent] of sentEntryRemovals(result.items)) {
+    const total = [...(baseline.get(sevenTvEmoteId)?.values() ?? [])].reduce(
+      (sum, group) => sum + group.aliases.length,
+      0,
+    );
+    const sentCount = [...sent.values()].reduce((sum, aliases) => sum + aliases.length, 0);
+    if (total > sentCount) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Clears up a slot delete run against its one re-read after the run and checks the removals'
+ * emotes for entries the run did not report (Plan-378 4.5, D33).
+ *
+ * An `unknown` id row settles as {@link settleDeleteResult} does. An `unknown` **entry** row
+ * becomes `done` only when the read shows no entry with its alias at its date **and** fewer entries
+ * at that date than the baseline held minus the run's own `done` removals there — positive only
+ * (Plan-275 N1). Several `unknown` rows at one date are settled in queue order against that
+ * difference, so never more of them become `done` than entries are gone; a renamed entry still
+ * there (same count, another alias) leaves its row `unknown`.
+ *
+ * Then, per emote with a removal that went out (`done` or `unknown`), {@link findUnexpectedRemovals}
+ * with those removals as the own ones; a row still `unknown` may have taken its entry, a skipped or
+ * failed one is expected to still be there.
+ *
+ * `unexpectedRemovals` is `null` when there is nothing to judge by: no read, a failed or incomplete
+ * one, or one without add dates — every row is then left as it was.
+ */
+export function settleEntryDeleteRun(
+  result: RunResult,
+  entries: SevenTvSetEntries | null,
+  baseline: EntryBaseline,
+): { result: RunResult; unexpectedRemovals: UnexpectedEntryRemoval[] | null } {
+  const readable = readableEntries(entries);
+  const liveById = readable?.entriesById;
+  if (readable === null || liveById === undefined) {
+    return { result: settleDeleteResult(result, null), unexpectedRemovals: null };
+  }
+  const doneAt = new Map<string, number>();
+  for (const item of result.items) {
+    if (item.entry && item.status === 'done') {
+      const key = emoteTimeKey(item.sevenTvEmoteId, item.entry.addedAt);
+      doneAt.set(key, (doneAt.get(key) ?? 0) + 1);
+    }
+  }
+  const items = result.items.map((item) => {
+    if (item.status !== 'unknown') {
+      return item;
+    }
+    if (!item.entry) {
+      return settleDeleteRow(item, readable);
+    }
+    const timeKey = entryTimeKey(item.entry.addedAt);
+    const group = baseline.get(item.sevenTvEmoteId)?.get(timeKey);
+    const live = (liveById.get(item.sevenTvEmoteId) ?? []).filter(
+      (entry) => entryTimeKey(entry.addedAt) === timeKey,
+    );
+    const key = emoteTimeKey(item.sevenTvEmoteId, item.entry.addedAt);
+    const done = doneAt.get(key) ?? 0;
+    if (
+      group === undefined ||
+      live.some((entry) => entry.alias === item.entry?.alias) ||
+      live.length >= group.aliases.length - done
+    ) {
+      return item;
+    }
+    doneAt.set(key, done + 1);
+    return asDone(item);
+  });
+  const unexpectedRemovals: UnexpectedEntryRemoval[] = [];
+  for (const [sevenTvEmoteId, own] of sentEntryRemovals(items)) {
+    const groups = baseline.get(sevenTvEmoteId);
+    if (groups !== undefined) {
+      unexpectedRemovals.push(
+        ...findUnexpectedRemovals(sevenTvEmoteId, groups, liveById.get(sevenTvEmoteId) ?? [], own),
+      );
+    }
+  }
+  return { result: { ...result, items, doneKeys: doneKeysOf(items) }, unexpectedRemovals };
+}
+
 /** `entries` is usable for clearing a row up only when it is a full read — a read that stopped
  *  short (`complete: false`) has itself only partial knowledge of the set, which is not enough to
  *  positively confirm anything either way (Plan-275 Festlegung 7/8). */
@@ -241,6 +412,26 @@ function asDone(item: RunQueueItem): RunQueueItem {
 
 function doneKeysOf(items: readonly RunQueueItem[]): string[] {
   return items.filter((item) => item.status === 'done').map((item) => item.key);
+}
+
+/** Per emote, per {@link entryTimeKey}: the aliases of the entry rows whose removal went out —
+ *  `done` or `unknown`. */
+function sentEntryRemovals(items: readonly RunQueueItem[]): Map<string, Map<string, string[]>> {
+  const sent = new Map<string, Map<string, string[]>>();
+  for (const item of items) {
+    if (!item.entry || (item.status !== 'done' && item.status !== 'unknown')) {
+      continue;
+    }
+    const perTime = sent.get(item.sevenTvEmoteId) ?? new Map<string, string[]>();
+    const key = entryTimeKey(item.entry.addedAt);
+    perTime.set(key, [...(perTime.get(key) ?? []), item.entry.alias]);
+    sent.set(item.sevenTvEmoteId, perTime);
+  }
+  return sent;
+}
+
+function emoteTimeKey(sevenTvEmoteId: string, addedAt: string): string {
+  return `${sevenTvEmoteId}\u0000${entryTimeKey(addedAt)}`;
 }
 
 function groupByTime(entries: readonly SevenTvSetEntry[]): Map<string, EntryBaselineGroup> {

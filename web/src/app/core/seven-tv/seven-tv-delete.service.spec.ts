@@ -2149,6 +2149,8 @@ describe('SevenTvDeleteService', () => {
       expect(body.query).toContain('removeEmote(id: { emoteId: $emoteId, alias: $alias })');
       flushApplied(request);
       vi.advanceTimersByTime(DELETE_DELAY_MS);
+      // ome44 should still be there: the run checks that once it has ended.
+      answerRead([LIVE_OME]);
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
@@ -2246,42 +2248,43 @@ describe('SevenTvDeleteService', () => {
     });
   });
 
+  // Shared by the binding and the post-check cases below (Plan-378 4.4, 4.5).
+  const T1 = '2026-10-13T08:00:14.902Z';
+  const T2 = '2026-10-13T09:00:00Z';
+  const T3 = '2026-10-13T10:00:00Z';
+  function entryRow(
+    sevenTvEmoteId: string,
+    alias: string,
+    addedAt: string,
+    cardKey = `slot-${alias}`,
+  ): DeleteQueueEmote {
+    return {
+      sevenTvEmoteId,
+      name: alias,
+      entry: { slotId: cardKey, alias, addedAt, cardKey },
+    };
+  }
+  const A = entryRow('7tv-x', 'aaa', T1);
+  const Y = entryRow('7tv-y', 'yyy', T3);
+
+  function answerRead(entries: readonly LiveEntry[]) {
+    httpMock.expectOne(isSetRead).flush(datedSetPage(entries));
+  }
+
+  function answerRemove() {
+    const request = httpMock.expectOne(isRemove);
+    const variables = request.request.body.variables;
+    flushApplied(request);
+    vi.advanceTimersByTime(DELETE_DELAY_MS);
+    return variables;
+  }
+
+  function rowOf(key: string) {
+    return service.queue().find((row) => row.key === key);
+  }
+
   // Plan-378 4.4 (D21, AK 38, 51): every attempt of an entry row is bound to a read of the set.
   describe('binding an entry row to a read of its set entry', () => {
-    const T1 = '2026-10-13T08:00:14.902Z';
-    const T2 = '2026-10-13T09:00:00Z';
-    const T3 = '2026-10-13T10:00:00Z';
-    function entryRow(
-      sevenTvEmoteId: string,
-      alias: string,
-      addedAt: string,
-      cardKey = `slot-${alias}`,
-    ): DeleteQueueEmote {
-      return {
-        sevenTvEmoteId,
-        name: alias,
-        entry: { slotId: cardKey, alias, addedAt, cardKey },
-      };
-    }
-    const A = entryRow('7tv-x', 'aaa', T1);
-    const Y = entryRow('7tv-y', 'yyy', T3);
-
-    function answerRead(entries: readonly LiveEntry[]) {
-      httpMock.expectOne(isSetRead).flush(datedSetPage(entries));
-    }
-
-    function answerRemove() {
-      const request = httpMock.expectOne(isRemove);
-      const variables = request.request.body.variables;
-      flushApplied(request);
-      vi.advanceTimersByTime(DELETE_DELAY_MS);
-      return variables;
-    }
-
-    function rowOf(key: string) {
-      return service.queue().find((row) => row.key === key);
-    }
-
     it('lets the attempt through with exactly the verified alias when the read shows the entry under it', () => {
       service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
 
@@ -2366,6 +2369,14 @@ describe('SevenTvDeleteService', () => {
       expect(rowOf('7tv-x#slot-bbb')?.errorMessage).toBe(
         'bbb ist nicht mehr in diesem Set — nicht gelöscht.',
       );
+      // Inside a tie an unknown alias meets no expectation (T-3): bbb counts as gone.
+      answerRead([
+        { id: '7tv-x', alias: 'ccc', addedAt: T1 },
+        { id: '7tv-x', alias: 'ddd', addedAt: T1 },
+      ]);
+      expect(service.run()?.unexpectedRemovals).toEqual([
+        { sevenTvEmoteId: '7tv-x', alias: 'bbb', addedAt: T1 },
+      ]);
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
@@ -2454,6 +2465,8 @@ describe('SevenTvDeleteService', () => {
       // be skipped without a read.
       answerRead(live);
       expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-a5', alias: 'a5' });
+      // a5's sibling should still be there — the re-read after the run checks it.
+      answerRead(live.filter((entry) => entry.alias !== 'a5'));
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
@@ -2524,6 +2537,221 @@ describe('SevenTvDeleteService', () => {
         status: 'cancelled',
         errorMessage: 'aaa wurde in ccc umbenannt — nicht gelöscht.',
       });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+  });
+  // Plan-378 4.5 (D33, AK 40, S2, S5, T-3, T-4): after the run the set is read once more, every
+  // unanswered entry row is cleared up per entry, and the emotes it removed from are checked for
+  // entries no reported removal accounts for.
+  describe('checking a slot removal against the set afterwards', () => {
+    const B = entryRow('7tv-x', 'bbb', T2);
+    const C = entryRow('7tv-x', 'ccc', T3);
+    const X_AAA: LiveEntry = { id: '7tv-x', alias: 'aaa', addedAt: T1 };
+    const X_BBB: LiveEntry = { id: '7tv-x', alias: 'bbb', addedAt: T2 };
+    const X_CCC: LiveEntry = { id: '7tv-x', alias: 'ccc', addedAt: T3 };
+
+    function failRead() {
+      httpMock
+        .expectOne(isSetRead)
+        .flush({ errors: [{ message: 'rate limited' }] }, { status: 200, statusText: 'OK' });
+    }
+
+    // AK 40: the result and the check land on the record together, in the update that leaves
+    // `settling`.
+    it('flags an entry of the emote the run did not report when the re-read misses it', () => {
+      service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+
+      answerRead([X_AAA, X_BBB]);
+      answerRemove();
+      expect(service.run()).toMatchObject({ phase: 'settling', result: null });
+      expect(service.run()?.unexpectedRemovals).toBeUndefined();
+
+      answerRead([]);
+      expect(service.run()).toMatchObject({
+        phase: 'reporting',
+        unexpectedRemovals: [{ sevenTvEmoteId: '7tv-x', alias: 'bbb', addedAt: T2 }],
+        postCheckUnavailable: false,
+      });
+      expect(service.run()?.result?.doneKeys).toEqual(['7tv-x#slot-aaa']);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('flags nothing when the re-read shows every other entry of the emote', () => {
+      service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+
+      answerRead([X_AAA, X_BBB]);
+      answerRemove();
+      answerRead([X_BBB]);
+
+      expect(service.run()).toMatchObject({ unexpectedRemovals: [], postCheckUnavailable: false });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('marks the check unavailable when the owed re-read fails, and still reports the removal', () => {
+      service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+
+      answerRead([X_AAA, X_BBB]);
+      answerRemove();
+      failRead();
+
+      expect(service.run()).toMatchObject({ unexpectedRemovals: [], postCheckUnavailable: true });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    // S2: the baseline accumulates, so a sibling the first removal took is not forgotten.
+    it('notes a sibling the first of two removals took at the next read, even when the re-read then fails', () => {
+      service.startDelete('set-1', 'sensitron', [A, C], 'sensitron', null);
+
+      answerRead([X_AAA, X_BBB, X_CCC]);
+      answerRemove();
+      // bbb went with the first request; the read in front of ccc's attempt shows it.
+      answerRead([X_CCC]);
+      answerRemove();
+      failRead();
+
+      expect(service.run()).toMatchObject({
+        unexpectedRemovals: [{ sevenTvEmoteId: '7tv-x', alias: 'bbb', addedAt: T2 }],
+        postCheckUnavailable: true,
+      });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('does not take a sibling that was only renamed for a removal', () => {
+      service.startDelete('set-1', 'sensitron', [A, C], 'sensitron', null);
+
+      answerRead([X_AAA, X_BBB, X_CCC]);
+      answerRemove();
+      answerRead([{ ...X_BBB, alias: 'bb2' }, X_CCC]);
+      answerRemove();
+      answerRead([{ ...X_BBB, alias: 'bb2' }]);
+
+      expect(service.run()?.unexpectedRemovals).toEqual([]);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    // T-3: in a tie the count can match while the wrong entry went.
+    it('flags the sibling of a tie by its alias, even when the number of entries matches', () => {
+      const tieB: LiveEntry = { id: '7tv-x', alias: 'bbb', addedAt: T1 };
+      service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+
+      answerRead([X_AAA, tieB]);
+      // Between the read and the request another editor renamed aaa → ccc and bbb → aaa, so 7TV
+      // took bbb's entry. One entry at T1 is left, as expected — but not under bbb.
+      answerRemove();
+      answerRead([{ id: '7tv-x', alias: 'ccc', addedAt: T1 }]);
+
+      expect(service.run()?.unexpectedRemovals).toEqual([
+        { sevenTvEmoteId: '7tv-x', alias: 'bbb', addedAt: T1 },
+      ]);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('flags nothing in a tie when the sibling is still there under its alias', () => {
+      const tieB: LiveEntry = { id: '7tv-x', alias: 'bbb', addedAt: T1 };
+      service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+
+      answerRead([X_AAA, tieB]);
+      answerRemove();
+      answerRead([tieB]);
+
+      expect(service.run()?.unexpectedRemovals).toEqual([]);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    // T-4: the trigger counts the removals that went out, not the rows that were marked.
+    it('still checks when a marked row was skipped, and flags the entry the sent removal took', () => {
+      service.startDelete('set-1', 'sensitron', [A, B], 'sensitron', null);
+
+      const renamedA = { ...X_AAA, alias: 'aa2' };
+      answerRead([renamedA, X_BBB, X_CCC]);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      expect(rowOf('7tv-x#slot-aaa')?.status).toBe('cancelled');
+      answerRead([renamedA, X_BBB, X_CCC]);
+      answerRemove();
+      // REMOVE(bbb) took ccc's entry.
+      answerRead([renamedA, X_BBB]);
+
+      expect(service.run()?.unexpectedRemovals).toEqual([
+        { sevenTvEmoteId: '7tv-x', alias: 'ccc', addedAt: T3 },
+      ]);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('reads nothing after a run whose only entry row was skipped and sent no removal', () => {
+      service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+
+      answerRead([{ ...X_AAA, alias: 'aa2' }, X_BBB]);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isSetRead);
+      expect(service.run()).toMatchObject({
+        phase: 'closed',
+        unexpectedRemovals: [],
+        postCheckUnavailable: false,
+      });
+    });
+
+    // S5: with a tie, an unanswered removal is cleared up by the count at its date.
+    it('confirms an unanswered removal in a tie when its alias is gone and one entry fewer is left', () => {
+      const tieB: LiveEntry = { id: '7tv-x', alias: 'bbb', addedAt: T1 };
+      service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+
+      answerRead([X_AAA, tieB]);
+      flushWithoutResult(httpMock.expectOne(isRemove));
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      expect(service.run()?.phase).toBe('settling');
+      answerRead([tieB]);
+
+      expect(rowOf('7tv-x#slot-aaa')?.status).toBe('done');
+      expect(service.run()?.unexpectedRemovals).toEqual([]);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('leaves an unanswered removal unknown when its entry is only renamed, and flags nothing', () => {
+      const tieB: LiveEntry = { id: '7tv-x', alias: 'bbb', addedAt: T1 };
+      service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+
+      answerRead([X_AAA, tieB]);
+      flushWithoutResult(httpMock.expectOne(isRemove));
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      answerRead([tieB, { id: '7tv-x', alias: 'ccc', addedAt: T1 }]);
+
+      expect(rowOf('7tv-x#slot-aaa')?.status).toBe('unknown');
+      expect(service.run()?.unexpectedRemovals).toEqual([]);
+      // Nothing to report: the client asks for the active channel's resync instead.
+      httpMock
+        .expectOne('/api/channels/sensitron/resync')
+        .flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('keeps the tie sibling expected after a confirmed removal and flags it when it is gone', () => {
+      const tieB: LiveEntry = { id: '7tv-x', alias: 'bbb', addedAt: T1 };
+      service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+
+      answerRead([X_AAA, tieB]);
+      answerRemove();
+      answerRead([]);
+
+      expect(service.run()?.unexpectedRemovals).toEqual([
+        { sevenTvEmoteId: '7tv-x', alias: 'bbb', addedAt: T1 },
+      ]);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    // Flag off = today: an id row's unanswered removal is re-read without dates, and the record
+    // gains no slot fields.
+    it('re-reads a run of id rows without add dates and adds no slot fields to its record', () => {
+      service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
+
+      flushWithoutResult(httpMock.expectOne(isRemove));
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      const read = httpMock.expectOne(isSetRead);
+      expect((read.request.body as { query: string }).query).not.toContain('addedAt');
+      read.flush(setEntriesPage([]));
+
+      expect(service.run()?.result?.doneKeys).toEqual(['7tv-1']);
+      expect(service.run()).not.toHaveProperty('unexpectedRemovals');
+      expect(service.run()).not.toHaveProperty('postCheckUnavailable');
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
   });
