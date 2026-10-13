@@ -320,8 +320,8 @@ Schreibzugriffe auf `olaf_olaf_son` (erwartet: keine 7TV-Writes; der Ablauf lies
    des Fensters. Eine Zelle, die das Archiv-Aggregat mit einer Live-Zeile teilt (gleicher Slot, Set, Tag), endet nicht als
    übersprungene Zelle, sondern mit `LiveRowConflict` und `failed` für den ganzen Lauf. Liegen Live-Zeilen im Fenster, ein anderes
    Fenster wählen (anderer `CreatedAt`, ggf. 3 Monate mit entsprechend verschobenem Zählbeginn) — **nie** Live-Zeilen löschen.
-   **S16 live** braucht einen Kanal mit Importen aus der Flag-aus-Zeit; hat die Kopie einen solchen und ist es `handofblood`, **vorher
-   fragen** (Nutzervorgabe „handofblood nur lesend“; §10 Punkt 8 offen).
+   **S16 live** braucht einen Kanal mit Importen aus der Flag-aus-Zeit; ist das auf der Kopie `handofblood`, darf das Entfernen dort
+   auf der Kopie `emotepurge_384` schreiben (Nutzerentscheid 13.10., §10 Punkt 8). Kein 7TV-Schreibzugriff auf `handofblood`, kein Prod.
 3. **Anmelden:** Worktree-Api auf `:5151`, Login im Browser über `http://localhost:5151/api/auth/twitch/login`, Cookie in die
    Scratchpad-Datei. Das Cookie gilt nur für die Api **aus genau diesem Worktree** (Schlüsselring). Probe `GET /api/auth/me`.
 4. **Import erzeugen:** 1-Monats-Lauf für `olaf_olaf_son` (aktives Set) über die UI oder `curl`; abwarten bis `completed`. Kommen aus
@@ -425,7 +425,7 @@ liegt beim Nutzer.**
    Entfernen-Ansage sind nicht festgelegt. Plan: eigener Zustand, Vorrang bis zum nächsten aktiven Lauf oder Kanalwechsel (3.).
 7. **[angenommen 13.10.] Live §13.10 „zweiter Manager in zweitem Browser“:** kein zweites Konto vorhanden. Plan: Coverage-Änderung per `curl` mit
    demselben Cookie während des offenen Dialogs (7.16).
-8. **[offen, Nutzer] Live-Kanal:** Nutzervorgabe `olaf_olaf_son`, Spec §13.1 wünscht einen Kanal mit Flag-aus-Importen (S16 live). Ist das auf der
-   Kopie `handofblood`, wird vor dem Entfernen dort gefragt (Vorgabe „nur lesend“). Liefert das Archiv für `olaf_olaf_son` keine
+8. **[Nutzerentscheid 13.10.] Live-Kanal:** Nutzervorgabe `olaf_olaf_son`, Spec §13.1 wünscht einen Kanal mit Flag-aus-Importen (S16 live). Ist das auf der
+   Kopie `handofblood`, darf das Entfernen dort **nur auf der DB-Kopie** schreiben; 7TV und Prod bleiben unberührt. Liefert das Archiv für `olaf_olaf_son` keine
    Nachrichten, ist dessen Import reine Coverage (S15 live), der Zeilenpfad dann nur am S16-Kanal oder per Integrationstest.
 9. **Backfill-Spec-Statuszeile:** im Auftrag „falls üblich“ genannt, Spec §15 schließt die Datei aus (Teil B). Plan: nicht anfassen.
