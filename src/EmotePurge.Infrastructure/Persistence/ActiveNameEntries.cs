@@ -19,8 +19,9 @@ public static class ActiveNameEntries
     /// <summary>
     /// One entry per active own slot (not archived, not an unsettled seed) of an active emote, plus
     /// — E14 — exactly one virtual entry under <c>Emote.Name</c> for an active emote that has no
-    /// active own slot (before its first reconcile, after a delta push, with a deferred settle). Slots under an archived emote never count. Not distinct: two slots of one
-    /// emote under one name are two entries, which is what the occupied-slot count wants.
+    /// active own slot (before its first reconcile, after a delta push, with a deferred settle). Slots
+    /// under an archived emote never count. Not distinct: two slots of one emote under one name are two
+    /// entries, which is what the occupied-slot count wants.
     /// </summary>
     public static IQueryable<ActiveNameEntry> ForChannel(this AppDbContext db, string channelId)
     {

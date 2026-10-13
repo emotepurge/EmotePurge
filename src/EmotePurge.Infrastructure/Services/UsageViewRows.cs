@@ -141,10 +141,10 @@ internal static class UsageViewRows
                                && o.AddedAt == slot.AddedAt);
 
     /// <summary>
-    /// R1/R2: exactly the emote-wide row from before slots — no slot id, the emote's name and <c>FirstSeenAt</c>, never "from REST",
-    /// no siblings, <c>IsArchived</c> from the emote (always false in the active view, whose base set is
-    /// unarchived) — carrying every slot of the emote with rows in X, so its numbers are the emote's whole
-    /// count in X.
+    /// R1/R2: exactly the emote-wide row from before slots — no slot id, the emote's name and
+    /// <c>FirstSeenAt</c>, never "from REST", no siblings, <c>IsArchived</c> from the emote (always false
+    /// in the active view, whose base set is unarchived) — carrying every slot of the emote with rows in
+    /// X, so its numbers are the emote's whole count in X.
     /// </summary>
     private static UsageViewRow EmoteModeRow(UsageViewEmote emote, List<string> slotsWithRows) =>
         new(emote.Id, null, emote.Name, emote.FirstSeenAt, false, emote.IsArchived, [], slotsWithRows, false);

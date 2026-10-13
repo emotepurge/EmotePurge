@@ -1283,8 +1283,9 @@ public class SevenTvSyncService(
 
     private async Task RefreshMatchCacheAsync(Channel channel, string channelName, CancellationToken cancellationToken)
     {
-        // Plan #373 §3.2: one entry per settled slot, with the slot id as value. Nothing here writes: a
-        // slot is only ever created by a reconcile.
+        // Plan #373 §3.2: one entry per settled slot, with the slot id as value. Nothing here writes: the
+        // map only reads the slots the writers (the reconcile, the delta, the backfill enqueue and the
+        // set-centric report) have committed.
         var (nameToSlotKey, duplicateNames) = await BuildSlotMatchMapAsync(channel, channelName, cancellationToken);
 
         if (duplicateNameTracker.Update(channelName, duplicateNames))
