@@ -12,8 +12,8 @@ namespace EmotePurge.Worker.Tests;
 
 /// <summary>
 /// The requeue side of the flush's return contract (plan #373, E9): a throw puts the whole batch back
-/// under the overall failure streak. Container-free: the flush service is a substitute. <see cref="UsageFlushWorker.FlushOnceAsync"/> runs exactly one flush
-/// cycle; the final flush of <see cref="UsageFlushWorker.StopAsync"/> (plan #373, E9a: bounded retries)
+/// under the overall failure streak. Container-free: the flush service is a substitute.
+/// <see cref="UsageFlushWorker.FlushOnceAsync"/> runs exactly one flush cycle; the final flush of <see cref="UsageFlushWorker.StopAsync"/> (plan #373, E9a: bounded retries)
 /// is driven on a worker that was never started, with the retry pause turned off.
 /// </summary>
 public class UsageFlushWorkerTests

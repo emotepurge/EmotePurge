@@ -218,8 +218,9 @@ public class EmoteService(
     // 2.9 (E27): one attempt runs from the first read to the commit, and a failed attempt — chosen as
     // a deadlock victim (40P01) or finding a hit channel deleted at its channel lock — rolls back,
     // clears the change tracker and runs once more from the first read. One retry in total, whichever
-    // the reason; the second failure propagates (500), as every database failure here did before. The attempt's audit entries are dropped with the
-    // cleared tracker, so they exist exactly once; nothing after the commit runs twice.
+    // the reason; the second failure propagates (500), as every database failure here did before. The
+    // attempt's audit entries are dropped with the cleared tracker, so they exist exactly once; nothing
+    // after the commit runs twice.
     private async Task<InSetOutcome> MarkInSetAsync(InSetReport report, CancellationToken cancellationToken)
     {
         var retried = false;

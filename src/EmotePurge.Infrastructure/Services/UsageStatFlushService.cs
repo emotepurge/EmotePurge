@@ -79,7 +79,7 @@ public class UsageStatFlushService(AppDbContext db, ILogger<UsageStatFlushServic
         if (dropped > 0)
         {
             logger.LogWarning(
-                "{Count} buffered usage counts dropped: their slot was deleted in the meantime.",
+                "{Count} buffered usage counts dropped: their slot no longer exists.",
                 dropped);
         }
 
