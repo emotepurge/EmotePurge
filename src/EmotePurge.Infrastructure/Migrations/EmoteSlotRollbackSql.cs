@@ -82,4 +82,22 @@ public static class EmoteSlotRollbackSql
         USING ranked r
         WHERE t.ctid = r.row_id AND r.rn > 1;
         """;
+
+    /// <summary>
+    /// Step 3b of the chat-log backfill rollback (docs/Operations.md, "Rolling back"), run after the
+    /// placeholder cleanup (step 3) and before the imported rows are deleted (step 4): deletes the
+    /// slots a backfill enqueue created (archived with <c>ArchivedAt</c> null, "was never in", and
+    /// marked <c>CreatedSlot</c> in a run's snapshot) that carry no live usage. A slot with a
+    /// <c>Source = 0</c> row stays, which also covers the hand-off of #373: a flush may have reused a
+    /// seedless enqueue slot for live counting. A seed the enqueue merely settled is never
+    /// <c>CreatedSlot</c> and stays. Deleting a slot cascades to its imported (<c>Source = 1</c>) rows,
+    /// which step 4 would delete anyway. Needs the snapshot rows, like step 3. Idempotent, no parameters.
+    /// </summary>
+    public const string DeleteBackfillCreatedSlotsSql =
+        """
+        DELETE FROM "EmoteSlots" s
+        WHERE s."IsArchived" AND s."ArchivedAt" IS NULL
+          AND EXISTS (SELECT 1 FROM "ChatLogBackfillRunEmotes" r WHERE r."SlotId" = s."Id" AND r."CreatedSlot")
+          AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id" AND u."Source" = 0);
+        """;
 }

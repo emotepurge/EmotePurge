@@ -1028,6 +1028,23 @@ matters:
    ```
 
    The vote predicates are what keep a ballot's history intact: `Vote.Emote` cascades.
+3b. **Remove the slots the backfill created (optional, restricted; slot-aware images only).** Run it right
+   after step 3 and before step 4, for the same reason as step 3: the run's snapshot is the only proof
+   which slots the backfill created (`CreatedSlot`). It deletes exactly the slots that are archived with
+   no archive time ("was never in"), were created by a run, and carry no live usage (`Source = 0`); a
+   slot that live counting has used stays, and so does a seed that the enqueue merely settled — that one
+   is not `CreatedSlot`. A placeholder removed in step 3 took its slots along already. Deleting a slot
+   removes its imported rows with it, which step 4 would delete anyway. Skip it on a database without the
+   `EmoteSlots` table.
+
+   ```sql
+   DELETE FROM "EmoteSlots" s
+   WHERE s."IsArchived" AND s."ArchivedAt" IS NULL
+     AND EXISTS (SELECT 1 FROM "ChatLogBackfillRunEmotes" r WHERE r."SlotId" = s."Id" AND r."CreatedSlot")
+     AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id" AND u."Source" = 0);
+   ```
+
+   The statement is `EmoteSlotRollbackSql.DeleteBackfillCreatedSlotsSql`; keep both texts identical.
 4. **Delete the imported rows and the coverage.** Globally, or per channel by adding the channel id:
 
    ```sql
