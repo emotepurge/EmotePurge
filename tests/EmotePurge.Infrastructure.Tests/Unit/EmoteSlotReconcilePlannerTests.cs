@@ -13,6 +13,17 @@ public class EmoteSlotReconcilePlannerTests
 {
     private static readonly DateTime Now = new(2026, 10, 12, 12, 0, 0, DateTimeKind.Utc);
 
+    // U+1F600 (a surrogate pair, UTF-16 0xD83D...) against U+FF5E / U+FFFF: UTF-16 puts the emoji first, UTF-8 last.
+    private static readonly string Emoji = "\U0001F600";
+    private static readonly string Tilde = "\uFF5E";
+
+    public static TheoryData<string, string> BoundaryPairs => new()
+    {
+        { Emoji, Tilde },
+        { "a" + Emoji, "a\uFFFF" },
+        { "\uE000", Emoji },
+    };
+
     // ---- Date identity (step 3, D4, D16, §6.5) ----
 
     [Fact]
@@ -393,6 +404,18 @@ public class EmoteSlotReconcilePlannerTests
         Assert.Equal("b", Assert.Single(plan.CreatedSlots).Name);
     }
 
+    [Fact]
+    public void Settle_OldestTie_PicksTheUtf8SmallestName_NotTheUtf16OnePlane()
+    {
+        // #403: U+1F600 sorts before U+FF5E in UTF-16 (surrogate 0xD83D) but after it in UTF-8 and D2.
+        var slots = new[] { Seed("seed", "x") };
+
+        var plan = Plan([Live(Emoji, Day(3)), Live(Tilde, Day(3))], slots, activeSeeds: ["seed"]);
+
+        Assert.Equal(Tilde, plan.UpdatedSlots.Single(s => s.Id == "seed").Name);
+        Assert.Equal(Emoji, Assert.Single(plan.CreatedSlots).Name);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -733,6 +756,61 @@ public class EmoteSlotReconcilePlannerTests
         var derived = EmoteSlotReconcilePlanner.Derive(slots);
 
         Assert.Equal(new EmoteNameDerivation("Alpha", Day(3)), derived);
+    }
+
+    // ---- One name order for D13 and D2 (#403): UTF-8 byte order, not UTF-16 ordinal ----
+
+    [Fact]
+    public void BoundaryFixtures_AreTheCodePointsTheTestsClaim()
+    {
+        Assert.Equal(0x1F600, char.ConvertToUtf32(Emoji, 0));
+        Assert.Equal(2, Emoji.Length);
+        Assert.Equal(0x1F600, char.ConvertToUtf32("a" + Emoji, 1));
+    }
+
+    [Theory]
+    [MemberData(nameof(BoundaryPairs))]
+    public void Derive_NameTie_FollowsUtf8Order_ForNullAndEqualDates_WhateverTheInputOrder(string a, string b)
+    {
+        Assert.NotEqual(
+            Math.Sign(string.CompareOrdinal(a, b)),
+            Math.Sign(BaseSlotRule.Utf8Order.Compare(a, b))); // the pair must separate the two orders
+        var expected = BaseSlotRule.Utf8Order.Compare(a, b) < 0 ? a : b;
+
+        foreach (DateTime? date in new DateTime?[] { null, Day(2) })
+        {
+            var sa = new SlotState("s1", a, date, date is not null, false, null, false);
+            var sb = new SlotState("s2", b, date, date is not null, false, null, false);
+
+            Assert.Equal(expected, EmoteSlotReconcilePlanner.Derive([sa, sb])!.Name);
+            Assert.Equal(expected, EmoteSlotReconcilePlanner.Derive([sb, sa])!.Name);
+        }
+    }
+
+    [Theory]
+    [InlineData("A", "B")]
+    [InlineData("Zed", "alpha")]
+    [InlineData("e\u0301", "\u00E9")]
+    [MemberData(nameof(BoundaryPairs))]
+    public void Derive_NameEqualsTheMinimumOfTheCandidatesUnderD2Order(string a, string b)
+    {
+        var day = Day(4);
+        var derived = EmoteSlotReconcilePlanner.Derive(
+        [
+            new SlotState("s1", a, day, true, false, null, false),
+            new SlotState("s2", b, day, true, false, null, false),
+        ]);
+
+        var d2 = new[] { new BaseSlotCandidate("s1", a, day), new BaseSlotCandidate("s2", b, day) }.Min(BaseSlotRule.D2Order)!;
+        Assert.Equal(d2.Name, derived!.Name);
+    }
+
+    [Fact]
+    public void PlanLiveGroup_UndatedLiveGroup_DerivesTheUtf8SmallestName()
+    {
+        var plan = Plan([Live(Emoji), Live(Tilde)], [], emoteName: Emoji);
+
+        Assert.Equal(Tilde, plan.Derivation!.Name);
     }
 
     [Fact]

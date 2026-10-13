@@ -434,6 +434,21 @@ describe('mergeSetView per slot (plan 377)', () => {
     expect(byName(result, 'zzUndated').siblingNames).toEqual(['ome44', 'hob44', 'aaUndated']);
   });
 
+  it('orders undated sibling names in UTF-8 byte order, like the server (supplementary after U+FF5E)', () => {
+    const emoji = '\u{1F600}';
+    const tilde = '\uFF5E';
+    expect(emoji.codePointAt(0)).toBe(0x1f600);
+    expect(emoji).toHaveLength(2);
+
+    const result = mergeSetView(
+      [slotDto('slot-a', 'a', { totalUseCount: 3 })],
+      [slotEntry(emoji, null), slotEntry(tilde, null), slotEntry('a', null)],
+      false,
+    );
+
+    expect(byName(result, 'a').siblingNames).toEqual([tilde, emoji]);
+  });
+
   it('S1: gives two uncounted entries sharing one instant distinct, name-qualified keys', () => {
     const result = mergeSetView(
       [
