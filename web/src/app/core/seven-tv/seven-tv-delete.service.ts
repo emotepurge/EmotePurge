@@ -1091,6 +1091,15 @@ export class SevenTvDeleteService {
   }
 }
 
+/** The aliases a delete row removes: an entry row exactly its own, an id row its known aliases, or
+ *  the emote's name when it has none. */
+function deleteRowAliases(emote: DeleteQueueEmote): readonly string[] {
+  if (emote.entry) {
+    return [emote.entry.alias];
+  }
+  return emote.aliases && emote.aliases.length > 0 ? emote.aliases : [emote.name];
+}
+
 /** The delete queue. **Id rows** are one per 7TV id, keyed by it (spec #200, 7.2, Sonde 5 branch A):
  *  a #74 duplicate cell is one row, and its one `REMOVE` takes every entry. Should a caller hand in
  *  the same id twice, the rows merge — two rows with one key would make the engine's per-key status
@@ -1107,11 +1116,7 @@ function toDeleteQueue(emotes: readonly DeleteQueueEmote[]): RunQueueEmote[] {
   );
   const rows = new Map<string, RunQueueEmote & { aliases: string[] }>();
   for (const emote of emotes) {
-    const aliases = emote.entry
-      ? [emote.entry.alias]
-      : emote.aliases && emote.aliases.length > 0
-        ? emote.aliases
-        : [emote.name];
+    const aliases = deleteRowAliases(emote);
     if (emote.entry && !idRowIds.has(emote.sevenTvEmoteId)) {
       const key = `${emote.sevenTvEmoteId}#${emote.entry.cardKey}`;
       if (!rows.has(key)) {

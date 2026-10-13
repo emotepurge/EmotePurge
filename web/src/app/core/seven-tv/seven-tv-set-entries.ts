@@ -61,6 +61,9 @@ type EmotesPayload = NonNullable<
   NonNullable<NonNullable<SevenTvGqlEmoteSetEntriesResponse['data']>['emoteSets']>['emoteSet']
 >['emotes'];
 
+/** One item of a page of set entries. */
+type SetEntryItem = NonNullable<EmotesPayload>['items'][number];
+
 /** One entry of a set as a read with {@link SevenTvSetEntriesOptions.withAddedAt} found it. */
 export interface SevenTvSetEntry {
   /** The alias as 7TV listed it — `null` or empty for an aliasless entry, kept as read. */
@@ -243,6 +246,28 @@ export function loadSevenTvSetEntries(
       );
     }
 
+    function collectItem(item: SetEntryItem): void {
+      const aliases = aliasesById.get(item.emote.id) ?? [];
+      if (item.alias) {
+        if (!aliases.includes(item.alias)) {
+          aliases.push(item.alias);
+        }
+      } else {
+        aliaslessIds.add(item.emote.id);
+      }
+      aliasesById.set(item.emote.id, aliases);
+      defaultNameById.set(item.emote.id, item.emote.defaultName ?? '');
+      animatedById.set(item.emote.id, item.emote.flags?.animated ?? false);
+      if (withAddedAt) {
+        const entries = entriesById.get(item.emote.id) ?? [];
+        entries.push({
+          alias: item.alias ?? null,
+          addedAt: typeof item.addedAt === 'string' ? item.addedAt : null,
+        });
+        entriesById.set(item.emote.id, entries);
+      }
+    }
+
     function loadPage(page: number): Observable<SevenTvSetEntries> {
       return readPage(page).pipe(
         switchMap((emotes) => {
@@ -253,27 +278,7 @@ export function loadSevenTvSetEntries(
             repeatedAcrossPages = true;
           }
           members.forEach((key) => seenMembers.add(key));
-          for (const item of emotes.items) {
-            const aliases = aliasesById.get(item.emote.id) ?? [];
-            if (item.alias) {
-              if (!aliases.includes(item.alias)) {
-                aliases.push(item.alias);
-              }
-            } else {
-              aliaslessIds.add(item.emote.id);
-            }
-            aliasesById.set(item.emote.id, aliases);
-            defaultNameById.set(item.emote.id, item.emote.defaultName ?? '');
-            animatedById.set(item.emote.id, item.emote.flags?.animated ?? false);
-            if (withAddedAt) {
-              const entries = entriesById.get(item.emote.id) ?? [];
-              entries.push({
-                alias: item.alias ?? null,
-                addedAt: typeof item.addedAt === 'string' ? item.addedAt : null,
-              });
-              entriesById.set(item.emote.id, entries);
-            }
-          }
+          emotes.items.forEach(collectItem);
           collected += emotes.items.length;
           const result = (complete: boolean): SevenTvSetEntries => ({
             aliasesById,

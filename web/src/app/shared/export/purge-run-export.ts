@@ -140,6 +140,15 @@ export interface PurgeRunMeta {
 
 export type PurgeRunProtocol = ExportEnvelope<PurgeRunRow, PurgeRunMeta>;
 
+/** The aliases a protocol row records: an entry row its own alias, an id row its known aliases, or
+ *  its name when it has none. */
+function protocolRowAliases(item: RunQueueItem): string[] {
+  if (item.entry) {
+    return [item.entry.alias];
+  }
+  return item.aliases && item.aliases.length > 0 ? [...item.aliases] : [item.name];
+}
+
 export function buildPurgeRunProtocol(input: {
   channelName: string;
   emoteSetId: string;
@@ -179,11 +188,7 @@ export function buildPurgeRunProtocol(input: {
         emoteId: item.emoteId ?? null,
         sevenTvEmoteId: item.sevenTvEmoteId,
         name: item.name,
-        aliases: item.entry
-          ? [item.entry.alias]
-          : item.aliases && item.aliases.length > 0
-            ? [...item.aliases]
-            : [item.name],
+        aliases: protocolRowAliases(item),
         status: item.status,
         errorMessage: item.errorMessage ?? null,
       };
@@ -368,23 +373,8 @@ export function parsePurgeRunProtocol(text: string): ProtocolParseResult {
   // Entry targets first, over every row the file holds (version 4 only): one malformed target
   // refuses the whole file, whatever its row's status.
   const entries = new Map<unknown, SevenTvEntryGeneration>();
-  if (readsEntryTargets) {
-    for (const row of envelope.rows as unknown[]) {
-      const parsed = readProtocolRow(row);
-      if (!parsed) {
-        continue;
-      }
-      const entry = readEntryTarget(row as Record<string, unknown>, parsed);
-      if (entry === null) {
-        return { ok: false, errorKey: 'restore.import.errors.invalidEntryTarget' };
-      }
-      if (entry !== undefined) {
-        entries.set(row, entry);
-      }
-    }
-    if (entries.size === 0) {
-      return { ok: false, errorKey: 'restore.import.errors.invalidEntryTarget' };
-    }
+  if (readsEntryTargets && !collectEntryTargets(envelope.rows as unknown[], entries)) {
+    return { ok: false, errorKey: 'restore.import.errors.invalidEntryTarget' };
   }
 
   const restorable = (envelope.rows as unknown[]).flatMap((row): RestoreRow[] => {
@@ -422,6 +412,28 @@ export function parsePurgeRunProtocol(text: string): ProtocolParseResult {
       ownerLogin: readNonBlankStringHint(envelope.channelName),
     },
   };
+}
+
+/** Reads the entry target of every row into `entries` (keyed by the raw row). `false` when one is
+ *  malformed, or when a version 4 file holds none at all — either refuses the whole file. */
+function collectEntryTargets(
+  rows: readonly unknown[],
+  entries: Map<unknown, SevenTvEntryGeneration>,
+): boolean {
+  for (const row of rows) {
+    const parsed = readProtocolRow(row);
+    if (!parsed) {
+      continue;
+    }
+    const entry = readEntryTarget(row as Record<string, unknown>, parsed);
+    if (entry === null) {
+      return false;
+    }
+    if (entry !== undefined) {
+      entries.set(row, entry);
+    }
+  }
+  return entries.size > 0;
 }
 
 /** One row of an untrusted protocol file, or `null` when it cannot be restored from. The 7TV id

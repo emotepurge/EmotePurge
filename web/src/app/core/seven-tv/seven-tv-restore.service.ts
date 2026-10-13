@@ -801,6 +801,15 @@ export class SevenTvRestoreService {
   }
 }
 
+/** The aliases a restore row brings back: its known aliases (or its name when it has none), and for
+ *  an entry target only the one alias that entry names. */
+function restoreRowAliases(emote: RestoreQueueEmote): readonly (string | null)[] {
+  const named: readonly (string | null)[] =
+    emote.aliases && emote.aliases.length > 0 ? emote.aliases : [emote.name];
+  const entry = emote.entry;
+  return entry === undefined ? named : named.filter((alias) => alias === entry.alias);
+}
+
 /** One queue row per alias (spec #200, 7.2, Sonde 5 branch A): 7TV accepts the same emote twice
  *  under two aliases, and restoring a #74 duplicate cell takes one `ADD` each, so the restore is
  *  the one run keyed `${sevenTvEmoteId}#${alias}`. `name` carries the alias the `ADD` sends. A row
@@ -834,9 +843,8 @@ function toRestoreQueue(emotes: readonly RestoreQueueEmote[]): {
     if (emote.entry !== undefined && !isValidEntryGeneration(emote.entry)) {
       continue;
     }
-    const named = emote.aliases && emote.aliases.length > 0 ? emote.aliases : [emote.name];
     const entry = emote.entry;
-    const aliases = entry === undefined ? named : named.filter((alias) => alias === entry.alias);
+    const aliases = restoreRowAliases(emote);
     for (const alias of aliases) {
       const key = `${emote.sevenTvEmoteId}#${alias ?? ''}`;
       if (!rows.has(key)) {
