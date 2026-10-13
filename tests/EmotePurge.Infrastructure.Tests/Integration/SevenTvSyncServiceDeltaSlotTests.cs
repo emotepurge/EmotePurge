@@ -637,7 +637,7 @@ public class SevenTvSyncServiceDeltaSlotTests(PostgresFixture fixture)
         Assert.NotNull(await CreateService(db, ApiReturning(channel, SetA, live), cache).SyncChannelAsync(channel.ChannelName));
 
     private static EmoteService ReportService(AppDbContext db) =>
-        new(db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new SlotReconcileOptions { Enabled = true });
+        new(db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db));
 
     // A second active emote with a slot, so pulling every slot of x is no implausible wipe.
     private static async Task SeedKeeperAsync(AppDbContext db, Channel channel)

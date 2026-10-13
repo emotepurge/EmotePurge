@@ -11,15 +11,8 @@ public class EmoteService(
     AppDbContext db,
     ILogger<EmoteService> logger,
     IExcludedChannelFilter excludedChannelFilter,
-    IBroadcasterChannelLockService broadcasterChannelLocks,
-    SlotReconcileOptions? slotReconcile = null) : IEmoteService
+    IBroadcasterChannelLockService broadcasterChannelLocks) : IEmoteService
 {
-    // Plan #372 2.0 (E26) and plan 376 R3/R6: with the flag on, the set-centric report locks its hit
-    // channels, then the emote rows, reads behind the locks and applies slot entries; off, it keeps
-    // the order and the semantics it had before the slot work and ignores entries. Optional like in
-    // SevenTvSyncService: no options means off.
-    private readonly bool slotReconcileEnabled = slotReconcile?.Enabled ?? false;
-
     public async Task<SyncDeletedResultDto> MarkDeletedAsync(string channelName, IReadOnlyList<string> emoteIds, AuditActor actor, CancellationToken cancellationToken = default)
     {
         // E4: measures how often the legacy body form is still in use, so retiring it (Folge-Issue 1,
@@ -223,10 +216,9 @@ public class EmoteService(
     // Both directions of the set-centric report (restore-per-set spec 5.2); they differ only in the
     // target state of IsArchived and in the audit action. This wrapper is the recovery of plan #372
     // 2.9 (E27): one attempt runs from the first read to the commit, and a failed attempt — chosen as
-    // a deadlock victim (40P01, both flag states) or, with the flag on, finding a hit channel
-    // deleted at its channel lock — rolls back, clears the change tracker and runs once more from the
-    // first read. One retry in total, whichever the reason; the second failure propagates (500), as
-    // every database failure here did before. The attempt's audit entries are dropped with the
+    // a deadlock victim (40P01) or finding a hit channel deleted at its channel lock — rolls back,
+    // clears the change tracker and runs once more from the first read. One retry in total, whichever
+    // the reason; the second failure propagates (500), as every database failure here did before. The attempt's audit entries are dropped with the
     // cleared tracker, so they exist exactly once; nothing after the commit runs twice.
     private async Task<InSetOutcome> MarkInSetAsync(InSetReport report, CancellationToken cancellationToken)
     {
@@ -235,9 +227,7 @@ public class EmoteService(
         {
             try
             {
-                return slotReconcileEnabled
-                    ? await MarkInSetLockedOnceAsync(report, cancellationToken)
-                    : await MarkInSetUnlockedOnceAsync(report, cancellationToken);
+                return await MarkInSetLockedOnceAsync(report, cancellationToken);
             }
             catch (HitChannelVanishedException) when (!retried)
             {
@@ -260,92 +250,7 @@ public class EmoteService(
         }
     }
 
-    // One attempt with the flag off: the order and the semantics from before the slot work, row for
-    // row. Entries are ignored (plan 376 R3 a) — the flag-off state writes no slot (plan 372 2.0) — so
-    // the report reads, writes and audits exactly what it did without them.
-    private async Task<InSetOutcome> MarkInSetUnlockedOnceAsync(InSetReport report, CancellationToken cancellationToken)
-    {
-        // Step 1: ordinal dedup, the same discipline as MarkImportedAsync — a client that reported an
-        // id twice did not delete it twice. Regel 9 for the expected channel.
-        var dedupedIds = report.SevenTvEmoteIds.Distinct(StringComparer.Ordinal).ToList();
-        var archive = report.Direction == InSetDirection.Delete;
-        var action = archive ? AuditActions.EmotesSyncDeleted : AuditActions.EmotesSyncRestored;
-
-        // Step 2 (E8): the hit channels, read without a lock.
-        var hits = await LoadHitsAsync(report.EmoteSetId, cancellationToken);
-
-        // Step 3 (E18): the expected channel, when it is not a hit.
-        var unresolved = await ResolveUnresolvedAsync(report.NormalizedExpectedChannelName, hits, cancellationToken);
-
-        // Step 4: the rows of every hit channel, matched by (ChannelId, SevenTvEmoteId) — one query
-        // for all hits, split per channel below. The same goal-state semantics as the channel-bound
-        // active branch: every found row counts, only the ones not yet in the target state are
-        // written, and an already archived row keeps its earlier, more accurate ArchivedAt.
-        var hitIds = hits.ConvertAll(hit => hit.Id);
-        var rows = hitIds.Count == 0
-            ? []
-            : await db.Emotes
-                .Where(e => hitIds.Contains(e.ChannelId) && dedupedIds.Contains(e.SevenTvEmoteId))
-                .ToListAsync(cancellationToken);
-
-        var now = DateTime.UtcNow;
-        var channels = new List<SyncInSetChannelResultDto>(hits.Count);
-        var channelEntryWritten = false;
-        var leaves = new List<(string ChannelId, List<string> SevenTvEmoteIds)>();
-        foreach (var hit in hits)
-        {
-            var found = rows.Where(e => e.ChannelId == hit.Id).ToList();
-            var changed = found.Where(e => e.IsArchived != archive).ToList();
-            foreach (var emote in changed)
-            {
-                if (archive)
-                {
-                    ArchiveEmote(emote, now);
-                }
-                else
-                {
-                    UnarchiveEmote(emote, now);
-                }
-            }
-
-            // Spec 5.5 rule 5 (c): our own set-centric delete report is always a credible leave, for
-            // every found row of the hit channel — an already archived one too, because the report is
-            // what we know, whatever an earlier sync decided. Ids without a row have no channel fact.
-            if (archive && found.Count > 0)
-            {
-                leaves.Add((hit.Id, found.ConvertAll(e => e.SevenTvEmoteId)));
-            }
-
-            if (found.Count > 0)
-            {
-                AddChannelEntry(report, action, hit, found.Count, entryCount: null);
-                channelEntryWritten = true;
-            }
-
-            channels.Add(new SyncInSetChannelResultDto(hit.ChannelName, found.Count, changed.Count, NotFoundIn(found, dedupedIds)));
-        }
-
-        await AddPaperEntryIfNeededAsync(report, action, dedupedIds, hits, unresolved, channelEntryWritten, entryCount: null, cancellationToken);
-
-        // Step 6: rows, leave observations and audit entries in one transaction. Explicit, because the
-        // observation upsert is raw SQL outside SaveChangesAsync's implicit transaction. Neither this
-        // report nor the sync touches a tag table (spec 5.5 rule 6). Lock order, flag off (as before
-        // the slot work): observation rows, then the emote rows in the save — the order of the
-        // worker's sync with the flag off. A channel purged meanwhile fails the upsert with 23503 and
-        // surfaces as a 500, like any database failure here; the browser retries the report.
-        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        foreach (var (channelId, leftIds) in leaves)
-        {
-            await EmoteSetLeaveObservations.RecordAsync(db, channelId, report.EmoteSetId, leftIds, now, cancellationToken);
-        }
-
-        await db.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-
-        return new InSetOutcome(dedupedIds.Count, channels, unresolved, Rejection: null);
-    }
-
-    // One attempt with the flag on (plan 376 4.3, R6; plan 372 E25): lock first, then read. The order
+    // One attempt (plan 376 4.3, R6; plan 372 E25): lock first, then read. The order
     // is the slot writers' one — channel rows, emote rows, leave rows, then the save (which updates
     // emote and slot rows already covered by the emote lock) — the order of the slot-aware sync (Z1),
     // the EventAPI delta (Z8) and the admin purge, whose cascading DELETE takes the channel row before
@@ -607,7 +512,7 @@ public class EmoteService(
 
     // Step 5, channel entries (spec 5.5): byte-identical with the set-scoped active branch, so
     // audit-row renders them as before. Gated on the goal-state count, like every bookkeeping entry:
-    // the 7TV mutation happened whoever wrote the row first. A report with entries (flag on) adds
+    // the 7TV mutation happened whoever wrote the row first. A report with entries adds
     // entryCount, the entries that found their slot in this channel (plan 376 4.1).
     private void AddChannelEntry(InSetReport report, string action, HitChannel hit, int foundCount, int? entryCount) =>
         db.AddAuditEntry(
@@ -630,7 +535,7 @@ public class EmoteService(
     // right next to a paper entry — same channel — saying false. Without an owner channel the entry
     // has no channel and the owner identity instead, which the audit view renders "for <ownerLogin>".
     // Never both groups of fields (spec 5.5 invariant). The unresolved ids are all reported ids, since
-    // none of them was matched in that channel. A report with entries (flag on) adds entryCount, the
+    // none of them was matched in that channel. A report with entries adds entryCount, the
     // number of entries it carried.
     private async Task AddPaperEntryIfNeededAsync(
         InSetReport report, string action, List<string> dedupedIds, List<HitChannel> hits, UnresolvedChannelDto? unresolved,
@@ -679,7 +584,7 @@ public class EmoteService(
         return locked.ToHashSet(StringComparer.Ordinal);
     }
 
-    // An id without an entry (plan 376 4.2a): the id-level semantics of the flag-off path — a delete
+    // An id without an entry (plan 376 4.2a): the id-level semantics the report had before slots — a delete
     // archives the emote row and is a leave for every found row, a restore un-archives the emote row
     // only — plus B1: a delete also archives every active own slot of the emote in the same
     // transaction, under the emote lock (unsettled seeds stay as they are, E7). Otherwise a quick undo
@@ -1021,7 +926,7 @@ public class EmoteService(
     // its leave — always (Leave) or only when none was observed since the last entry (B2).
     private readonly record struct EmoteApplication(bool Changed, int ResolvedEntries, bool Leave, bool LeaveOnceUnobserved);
 
-    // Flag on: a hit channel of the report was deleted between its read and its channel lock (a purge
+    // A hit channel of the report was deleted between its read and its channel lock (a purge
     // committed). Handled by MarkInSetAsync's one retry; propagates when it happens again.
     private sealed class HitChannelVanishedException()
         : InvalidOperationException("A channel the in-set report writes was deleted while the report was in flight.");

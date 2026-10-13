@@ -2907,8 +2907,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         var service = new EmoteService(
-            db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db),
-            new SlotReconcileOptions { Enabled = true });
+            db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db));
         var result = await service.MarkDeletedInSetAsync(set, "owner-7tv", "owner", "owner-tw-none", [entry.SevenTvEmoteId], null, Actor, [entry]);
         Assert.Null(result.Rejection);
     }

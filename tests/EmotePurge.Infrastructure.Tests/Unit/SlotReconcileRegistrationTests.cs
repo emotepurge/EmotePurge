@@ -31,7 +31,6 @@ public class SlotReconcileRegistrationTests
         using var scope = provider.CreateScope();
         var services = scope.ServiceProvider;
 
-        Assert.Equal(expected, FlagOf(services.GetRequiredService<IEmoteService>(), "slotReconcileEnabled"));
         Assert.Equal(expected, FlagOf(services.GetRequiredService<IChatLogBackfillService>(), "slotReconcileEnabled"));
     }
 

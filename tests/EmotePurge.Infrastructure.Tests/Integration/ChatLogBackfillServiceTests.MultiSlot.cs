@@ -748,13 +748,12 @@ public partial class ChatLogBackfillServiceTests
         return (channel, emote, s1);
     }
 
-    // The flag-on set-centric restore report (#376) for S1 with the generation it names.
+    // The set-centric restore report (#376) for S1 with the generation it names.
     private async Task RestoreReportAsync(Channel channel, string slotId, DateTime generation)
     {
         await using var db = CreateDbContext();
         var service = new EmoteService(
-            db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db),
-            new SlotReconcileOptions { Enabled = true });
+            db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db));
         await service.MarkRestoredInSetAsync(
             ActiveSetId, "owner-7tv", "owner", "4499", ["X"], channel.ChannelName, Actor,
             [new SyncInSetEntryDto("X", "A", slotId, generation)]);

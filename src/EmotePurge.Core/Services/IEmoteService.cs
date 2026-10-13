@@ -101,9 +101,8 @@ public interface IEmoteService
     // identity in the details (addendum N3). Rows and audit entries are saved together, in one
     // SaveChangesAsync.
     //
-    // entries (emote slots spec 5.7, D32; plan 376 section 4). With SevenTv:SlotReconcile:Enabled off
-    // they are ignored and everything above holds unchanged (R3 a). With it on, the hit channels are
-    // locked before anything is read (R6), and the decision is taken per reported 7TV id (R3 b): an id
+    // entries (emote slots spec 5.7, D32; plan 376 section 4). The hit channels are locked before
+    // anything is read (R6), and the decision is taken per reported 7TV id (R3 b): an id
     // with at least one entry is handled per slot — the entry's slot in the channel its SlotId belongs
     // to when that channel is a hit (generation checked against AddedAt, stale = no-op), the slot with
     // the same authoritative date (and, on a tie, the alias) in every other hit channel; the emote row
@@ -120,7 +119,7 @@ public interface IEmoteService
 
     // Mirror of MarkDeletedInSetAsync, in the restore direction: un-archives (IsArchived = false,
     // ArchivedAt = null) only the rows that are still archived, and audits emotes.syncRestored. With
-    // entries and the flag on, the matching archived generation of a slot is reactivated once with a
+    // entries, the matching archived generation of a slot is reactivated once with a
     // provisional date (AddedAt = now, not from REST) for the next REST reconcile to authorize; an
     // already active slot or another generation is a no-op. Without an entry only the emote row is
     // un-archived, no slot is created or reactivated.

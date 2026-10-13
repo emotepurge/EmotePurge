@@ -1263,7 +1263,7 @@ public partial class EmoteServiceTests(PostgresFixture fixture)
             .Build();
         var excludedChannelFilter = new ExcludedChannelFilter(configuration, NullLogger<ExcludedChannelFilter>.Instance);
 
-        return new EmoteService(db, logger ?? NullLogger<EmoteService>.Instance, excludedChannelFilter, new BroadcasterChannelLockService(db), slotReconcile: SlotFlag.On);
+        return new EmoteService(db, logger ?? NullLogger<EmoteService>.Instance, excludedChannelFilter, new BroadcasterChannelLockService(db));
     }
 
     // A row whose id a test locked is left again afterwards (see BroadcasterLockScope).

@@ -151,7 +151,7 @@ public class SevenTvSyncServicePlaceholderTests(PostgresFixture fixture)
         await using (var db = fixture.CreateDbContext())
         {
             var emoteService = new EmoteService(
-                db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), slotReconcile: SlotFlag.On);
+                db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db));
             await emoteService.MarkRestoredInSetAsync(
                 RestoreSetId, "owner-seven-tv-id", "placeholder_restore", "tw_placeholder_restore", ["phballot1"], null, Actor);
         }
