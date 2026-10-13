@@ -2261,7 +2261,8 @@
       "backfill_twitch_id_unknown": "This channel is not fully set up yet. Please try again in a few minutes.",
       "backfill_set_empty": "This emote set has no emotes, so there is nothing to look for.",
       "backfill_set_truncated": "This emote set is too large to read completely, so the backfill cannot be started for it.",
-      "backfill_channel_identity_changed": "The channel changed while your request was running. Please reload and try again."
+      "backfill_channel_identity_changed": "The channel changed while your request was running. Please reload and try again.",
+      "backfill_slots_unsettled": "The emote slots of this set are not fully matched yet. This usually clears after the next sync. If it persists, an emote in the set has no add date."
     }
   },
   "backfill": {
@@ -2330,8 +2331,8 @@
     "waitUntil": "The archive asked us to wait until {{ time }}.",
     "runWindow": "Range: {{ from }} – {{ to }}",
     "runSet": {
-      "one": "Set: {{ set }} ({{ count }} emote)",
-      "other": "Set: {{ set }} ({{ count }} emotes)"
+      "one": "Set: {{ set }} ({{ count }} entry)",
+      "other": "Set: {{ set }} ({{ count }} entries)"
     },
     "requestedBy": "Requested by {{ login }}",
     "finishedAt": "Finished {{ time }}",

@@ -1028,6 +1028,25 @@ matters:
    ```
 
    The vote predicates are what keep a ballot's history intact: `Vote.Emote` cascades.
+3b. **Remove the slots the backfill created (optional, restricted; slot-aware images only).** Run it right
+   after step 3 and before step 4, for the same reason as step 3: the run's snapshot is the only proof
+   which slots the backfill created (`CreatedSlot`). It deletes exactly the slots that are archived with
+   no archive time ("was never in"), were created by a run, and carry no live usage (`Source = 0`); a
+   slot that live counting has used stays, and so does a seed that the enqueue merely settled — that one
+   is not `CreatedSlot`. A placeholder removed in step 3 took its slots along already. Deleting a slot
+   removes its imported rows with it, which step 4 would delete anyway. Skip it on a database without the
+   `EmoteSlots` table. Seeds that a flag-off enqueue created for active emotes are not archived and are not
+   removed here: they remain as unsettled seeds without rows, inert (no numbers, no cards, no permanent
+   409), and are swept after #379 removes the flag-off branches.
+
+   ```sql
+   DELETE FROM "EmoteSlots" s
+   WHERE s."IsArchived" AND s."ArchivedAt" IS NULL
+     AND EXISTS (SELECT 1 FROM "ChatLogBackfillRunEmotes" r WHERE r."SlotId" = s."Id" AND r."CreatedSlot")
+     AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id" AND u."Source" = 0);
+   ```
+
+   The statement is `EmoteSlotRollbackSql.DeleteBackfillCreatedSlotsSql`; keep both texts identical.
 4. **Delete the imported rows and the coverage.** Globally, or per channel by adding the channel id:
 
    ```sql
@@ -1041,7 +1060,9 @@ matters:
    DELETE FROM "ChatLogBackfillCoverage" WHERE "ChannelId" = '<channel-id>';
    ```
 
-   The caption disappears with the coverage rows.
+   The caption disappears with the coverage rows. The per-channel variant removes all imported rows and the
+   coverage of that channel from every run and every set; steps 3, 3b and 5 are global and are not scoped
+   to the channel.
 5. **Close the runs that are still open:**
 
    ```sql
@@ -1064,7 +1085,18 @@ system behaves as before the slot work, with one difference since #373: usage ro
 
 | Key | Default | Compose variable | Meaning |
 |---|---|---|---|
-| `SevenTv:SlotReconcile:Enabled` | `false` | `SEVENTV_SLOT_RECONCILE_ENABLED` | Read by **api and worker**; set both together. The value is read once at startup, so a change needs a restart. Off: emote-wide reconcile and readers; the match map keeps today's names (one per emote) and counts onto the slot of the (emote, active set) pair. No writes to `EmoteSlots` except unsettled base seeds, created together with a pair's first counted row (usage flush) or by a backfill enqueue; EventAPI deltas stay emote-wide and write no slot. On: the slot reconcile, and the match map counts per slot — an emote that still has an unsettled seed of the active set is not counted until the reconcile settles it; EventAPI deltas add, rename and archive single slots, and an ambiguous dispatch writes no inventory (only certain last-slot leaves) and triggers a REST resync. |
+| `SevenTv:SlotReconcile:Enabled` | `false` | `SEVENTV_SLOT_RECONCILE_ENABLED` | Read by **api and worker**; set both together. The value is read once at startup, so a change needs a restart. Off: emote-wide reconcile and readers; the match map keeps today's names (one per emote) and counts onto the slot of the (emote, active set) pair. No writes to `EmoteSlots` except unsettled base seeds, created together with a pair's first counted row (usage flush) or by a backfill enqueue; EventAPI deltas stay emote-wide and write no slot. On: the slot reconcile, and the match map counts per slot — an emote that still has an unsettled seed of the active set is not counted until the reconcile settles it; EventAPI deltas add, rename and archive single slots, and an ambiguous dispatch writes no inventory (only certain last-slot leaves) and triggers a REST resync; a backfill enqueue binds every entry of the previewed set to its own slot (new slots are archived and taken over by the next reconcile; the preview of a non-active set settles that set's seed) and answers 409 `backfill_slots_unsettled` without writing anything while an emote of the active set still has an unsettled seed or an entry lacks the 7TV date it needs — expected until the first reconcile tick per channel after switching, and for a non-active set until 7TV reports every entry's date. Off, the enqueue keeps one snapshot row per emote. In both states the chat-log backfill counts and writes per slot of its run's snapshot (from #375); with one snapshot row per emote that is the per-emote count of before. |
+
+**Switch the slot flag only while no backfill run is queued, running or paused** (check with
+`SELECT count(*) FROM "ChatLogBackfillRuns" WHERE "Status" IN ('queued', 'running', 'paused');`, cancel
+or let them finish first). With the flag on, the reconcile settles seed slots and moves the snapshot rows
+of a run along; a block the worker counted against the old slot is then refused, and the worker re-reads
+the snapshot and hands that block in once more. Anything it cannot follow fails the run with
+`worker_error` — that path is the safety net, not the way to switch.
+
+Seeds that a flag-off enqueue created for active emotes are not archived: they remain as unsettled
+seeds without rows after the switch. They are inert (no numbers, no cards, no permanent 409) and are
+swept after #379 removes the flag-off branches.
 
 ### Usage key switch (M2, #373)
 
@@ -1168,6 +1200,100 @@ WHERE t."Id" = r."Id" AND r.rn > 1;
 ```
 
 The statement is `EmoteSlotRollbackSql.CollapseUsageStatsSql`; keep both texts identical.
+
+### Backfill snapshot key (M3, #375)
+
+From #375 on, the snapshot of a backfill run is keyed per slot: the migration
+`SwitchBackfillSnapshotToSlotKey` (M3) makes `ChatLogBackfillRunEmotes.SlotId` NOT NULL and swaps the
+primary key from `(RunId, EmoteId)` to `(RunId, SlotId)`, so a run can hold one snapshot row per set
+entry (two aliases of one emote are two rows). The index on `(RunId, SevenTvEmoteId)` stays. It runs in
+one transaction and takes `ACCESS EXCLUSIVE` on the snapshot table with a 5-second `lock_timeout`; an
+abort changes nothing.
+
+Rows without a slot only exist in runs enqueued before #373. M3 **refuses** while a queued, running or
+paused run has one (cancel those runs, then repeat). A finished run's row without a slot is attached to
+the slot of its emote that carries usage rows of the run's set — the oldest one (earliest `AddedAt`,
+then name, ordinal), which is where the run's imported rows are — and keeps `CreatedSlot` false. If no
+slot of the emote carries rows of that set, the run never wrote anything for the emote and the row is
+deleted; no seed is created for it. A deleted row's `CreatedRow` is lost with it, so a placeholder it
+marked stays behind in step 3 of "Rolling back" under "Chat-log backfill", like the placeholders of a
+run that retention already removed. The migration reports both counts as a notice.
+
+Images from before #375 keep working against a database with M3: they write one snapshot row per emote,
+always with a slot, which fits the new key. Every image from #375 on needs M3 (api and worker refuse to
+start with a pending migration).
+
+**Window**, short and of its own, with the first deploy that contains #375:
+
+1. Announce it. Stop **worker and api**; `pg_stat_activity` shows no `EmotePurge%` session any more.
+2. Back up with `scripts/backup-postgres.sh`.
+3. Precondition: `SELECT count(*) FROM "ChatLogBackfillRuns";` and
+   `SELECT count(*) FROM "ChatLogBackfillRunEmotes";` both return 0 on production (the backfill has never
+   been switched on there). If not, stop and look first: the rule above is meant for development
+   databases.
+4. Tunnel to the database as described under "Prod-Migration" in `CLAUDE.md`, then list:
+
+   ```sh
+   dotnet ef migrations list --project src/EmotePurge.Infrastructure --startup-project src/EmotePurge.Api \
+     --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<DB-PASSWORD>;Command Timeout=600'
+   ```
+
+   Expect exactly `20261013092051_SwitchBackfillSnapshotToSlotKey` as `(Pending)`. More than that means the database
+   is behind by more than this release: review those migrations first.
+5. Apply it, naming the target:
+
+   ```sh
+   dotnet ef database update 20261013092051_SwitchBackfillSnapshotToSlotKey --project src/EmotePurge.Infrastructure \
+     --startup-project src/EmotePurge.Api \
+     --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<DB-PASSWORD>;Command Timeout=600'
+   ```
+
+   A lock timeout means a session is still open (step 1).
+6. `migrations list` again: nothing pending. Bring **both new images up together**; the slot flag and
+   the backfill stay as they were.
+7. Check: `GET /api/health` answers 200, the worker logs `Chat-log backfill disabled.` (with the backfill
+   off) and flushes as before.
+
+**Rollback.** Going back to the images from before #375 needs no `Down` (see above) as long as every
+run has one snapshot row per emote, which holds while the slot flag was off at every enqueue. To revert
+the migration itself, stop worker and api, back up, then
+
+```sh
+dotnet ef database update 20261012111509_SwitchUsageStatsToSlotKey --project src/EmotePurge.Infrastructure \
+  --startup-project src/EmotePurge.Api \
+  --connection 'Host=localhost;Port=15432;Database=emotepurge;Username=emotepurge;Password=<DB-PASSWORD>;Command Timeout=600'
+```
+
+Rows that `Up` deleted do not come back. `Down` refuses while a run holds more than one row of an emote
+— one per slot, which only an enqueue with the slot flag on produces. Then run the collapse statement
+first, in one transaction, and repeat `Down`; per run and emote it keeps the row of the oldest slot
+(earliest `AddedAt`, then name, ordinal) and sets `CreatedRow` on it if any row of the emote had it, so
+step 3 of the backfill rollback still finds the placeholders the run created:
+
+```sql
+WITH ranked AS (
+    SELECT e.ctid AS row_id,
+           ROW_NUMBER() OVER w AS rn,
+           BOOL_OR(e."CreatedRow") OVER g AS any_created_row
+    FROM "ChatLogBackfillRunEmotes" e
+    LEFT JOIN "EmoteSlots" s ON s."Id" = e."SlotId"
+    WINDOW g AS (PARTITION BY e."RunId", e."EmoteId"),
+           w AS (g ORDER BY s."AddedAt" ASC NULLS LAST, s."Name" COLLATE "C" ASC NULLS LAST,
+                            e."SlotId" ASC NULLS LAST)
+),
+updated AS (
+    UPDATE "ChatLogBackfillRunEmotes" t
+    SET "CreatedRow" = true
+    FROM ranked r
+    WHERE t.ctid = r.row_id AND r.rn = 1 AND r.any_created_row AND NOT t."CreatedRow"
+    RETURNING t."RunId"
+)
+DELETE FROM "ChatLogBackfillRunEmotes" t
+USING ranked r
+WHERE t.ctid = r.row_id AND r.rn > 1;
+```
+
+The statement is `EmoteSlotRollbackSql.CollapseBackfillSnapshotSql`; keep both texts identical.
 
 ## Database backup and restore
 

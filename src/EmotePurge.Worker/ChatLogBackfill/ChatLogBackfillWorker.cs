@@ -1,7 +1,6 @@
 using System.Data.Common;
 using EmotePurge.Core.ChatLogArchive;
 using EmotePurge.Core.Entities;
-using EmotePurge.Core.Matching;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.ChatLogArchive;
@@ -276,18 +275,13 @@ public sealed class ChatLogBackfillWorker(
                 return await FailOrAbandonAsync(service, claim, state, SnapshotMissingErrorCode, null, stoppingToken);
             }
 
-            var map = EmoteNameMatching.Coalesce(snapshot.Emotes.Select(e => new KeyValuePair<string, string>(e.Name, e.EmoteId)));
+            // Counted per slot (slot plan #375): read once per run, again only when a block finds it changed (E9).
+            var map = ChatLogBackfillSnapshotMap.From(snapshot.Emotes);
             if (map.AmbiguousNames.Count > 0)
             {
                 logger.LogInformation(
-                    "Chat-log backfill run {RunId}: {Count} aliases appear twice in the snapshot; the first emote id wins.",
+                    "Chat-log backfill run {RunId}: {Count} aliases appear twice in the snapshot; the first slot wins.",
                     claim.RunId, map.AmbiguousNames.Count);
-            }
-
-            var addedToSetDay = new Dictionary<string, DateOnly?>(StringComparer.Ordinal);
-            foreach (var emote in snapshot.Emotes)
-            {
-                addedToSetDay.TryAdd(emote.EmoteId, emote.AddedToSetDay);
             }
 
             var plan = ChatLogBackfillBlockPlanner.Plan(claim.WindowFrom, claim.WindowTo);
@@ -316,7 +310,7 @@ public sealed class ChatLogBackfillWorker(
             monitorScope = scopeFactory.CreateAsyncScope();
             monitor = MonitorAsync(monitorScope.Value.ServiceProvider.GetRequiredService<IChatLogBackfillService>(), claim.RunId, runCancellation);
             state.InBlockLoop = true;
-            return await RunBlocksAsync(service, client, claim, plan, map.NameToId, addedToSetDay, state, runCancellation.Token, stoppingToken);
+            return await RunBlocksAsync(service, client, claim, plan, map, state, runCancellation.Token, stoppingToken);
         }
         catch (OperationCanceledException) when (runCancellation.IsCancellationRequested && !stoppingToken.IsCancellationRequested)
         {
@@ -362,8 +356,7 @@ public sealed class ChatLogBackfillWorker(
         IChatLogArchiveClient client,
         ChatLogBackfillClaim claim,
         IReadOnlyList<ChatLogBackfillBlock> plan,
-        IReadOnlyDictionary<string, string> nameToId,
-        IReadOnlyDictionary<string, DateOnly?> addedToSetDay,
+        ChatLogBackfillSnapshotMap map,
         RunState state,
         CancellationToken runToken,
         CancellationToken stoppingToken)
@@ -391,7 +384,7 @@ public sealed class ChatLogBackfillWorker(
                 return RunOutcome.Finished;
             }
 
-            var counter = new ChatLogBackfillBlockCounter(block, nameToId, addedToSetDay, botChatterDetector.IsBot);
+            var counter = new ChatLogBackfillBlockCounter(block, map, botChatterDetector.IsBot);
             _lastRequestStartedUtc = UtcNow();
             var result = await client.ReadRangeAsync(
                 claim.TwitchChannelId,
@@ -435,9 +428,47 @@ public sealed class ChatLogBackfillWorker(
                 case ChatLogDayStatus.Complete:
                 case ChatLogDayStatus.NoLogDay:
                     // A 404 is a block without data (D12): committed like any other, replacing and covering its days.
+                    var rows = counter.Aggregates();
                     var outcome = await service.ReplaceBlockAsync(
-                        claim.RunId, block.From, block.ToExclusive, counter.Aggregates(), result.BytesReceived, result.MessageCount,
-                        isLastBlock, stoppingToken);
+                        claim.RunId, block.From, block.ToExclusive, rows, result.BytesReceived, result.MessageCount, isLastBlock, stoppingToken);
+                    if (outcome is ChatLogBackfillBlockResult.SnapshotChanged)
+                    {
+                        // E9 (slot plan #375): a settle rebound snapshot rows of this run — only reachable when
+                        // the slot flag went on during a run enqueued with it off. Re-read the snapshot, move the
+                        // aggregates to their rows' new slots and hand the same block in once more: no second
+                        // archive request, the bytes and messages as counted. The next blocks count on the new map.
+                        var current = ChatLogBackfillSnapshotMap.From((await service.GetSnapshotAsync(claim.RunId, stoppingToken)).Emotes);
+                        var rebound = ChatLogBackfillSnapshotMap.Rebind(rows, map, current);
+                        if (rebound.Rows is null)
+                        {
+                            logger.LogError(
+                                "Chat-log backfill run {RunId} ({Channel}): block {From:yyyy-MM-dd}..{To:yyyy-MM-dd} cannot follow its changed snapshot ({Reason}).",
+                                claim.RunId, claim.ChannelName, block.From, block.ToExclusive, rebound.Failure);
+                            return await FailOrAbandonAsync(service, claim, state, WorkerErrorCode, null, stoppingToken);
+                        }
+
+                        map = current;
+                        logger.LogWarning(
+                            "Chat-log backfill run {RunId} ({Channel}): the snapshot changed under block {From:yyyy-MM-dd}..{To:yyyy-MM-dd}; {Moved} aggregates moved to their rows' new slots, handing the block in again.",
+                            claim.RunId, claim.ChannelName, block.From, block.ToExclusive, rebound.Moved);
+                        if (!await service.HoldsLoopLockAsync(stoppingToken))
+                        {
+                            return await AbandonAsync(
+                                service, claim, state, "the loop lock was lost before handing a block in again", null, deferFailure: false, stoppingToken);
+                        }
+
+                        outcome = await service.ReplaceBlockAsync(
+                            claim.RunId, block.From, block.ToExclusive, rebound.Rows, result.BytesReceived, result.MessageCount, isLastBlock,
+                            stoppingToken);
+                        if (outcome is ChatLogBackfillBlockResult.SnapshotChanged)
+                        {
+                            logger.LogError(
+                                "Chat-log backfill run {RunId} ({Channel}): the snapshot changed again under block {From:yyyy-MM-dd}..{To:yyyy-MM-dd}.",
+                                claim.RunId, claim.ChannelName, block.From, block.ToExclusive);
+                            return await FailOrAbandonAsync(service, claim, state, WorkerErrorCode, null, stoppingToken);
+                        }
+                    }
+
                     if (outcome is ChatLogBackfillBlockResult.Committed committed)
                     {
                         state.UnbookedBytes = 0;
@@ -544,7 +575,8 @@ public sealed class ChatLogBackfillWorker(
         return RunOutcome.Finished;
     }
 
-    // D48: RunNotActive, LiveRowConflict and ChannelGone roll the block back.
+    // D48: RunNotActive, LiveRowConflict and ChannelGone roll the block back (a SnapshotChanged that
+    // reaches here was already answered once in RunBlocksAsync, E9).
     private async Task<RunOutcome> HandleUncommittedBlockAsync(
         IChatLogBackfillService service, ChatLogBackfillClaim claim, RunState state, ChatLogBackfillBlockResult outcome, CancellationToken stoppingToken)
     {
@@ -569,10 +601,14 @@ public sealed class ChatLogBackfillWorker(
                 LogStopped(claim);
                 return RunOutcome.Finished;
 
-            default:
-                // ChannelGone: the purge's cascade took the run along; nothing left to record.
+            case ChatLogBackfillBlockResult.ChannelGone:
+                // The purge's cascade took the run along; nothing left to record.
                 logger.LogInformation("Chat-log backfill run {RunId} stopped: its channel is gone (purged).", claim.RunId);
                 return RunOutcome.Finished;
+
+            default:
+                logger.LogError("Chat-log backfill run {RunId}: unexpected block result {Result}.", claim.RunId, outcome.GetType().Name);
+                return await FailOrAbandonAsync(service, claim, state, WorkerErrorCode, null, stoppingToken);
         }
     }
 

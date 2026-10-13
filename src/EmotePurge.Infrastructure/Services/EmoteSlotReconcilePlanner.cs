@@ -33,7 +33,7 @@ namespace EmotePurge.Infrastructure.Services;
 /// the order of D2; #403), which differs from UTF-16 ordinal for supplementary characters.
 /// </para>
 /// </summary>
-internal static class EmoteSlotReconcilePlanner
+internal static partial class EmoteSlotReconcilePlanner
 {
     /// <summary>
     /// Plans one live group (spec §6.2 steps 2–8). Steps in this order: dedup (step 1, "first (Id, Name)
@@ -86,7 +86,7 @@ internal static class EmoteSlotReconcilePlanner
         var rebinds = new List<SlotUsageRebind>();
         if (activeSetSeeds.Count > 0)
         {
-            Settle(entries, own, activeSetSeeds, bindings, rebinds);
+            Settle(entries, own, activeSetSeeds, bindings, rebinds, now);
         }
 
         ResumeArchivedSlots(entries, own, bindings);
@@ -197,9 +197,9 @@ internal static class EmoteSlotReconcilePlanner
     }
 
     /// <summary>
-    /// Step 2 (§6.3, D12, plan 2.4 E11–E13): settles the unsettled seed(s) of the active set. The target
-    /// candidate is the only entry (|G| = 1) or the oldest one (|G| ≥ 2, all dated — the deferral case
-    /// has returned before; tie → smallest name in UTF-8 byte order, as D2).
+    /// Step 2 (§6.3, D12, plan 2.4 E11–E13): settles the unsettled seed(s) of the active set — the REST
+    /// target selection (<see cref="SettleTargetSearch.DateThenName"/>) followed by the shared mutation
+    /// (<see cref="SettleOnto"/>) with the in-place seed taking its place in the active set.
     /// <para>
     /// <b>Target exists</b> (E11): the candidate binds to an own slot by step 3 (already computed) or by
     /// step 5 → the seed's active-set rows move onto that slot and the seed becomes an empty settled
@@ -225,7 +225,24 @@ internal static class EmoteSlotReconcilePlanner
         List<WorkingSlot> own,
         List<WorkingSlot> activeSetSeeds,
         WorkingSlot?[] bindings,
-        List<SlotUsageRebind> rebinds)
+        List<SlotUsageRebind> rebinds,
+        DateTime now)
+    {
+        var (candidate, target) = SelectSettleTarget(entries, own, bindings, SettleTargetSearch.DateThenName);
+        SettleOnto(entries, candidate, target, own, activeSetSeeds, bindings, rebinds, SettledSeedMembership.ActiveSet, now);
+    }
+
+    /// <summary>
+    /// The target selection of a settle (§6.3, plan #375 T4, Sol-P2-2). The candidate is the only entry
+    /// (|G| = 1) or the oldest one (|G| ≥ 2, all dated — callers reject or defer an undated group before;
+    /// tie → smallest name in UTF-8 byte order, as D2, #403). Its target is the slot step 3 bound it to
+    /// (<paramref name="bindings"/>, already computed) and, only with
+    /// <see cref="SettleTargetSearch.DateThenName"/>, else the slot step 5 binds it to by name — which
+    /// commits that binding (a dated candidate authorizes the slot's date). <c>null</c> = no target, the
+    /// seed is settled in place.
+    /// </summary>
+    private static (int Candidate, WorkingSlot? Target) SelectSettleTarget(
+        List<SlotLiveEntry> entries, List<WorkingSlot> own, WorkingSlot?[] bindings, SettleTargetSearch search)
     {
         var candidate = entries.Count == 1
             ? 0
@@ -234,22 +251,61 @@ internal static class EmoteSlotReconcilePlanner
                 .ThenBy(i => entries[i].Name, BaseSlotRule.Utf8Order)
                 .First();
 
-        var target = bindings[candidate] ?? BindByName(entries[candidate], own, bindings);
-        var remaining = activeSetSeeds;
+        var target = bindings[candidate];
+        if (target is null && search == SettleTargetSearch.DateThenName)
+        {
+            target = BindByName(entries[candidate], own, bindings);
+        }
+
+        return (candidate, target);
+    }
+
+    /// <summary>
+    /// The mutation of a settle (§6.3, D12, plan #372 E11/E12), shared by the REST reconcile and the
+    /// backfill preview planner. With a <paramref name="target"/> every seed's rows move onto it (one
+    /// <see cref="SlotUsageRebind"/> per seed) and each seed ends empty: marker off, archived without
+    /// archive date, name and date kept. Without one the first seed (Id ordinal) is re-keyed in place onto
+    /// the candidate (name, date, authoritative iff dated, marker off), joins <paramref name="own"/> and
+    /// is the target of every further seed. <paramref name="membership"/> decides the in-place seed's
+    /// archive state: in the active set (REST) it is active without archive date; for a set that is not
+    /// the active one (backfill preview, operator decision R2) it is archived and keeps its archive date,
+    /// else gets <paramref name="now"/>, so it stays a D7 candidate.
+    /// </summary>
+    private static void SettleOnto(
+        List<SlotLiveEntry> entries,
+        int candidate,
+        WorkingSlot? target,
+        List<WorkingSlot> own,
+        List<WorkingSlot> seeds,
+        WorkingSlot?[] bindings,
+        List<SlotUsageRebind> rebinds,
+        SettledSeedMembership membership,
+        DateTime now)
+    {
+        var remaining = seeds;
         if (target is null)
         {
-            var seed = activeSetSeeds[0];
+            var seed = seeds[0];
             var entry = entries[candidate];
             seed.Name = entry.Name;
             seed.AddedAt = entry.AddedAt;
             seed.AddedAtFromRest = entry.AddedAt is not null;
-            seed.IsArchived = false;
-            seed.ArchivedAt = null;
+            if (membership == SettledSeedMembership.ActiveSet)
+            {
+                seed.IsArchived = false;
+                seed.ArchivedAt = null;
+            }
+            else
+            {
+                seed.IsArchived = true;
+                seed.ArchivedAt ??= now;
+            }
+
             seed.SeedUnsettled = false;
-            // From here on an own slot like any other (working state of steps 4–8).
+            // From here on an own slot like any other (working state of the following steps).
             own.Add(seed);
             target = seed;
-            remaining = activeSetSeeds.Skip(1).ToList();
+            remaining = seeds.Skip(1).ToList();
         }
 
         bindings[candidate] = target;
@@ -446,6 +502,30 @@ internal static class EmoteSlotReconcilePlanner
 
         public SlotState ToState() => new(Id, Name, AddedAt, AddedAtFromRest, IsArchived, ArchivedAt, SeedUnsettled);
     }
+
+    /// <summary>How a settle looks for its target (<see cref="SelectSettleTarget"/>).</summary>
+    private enum SettleTargetSearch
+    {
+        /// <summary>REST (§6.3, plan #372 E11): the step-3 date binding, else the step-5 name binding.</summary>
+        DateThenName,
+
+        /// <summary>
+        /// Backfill preview of a set that is not the active one (plan #375 2.3, Sol-P2-2): the step-3 date
+        /// binding only. A name fallback would bind a provisional slot of the active set and give it this
+        /// set's date and history.
+        /// </summary>
+        DateOnly,
+    }
+
+    /// <summary>Where a seed settled in place ends up (<see cref="SettleOnto"/>).</summary>
+    private enum SettledSeedMembership
+    {
+        /// <summary>REST: the seed is the candidate's slot in the active set, active without archive date.</summary>
+        ActiveSet,
+
+        /// <summary>Backfill preview of another set (R2): archived, archive date kept or stamped now.</summary>
+        OutsideActiveSet,
+    }
 }
 
 /// <summary>One live set entry of an emote: alias and the v4 overlay date for <c>(Id, Name)</c>, <c>null</c> = undated.</summary>
@@ -497,7 +577,7 @@ internal sealed record SlotState(
     }
 }
 
-/// <summary>Move the usage rows of the active set from a settled seed onto <paramref name="ToSlotId"/> (§6.3 "target exists").</summary>
+/// <summary>Move the usage rows of the settled set (REST: the active set; backfill: the previewed set) from a settled seed onto <paramref name="ToSlotId"/> (§6.3 "target exists").</summary>
 internal sealed record SlotUsageRebind(string FromSeedId, string ToSlotId);
 
 /// <summary>D13: the values for <c>Emote.Name</c> and <c>Emote.FirstSeenAt</c>; <c>FirstSeenAt</c> may be <c>null</c>.</summary>

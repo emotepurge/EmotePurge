@@ -388,7 +388,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         modelBuilder.Entity<ChatLogBackfillRunEmote>(entity =>
         {
-            entity.HasKey(e => new { e.RunId, e.EmoteId });
+            // One row per slot since M3 (#375); EmoteId may repeat within a run.
+            entity.HasKey(e => new { e.RunId, e.SlotId });
             entity.Property(e => e.CreatedRow).HasDefaultValue(false);
             entity.Property(e => e.CreatedSlot).HasDefaultValue(false);
             entity.HasIndex(e => new { e.RunId, e.SevenTvEmoteId });

@@ -38,6 +38,7 @@ public class SlotReconcileRegistrationTests
         Assert.Equal(expected, FlagOf(services.GetRequiredService<ISevenTvApiClient>(), "slotReconcileEnabled"));
         Assert.Equal(expected, FlagOf(services.GetRequiredService<IUsageStatQueryService>(), "slotReconcileEnabled"));
         Assert.Equal(expected, FlagOf(services.GetRequiredService<IVoteSessionQueryService>(), "slotReconcileEnabled"));
+        Assert.Equal(expected, FlagOf(services.GetRequiredService<IChatLogBackfillService>(), "slotReconcileEnabled"));
     }
 
     // The services keep the flag in a private field read once at construction (E26); reading it is

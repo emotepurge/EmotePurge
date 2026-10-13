@@ -369,7 +369,7 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Property<long>("RunId")
                         .HasColumnType("bigint");
 
-                    b.Property<string>("EmoteId")
+                    b.Property<string>("SlotId")
                         .HasColumnType("text");
 
                     b.Property<DateOnly?>("AddedToSetDay")
@@ -385,6 +385,10 @@ namespace EmotePurge.Infrastructure.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(false);
 
+                    b.Property<string>("EmoteId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text");
@@ -393,10 +397,7 @@ namespace EmotePurge.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string>("SlotId")
-                        .HasColumnType("text");
-
-                    b.HasKey("RunId", "EmoteId");
+                    b.HasKey("RunId", "SlotId");
 
                     b.HasIndex("RunId", "SevenTvEmoteId");
 

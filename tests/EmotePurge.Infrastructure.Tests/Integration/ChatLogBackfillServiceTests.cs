@@ -618,7 +618,8 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
         AppDbContext db,
         ChatLogArchiveOptions? archiveOptions = null,
         ILogger<ChatLogBackfillService>? logger = null,
-        ChatLogBackfillOptions? backfillOptions = null) =>
+        ChatLogBackfillOptions? backfillOptions = null,
+        bool slotsEnabled = false) =>
         new(
             db,
             _publisher,
@@ -628,7 +629,8 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
             backfillOptions ?? new ChatLogBackfillOptions(),
             archiveOptions ?? new ChatLogArchiveOptions { BaseUrl = ArchiveUrl },
             _clock,
-            logger ?? NullLogger<ChatLogBackfillService>.Instance);
+            logger ?? NullLogger<ChatLogBackfillService>.Instance,
+            new SlotReconcileOptions { Enabled = slotsEnabled });
 
     private async Task<ChatLogBackfillEnqueueResult> EnqueueAsync(Channel channel, string emoteSetId, int months)
     {
@@ -763,9 +765,22 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
             PauseCount = pauseCount,
             BlockAttempts = blockAttempts,
         };
+        // A snapshot names real emotes and slots: since M3 its key is (RunId, SlotId), and every row the
+        // enqueue writes carries a slot (plan #375, 7.1a).
         for (var i = 0; i < snapshotSize; i++)
         {
-            run.Emotes.Add(new ChatLogBackfillRunEmote { EmoteId = $"seed-{i}", SevenTvEmoteId = $"seed7tv-{i}", Name = $"Seed{i}" });
+            var emote = new Emote
+            {
+                ChannelId = channel.Id,
+                SevenTvEmoteId = $"seed7tv-{i}",
+                Name = $"Seed{i}",
+                ImageUrl = ImageUrl($"seed7tv-{i}"),
+                LastSyncedAt = NowUtc,
+            };
+            var slot = new EmoteSlot { EmoteId = emote.Id, Name = emote.Name, LastSyncedAt = NowUtc, SeedUnsettled = true };
+            db.Emotes.Add(emote);
+            db.EmoteSlots.Add(slot);
+            run.Emotes.Add(new ChatLogBackfillRunEmote { EmoteId = emote.Id, SevenTvEmoteId = emote.SevenTvEmoteId, Name = emote.Name, SlotId = slot.Id });
         }
 
         db.ChatLogBackfillRuns.Add(run);

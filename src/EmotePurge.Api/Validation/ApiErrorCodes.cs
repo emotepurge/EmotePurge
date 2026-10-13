@@ -194,6 +194,9 @@ internal static class ApiErrorCodes
     public const string BackfillSetTruncated = "backfill_set_truncated";
     // 409: a rename/merge handed the login to another Twitch identity while the request ran.
     public const string BackfillChannelIdentityChanged = "backfill_channel_identity_changed";
+    // 409, only with the slot flag on (emote slots spec 5.6, D12): a preview entry cannot be bound to its
+    // slot yet (an unsettled seed of the active set, or an undated entry); nothing written, retry later.
+    public const string BackfillSlotsUnsettled = "backfill_slots_unsettled";
 
     // Admin dashboard (#381).
     // 400 from both dashboard routes: the range query value is present but not one of 30d, 90d, 13mo.

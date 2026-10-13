@@ -426,13 +426,13 @@ public partial class ChatLogBackfillServiceTests
         var channel = await SeedChannelAsync("bflockpurge", createdAt: new DateTime(2026, 6, 22, 0, 0, 0, DateTimeKind.Utc));
         var emote = await SeedEmoteAsync(channel, "e1", "E1");
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3);
-        await BindSnapshotAsync(run, emote);
+        var slot = (await BindSnapshotAsync(run, emote))[emote.Id];
 
         var atCoverage = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var commitDb = CreateDbContext(new PauseBeforeCommand("\"ChatLogBackfillCoverage\"", atCoverage, proceed));
         var commit = Task.Run(() => CreateService(commitDb).ReplaceBlockAsync(
-            run.Id, run.WindowFrom, run.WindowFrom.AddDays(7), [new ChatLogBackfillAggregate(emote.Id, run.WindowFrom, 3, 0, 0)], 10, 5, isLastBlock: false));
+            run.Id, run.WindowFrom, run.WindowFrom.AddDays(7), [new ChatLogBackfillAggregate(slot, emote.Id, run.WindowFrom, 3, 0, 0)], 10, 5, isLastBlock: false));
         await atCoverage.Task;
 
         await using var purgeDb = fixture.CreateTaggedDbContext("bflockpurge-purge", DatabaseName);

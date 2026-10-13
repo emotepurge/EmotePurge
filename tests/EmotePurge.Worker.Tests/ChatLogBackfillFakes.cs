@@ -21,7 +21,9 @@ namespace EmotePurge.Worker.Tests;
 /// the persisted <c>PauseCount</c> (the eleventh pause failing the run with HTTP 429), the provider
 /// cooldown never shortened, a strict FIFO head, and a block commit that refuses a block outside the
 /// run's plan and validates its aggregates the way the service's private <c>ValidateBlock</c> does
-/// (mirrored here, since it is not accessible).
+/// (mirrored here, since it is not accessible) — including the pair check against the run's current
+/// <see cref="FakeRun.Snapshot"/> (slot plan #375, E9): a pair that is not a snapshot row throws, a slot
+/// the snapshot no longer holds for an emote it holds answers <c>SnapshotChanged</c>.
 /// <para>
 /// <b>Deliberately not mirrored:</b> the claim-time checks (channel no longer active, Twitch id unknown,
 /// channel excluded, archive mismatch — AC 23/34). The service fails such a head itself and never hands
@@ -88,7 +90,11 @@ internal sealed class FakeBackfillStore(ChatLogBackfillOptions options)
                 WindowFrom = windowFrom,
                 WindowTo = windowTo,
                 WeeksTotal = ChatLogBackfillWindow.WeeksFor(windowTo.DayNumber - windowFrom.DayNumber),
-                Snapshot = snapshot ?? [new ChatLogBackfillSnapshotEmote("e1", "Kappa", null), new ChatLogBackfillSnapshotEmote("e2", "PogU", null)],
+                Snapshot = snapshot ??
+                [
+                    new ChatLogBackfillSnapshotEmote("s1", "e1", "Kappa", null),
+                    new ChatLogBackfillSnapshotEmote("s2", "e2", "PogU", null)
+                ],
             };
             _runs.Add(run);
             return run;
@@ -222,6 +228,11 @@ internal sealed class FakeBackfillStore(ChatLogBackfillOptions options)
 
         return Locked<ChatLogBackfillBlockResult>(() =>
         {
+            if (!SnapshotHolds(run.Snapshot, rows))
+            {
+                return new ChatLogBackfillBlockResult.SnapshotChanged();
+            }
+
             var index = (from.DayNumber - run.WindowFrom.DayNumber) / ChatLogBackfillWindow.BlockDays;
             var plannedTo = from.AddDays(ChatLogBackfillWindow.BlockDays) < run.WindowTo ? from.AddDays(ChatLogBackfillWindow.BlockDays) : run.WindowTo;
             if (run.Status != ChatLogBackfillRunStatus.Running || run.WeeksDone != index || to != plannedTo || isLast != (index + 1 == run.WeeksTotal))
@@ -297,8 +308,22 @@ internal sealed class FakeBackfillStore(ChatLogBackfillOptions options)
         return 0;
     });
 
+    // A mirror of the service's pair stage (E9): false = drift (SnapshotChanged); a pair that is no
+    // snapshot row throws, like the service.
+    private static bool SnapshotHolds(IReadOnlyList<ChatLogBackfillSnapshotEmote> snapshot, IReadOnlyList<ChatLogBackfillAggregate> rows)
+    {
+        var emoteOfSlot = snapshot.ToDictionary(e => e.SlotId, e => e.EmoteId, StringComparer.Ordinal);
+        var emotes = snapshot.Select(e => e.EmoteId).ToHashSet(StringComparer.Ordinal);
+        if (rows.Any(r => emoteOfSlot.TryGetValue(r.SlotId, out var emoteId) ? emoteId != r.EmoteId : !emotes.Contains(r.EmoteId)))
+        {
+            throw new ArgumentException("An aggregate names a slot and an emote that are not one snapshot row.", nameof(rows));
+        }
+
+        return rows.All(r => emoteOfSlot.ContainsKey(r.SlotId));
+    }
+
     // A mirror of ChatLogBackfillService.ValidateBlock (private there): the worker must never hand in
-    // an empty block, a cell outside it or two aggregates for one cell.
+    // an empty block, a cell outside it or two aggregates for one slot and day.
     private static void ValidateBlock(DateOnly from, DateOnly to, IReadOnlyList<ChatLogBackfillAggregate> rows)
     {
         if (from >= to)
@@ -314,9 +339,9 @@ internal sealed class FakeBackfillStore(ChatLogBackfillOptions options)
                 throw new ArgumentOutOfRangeException(nameof(rows), $"Aggregate day {row.Date:yyyy-MM-dd} lies outside the block.");
             }
 
-            if (!seen.Add((row.EmoteId, row.Date)))
+            if (!seen.Add((row.SlotId, row.Date)))
             {
-                throw new ArgumentException("One aggregate per emote and day.", nameof(rows));
+                throw new ArgumentException("One aggregate per slot and day.", nameof(rows));
             }
         }
     }
@@ -356,7 +381,8 @@ internal sealed class FakeRun
 
     public int Claims { get; set; }
 
-    public IReadOnlyList<ChatLogBackfillSnapshotEmote> Snapshot { get; init; } = [];
+    /// <summary>The run's snapshot rows; a test replaces it to play a settle that rebinds rows (E9).</summary>
+    public IReadOnlyList<ChatLogBackfillSnapshotEmote> Snapshot { get; set; } = [];
 
     public List<FakeCommit> Commits { get; } = [];
 }

@@ -65,17 +65,28 @@ public interface IChatLogBackfillService
     /// <summary><c>Status = running</c> — read before every archive request and by the status monitor (D39).</summary>
     Task<bool> IsRunActiveAsync(long runId, CancellationToken cancellationToken = default);
 
-    /// <summary>The run's chosen set and its persisted matching snapshot, ordered by <c>EmoteId</c> (ordinal).</summary>
+    /// <summary>
+    /// The run's chosen set and its persisted matching snapshot, one entry per snapshot row (per slot),
+    /// ordered by <c>EmoteId</c>, then <c>SlotId</c> (both ordinal).
+    /// </summary>
     Task<ChatLogBackfillSnapshot> GetSnapshotAsync(long runId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Replaces one block in one transaction (D2): deletes every imported row of the channel in
     /// <c>[blockFrom, blockToExclusive)</c> whatever its set, inserts <paramref name="rows"/> as imported
-    /// rows of the run's set, marks the block's days covered and advances the run. Rolls everything back
-    /// unless the run is still <c>running</c> when the progress update runs and the block is the run's
-    /// next planned block (<c>WindowFrom + 7·WeeksDone</c>, ending as the plan ends it, with
+    /// rows of the run's set on their slots, marks the block's days covered and advances the run. Rolls
+    /// everything back unless the run is still <c>running</c> when the progress update runs and the block
+    /// is the run's next planned block (<c>WindowFrom + 7·WeeksDone</c>, ending as the plan ends it, with
     /// <paramref name="isLastBlock"/> matching the counters) — both cases answer
     /// <see cref="ChatLogBackfillBlockResult.RunNotActive"/>.
+    /// <para>
+    /// Every aggregate must name a snapshot row of the run: its <c>(SlotId, EmoteId)</c> pair is checked
+    /// for the whole block before anything is written. A slot the snapshot holds under another emote, or
+    /// an emote without any snapshot row, throws <see cref="ArgumentException"/>; a slot the snapshot no
+    /// longer holds for an emote it still holds (a settle rebound the row) answers
+    /// <see cref="ChatLogBackfillBlockResult.SnapshotChanged"/>. Only then are aggregates of a deleted
+    /// emote or slot dropped (D25).
+    /// </para>
     /// </summary>
     Task<ChatLogBackfillBlockResult> ReplaceBlockAsync(
         long runId,
@@ -143,7 +154,14 @@ public enum ChatLogBackfillEnqueueStatus
     SetNotMember,
     SetEmpty,
     SetTruncated,
-    SevenTvUnavailable
+    SevenTvUnavailable,
+
+    /// <summary>
+    /// Only with the slot flag on (slot plan #375 2.4, spec 5.6): a preview entry cannot be bound to a
+    /// slot yet — an emote has an unsettled seed of the active set, or an entry is undated where the
+    /// binding needs its date. Nothing is written; the next REST reconcile or v4 overlay resolves it.
+    /// </summary>
+    SlotsUnsettled
 }
 
 /// <summary>
@@ -289,15 +307,23 @@ public sealed record ChatLogBackfillTransition(
 /// <summary>The persisted matching snapshot of a run (D10).</summary>
 public sealed record ChatLogBackfillSnapshot(string EmoteSetId, IReadOnlyList<ChatLogBackfillSnapshotEmote> Emotes);
 
-/// <summary>One snapshot member: our emote id, its alias in the chosen set, and its entry day into that set (null = no gate).</summary>
-public sealed record ChatLogBackfillSnapshotEmote(string EmoteId, string Name, DateOnly? AddedToSetDay);
+/// <summary>
+/// One snapshot row: the slot it counts for, our emote id, the alias in the chosen set, and the entry day
+/// into that set (null = no gate). <c>(EmoteId, Name)</c> identifies the row across a settle, which
+/// only rebinds its slot.
+/// </summary>
+public sealed record ChatLogBackfillSnapshotEmote(string SlotId, string EmoteId, string Name, DateOnly? AddedToSetDay);
 
-/// <summary>One counted cell of a block; the service stamps the run's set id and the archive source.</summary>
-public sealed record ChatLogBackfillAggregate(string EmoteId, DateOnly Date, int UseCount, int BotUseCount, int SharedChatUseCount);
+/// <summary>
+/// One counted cell of a block, per slot and day; <see cref="EmoteId"/> is the slot's emote in the
+/// snapshot. The service stamps the run's set id and the archive source.
+/// </summary>
+public sealed record ChatLogBackfillAggregate(
+    string SlotId, string EmoteId, DateOnly Date, int UseCount, int BotUseCount, int SharedChatUseCount);
 
 /// <summary>
 /// What <see cref="IChatLogBackfillService.ReplaceBlockAsync"/> did (D48) — a closed set: the private
-/// constructor admits only the four cases below.
+/// constructor admits only the five cases below.
 /// </summary>
 public abstract record ChatLogBackfillBlockResult
 {
@@ -316,6 +342,13 @@ public abstract record ChatLogBackfillBlockResult
 
     /// <summary>The channel (and with it the run) vanished between claim and commit; everything rolled back.</summary>
     public sealed record ChannelGone : ChatLogBackfillBlockResult;
+
+    /// <summary>
+    /// The snapshot no longer holds the slot of an aggregate whose emote it still holds — a settle
+    /// rebound that row (slot plan #375, E9). Nothing written; the worker re-reads the snapshot, moves
+    /// the block's aggregates to the rows' new slots and hands the same block in once more.
+    /// </summary>
+    public sealed record SnapshotChanged : ChatLogBackfillBlockResult;
 }
 
 /// <summary>The window arithmetic of spec 4.1, shared by the status read and the enqueue.</summary>

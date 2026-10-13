@@ -57,7 +57,7 @@ public partial class ChatLogBackfillServiceTests
             var counted = Assert.Single(snapshot.Emotes);
             Assert.IsType<ChatLogBackfillBlockResult.Committed>(await service.ReplaceBlockAsync(
                 claim.RunId, claim.WindowFrom, claim.WindowFrom.AddDays(7),
-                [new ChatLogBackfillAggregate(counted.EmoteId, claim.WindowFrom, 3, 1, 0)], 100, 5, isLastBlock: false));
+                [new ChatLogBackfillAggregate(counted.SlotId, counted.EmoteId, claim.WindowFrom, 3, 1, 0)], 100, 5, isLastBlock: false));
         }
 
         await using (var verify = CreateDbContext())
@@ -196,8 +196,8 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, SetB, months: 1)).Status);
         var seed = (await SingleSnapshotEntryAsync()).SlotId!;
         var firstRun = await ClaimAsync();
-        await ReplaceBlockOfAsync(firstRun, 0, new ChatLogBackfillAggregate(emote.Id, firstRun.WindowFrom, 3, 0, 0));
-        await ReplaceBlockOfAsync(firstRun, 1, new ChatLogBackfillAggregate(emote.Id, firstRun.WindowFrom.AddDays(8), 2, 0, 0));
+        await ReplaceBlockOfAsync(firstRun, 0, new ChatLogBackfillAggregate(seed, emote.Id, firstRun.WindowFrom, 3, 0, 0));
+        await ReplaceBlockOfAsync(firstRun, 1, new ChatLogBackfillAggregate(seed, emote.Id, firstRun.WindowFrom.AddDays(8), 2, 0, 0));
         await using (var db = CreateDbContext())
         {
             Assert.Equal(ChatLogBackfillRunStatus.Completed, (await db.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == firstRun.RunId)).Status);
@@ -215,9 +215,10 @@ public partial class ChatLogBackfillServiceTests
         // 3. A run of C on the same channel deletes the channel's imported rows in its blocks, S's included.
         PreviewReturns(SetC, "Set C", Member("e2", "CE2", null));
         Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, SetC, months: 1)).Status);
+        var slotOfC = (await SingleSnapshotEntryAsync(newest: true)).SlotId;
         var runOfC = await ClaimAsync();
-        await ReplaceBlockOfAsync(runOfC, 0, new ChatLogBackfillAggregate(other.Id, runOfC.WindowFrom, 1, 0, 0));
-        await ReplaceBlockOfAsync(runOfC, 1, new ChatLogBackfillAggregate(other.Id, runOfC.WindowFrom.AddDays(8), 1, 0, 0));
+        await ReplaceBlockOfAsync(runOfC, 0, new ChatLogBackfillAggregate(slotOfC, other.Id, runOfC.WindowFrom, 1, 0, 0));
+        await ReplaceBlockOfAsync(runOfC, 1, new ChatLogBackfillAggregate(slotOfC, other.Id, runOfC.WindowFrom.AddDays(8), 1, 0, 0));
         await using (var db = CreateDbContext())
         {
             Assert.False(await db.UsageStats.AnyAsync(u => u.SlotId == seed));
@@ -239,7 +240,7 @@ public partial class ChatLogBackfillServiceTests
         }
 
         var secondRun = await ClaimAsync();
-        await ReplaceBlockOfAsync(secondRun, 0, new ChatLogBackfillAggregate(emote.Id, secondRun.WindowFrom, 5, 0, 0));
+        await ReplaceBlockOfAsync(secondRun, 0, new ChatLogBackfillAggregate(entry.SlotId, emote.Id, secondRun.WindowFrom, 5, 0, 0));
 
         await using var verify = CreateDbContext();
         var slotsWithRows = await verify.UsageStats
@@ -339,26 +340,28 @@ public partial class ChatLogBackfillServiceTests
 
     // ---------------------------------------------------------------- ReplaceBlockAsync with the snapshot's slot (§4, E11a)
 
-    // The snapshot's slot must exist and belong to the aggregate's emote: a deleted slot, a snapshot row
-    // with SlotId NULL (a run from before #373) and a slot of another emote all drop the aggregate with
-    // the existing warning, never a failure; the rest of the block is written.
+    // The existence stage after the pair stage (D25, plan #375 E9): an aggregate that is a snapshot row
+    // of the run, but whose slot was deleted or (by now) belongs to another emote, is dropped with the
+    // existing warning, never a failure; the rest of the block is written. Since M3 a snapshot row can
+    // neither lack a slot nor share one with another row of its run (the key is (RunId, SlotId)): the
+    // foreign slot is one of an emote outside the snapshot, and the NULL case of runs from before #373
+    // is M3's (SwitchBackfillSnapshotToSlotKeyMigrationTests).
     [Fact]
-    public async Task ReplaceBlock_DropsAggregatesWhoseSnapshotSlotIsMissing_NullOrAnotherEmotes()
+    public async Task ReplaceBlock_DropsAggregatesWhoseSnapshotSlotIsMissingOrAnotherEmotes()
     {
         var channel = await SeedChannelAsync("bfreplaceslots", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
         var kept = await SeedEmoteAsync(channel, "e1", "E1");
         var slotDeleted = await SeedEmoteAsync(channel, "e2", "E2");
-        var slotNull = await SeedEmoteAsync(channel, "e3", "E3");
         var slotForeign = await SeedEmoteAsync(channel, "e4", "E4");
+        var outsider = await SeedEmoteAsync(channel, "e5", "E5");
+        var outsiderSlot = await SeedSlotAsync(outsider.Id, "E5", new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc));
         var run = await SeedRunAsync(channel, ChatLogBackfillRunStatus.Running, weeksTotal: 3, windowFrom: BlockFrom);
-        var slots = await BindSnapshotAsync(run, kept, slotDeleted, slotNull, slotForeign);
+        var slots = await BindSnapshotAsync(run, kept, slotDeleted, slotForeign);
         await using (var db = CreateDbContext())
         {
             await db.EmoteSlots.Where(s => s.Id == slots[slotDeleted.Id]).ExecuteDeleteAsync();
-            await db.ChatLogBackfillRunEmotes.Where(e => e.RunId == run.Id && e.EmoteId == slotNull.Id)
-                .ExecuteUpdateAsync(s => s.SetProperty(e => e.SlotId, (string?)null));
             await db.ChatLogBackfillRunEmotes.Where(e => e.RunId == run.Id && e.EmoteId == slotForeign.Id)
-                .ExecuteUpdateAsync(s => s.SetProperty(e => e.SlotId, slots[kept.Id]));
+                .ExecuteUpdateAsync(s => s.SetProperty(e => e.SlotId, outsiderSlot));
         }
 
         var logger = new RecordingLogger<ChatLogBackfillService>();
@@ -366,11 +369,15 @@ public partial class ChatLogBackfillServiceTests
         {
             Assert.IsType<ChatLogBackfillBlockResult.Committed>(await CreateService(db, logger: logger).ReplaceBlockAsync(
                 run.Id, BlockFrom, BlockTo,
-                [.. new[] { kept, slotDeleted, slotNull, slotForeign }.Select(e => new ChatLogBackfillAggregate(e.Id, BlockFrom, 2, 0, 0))],
+                [
+                    new ChatLogBackfillAggregate(slots[kept.Id], kept.Id, BlockFrom, 2, 0, 0),
+                    new ChatLogBackfillAggregate(slots[slotDeleted.Id], slotDeleted.Id, BlockFrom, 2, 0, 0),
+                    new ChatLogBackfillAggregate(outsiderSlot, slotForeign.Id, BlockFrom, 2, 0, 0),
+                ],
                 10, 1, isLastBlock: false));
         }
 
-        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("3 aggregates", StringComparison.Ordinal));
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("2 aggregates", StringComparison.Ordinal));
         await using var verify = CreateDbContext();
         var row = await verify.UsageStats.AsNoTracking().SingleAsync();
         Assert.Equal((kept.Id, (string?)slots[kept.Id], 2), (row.EmoteId, row.SlotId, row.UseCount));
@@ -379,10 +386,11 @@ public partial class ChatLogBackfillServiceTests
 
     // E11a, settle first: a writer holding the emote row FOR NO KEY UPDATE (the settle moving the
     // snapshot rows from seed S to target T) makes the block wait at its FOR SHARE, before it reads the
-    // snapshot; after that commit the block writes on T. Mutation probe: without the FOR SHARE the block
-    // never waits and writes on S.
+    // snapshot; after that commit the block, counted on S, finds S gone from the snapshot and answers
+    // SnapshotChanged without writing (plan #375 E9); handed in on T it commits there. Mutation probe:
+    // without the FOR SHARE the block never waits and writes on S.
     [Fact]
-    public async Task ReplaceBlock_WaitsForAWriterHoldingTheEmoteRow_AndThenReadsTheSlotItMovedTheSnapshotTo()
+    public async Task ReplaceBlock_WaitsForAWriterHoldingTheEmoteRow_AndThenSeesTheSlotItMovedTheSnapshotTo()
     {
         var channel = await SeedChannelAsync("bfshareafter", createdAt: new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
         var emote = await SeedEmoteAsync(channel, "e1", "E1");
@@ -400,12 +408,23 @@ public partial class ChatLogBackfillServiceTests
         const string tag = "bfshareafter-block";
         await using var blockDb = fixture.CreateTaggedDbContext(tag, DatabaseName);
         var block = Task.Run(() => CreateService(blockDb).ReplaceBlockAsync(
-            run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(emote.Id, BlockFrom, 5, 0, 0)], 10, 1, isLastBlock: false));
+            run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(seed, emote.Id, BlockFrom, 5, 0, 0)], 10, 1, isLastBlock: false));
         await fixture.WaitUntilBlockedOnLockAsync(tag, block);
         Assert.Contains("FOR SHARE", await fixture.WaitingQueryAsync(tag), StringComparison.Ordinal);
 
         await settleTransaction.CommitAsync();
-        Assert.IsType<ChatLogBackfillBlockResult.Committed>(await block);
+        Assert.IsType<ChatLogBackfillBlockResult.SnapshotChanged>(await block);
+        await using (var check = CreateDbContext())
+        {
+            Assert.False(await check.UsageStats.AnyAsync(u => u.EmoteId == emote.Id));
+            Assert.Equal(0, (await check.ChatLogBackfillRuns.AsNoTracking().SingleAsync(r => r.Id == run.Id)).WeeksDone);
+        }
+
+        await using (var db = CreateDbContext())
+        {
+            Assert.IsType<ChatLogBackfillBlockResult.Committed>(await CreateService(db).ReplaceBlockAsync(
+                run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(target, emote.Id, BlockFrom, 5, 0, 0)], 10, 1, isLastBlock: false));
+        }
 
         await using var verify = CreateDbContext();
         Assert.Equal(target, (await verify.UsageStats.AsNoTracking().SingleAsync(u => u.EmoteId == emote.Id)).SlotId);
@@ -427,7 +446,7 @@ public partial class ChatLogBackfillServiceTests
         var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var blockDb = CreateDbContext(new PauseBeforeCommand("INSERT INTO \"UsageStats\"", atInsert, proceed));
         var block = Task.Run(() => CreateService(blockDb).ReplaceBlockAsync(
-            run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(emote.Id, BlockFrom, 5, 0, 0)], 10, 1, isLastBlock: false));
+            run.Id, BlockFrom, BlockTo, [new ChatLogBackfillAggregate(seed, emote.Id, BlockFrom, 5, 0, 0)], 10, 1, isLastBlock: false));
         await atInsert.Task;
 
         const string tag = "bfsharebefore-settle";
@@ -457,7 +476,9 @@ public partial class ChatLogBackfillServiceTests
     // Plan #373 §6.3 E11a, in sequence: the enqueue binds the snapshot to a new seed S next to the REST
     // slot T, block 1 writes on S, the real flag-on settle finds T ("target exists"), merges S's rows
     // onto T — one cell collides with a live row of T (E10) — and rebinds the snapshot to T with
-    // CreatedSlot false; block 2 writes on T, and the next tick leaves nothing on S.
+    // CreatedSlot false; block 2, still counted on S, is refused as SnapshotChanged (plan #375 E9), and
+    // after the worker's re-read — the row (EmoteId, Name) now on T — is handed in on T and written there;
+    // the next tick leaves nothing on S.
     [Fact]
     public async Task Settle_OntoAnExistingTarget_MergesTheBlocksRows_AndTheNextBlockWritesOnTheTarget()
     {
@@ -479,7 +500,7 @@ public partial class ChatLogBackfillServiceTests
             await db.SaveChangesAsync();
         }
 
-        await ReplaceBlockOfAsync(claim, 0, new ChatLogBackfillAggregate(emote.Id, claim.WindowFrom, 3, 1, 0));
+        await ReplaceBlockOfAsync(claim, 0, new ChatLogBackfillAggregate(seed, emote.Id, claim.WindowFrom, 3, 1, 0));
         await using (var db = CreateDbContext())
         {
             var imported = await db.UsageStats.AsNoTracking().SingleAsync(u => u.Source == UsageStatSource.ChatLogArchive);
@@ -506,7 +527,16 @@ public partial class ChatLogBackfillServiceTests
         Assert.Contains(logger.Entries, e => e.Message.Contains("1 backfill snapshot entries", StringComparison.Ordinal));
 
         var secondDay = claim.WindowFrom.AddDays(8);
-        await ReplaceBlockOfAsync(claim, 1, new ChatLogBackfillAggregate(emote.Id, secondDay, 4, 0, 0));
+        await using (var db = CreateDbContext())
+        {
+            var service = CreateService(db);
+            Assert.IsType<ChatLogBackfillBlockResult.SnapshotChanged>(
+                await ReplaceBlockOfAsync(db, claim, 1, new ChatLogBackfillAggregate(seed, emote.Id, secondDay, 4, 0, 0)));
+            var reread = Assert.Single((await service.GetSnapshotAsync(claim.RunId)).Emotes);
+            Assert.Equal((target, emote.Id, "A"), (reread.SlotId, reread.EmoteId, reread.Name));
+        }
+
+        await ReplaceBlockOfAsync(claim, 1, new ChatLogBackfillAggregate(target, emote.Id, secondDay, 4, 0, 0));
         Assert.Equal(target, await SlotOfRowOnAsync(emote.Id, secondDay));
 
         await SettleAsync(channel, logger: null);
@@ -517,13 +547,14 @@ public partial class ChatLogBackfillServiceTests
     }
 
     // E11a, settle first: the real settle holds the emote row from its lock until its commit and has
-    // already rebound the snapshot; block 2 waits at its FOR SHARE, before it reads the snapshot, and
-    // after the settle's commit writes on T.
+    // already rebound the snapshot; block 2, counted on S, waits at its FOR SHARE, before it reads the
+    // snapshot, and after the settle's commit sees the rebound row: SnapshotChanged, nothing written
+    // (plan #375 E9). Handed in again on T, it writes there.
     [Fact]
-    public async Task Settle_FirstHoldingTheEmoteRow_TheWaitingBlockReadsTheReboundSnapshotAndWritesOnTheTarget()
+    public async Task Settle_FirstHoldingTheEmoteRow_TheWaitingBlockSeesTheReboundSnapshot_AndIsWrittenOnTheTargetWhenHandedInAgain()
     {
         var (channel, emote, target, seed, claim) = await EnqueueNextToRestSlotAsync("bfsettlefirst");
-        await ReplaceBlockOfAsync(claim, 0, new ChatLogBackfillAggregate(emote.Id, claim.WindowFrom, 3, 0, 0));
+        await ReplaceBlockOfAsync(claim, 0, new ChatLogBackfillAggregate(seed, emote.Id, claim.WindowFrom, 3, 0, 0));
 
         const string tag = "bfsettlefirst-block";
         var secondDay = claim.WindowFrom.AddDays(8);
@@ -537,7 +568,7 @@ public partial class ChatLogBackfillServiceTests
                 {
                     await using (blockDb)
                     {
-                        return await ReplaceBlockOfAsync(blockDb, claim, 1, new ChatLogBackfillAggregate(emote.Id, secondDay, 4, 0, 0));
+                        return await ReplaceBlockOfAsync(blockDb, claim, 1, new ChatLogBackfillAggregate(seed, emote.Id, secondDay, 4, 0, 0));
                     }
                 });
                 await fixture.WaitUntilBlockedOnLockAsync(tag, block);
@@ -549,7 +580,13 @@ public partial class ChatLogBackfillServiceTests
         }
 
         Assert.NotNull(block);
-        Assert.IsType<ChatLogBackfillBlockResult.Committed>(await block);
+        Assert.IsType<ChatLogBackfillBlockResult.SnapshotChanged>(await block);
+        await using (var check = CreateDbContext())
+        {
+            Assert.False(await check.UsageStats.AnyAsync(u => u.EmoteId == emote.Id && u.Date == secondDay));
+        }
+
+        await ReplaceBlockOfAsync(claim, 1, new ChatLogBackfillAggregate(target, emote.Id, secondDay, 4, 0, 0));
         await using var verify = CreateDbContext();
         Assert.Equal(target, await SlotOfRowOnAsync(emote.Id, secondDay));
         Assert.Equal(target, await SlotOfRowOnAsync(emote.Id, claim.WindowFrom));
@@ -569,7 +606,7 @@ public partial class ChatLogBackfillServiceTests
         var atInsert = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var blockDb = CreateDbContext(new PauseBeforeCommand("INSERT INTO \"UsageStats\"", atInsert, proceed));
-        var block = Task.Run(() => ReplaceBlockOfAsync(blockDb, claim, 0, new ChatLogBackfillAggregate(emote.Id, claim.WindowFrom, 3, 0, 0)));
+        var block = Task.Run(() => ReplaceBlockOfAsync(blockDb, claim, 0, new ChatLogBackfillAggregate(seed, emote.Id, claim.WindowFrom, 3, 0, 0)));
         await atInsert.Task;
 
         const string tag = "bfblockfirst-settle";
@@ -592,8 +629,9 @@ public partial class ChatLogBackfillServiceTests
             Assert.Equal((false, true, (DateTime?)null), (settled.SeedUnsettled, settled.IsArchived, settled.ArchivedAt));
         }
 
+        // The worker's next block counts on the re-read snapshot's slot.
         var secondDay = claim.WindowFrom.AddDays(8);
-        await ReplaceBlockOfAsync(claim, 1, new ChatLogBackfillAggregate(emote.Id, secondDay, 4, 0, 0));
+        await ReplaceBlockOfAsync(claim, 1, new ChatLogBackfillAggregate(target, emote.Id, secondDay, 4, 0, 0));
         Assert.Equal(target, await SlotOfRowOnAsync(emote.Id, secondDay));
     }
 
@@ -609,7 +647,7 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal(ChatLogBackfillEnqueueStatus.Enqueued, (await EnqueueAsync(channel, SetB, months: 1)).Status);
         var claim = await ClaimAsync();
         var before = await SingleSnapshotEntryAsync();
-        await ReplaceBlockOfAsync(claim, 0, new ChatLogBackfillAggregate(emote.Id, claim.WindowFrom, 3, 0, 0));
+        await ReplaceBlockOfAsync(claim, 0, new ChatLogBackfillAggregate(before.SlotId, emote.Id, claim.WindowFrom, 3, 0, 0));
 
         await SettleAsync(channel, logger: null);
 

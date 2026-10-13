@@ -16,12 +16,12 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 // that gains a column. The predecessor is looked up from the migration chain by name, so the tests
 // keep working when another migration lands in between (plan #371, E1).
 //
-// The two collapse constants of the rollback procedure and the reusable seed constant have no input
-// on a pre-M2/M3 schema, so their cases simulate the target state with raw SQL after Up (plan E14):
-// the unique (EmoteId, EmoteSetId, Date) index is dropped for UsageStats, the (RunId, EmoteId) primary
-// key is swapped for (RunId, SlotId) for the snapshot. SwitchUsageStatsToSlotKeyMigrationTests (child 3)
-// repeats the UsageStats half against the real M2 Up/Down with the same fixtures
-// (EmoteSlotMigrationFixtures); child 5 does the snapshot half against M3.
+// The UsageStats collapse constant of the rollback procedure and the reusable seed constant have no
+// input on a pre-M2 schema, so their cases simulate the target state with raw SQL after Up (plan E14):
+// the unique (EmoteId, EmoteSetId, Date) index is dropped. SwitchUsageStatsToSlotKeyMigrationTests
+// (child 3) repeats that half against the real M2 Up/Down with the same fixtures
+// (EmoteSlotMigrationFixtures). The snapshot collapse is tested against the real M3 Up/Down only, in
+// SwitchBackfillSnapshotToSlotKeyMigrationTests (child 5); its simulation here was removed with it.
 [Collection("Postgres")]
 public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
 {
@@ -612,108 +612,6 @@ public class AddEmoteSlotsMigrationTests(PostgresFixture fixture)
         Assert.Equal(1, await db.Database.ExecuteSqlRawAsync(EmoteSlotSeedSql.AttachUnslottedUsageRowsSql));
 
         Assert.Equal("tie-upper", await OneAsync(db, """SELECT "SlotId" AS "Value" FROM "UsageStats" WHERE "EmoteId" = 'ex' AND "Date" = '2026-09-20';"""));
-    }
-
-    [Fact]
-    public async Task CollapseBackfillSnapshotSql_KeepsTheOldestSlotsRow_PerRunAndEmote_AndRestoresThePrimaryKey()
-    {
-        var (databaseName, previous, current) = await CreateDatabaseAtPreviousMigrationAsync();
-        await using var db = fixture.CreateDbContext(databaseName);
-        await Exec(
-            db,
-            """
-            INSERT INTO "Channels" ("Id", "TwitchChannelId", "ChannelName", "ActiveEmoteSetId", "IsBotActive", "CreatedAt", "TrackingResumedAt")
-            VALUES ('c1', '1', 'chan', 'SETA', true, now(), NULL);
-            INSERT INTO "Emotes" ("Id", "SevenTvEmoteId", "ChannelId", "Name", "ImageUrl", "IsArchived", "LastSyncedAt")
-            VALUES ('ex', '7x', 'c1', 'EmoteX', '', false, now()),
-                   ('ey', '7y', 'c1', 'EmoteY', '', false, now()),
-                   ('ez', '7z', 'c1', 'EmoteZ', '', false, now()),
-                   ('ev', '7v', 'c1', 'EmoteV', '', false, now());
-            -- ez has no usage at all: it gets no seed, its slots below are the only ones.
-            INSERT INTO "UsageStats" ("EmoteId", "EmoteSetId", "Date", "UseCount", "BotUseCount", "SharedChatUseCount", "Source")
-            VALUES ('ex', 'SETA', '2026-09-01', 1, 0, 0, 0),
-                   ('ey', 'SETA', '2026-09-01', 1, 0, 0, 0),
-                   ('ev', 'SETA', '2026-09-01', 1, 0, 0, 0);
-            INSERT INTO "ChatLogBackfillRuns"
-                ("ChannelId", "Status", "RequestedMonths", "WindowFrom", "WindowTo", "WeeksTotal", "EmoteSetId", "ArchiveBaseUrl",
-                 "RequestedByTwitchUserId", "RequestedByLogin", "RequestedAtUtc")
-            VALUES ('c1', 'completed', 1, '2026-08-01', '2026-09-01', 5, 'SETA', 'https://logs.cyex.app/', '42', 'r1', now()),
-                   ('c1', 'completed', 1, '2026-07-01', '2026-08-01', 5, 'SETA', 'https://logs.cyex.app/', '42', 'r2', now());
-            INSERT INTO "ChatLogBackfillRunEmotes" ("RunId", "EmoteId", "SevenTvEmoteId", "Name", "CreatedRow")
-            SELECT r."Id", v.e, v.s, v.n, false
-            FROM "ChatLogBackfillRuns" r,
-                 (VALUES ('ex', '7x', 'EmoteX'), ('ey', '7y', 'EmoteY'), ('ev', '7v', 'EmoteV')) v(e, s, n)
-            WHERE r."RequestedByLogin" = 'r1';
-            INSERT INTO "ChatLogBackfillRunEmotes" ("RunId", "EmoteId", "SevenTvEmoteId", "Name", "CreatedRow")
-            SELECT r."Id", v.e, v.s, v.n, false
-            FROM "ChatLogBackfillRuns" r,
-                 (VALUES ('ex', '7x', 'EmoteX'), ('ey', '7y', 'EmoteY')) v(e, s, n)
-            WHERE r."RequestedByLogin" = 'r2';
-            """);
-        await MigrateAsync(db, current);
-        // Up bound every snapshot row to its pair's seed; the simulation below needs that (PK columns).
-        Assert.Equal("0", await OneAsync(db, """SELECT count(*)::text AS "Value" FROM "ChatLogBackfillRunEmotes" WHERE "SlotId" IS NULL;"""));
-        var seedOfEy = await OneAsync(db, """SELECT "SlotId" AS "Value" FROM "UsageStats" WHERE "EmoteId" = 'ey';""");
-        var seedOfEv = await OneAsync(db, """SELECT "SlotId" AS "Value" FROM "UsageStats" WHERE "EmoteId" = 'ev';""");
-
-        // Simulated M3 state: one snapshot row per (RunId, SlotId) instead of per (RunId, EmoteId).
-        await Exec(
-            db,
-            """
-            ALTER TABLE "ChatLogBackfillRunEmotes" DROP CONSTRAINT "PK_ChatLogBackfillRunEmotes";
-            ALTER TABLE "ChatLogBackfillRunEmotes" ADD CONSTRAINT "PK_ChatLogBackfillRunEmotes" PRIMARY KEY ("RunId", "SlotId");
-            INSERT INTO "EmoteSlots" ("Id", "EmoteId", "Name", "AddedAt", "AddedAtFromRest", "LastSyncedAt")
-            VALUES ('x-dated',  'ex', 'Zeta',  '2026-03-01', true,  now()),
-                   ('y-null',   'ey', 'Alpha', NULL,         false, now()),
-                   ('z-upper',  'ez', 'Bravo', NULL,         false, now()),
-                   ('z-lower',  'ez', 'alpha', NULL,         false, now());
-            INSERT INTO "ChatLogBackfillRunEmotes" ("RunId", "EmoteId", "SevenTvEmoteId", "Name", "CreatedRow", "SlotId")
-            SELECT r."Id", v.e, v.s, v.n, false, v.slot
-            FROM "ChatLogBackfillRuns" r,
-                 (VALUES ('ex', '7x', 'Zeta',  'x-dated'),
-                         ('ey', '7y', 'Alpha', 'y-null'),
-                         ('ez', '7z', 'alpha', 'z-lower'),
-                         ('ez', '7z', 'Bravo', 'z-upper')) v(e, s, n, slot)
-            WHERE r."RequestedByLogin" = 'r1';
-            -- the second run: the dated slot again, decided on its own
-            INSERT INTO "ChatLogBackfillRunEmotes" ("RunId", "EmoteId", "SevenTvEmoteId", "Name", "CreatedRow", "SlotId")
-            SELECT r."Id", 'ex', '7x', 'Zeta', false, 'x-dated' FROM "ChatLogBackfillRuns" r WHERE r."RequestedByLogin" = 'r2';
-            """);
-        Assert.Equal("10", await OneAsync(db, """SELECT count(*)::text AS "Value" FROM "ChatLogBackfillRunEmotes";"""));
-
-        var removed = await db.Database.ExecuteSqlRawAsync(EmoteSlotRollbackSql.CollapseBackfillSnapshotSql);
-
-        Assert.Equal(4, removed);
-        Assert.Equal(
-            [
-                "r1|ev|" + seedOfEv,
-                "r1|ex|x-dated",
-                "r1|ey|y-null",
-                "r1|ez|z-upper",
-                "r2|ex|x-dated",
-                "r2|ey|" + seedOfEy
-            ],
-            await QueryAsync(
-                db,
-                """
-                SELECT r."RequestedByLogin" || '|' || re."EmoteId" || '|' || re."SlotId" AS "Value"
-                FROM "ChatLogBackfillRunEmotes" re JOIN "ChatLogBackfillRuns" r ON r."Id" = re."RunId"
-                ORDER BY r."RequestedByLogin", re."EmoteId";
-                """));
-
-        Assert.Equal(0, await db.Database.ExecuteSqlRawAsync(EmoteSlotRollbackSql.CollapseBackfillSnapshotSql));
-
-        // The old primary key is valid again, in the form of M3's Down guard.
-        await Exec(
-            db,
-            """
-            ALTER TABLE "ChatLogBackfillRunEmotes" DROP CONSTRAINT "PK_ChatLogBackfillRunEmotes";
-            ALTER TABLE "ChatLogBackfillRunEmotes" ADD CONSTRAINT "PK_ChatLogBackfillRunEmotes" PRIMARY KEY ("RunId", "EmoteId");
-            """);
-
-        await MigrateAsync(db, previous);
-        Assert.False(await ColumnExistsAsync(db, "ChatLogBackfillRunEmotes", "SlotId"));
-        Assert.Equal("6", await OneAsync(db, """SELECT count(*)::text AS "Value" FROM "ChatLogBackfillRunEmotes";"""));
     }
 
     private static string SlotCountForEmoteSql(string emoteId) =>
