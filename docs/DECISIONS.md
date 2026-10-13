@@ -25,14 +25,23 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 `tests/EmotePurge.Infrastructure.Tests/Integration/AuditLogQueryServiceTests.cs` ·
 `web/src/app/features/channel-workspace/backfill-section.ts` · `web/src/app/core/channels/backfill.service.ts` ·
 `web/src/app/core/channels/backfill.model.ts` · `web/src/app/core/audit/audit.model.ts` ·
-`web/src/app/shared/audit/audit-actions.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+`web/src/app/shared/audit/audit-actions.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` ·
+`src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` · `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` ·
+`web/src/app/core/i18n/api-error.ts` ·
+`tests/EmotePurge.Api.Tests/ChatLogImportRemovalEndpointTests.cs` ·
+`tests/EmotePurge.Api.Tests/ApiFactory.cs` · `tests/EmotePurge.Api.Tests/AuthFilterMatrixTests.cs` ·
+`tests/EmotePurge.Api.Tests/EmoteRoutePolicyTests.cs` ·
+`web/src/app/features/channel-workspace/backfill-section.spec.ts` ·
+`web/src/app/core/channels/backfill.service.spec.ts` · `web/src/app/shared/audit/audit-actions.spec.ts` ·
+`web/e2e/channel-settings.e2e.spec.ts` · `web/e2e/usage-atlas.e2e.spec.ts` · `web/e2e/support/mocks.ts` ·
+`docs/Operations.md`
 
 Until now a manager could start a backfill but not take it back; the only way to remove imported numbers
 was the operator procedure in `docs/Operations.md` ("Chat-log backfill" → "Rolling back"). Spec:
 `docs/superpowers/specs/2026-10-13-remove-imported-backfill-spec.md`; plan:
 `docs/plans/Plan-384-Remove-Imported-Backfill.md`.
 
-Decision (this entry covers the service and the route; the UI follows in the same branch):
+Decision (service, route and the settings-tab UI, all in one branch):
 
 - **A service of its own** (D2): `IChatLogImportRemovalService` in Core, `ChatLogImportRemovalService` and
   the SQL texts in `ChatLogImportRemovalSql` in Infrastructure. Not a method on `IChatLogBackfillService`:
