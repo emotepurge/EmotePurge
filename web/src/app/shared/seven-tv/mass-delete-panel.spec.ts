@@ -2152,6 +2152,77 @@ describe('MassDeletePanel — an active-set delete records every alias from a li
     expect(startDelete.mock.calls[0][2][0].aliases).toEqual(['PogU']);
   });
 
+  // --- entry rows (slot delete, plan 378, 4.3) ---------------------------------------------------
+
+  const HOB_TARGET = {
+    slotId: 'slot-hob',
+    alias: 'hob44',
+    addedAt: '2026-10-13T08:00:14.902Z',
+    cardKey: 'slot-hob',
+  };
+
+  function selectEntryRow(): void {
+    fixture.componentRef.setInput('selectedEmotes', [
+      {
+        emoteId: 'e1',
+        sevenTvEmoteId: '7tv-1',
+        name: 'hob44',
+        aliases: ['hob44'],
+        hidden: false,
+        entry: HOB_TARGET,
+      },
+    ]);
+    fixture.detectChanges();
+  }
+
+  it('hands an entry row to the service with its target unchanged and only its own alias, whatever else the id holds', () => {
+    selectEntryRow();
+    confirm();
+    httpMock.expectOne(GQL).flush(
+      entriesPage([
+        { id: '7tv-1', alias: 'ome44' },
+        { id: '7tv-1', alias: 'hob44' },
+      ]),
+    );
+
+    expect(startDelete).toHaveBeenCalledWith(
+      'set-1',
+      'somechannel',
+      [
+        {
+          emoteId: 'e1',
+          sevenTvEmoteId: '7tv-1',
+          name: 'hob44',
+          aliases: ['hob44'],
+          entry: HOB_TARGET,
+        },
+      ],
+      'somechannel',
+      'tw-owner',
+    );
+  });
+
+  // The pre-run block stays per id (#229, "gezeigt = gelöscht"): an entry that alone has gone or
+  // been renamed is the run's own per-row skip (plan 378, 4.4), not a reason to delete nothing.
+  it('lets an entry row through when only its own alias is gone but its id is still in the set', () => {
+    selectEntryRow();
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'ome44' }]));
+
+    expect(startDelete).toHaveBeenCalledTimes(1);
+    expect(startDelete.mock.calls[0][2][0].entry).toBe(HOB_TARGET);
+  });
+
+  it('blocks the whole run when the id of an entry row has left the set', () => {
+    selectEntryRow();
+    confirm();
+    httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-2', alias: 'KEKW' }]));
+    fixture.detectChanges();
+
+    expect(startDelete).not.toHaveBeenCalled();
+    expect(statusText()).toContain('massDelete.nothingDeleted');
+  });
+
   it('falls back to the name for a cell that is entirely aliasless in the live set', () => {
     fixture.componentRef.setInput('selectedEmotes', [
       { emoteId: 'e1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['PogU'], hidden: false },

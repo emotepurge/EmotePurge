@@ -5512,6 +5512,61 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       expect(entry.aliases).toEqual(['Dupe', 'DupeAlias']);
       expect('confirmationNames' in entry).toBe(false);
     });
+
+    it("hands a dated uncounted entry in as an entry row without a slot, bound by 7TV's own add date (plan 378, R1 a)", async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [
+          slotRow('x', 'slot-ome', 'ome44', 30, {
+            firstSeenAt: '2026-03-01T00:00:00.000Z',
+            firstSeenAtFromRest: true,
+          }),
+        ],
+        members: memberList([
+          dated('7tv-x', 'ome44', '2026-03-01T00:00:00.000Z'),
+          dated('7tv-x', 'hob44', '2026-10-13T08:00:14.902Z'),
+        ]),
+      });
+      const key = 'live:7tv-x#2026-10-13T08:00:14.902Z';
+      component['selection'].onRowClick(card(key), { shiftKey: false } as MouseEvent);
+
+      expect(component['selectedForDelete']()).toEqual([
+        {
+          emoteId: undefined,
+          sevenTvEmoteId: '7tv-x',
+          name: 'hob44',
+          aliases: ['hob44'],
+          hidden: false,
+          entry: { alias: 'hob44', addedAt: '2026-10-13T08:00:14.902Z', cardKey: key },
+        },
+      ]);
+      expect(component['pendingRemovalSlots']()).toBe(1);
+    });
+
+    it('reloads instead of editing the rows when a slot delete ran in a non-active view', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [slotRow('x', 'slot-ome', 'ome44', 30), slotRow('x', 'slot-hob', 'hob44', 10)],
+        members: memberList([member('7tv-x', 'ome44'), member('7tv-x', 'hob44')]),
+      });
+      TestBed.inject(SevenTvDeleteService).lastRun.set({
+        setId: 'set-b',
+        channelName: 'a',
+        targetOwnerTwitchId: null,
+        result: { doneKeys: ['7tv-x#slot-hob'], items: [], startedAt: 0, finishedAt: 1 },
+      });
+
+      component['onDeleted'](['7tv-x#slot-hob']);
+      fixture.detectChanges();
+
+      // Both cards still on screen until the reload answers; the reload asks for the rows and the
+      // member list again.
+      expect(component['emotes']().map((row) => row.slotKey)).toEqual(['slot-ome', 'slot-hob']);
+      expect(
+        httpMock.match((r) => r.url === '/api/channels/a/usage-stats/totals').length,
+      ).toBeGreaterThan(0);
+      expect(liveListRequests().length).toBeGreaterThan(0);
+    });
   });
 });
 
@@ -8507,8 +8562,11 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     ]);
   });
 
-  it('hands the delete run one entry per 7TV id, naming both slots when only one card is marked', () => {
-    mount([ome(), hob(), other()]);
+  // --- delete per set entry (plan 378, 4.9; replaces plan 377's per-id transition, S7) ---------
+
+  it('hands a marked dated slot card to the delete run as an entry row: its own alias, its slot, its add date verbatim and its card key', () => {
+    const micro = '2026-02-05T10:00:00.123456+00:00';
+    mount([ome(), hob(10, { firstSeenAt: micro }), other()]);
     click('slot-hob');
 
     expect(component['selectedForDelete']()).toEqual([
@@ -8516,43 +8574,127 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
         emoteId: 'x',
         sevenTvEmoteId: '7tv-x',
         name: 'hob44',
-        aliases: ['hob44', 'ome44'],
-        confirmationNames: ['hob44', 'ome44'],
+        // Never its sibling's name: the run leaves 'ome44' where it is, and the protocol and a
+        // restore must not bring it back.
+        aliases: ['hob44'],
         hidden: false,
+        entry: { slotId: 'slot-hob', alias: 'hob44', addedAt: micro, cardKey: 'slot-hob' },
       },
     ]);
   });
 
-  it('names the unmarked sibling a filter hides in the confirmation, marked card first, and keeps the entry visible (F3, S3)', () => {
+  it('hands two marked slot cards of one emote in as two entry rows, and an emote-mode card beside them as an id row, in card order', () => {
+    mount([ome(), other(), hob()]);
+    click('slot-hob');
+    click('7tv-y');
+    click('slot-ome');
+
+    const rows = component['selectedForDelete']();
+    expect(rows.map((row) => [row.sevenTvEmoteId, row.name, row.entry?.cardKey])).toEqual([
+      ['7tv-x', 'ome44', 'slot-ome'],
+      ['7tv-y', 'Other', undefined],
+      ['7tv-x', 'hob44', 'slot-hob'],
+    ]);
+    // The id row is the one it always was, with no entry and no confirmation names (flag-off guard).
+    expect(rows[1]).toStrictEqual({
+      emoteId: 'y',
+      sevenTvEmoteId: '7tv-y',
+      name: 'Other',
+      aliases: ['Other'],
+      hidden: false,
+    });
+  });
+
+  it('keeps an entry row visible when only its unmarked sibling is filtered out', () => {
     mount([ome(), hob(), other()]);
     click('slot-hob');
     // Hides 'ome44' (and 'Other'); the marked 'hob44' stays on screen.
     component['usageFilter'].setNameFilter('hob44');
 
-    const [entry] = component['selectedForDelete']();
-    expect(entry.hidden).toBe(false);
-    // Marked first, although 'ome44' entered the set earlier (D2 order would put it first).
-    expect(entry.confirmationNames).toEqual(['hob44', 'ome44']);
+    const [row] = component['selectedForDelete']();
+    expect(row.hidden).toBe(false);
+    expect(row.aliases).toEqual(['hob44']);
   });
 
-  it('marks the entry hidden only when its marked card is the one the filter hides', () => {
+  it('marks an entry row hidden when its own card is the one the filter hides', () => {
     mount([ome(), hob(), other()]);
     click('slot-hob');
     component['usageFilter'].setNameFilter('ome44');
 
-    const [entry] = component['selectedForDelete']();
-    expect(entry.hidden).toBe(true);
-    expect(entry.confirmationNames).toEqual(['hob44', 'ome44']);
+    const [row] = component['selectedForDelete']();
+    expect(row.hidden).toBe(true);
+    expect(row.entry?.cardKey).toBe('slot-hob');
   });
 
-  it('projects both slots of the emote as freed when one of its two cards is marked', () => {
+  it('projects one freed slot per marked slot card, not every slot of the emote (D27)', () => {
     mount([ome(), hob(), other()]);
     click('slot-ome');
 
+    expect(component['pendingRemovalSlots']()).toBe(1);
+    expect(component['projectedSlots']()).toEqual({ projected: 9, capacity: 600 });
+
+    click('slot-hob');
     expect(component['pendingRemovalSlots']()).toBe(2);
-    expect(component['projectedSlots']()).toEqual({ projected: 8, capacity: 600 });
   });
 
+  it('drops exactly the deleted slot card, frees one slot and takes its name out of the sibling hint of the card that stays (AK 37)', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-hob');
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId: 'set-a',
+      channelName: 'a',
+      targetOwnerTwitchId: null,
+      result: {
+        doneKeys: ['7tv-x#slot-hob'],
+        items: [
+          {
+            key: '7tv-x#slot-hob',
+            emoteId: 'x',
+            sevenTvEmoteId: '7tv-x',
+            name: 'hob44',
+            aliases: ['hob44'],
+            entry: {
+              slotId: 'slot-hob',
+              alias: 'hob44',
+              addedAt: '2026-02-05T10:00:00.000Z',
+              cardKey: 'slot-hob',
+            },
+            status: 'done',
+            completedSteps: 1,
+            failedStep: null,
+          },
+        ],
+        startedAt: 0,
+        finishedAt: 1,
+      },
+    });
+
+    component['onDeleted'](['7tv-x#slot-hob']);
+
+    expect(component['emotes']().map((row) => row.slotKey)).toEqual(['slot-ome', '7tv-y']);
+    expect(card('slot-ome').siblingNames).toEqual([]);
+    expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 9 });
+    expect(component['selection'].selectedKeys()).toEqual([]);
+  });
+
+  it('handles an id key and an entry key of one run side by side', () => {
+    mount([ome(), hob(), other()]);
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId: 'set-a',
+      channelName: 'a',
+      targetOwnerTwitchId: null,
+      result: { doneKeys: ['7tv-x#slot-ome', '7tv-y'], items: [], startedAt: 0, finishedAt: 1 },
+    });
+
+    component['onDeleted'](['7tv-x#slot-ome', '7tv-y']);
+
+    expect(component['emotes']().map((row) => row.slotKey)).toEqual(['slot-hob']);
+    expect(card('slot-hob').siblingNames).toEqual([]);
+    expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 8 });
+  });
+
+  // Still the id path (plan 378, 4.9): a run that removes per id — a tag removal — can meet an
+  // emote shown as slot cards, and its one row already counts both entries.
   it('frees two slots, not four, and drops both cards when a run with both aliases deletes the emote (A8)', () => {
     mount([ome(), hob(), other()]);
     TestBed.inject(SevenTvDeleteService).lastRun.set({

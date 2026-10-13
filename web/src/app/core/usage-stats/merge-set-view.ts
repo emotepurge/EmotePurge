@@ -40,7 +40,8 @@ import { EmoteUsageTotal, EmoteUsageTotalDto } from './usage-stat.model';
  * 4. A bound slot row is `'live'` with the DTO's numbers and the live entry's name and image; an
  *    unbound one is `'left'` with the DTO's values.
  * 5. The rest of the live entries are Klasse 3 (`emoteId: null`, null payload, E17): one row per
- *    entry in a slot response (D22), one row per 7TV id in an emote response (F2).
+ *    entry in a slot response (D22), carrying the entry's raw `addedAt` as `liveAddedAt` (plan 378,
+ *    R1 a), one row per 7TV id in an emote response (F2).
  * 6. `siblingNames` of a bound slot row or a per-entry Klasse-3 row are the names of the id's other
  *    live entries in D2 order; a `'left'` slot row keeps the DTO's, everything else has none.
  *
@@ -184,7 +185,8 @@ export function mergeSetView(
     const keys = klasse3Keys(live, instants, entriesById);
     live.forEach((entry, entryIndex) => {
       if (!consumed[entryIndex]) {
-        rows.push(uncounted(entry, keys[entryIndex], [entry.name], siblingsOf(entryIndex)));
+        const row = uncounted(entry, keys[entryIndex], [entry.name], siblingsOf(entryIndex));
+        rows.push(entry.addedAt ? { ...row, liveAddedAt: entry.addedAt } : row);
       }
     });
   } else {
