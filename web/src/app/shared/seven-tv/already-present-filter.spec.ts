@@ -8,6 +8,7 @@ import { ImportRow } from '../../core/seven-tv/import-source';
 import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { TransferPlan, TransferRow } from '../../core/seven-tv/transfer-plan';
 import {
+  clipToShown,
   filterAlreadyPresent,
   filterAlreadyPresentForRestore,
   loadRestoreConfirmPreview,
@@ -294,6 +295,7 @@ interface RestoreRow {
   name: string;
   aliases?: (string | null)[];
   uncertain?: true;
+  entry?: { slotId?: string; alias: string; addedAt: string };
 }
 
 /** Same shape as `entriesPage`, but 7TV's `totalCount` promises one entry more than this single,
@@ -790,6 +792,152 @@ describe('filterAlreadyPresentForRestore — uncertain rows fail closed (#275)',
 // Operator decision 2026-09-25 (#255, "Slot-Zahl nach dem Skip-Filter"): the restore
 // confirmation's own numbers, derived over `filterAlreadyPresentForRestore`'s result rather than
 // each call site re-deriving them.
+// Plan-378 4.7 a (S1): a row with an entry target brings back one removed set entry of an id whose
+// other entries may still be there — a slot delete removes one entry and leaves its siblings.
+describe('filterAlreadyPresentForRestore — entry mode', () => {
+  let httpClient: HttpClient;
+  let httpMock: HttpTestingController;
+
+  /** The entry row of a removed `alias` of `7tv-1`, as a finished slot delete hands it over. */
+  function entryRow(alias: string, extra: Partial<RestoreRow> = {}): RestoreRow {
+    return {
+      sevenTvEmoteId: '7tv-1',
+      name: alias,
+      aliases: [alias],
+      entry: { slotId: `slot-${alias}`, alias, addedAt: '2026-10-13T08:00:14.902Z' },
+      ...extra,
+    };
+  }
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    });
+    httpClient = TestBed.inject(HttpClient);
+    httpMock = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+  });
+
+  async function run(
+    rows: RestoreRow[],
+    entries: { id: string; alias?: string }[],
+    read = entriesPage,
+  ) {
+    const result$ = firstValueFrom(filterAlreadyPresentForRestore(httpClient, 'target-set', rows));
+    httpMock.expectOne(GQL_ENDPOINT).flush(read(entries));
+    return result$;
+  }
+
+  it('sends a removed entry next to a surviving sibling of the same id', async () => {
+    const hob = entryRow('hob44');
+
+    expect(await run([hob], [{ id: '7tv-1', alias: 'ome44' }])).toEqual({
+      rows: [hob],
+      skipped: 0,
+      skippedNameTaken: 0,
+      uncertainDropped: 0,
+      available: true,
+      complete: true,
+    });
+  });
+
+  it('takes an aliasless entry of the same id for no obstacle either', async () => {
+    const hob = entryRow('hob44');
+
+    expect((await run([hob], [{ id: '7tv-1' }])).rows).toEqual([hob]);
+  });
+
+  it('drops the entry as present when its own alias is back under the id', async () => {
+    const result = await run(
+      [entryRow('hob44')],
+      [
+        { id: '7tv-1', alias: 'ome44' },
+        { id: '7tv-1', alias: 'hob44' },
+      ],
+    );
+
+    expect(result.rows).toEqual([]);
+    expect(result.skipped).toBe(1);
+    expect(result.skippedNameTaken).toBe(0);
+  });
+
+  it('drops the entry as name taken when another emote holds its alias', async () => {
+    const result = await run([entryRow('hob44')], [{ id: '7tv-other', alias: 'hob44' }]);
+
+    expect(result.rows).toEqual([]);
+    expect(result.skipped).toBe(0);
+    expect(result.skippedNameTaken).toBe(1);
+  });
+
+  // A partial retry: of two removed entries of one id, one is back already.
+  it('sends only the entry still missing when its sibling row is back', async () => {
+    const hob = entryRow('hob44');
+    const ome = entryRow('ome44');
+
+    const result = await run([hob, ome], [{ id: '7tv-1', alias: 'ome44' }]);
+
+    expect(result.rows).toEqual([hob]);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('keeps the uncertain rule: an incomplete read drops an uncertain entry row', async () => {
+    const result = await run(
+      [entryRow('hob44', { uncertain: true })],
+      [{ id: '7tv-1', alias: 'ome44' }],
+      truncatedEntriesPage,
+    );
+
+    expect(result.rows).toEqual([]);
+    expect(result.uncertainDropped).toBe(1);
+  });
+
+  // Guard: rule 2 still holds for a row without a target — the #149 hole stays closed.
+  it('still drops a row without a target whose id sits in the set under another alias', async () => {
+    const result = await run(
+      [{ sevenTvEmoteId: '7tv-1', name: 'hob44', aliases: ['hob44'] }],
+      [{ id: '7tv-1', alias: 'ome44' }],
+    );
+
+    expect(result.rows).toEqual([]);
+    expect(result.skipped).toBe(1);
+  });
+
+  it('counts entry rows in the restore confirmation like the run sends them', async () => {
+    const preview$ = firstValueFrom(
+      loadRestoreConfirmPreview(httpClient, 'target-set', [
+        entryRow('hob44'),
+        entryRow('ome44'),
+        entryRow('zaza'),
+      ]),
+    );
+    httpMock.expectOne(GQL_ENDPOINT).flush(entriesPage([{ id: '7tv-1', alias: 'ome44' }]));
+    const preview = await preview$;
+
+    expect(preview.names).toEqual(['hob44', 'zaza']);
+    expect(preview.addCount).toBe(2);
+  });
+});
+
+describe('clipToShown', () => {
+  // Plan-378 4.7: entry rows put several rows of one id side by side.
+  it('keeps each entry row of one id that the confirmation showed', () => {
+    const hob: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'hob44', aliases: ['hob44'] };
+    const ome: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'ome44', aliases: ['ome44'] };
+
+    expect(clipToShown([hob, ome], [hob, ome])).toEqual([hob, ome]);
+  });
+
+  it('still clips a row down to the aliases shown for its id', () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A', 'B'] };
+
+    expect(clipToShown([row], [{ ...row, aliases: ['B'] }])).toEqual([{ ...row, aliases: ['B'] }]);
+    expect(clipToShown([row], [{ sevenTvEmoteId: '7tv-2', name: 'C' }])).toEqual([]);
+  });
+});
+
 describe('loadRestoreConfirmPreview', () => {
   let httpClient: HttpClient;
   let httpMock: HttpTestingController;

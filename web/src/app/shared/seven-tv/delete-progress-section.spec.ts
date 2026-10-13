@@ -1551,6 +1551,38 @@ describe('DeleteProgressSection — a slot restore carries the removed entry int
     };
   }
 
+  // S1: the slot delete took hob44 and left ome44 — the same id is still in the set, and the restore
+  // must go out all the same.
+  it('sends the ADD of a removed entry whose sibling of the same id survived', () => {
+    fixture.componentInstance['openRestoreConfirm']();
+    httpMock
+      .expectOne((request) => request.url === preCheckUrl('set-1'))
+      .flush(preCheckEditableBody('set-1', 'channel-a'));
+    httpMock.expectOne(GQL).flush(setRead([{ id: '7tv-1', alias: 'ome44' }]));
+    closed.next(true);
+    httpMock.expectOne(GQL).flush(setRead([{ id: '7tv-1', alias: 'ome44' }]));
+
+    const add = httpMock.expectOne(GQL);
+    expect(add.request.body.variables).toEqual({
+      setId: 'set-1',
+      emoteId: '7tv-1',
+      alias: 'hob44',
+    });
+    flushApplied(add);
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    const report = httpMock.expectOne('/api/seventv/emote-sets/set-1/sync-restored');
+    expect(report.request.body.entries).toEqual([
+      { sevenTvEmoteId: '7tv-1', alias: 'hob44', slotId: 'slot-a-hob', addedAt: ORIGINAL },
+    ]);
+    report.flush({
+      reportedCount: 1,
+      channels: [],
+      unresolvedChannel: null,
+      resyncTriggered: ['channel-a'],
+    });
+  });
+
   it('sends the slot of the viewed channel and the original add date, reporting to the owner channel', () => {
     fixture.componentInstance['openRestoreConfirm']();
     httpMock
