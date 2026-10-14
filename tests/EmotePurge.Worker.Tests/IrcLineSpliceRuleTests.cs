@@ -101,9 +101,8 @@ public class IrcLineSpliceRuleTests
     {
         var line = "@badge-info=;id=aaaa1111-1111-1111-1111-111111111111 :testuser1!testuser1@testuser1.tmi.twitch.tv PRIVMSG #targetchannel_test :hello";
 
-        // badge-info is an identifying tag (#246) and is redacted even though its value happens to
-        // be empty here; id is not and survives untouched.
-        Assert.Equal("@badge-info=<entfernt>;id=aaaa1111-1111-1111-1111-111111111111", IrcLineSpliceRule.TagBlockForLog(line));
+        // Keys only: every value is replaced, even an empty one or a GUID (R1).
+        Assert.Equal("@badge-info=<entfernt>;id=<entfernt>", IrcLineSpliceRule.TagBlockForLog(line));
     }
 
     [Fact]
@@ -111,25 +110,23 @@ public class IrcLineSpliceRuleTests
     {
         var line = "@badge-info=;id=aaaa1111-1111-1111-1111-111111111111";
 
-        Assert.Equal("@badge-info=<entfernt>;id=aaaa1111-1111-1111-1111-111111111111", IrcLineSpliceRule.TagBlockForLog(line));
+        Assert.Equal("@badge-info=<entfernt>;id=<entfernt>", IrcLineSpliceRule.TagBlockForLog(line));
     }
 
     [Fact]
     public void TagBlockForLog_TagBlockLongerThanMaxLength_TruncatesToMaxLength()
     {
-        var tagBlock = new string('a', 20);
-        var line = tagBlock + " rest of line ignored";
+        var line = "@id=1;id=2;id=3 rest of line ignored";
 
-        Assert.Equal(new string('a', 10), IrcLineSpliceRule.TagBlockForLog(line, maxLength: 10));
+        Assert.Equal("@id=<entfe", IrcLineSpliceRule.TagBlockForLog(line, maxLength: 10));
     }
 
     [Fact]
     public void TagBlockForLog_TagBlockShorterThanMaxLength_ReturnsUnchanged()
     {
-        var tagBlock = new string('a', 5);
-        var line = tagBlock + " rest of line ignored";
+        var line = "@id=1 rest of line ignored";
 
-        Assert.Equal(tagBlock, IrcLineSpliceRule.TagBlockForLog(line, maxLength: 10));
+        Assert.Equal("@id=<entfernt>", IrcLineSpliceRule.TagBlockForLog(line, maxLength: 20));
     }
 
     [Fact]
@@ -232,7 +229,7 @@ public class IrcLineSpliceRuleTests
         // badge-info is now also redacted (#246, identifying tag), on top of the two free-text
         // msg-body tags this test originally covered.
         Assert.Equal(
-            "@badge-info=<entfernt>;reply-parent-msg-body=<entfernt>;reply-thread-parent-msg-body=<entfernt>;room-id=111111111;user-type=",
+            "@badge-info=<entfernt>;reply-parent-msg-body=<entfernt>;reply-thread-parent-msg-body=<entfernt>;room-id=111111111;user-type=<entfernt>",
             tagBlock);
     }
 
@@ -267,7 +264,7 @@ public class IrcLineSpliceRuleTests
         var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
 
         Assert.Equal(
-            "@source-room-id=222222222;source-user-id=<entfernt>;source-login=<entfernt>",
+            "@source-room-id=<entfernt>;source-user-id=<entfernt>;source-login=<entfernt>",
             tagBlock);
     }
 
@@ -287,7 +284,7 @@ public class IrcLineSpliceRuleTests
             + ":testuser2!testuser2@testuser2.tmi.twitch.tv PRIVMSG #targetchannel_test :hello";
 
         Assert.Equal(
-            "@badge-info=<entfernt>;room-id=111111111;subscriber=0@badge-info=<entfernt>;room-id=222222222;user-type=",
+            "@badge-info=<entfernt>;room-id=111111111;subscriber=0@badge-info=<entfernt>;room-id=222222222;user-type=<entfernt>",
             IrcLineSpliceRule.TagBlockForLog(line));
     }
 
@@ -352,6 +349,27 @@ public class IrcLineSpliceRuleTests
         var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
 
         Assert.Equal("@reply-parent-msg-body=<entfernt>;room-id=111111111", tagBlock);
+    }
+
+    [Theory]
+    [InlineData("111111111", "111111111")]
+    [InlineData("12345678901234567890", "12345678901234567890")]
+    [InlineData("123456789012345678901", "<entfernt>")]
+    [InlineData("111111111@display-name=EvilName@user-id=444444444", "<entfernt>")]
+    [InlineData("abc", "<entfernt>")]
+    [InlineData("", "<entfernt>")]
+    [InlineData(null, "<entfernt>")]
+    public void ForSpliceWarning_RoomId_IsKeptOnlyAsUpToTwentyDigits(string? roomId, string expected) =>
+        Assert.Equal(expected, IrcLineSpliceRule.ForSpliceWarning("targetchannel_test", roomId, "@room-id=1").RoomId);
+
+    [Fact]
+    public void ForSpliceWarning_CarriesChannelAndRedactedTagBlock()
+    {
+        var fields = IrcLineSpliceRule.ForSpliceWarning(
+            "targetchannel_test", "111111111", "@room-id=111111111@display-name=EvilName;mod=0 PRIVMSG #targetchannel_test :hi");
+
+        Assert.Equal("targetchannel_test", fields.Channel);
+        Assert.Equal("@room-id=111111111@display-name=<entfernt>;mod=0", fields.TagBlock);
     }
 
     private static string ReplyLine(string parentBody) =>

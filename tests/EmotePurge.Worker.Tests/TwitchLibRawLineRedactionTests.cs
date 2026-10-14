@@ -56,10 +56,11 @@ public class TwitchLibRawLineRedactionTests
     [Fact]
     public void Redact_TagBlockWithNoValues_KeysOnlyNoEquals()
     {
-        // A splice or truncation can leave a bare key with no '=' at all.
+        // A splice or truncation can leave a bare key with no '=' at all. Such a fragment may be a
+        // piece of chat text, so it is withheld and only counted (S2).
         var line = "@badge-info;id=aaaa1111 PRIVMSG #targetchannel_test :hi";
 
-        Assert.Equal("command=PRIVMSG, tagKeys=[badge-info,id]", TwitchLibRawLineRedaction.Redact(line));
+        Assert.Equal("command=PRIVMSG, tagKeys=[id], withheldTagKeys=1", TwitchLibRawLineRedaction.Redact(line));
     }
 
     [Fact]

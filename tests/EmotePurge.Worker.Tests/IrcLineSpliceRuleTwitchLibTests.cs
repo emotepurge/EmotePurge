@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using TwitchLib.Client.Models;
 using TwitchLib.Client.Parsing;
 using Xunit;
@@ -115,6 +116,56 @@ public class IrcLineSpliceRuleTwitchLibTests
         Assert.DoesNotContain("333333333", tagBlock, StringComparison.Ordinal);
         Assert.Contains("display-name=<entfernt>;", tagBlock, StringComparison.Ordinal);
         Assert.Contains("reply-parent-user-login=<entfernt>;", tagBlock, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SplicedLine_ThroughTwitchLibParserAndSpliceWarning_LeaksNeitherNameNorUserId()
+    {
+        // The splice puts a foreign display-name and user-id into the *value* of room-id, and
+        // TwitchLib 4.0.1 hands that raw value to ChatMessage.RoomId. The warning must not carry it
+        // anywhere: not in the rendered message, not in any structured property.
+        var line = "@badge-info=;badges=;color=#FF0000;display-name=TestUser1;id=cccc3333-3333-3333-3333-333333333333;"
+            + "mod=0;room-id=" + RoomId + "@display-name=EvilName@user-id=444444444;subscriber=0;"
+            + "tmi-sent-ts=1694000000000;turbo=0;user-id=333333333;user-type= "
+            + ":testuser1!testuser1@testuser1.tmi.twitch.tv PRIVMSG #targetchannel_test :hello spliced";
+
+        var message = ParseLine(line);
+        Assert.True(IrcLineSpliceRule.IsSpliced(message.RawIrcMessage));
+        Assert.Contains("444444444", message.RoomId, StringComparison.Ordinal);
+
+        var fields = IrcLineSpliceRule.ForSpliceWarning(message.Channel, message.RoomId, message.RawIrcMessage);
+        var logger = new CapturingLogger();
+        logger.LogWarning(IrcLineSpliceRule.SpliceWarningTemplate, fields.Channel, fields.RoomId, fields.TagBlock);
+
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal(3, entry.Properties.Count(p => p.Key != "{OriginalFormat}"));
+        Assert.Contains(entry.Properties, p => p.Key == "RoomId" && (string?)p.Value == "<entfernt>");
+        Assert.DoesNotContain("EvilName", entry.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("444444444", entry.Message, StringComparison.Ordinal);
+        Assert.Contains("targetchannel_test", entry.Message, StringComparison.Ordinal);
+        foreach (var property in entry.Properties)
+        {
+            var rendered = property.Value?.ToString() ?? string.Empty;
+            Assert.DoesNotContain("EvilName", rendered, StringComparison.Ordinal);
+            Assert.DoesNotContain("444444444", rendered, StringComparison.Ordinal);
+        }
+    }
+
+    private sealed record CapturedEntry(string Message, IReadOnlyList<KeyValuePair<string, object?>> Properties);
+
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<CapturedEntry> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Entries.Add(new CapturedEntry(
+                formatter(state, exception),
+                state is IReadOnlyList<KeyValuePair<string, object?>> properties ? properties : []));
     }
 
     /// <summary>

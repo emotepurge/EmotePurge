@@ -10,6 +10,39 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-14 — Log lines carry only allowlisted tag keys, and the splice warning carries no tag values (#383)
+
+**Betrifft:** `src/EmotePurge.Worker/TwitchTagKeyAllowlist.cs` · `src/EmotePurge.Worker/TwitchLibRawLineRedaction.cs` · `src/EmotePurge.Worker/IrcLineSpliceRule.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs`
+
+Two existing gaps in the #246 redaction, found while checking what the admin log viewer would otherwise persist.
+`TwitchLibRawLineRedaction.ExtractKeys` reported every `;` fragment up to the first `=` as a "tag key", including a
+fragment without `=`, so after a splice (#114) `@reply-parent-msg-body=hello;SECRET PRIVMSG …` logged `SECRET` as a key.
+`IrcLineSpliceRule.TagBlockForLog` had the same hole for bare fragments and, worse, redacted values only for free-text
+and a few identity keys: `system-msg` (contains the display name) and `msg-param-*` identities
+(`msg-param-recipient-display-name`, `msg-param-sender-login`, `msg-param-login`) went into the warning in clear text.
+
+Decisions: (1) One shared `TwitchTagKeyAllowlist` for both sites. A key is reported only if the fragment has an `=`, the
+key satisfies the IRCv3 grammar (optional `+`, optional `vendor/`, `[A-Za-z0-9-]`, at most 64 characters) and it is a
+fixed Twitch tag name or one of the prefixes `msg-param-`, `reply-parent-`, `reply-thread-parent-`, `pinned-chat-paid-`,
+`source-` followed by `[a-z0-9-]{1,48}` (the 64-character grammar cap applies on top). Anything else is withheld with
+its value: `Redact` appends `, withheldTagKeys=<n>` only when n > 0 (otherwise byte-identical), `TagBlockForLog` writes
+`<withheld>` in its place, also for a spliced-in tag after an `@`. (2) `TagBlockForLog` now emits keys only: every value
+becomes `<entfernt>`, except `tmi-sent-ts` and `room-id` (digits only, at most 20) and the flags `subscriber`, `mod`,
+`turbo`, `vip`, `first-msg`, `returning-chatter`, `emote-only` (exactly `0` or `1`). The timestamp and room id are enough
+to see which two lines were merged; the flags carry no identity. The old `IdentifyingKeys` list is gone. (3) The warning
+logs `RoomId` only as up to 20 digits, otherwise `<entfernt>`, because TwitchLib 4.0.1 hands over the raw `room-id`
+value, which on a splice can be `111111111@display-name=…@user-id=…`. The fields are prepared by the TwitchLib-free
+`IrcLineSpliceRule.ForSpliceWarning`; the message template moved unchanged to `IrcLineSpliceRule.SpliceWarningTemplate`.
+`IsSpliced` is unchanged.
+
+Checked against Twitch's IRC reference (dev.twitch.tv/docs/chat/irc, 2026-10-14). Deviations from the author's list: the
+documented `gifs` tag was missing and is added. Twitch documents `msg-param-displayName` and `msg-param-viewerCount`
+in camel case, which the lower-case prefix rest would reject (they occur on every raid), so they are fixed names, as are
+the camel-case `msg-param-profileImageURL` and `msg-param-copoReward` that real raid and watch-streak lines carry. Added
+as fixed names although the page lists them only in examples or not at all: `first-msg`, `flags`, `returning-chatter`,
+`client-nonce` (already in the list), `message-id`, `thread-id` (whisper). Not on the page but kept: `pinned-chat-paid-*`,
+`animation-id`, `custom-reward-id`. The page documents no WHISPER or pinned-chat tags.
+
 ### 2026-10-14 — TwitchLib log noise is removed at the source; Api EF Core logs at Warning (#383)
 
 **Betrifft:** `src/EmotePurge.Api/appsettings.json` · `src/EmotePurge.Worker/RedactingTwitchClientLoggerFactory.cs` · `src/EmotePurge.Worker/TwitchLibRawLineRedaction.cs` · `src/EmotePurge.Core/Logging/WithheldMessageException.cs`
