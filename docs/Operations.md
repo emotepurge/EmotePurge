@@ -1080,6 +1080,9 @@ matters:
    `EmoteSlots` table. Seeds that a flag-off enqueue (an image from before #379 part B) created for active emotes
    are not archived and are not removed here: they remain as unsettled seeds without rows, inert (no numbers,
    no cards, no permanent 409), and are removed by "Sweeping row-less unsettled seeds (#379, part B)" below.
+   A seed that the "Removing imported data (channel managers)" action removed because the removal left it
+   without rows (a `CreatedSlot` seed of a flag-off enqueue) is gone already and does not appear in this
+   statement's set; if a manager has removed a channel's data, expect fewer `CreatedSlot` slots there.
 
    ```sql
    DELETE FROM "EmoteSlots" s
@@ -1107,6 +1110,15 @@ matters:
    older imported rows on the acceptance copy). For a single channel use the per-channel variant, which removes
    all imported rows and the coverage of that channel from every run and every set; steps 3, 3b and 5 are
    global and are not scoped to the channel.
+
+   Prefer the "Remove imported data" action in the Settings tab (see "Removing imported data (channel
+   managers)") over the per-channel statements: it also deletes the unsettled seeds that the removal leaves
+   without rows. **Running the per-channel statements by hand does not**, and the one-off sweep of #379 part B
+   ran only once per database, so such seeds stay behind as inert rows (no numbers, no cards, no 409). Find
+   them with `EmoteSlotRollbackSql.CountRowlessUnsettledSeedsSql` and remove them with
+   `EmoteSlotRollbackSql.SweepRowlessUnsettledSeedsSql`, both quoted in "Sweeping row-less unsettled seeds
+   (#379, part B)". Those statements are not scoped to a channel: they match every row-less unsettled seed in
+   every set. Look at the count first and run the sweep only when it is the number of seeds you expect.
 5. **Close the runs that are still open:**
 
    ```sql

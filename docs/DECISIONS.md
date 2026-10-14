@@ -60,6 +60,11 @@ Decision (service, route and the settings-tab UI, all in one branch):
   UsageStats on SlotId`) restricted to them, with no look at `CreatedSlot`, `IsArchived` or `ArchivedAt`.
   A channel-wide predicate would do the sweep's work; skipping the seeds would leave exactly the rowless
   seeds the one-off sweep removes and never revisits.
+  The removal's statement (`ChatLogImportRemovalSql.DeleteRowlessCandidateSeedsSql`) is therefore not a
+  second sweep: it deletes only seeds that this very deletion made rowless, while
+  `EmoteSlotRollbackSql.SweepRowlessUnsettledSeedsSql` is a one-off runbook step over every row-less
+  unsettled seed of the database. Operations points a by-hand per-channel step 4 at the sweep's count
+  and statement instead.
 - **Row delete and seed delete are two statements.** Every part of one statement reads the same
   snapshot, so a seed check written as a second CTE of the row delete would still see the rows it
   deletes and never find a seed that has just become rowless.
