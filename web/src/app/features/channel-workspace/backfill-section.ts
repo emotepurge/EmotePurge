@@ -659,6 +659,15 @@ export class BackfillSection {
   );
 
   /**
+   * The channel, the active run and the last run on screen — the key the removal's announcement
+   * goes with. A run short enough to start and end between two status reads never shows up as
+   * `activeRun`, but its `lastRun` changes the key, so the sentence cannot cover its new data.
+   */
+  private readonly announcementKey = computed(
+    () => `${this.channelRunKey()}|${this.status()?.lastRun?.id ?? ''}`,
+  );
+
+  /**
    * The in-flight removal, or `null` — a request token like `cancelRequest`, keyed on the channel
    * and the active run, so the answer of a removal for a channel the user has since left touches
    * nothing.
@@ -687,7 +696,7 @@ export class BackfillSection {
    */
   protected readonly removalAnnouncement = linkedSignal<string, BackfillRemovalAnnouncement | null>(
     {
-      source: this.channelRunKey,
+      source: this.announcementKey,
       computation: () => null,
     },
   );

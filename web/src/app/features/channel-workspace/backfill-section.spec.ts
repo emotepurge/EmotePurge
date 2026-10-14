@@ -1306,6 +1306,39 @@ describe('BackfillSection', () => {
       expect(liveRegionText(fixture)).toBe('Backfill Running: 3 of 14 weeks.');
     });
 
+    it('drops the confirmation when a run started and ended unseen: new coverage, new lastRun, no activeRun', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const fixture = await create();
+      removeButton(fixture)?.click();
+      await fixture.whenStable();
+      expect(fixture.componentInstance['removalAnnouncement']()).not.toBeNull();
+
+      getStatus.mockReturnValue(
+        of(status({ coverage: [MORE], lastRun: { ...RUNNING, status: 'completed' } })),
+      );
+      fixture.componentInstance['statusResource'].reload();
+      await fixture.whenStable();
+
+      expect(fixture.componentInstance['removalAnnouncement']()).toBeNull();
+      expect(fixture.componentInstance.importedIntervals()).toHaveLength(1);
+      expect(importedSection(fixture)).not.toBeNull();
+      expect(removeButton(fixture)).not.toBeNull();
+    });
+
+    it('keeps the confirmation through a read that changes neither the run nor the lastRun', async () => {
+      const done = { ...RUNNING, status: 'completed' } as BackfillRun;
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE, lastRun: done })));
+      const fixture = await create();
+      removeButton(fixture)?.click();
+      await fixture.whenStable();
+
+      getStatus.mockReturnValue(of(status({ coverage: [], lastRun: done })));
+      fixture.componentInstance['statusResource'].reload();
+      await fixture.whenStable();
+
+      expect(fixture.componentInstance['removalAnnouncement']()).not.toBeNull();
+    });
+
     it('drops the confirmation when the channel changes', async () => {
       getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
       const fixture = await create();
