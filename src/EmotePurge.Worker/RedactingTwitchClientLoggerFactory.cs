@@ -1,4 +1,5 @@
 using System.Collections;
+using EmotePurge.Core.Logging;
 
 namespace EmotePurge.Worker;
 
@@ -90,7 +91,9 @@ public sealed class RedactingTwitchClientLoggerFactory(ILoggerFactory inner) : I
                     logLevel = LogLevel.Debug;
                 }
 
-                inner.Log(logLevel, eventId, new RedactedState(redactedMessage), exception,
+                // The exception can carry the raw line in its Message/Data too, so it is replaced as well.
+                var withheld = exception is null ? null : WithheldMessageException.From(exception);
+                inner.Log(logLevel, eventId, new RedactedState(redactedMessage), withheld,
                     static (redacted, _) => redacted.Message);
                 return;
             }

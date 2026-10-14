@@ -12,7 +12,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ### 2026-10-14 — TwitchLib log noise is removed at the source; Api EF Core logs at Warning (#383)
 
-**Betrifft:** `src/EmotePurge.Api/appsettings.json` · `src/EmotePurge.Worker/RedactingTwitchClientLoggerFactory.cs` · `src/EmotePurge.Worker/TwitchLibRawLineRedaction.cs`
+**Betrifft:** `src/EmotePurge.Api/appsettings.json` · `src/EmotePurge.Worker/RedactingTwitchClientLoggerFactory.cs` · `src/EmotePurge.Worker/TwitchLibRawLineRedaction.cs` · `src/EmotePurge.Core/Logging/WithheldMessageException.cs`
 
 Measured on prod over about 20 h from the container start on 2026-10-13 17:27 UTC: the Api wrote 13,167 entries
 (8.0 MB), of which 13,156 were `Microsoft.EntityFrameworkCore.Database.Command` at Information; the Worker wrote
@@ -33,6 +33,17 @@ the log viewer. Two changes:
 
 Expected effect: about 13,156 Api lines and about 308 of 312 Worker warnings per 20 h disappear (about 24
 warnings per day remain in the Worker).
+
+Exceptions of the redacted events are replaced too (O3). TwitchLib passes the exception of a parse failure along
+with the raw line, and its `Message` or `Data` can carry that line again. In the same state-replacing branch of
+the wrapper, for `LogParsingError`, `LogUnaccountedFor` and `LogLeavingChannel` (also when downgraded to Debug),
+a non-null exception becomes `WithheldMessageException.From(original)`: `Message` is
+`"<OriginalTypeName>: message withheld (#246)"`, `ToString()` lists type names and stack traces of the whole
+chain (outer first, `InnerException` or all `AggregateException.InnerExceptions`, at most 8 levels per branch),
+never any `Message`, `Data` or `ToString()` of an original, and `InnerException` is `null`. The wrapper is the
+place because it is the only point that sees the exception before any provider does, so the console sink
+profits as well. The type lives in `EmotePurge.Core` (BCL only) so the future log-capture sink can recognise it
+and read the original type name. All other events pass their exception through by reference.
 
 ### 2026-10-14 — Muted text is not permitted on the inset hover surface (#402)
 

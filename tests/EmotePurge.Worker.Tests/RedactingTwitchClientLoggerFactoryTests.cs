@@ -1,3 +1,4 @@
+using EmotePurge.Core.Logging;
 using Microsoft.Extensions.Logging;
 using Xunit;
 
@@ -219,6 +220,113 @@ public class RedactingTwitchClientLoggerFactoryTests
         LogReconnectingCallback(logger, null);
 
         Assert.Single(provider.Entries);
+    }
+
+    private const string ChatSecret = "secret chat text display-name=EvilName";
+
+    [Fact]
+    public void ParsingError_WithException_ForwardsWithheldReplacement()
+    {
+        var (provider, redactingFactory) = CreateFactory();
+        var logger = redactingFactory.CreateLogger(TwitchClientCategory);
+        var original = Thrown(new InvalidOperationException(ChatSecret, Thrown(new FormatException(ChatSecret))));
+
+        LogParsingErrorCallback(logger, "@a=b PRIVMSG #c :x", original);
+
+        var entry = Assert.Single(provider.Entries);
+        var withheld = Assert.IsType<WithheldMessageException>(entry.Exception);
+        Assert.Null(withheld.InnerException);
+        Assert.Equal("System.InvalidOperationException: message withheld (#246)", withheld.Message);
+        Assert.Equal("System.InvalidOperationException", withheld.OriginalTypeName);
+        var text = withheld.ToString();
+        Assert.DoesNotContain("EvilName", withheld.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("EvilName", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret chat text", text, StringComparison.Ordinal);
+        Assert.Contains("System.InvalidOperationException", text, StringComparison.Ordinal);
+        Assert.Contains("System.FormatException", text, StringComparison.Ordinal);
+        Assert.Contains(" at ", text, StringComparison.Ordinal);
+        Assert.Equal(2, withheld.Chain.Count);
+    }
+
+    [Fact]
+    public void UnaccountedFor_WithException_IsReplacedToo()
+    {
+        var (provider, redactingFactory) = CreateFactory();
+        var logger = redactingFactory.CreateLogger(TwitchClientCategory);
+
+        LogUnaccountedForCallback(logger, "@a=b USERNOTICE #c :x", Thrown(new InvalidOperationException(ChatSecret)));
+
+        var entry = Assert.Single(provider.Entries);
+        Assert.Equal(LogLevel.Debug, entry.Level);
+        Assert.IsType<WithheldMessageException>(entry.Exception);
+    }
+
+    [Fact]
+    public void LeavingChannel_WithException_IsReplacedToo()
+    {
+        var (provider, redactingFactory) = CreateFactory();
+        var logger = redactingFactory.CreateLogger(TwitchClientCategory);
+
+        LogLeavingChannelCallback(logger, "somechannel", Thrown(new InvalidOperationException(ChatSecret)));
+
+        var entry = Assert.Single(provider.Entries);
+        Assert.IsType<WithheldMessageException>(entry.Exception);
+    }
+
+    [Fact]
+    public void OtherEvent_WithException_PassesOriginalThrough()
+    {
+        var (provider, redactingFactory) = CreateFactory();
+        var logger = redactingFactory.CreateLogger(TwitchClientCategory);
+        var original = new InvalidOperationException("keep me");
+        var callback = LoggerMessage.Define(LogLevel.Warning, new EventId(1, "SomethingElse"), "other");
+
+        callback(logger, original);
+
+        Assert.Same(original, Assert.Single(provider.Entries).Exception);
+    }
+
+    [Fact]
+    public void From_AggregateException_ListsAllInnerTypes()
+    {
+        var aggregate = Thrown(new AggregateException(
+            ChatSecret,
+            Thrown(new FormatException(ChatSecret)),
+            Thrown(new ArgumentException(ChatSecret))));
+
+        var withheld = WithheldMessageException.From(aggregate);
+
+        Assert.Equal(
+            ["System.AggregateException", "System.FormatException", "System.ArgumentException"],
+            withheld.Chain.Select(l => l.TypeName));
+        Assert.All(withheld.Chain, l => Assert.NotNull(l.StackTrace));
+        Assert.DoesNotContain("EvilName", withheld.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void From_DeepChain_StopsAtEightLevels()
+    {
+        Exception current = new InvalidOperationException("level12");
+        for (var i = 11; i >= 1; i--)
+        {
+            current = new InvalidOperationException("level" + i, current);
+        }
+
+        var withheld = WithheldMessageException.From(current);
+
+        Assert.Equal(8, withheld.Chain.Count);
+    }
+
+    private static T Thrown<T>(T exception) where T : Exception
+    {
+        try
+        {
+            throw exception;
+        }
+        catch (T caught)
+        {
+            return caught;
+        }
     }
 
     private static (CapturingLoggerProvider Provider, RedactingTwitchClientLoggerFactory Factory) CreateFactory()
