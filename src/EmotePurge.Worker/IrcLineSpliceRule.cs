@@ -300,6 +300,7 @@ public static class IrcLineSpliceRule
     /// splice can land mid-value (<c>subscriber=0@badge-info=…</c>, see <see cref="IsSpliced"/>);
     /// each embedded tag after an <c>@</c> followed by a tag key and <c>=</c> (escaping is not considered, see <see cref="TryFindEmbeddedKeyStart"/>) is treated exactly like a top-level one, so the
     /// splice's shape survives and nothing it dragged along does.
+    /// An embedded free-text value is replaced whole like a top-level one: nothing after it is scanned.
     /// </summary>
     private static void AppendTag(StringBuilder builder, ReadOnlySpan<char> tag)
     {
@@ -339,6 +340,12 @@ public static class IrcLineSpliceRule
             if (TwitchTagKeyAllowlist.IsAllowed(embeddedKey))
             {
                 builder.Append(embeddedKey).Append('=');
+                if (IsFreeTextKey(embeddedKey))
+                {
+                    builder.Append(RedactedValue);
+                    return;
+                }
+
                 currentKey = embeddedKey;
             }
             else

@@ -372,6 +372,54 @@ public class IrcLineSpliceRuleTests
         Assert.Equal("@room-id=111111111@display-name=<entfernt>;mod=0", fields.TagBlock);
     }
 
+    // A free-text value embedded in another tag's value is replaced whole, like a top-level one:
+    // chat text can imitate any tag, so nothing after it may be scanned for embedded tags.
+    [Fact]
+    public void TagBlockForLog_EmbeddedFreeTextTag_DoesNotLeakImitatedRoomId()
+    {
+        var line = "@display-name=x@reply-parent-msg-body=hi@room-id=444444444;subscriber=0 "
+            + ":testuser2!testuser2@testuser2.tmi.twitch.tv PRIVMSG #targetchannel_test :hello";
+
+        var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
+
+        Assert.Equal("@display-name=<entfernt>@reply-parent-msg-body=<entfernt>;subscriber=0", tagBlock);
+        Assert.DoesNotContain("444444444", tagBlock, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TagBlockForLog_EmbeddedFreeTextTagAfterRoomId_DoesNotLeakTrailingDigits()
+    {
+        var line = "@room-id=111111111@reply-parent-msg-body=call\\sme@room-id=015112345678 "
+            + ":testuser2!testuser2@testuser2.tmi.twitch.tv PRIVMSG #targetchannel_test :hello";
+
+        var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
+
+        Assert.Equal("@room-id=111111111@reply-parent-msg-body=<entfernt>", tagBlock);
+        Assert.DoesNotContain("015112345678", tagBlock, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TagBlockForLog_EmbeddedThreadParentBodyAfterColor_IsRedactedWhole()
+    {
+        var line = "@color=#FFF@reply-thread-parent-msg-body=x@mod=1 "
+            + ":testuser2!testuser2@testuser2.tmi.twitch.tv PRIVMSG #targetchannel_test :hello";
+
+        var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
+
+        Assert.Equal("@color=<entfernt>@reply-thread-parent-msg-body=<entfernt>", tagBlock);
+    }
+
+    [Fact]
+    public void TagBlockForLog_EmbeddedTypedTags_KeepTheirFormatCheckedValues()
+    {
+        var line = "@display-name=X@tmi-sent-ts=1700000000000@room-id=222222222@mod=1 "
+            + ":testuser2!testuser2@testuser2.tmi.twitch.tv PRIVMSG #targetchannel_test :hello";
+
+        var tagBlock = IrcLineSpliceRule.TagBlockForLog(line);
+
+        Assert.Equal("@display-name=<entfernt>@tmi-sent-ts=1700000000000@room-id=222222222@mod=1", tagBlock);
+    }
+
     private static string ReplyLine(string parentBody) =>
         ReplyTagsBeforeParentBody + "reply-parent-msg-body=" + parentBody + ReplyTagsAfterParentBody;
 }
