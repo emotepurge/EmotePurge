@@ -38,9 +38,9 @@ value, which on a splice can be `111111111@display-name=…@user-id=…`. The fi
 Checked against Twitch's IRC reference (dev.twitch.tv/docs/chat/irc, 2026-10-14). Deviations from the author's list: the
 documented `gifs` tag was missing and is added. Twitch documents `msg-param-displayName` and `msg-param-viewerCount`
 in camel case, which the lower-case prefix rest would reject (they occur on every raid), so they are fixed names, as are
-the camel-case `msg-param-profileImageURL` and `msg-param-copoReward` that real raid and watch-streak lines carry. Added
-as fixed names although the page lists them only in examples or not at all: `first-msg`, `flags`, `returning-chatter`,
-`client-nonce` (already in the list), `message-id`, `thread-id` (whisper). Not on the page but kept: `pinned-chat-paid-*`,
+the camel-case `msg-param-profileImageURL` and `msg-param-copoReward` that real raid and watch-streak lines carry. Kept
+from the author's list although the page lists them only in examples or not at all: `first-msg`, `flags`,
+`returning-chatter`, `client-nonce`, `message-id`, `thread-id` (whisper). Not on the page but kept: `pinned-chat-paid-*`,
 `animation-id`, `custom-reward-id`. The page documents no WHISPER or pinned-chat tags.
 
 ### 2026-10-14 — TwitchLib log noise is removed at the source; Api EF Core logs at Warning (#383)
@@ -59,7 +59,8 @@ the log viewer. Two changes:
 2. `RedactingTwitchClientLoggerFactory` forwards `LogUnaccountedFor` at `Debug` instead of `Warning`, and only
    when the recognised command is exactly `USERNOTICE`. The command comes from the new
    `TwitchLibRawLineRedaction.RedactLine` as its own value (same allow-list recognition as before, the output
-   string of `Redact` is byte-identical); the output string is never re-parsed. Message and event id are
+   string of `Redact` is byte-identical for lines without withheld tag keys; the allowlist entry above adds
+   `, withheldTagKeys=<n>` otherwise); the output string is never re-parsed. Message and event id are
    unchanged. Because the Worker minimum for the category is Information, the entry is dropped for every
    provider. `NOTICE`, `<unparsed>`, `<none>` and every other command stay `Warning`, `LogParsingError` stays
    `Error`, `LogLeavingChannel` stays `Information`.

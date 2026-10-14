@@ -42,6 +42,14 @@ namespace EmotePurge.Worker;
 /// deactivation directly. Its login is withheld; the event stays.
 /// </para>
 /// <para>
+/// In summary, for all three calls (<c>LogParsingError</c>, <c>LogUnaccountedFor</c>,
+/// <c>LogLeavingChannel</c>) the logged state is replaced by a redacted message, and an attached
+/// exception is replaced by a <see cref="WithheldMessageException"/> (type names and stack traces
+/// only). <c>LogUnaccountedFor</c> for a <c>USERNOTICE</c> is deliberately forwarded at
+/// <c>Debug</c>, which the Information minimum for this category drops; every other command stays a
+/// Warning.
+/// </para>
+/// <para>
 /// Deliberately not solved by raising this category's minimum level: <c>TwitchLib.Client.TwitchClient</c>
 /// also logs connection-relevant events (e.g. <c>LogReconnecting</c>) that must keep reaching the
 /// sink at their own level.

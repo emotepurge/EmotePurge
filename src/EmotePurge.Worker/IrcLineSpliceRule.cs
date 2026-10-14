@@ -204,7 +204,7 @@ public static class IrcLineSpliceRule
     /// Finds the first splice-embedded tag-block start in <paramref name="value"/> — the same shape
     /// <see cref="ContainsTagBlockStart"/> tests for, an <c>@</c> followed by a non-empty tag key and
     /// an <c>=</c> — and returns where the <c>@</c> and the terminating <c>=</c> sit. Used by
-    /// <see cref="AppendTagWithEmbeddedRedaction"/> (Codex review finding P1) to redact an embedded
+    /// <see cref="AppendTag"/> (Codex review finding P1) to redact an embedded
     /// tag's own value, not just top-level ones: <see cref="IsSpliced"/> already proves a splice can
     /// land inside a typed tag's value (<c>subscriber=0@badge-info=...</c>) rather than cleanly
     /// between two <c>;</c>-separated tags, and that embedded fragment can itself be an identifying
@@ -298,7 +298,7 @@ public static class IrcLineSpliceRule
     /// format-checked one (<see cref="AppendValue"/>). A free-text value is replaced wholesale
     /// without looking inside: it is chat text and may imitate anything. For every other tag a
     /// splice can land mid-value (<c>subscriber=0@badge-info=…</c>, see <see cref="IsSpliced"/>);
-    /// each embedded tag after an unescaped <c>@</c> is treated exactly like a top-level one, so the
+    /// each embedded tag after an <c>@</c> followed by a tag key and <c>=</c> (escaping is not considered, see <see cref="TryFindEmbeddedKeyStart"/>) is treated exactly like a top-level one, so the
     /// splice's shape survives and nothing it dragged along does.
     /// </summary>
     private static void AppendTag(StringBuilder builder, ReadOnlySpan<char> tag)

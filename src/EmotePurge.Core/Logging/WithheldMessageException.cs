@@ -21,7 +21,7 @@ public sealed record WithheldExceptionLink(string TypeName, string? StackTrace);
 /// </summary>
 public sealed class WithheldMessageException : Exception
 {
-    public const int MaxDepth = 8;
+    private const int MaxDepth = 8;
 
     private WithheldMessageException(string originalTypeName, IReadOnlyList<WithheldExceptionLink> chain)
         : base($"{originalTypeName}: message withheld (#246)")

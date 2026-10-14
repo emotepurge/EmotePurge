@@ -16,6 +16,7 @@ namespace EmotePurge.Worker.Tests;
 public class RedactingTwitchClientLoggerFactoryTests
 {
     private const string TwitchClientCategory = "TwitchLib.Client.TwitchClient";
+    private const string ChatSecret = "secret chat text display-name=EvilName";
 
     // Pinned from the decompiled TwitchLib.Client 4.0.1 LogExtensions (see the class-level remarks
     // on RedactingTwitchClientLoggerFactory) — not invented here.
@@ -221,8 +222,6 @@ public class RedactingTwitchClientLoggerFactoryTests
 
         Assert.Single(provider.Entries);
     }
-
-    private const string ChatSecret = "secret chat text display-name=EvilName";
 
     [Fact]
     public void ParsingError_WithException_ForwardsWithheldReplacement()
