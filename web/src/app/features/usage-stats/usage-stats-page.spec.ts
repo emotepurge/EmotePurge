@@ -964,6 +964,103 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     expect(httpMock.match((req) => req.url === SERIES)).toHaveLength(0);
   });
 
+  const emptySeries = (): object => ({
+    from: '2026-01-01',
+    to: '2026-09-08',
+    liveDays: [],
+    emotes: [],
+  });
+  const seriesRequests = () => httpMock.match((req) => req.url === SERIES);
+
+  it('coalesces flushes that arrive while a series refresh is out, then refreshes once more (#415)', () => {
+    mount([emote('a', 'PeepoA')]);
+    const held = component['channelSeries']();
+
+    emitFlush();
+    const [first, ...none] = seriesRequests();
+    expect(none).toHaveLength(0);
+    emitFlush();
+    emitFlush();
+    // A newer request would supersede the first and discard its answer; none is started.
+    expect(seriesRequests()).toHaveLength(0);
+
+    first.flush(emptySeries());
+    const adopted = component['channelSeries']();
+    expect(adopted).not.toBe(held);
+    const [followUp, ...more] = seriesRequests();
+    expect(more).toHaveLength(0);
+    followUp.flush(emptySeries());
+    expect(component['channelSeries']()).not.toBe(adopted);
+    expect(seriesRequests()).toHaveLength(0);
+  });
+
+  it('lets a flush during the initial series load wait for it, then refreshes once (#415)', () => {
+    mount([emote('a', 'PeepoA')]);
+    component['load']('a', '2026-01-01', '2026-09-08', true, null, false);
+    const [initial] = seriesRequests();
+
+    emitFlush();
+    expect(seriesRequests()).toHaveLength(0);
+    initial.flush(emptySeries());
+
+    expect(component['channelSeries']()).not.toBeNull();
+    expect(seriesRequests()).toHaveLength(1);
+  });
+
+  it('a new load() drops a pending coalesced refresh (#415)', () => {
+    mount([emote('a', 'PeepoA')]);
+    emitFlush();
+    emitFlush();
+    expect(seriesRequests()).toHaveLength(1);
+
+    component['load']('a', '2026-01-01', '2026-09-08', true, null, false);
+    const [fresh, ...more] = seriesRequests();
+    expect(more).toHaveLength(0);
+    fresh.flush(emptySeries());
+
+    expect(seriesRequests()).toHaveLength(0);
+  });
+
+  it('refreshes the series when channel.synced and usage.flushed share a burst and the set stays (#415)', () => {
+    mount([emote('a', 'PeepoA')]);
+    const events = FakeEventSource.instances[0];
+    events.emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+    events.emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+    expect(seriesRequests()).toHaveLength(0);
+
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
+      setStatus({
+        activeEmoteSetId: 'set-a',
+        trackedSince: '2026-01-01T00:00:00Z',
+        botsExcludedSince: '2026-01-02T00:00:00Z',
+        sharedChatSeparatedSince: '2026-01-02T00:00:00Z',
+      }),
+    );
+    fixture.detectChanges();
+
+    expect(seriesRequests()).toHaveLength(1);
+  });
+
+  it('a lone channel.synced does not refresh the series (#415)', () => {
+    mount([emote('a', 'PeepoA')]);
+    FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.channelSynced, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+    httpMock.expectOne('/api/channels/a/emotes/active-set').flush(
+      setStatus({
+        activeEmoteSetId: 'set-a',
+        trackedSince: '2026-01-01T00:00:00Z',
+        botsExcludedSince: '2026-01-02T00:00:00Z',
+        sharedChatSeparatedSince: '2026-01-02T00:00:00Z',
+      }),
+    );
+    fixture.detectChanges();
+
+    expect(seriesRequests()).toHaveLength(0);
+  });
+
   it('a drilldown series requested before usage.flushed is fetched again afterwards (#415)', () => {
     mount([emote('a', 'PeepoA')]);
     const usageStatService = TestBed.inject(UsageStatService);
