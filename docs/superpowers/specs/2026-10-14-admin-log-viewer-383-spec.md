@@ -156,6 +156,11 @@ Wirkung: In 20 h fallen rund 13.156 Zeilen aus der Api-Console weg.
     - die Ja/Nein-Flags `subscriber`, `mod`, `turbo`, `vip`, `first-msg`, `returning-chatter`, `emote-only`: genau `0` oder `1`.
   - **Entscheidung des Autors (offen für Einspruch), A35:** Zeitstempel und Raum-Id reichen, um zu erkennen, welche zwei Zeilen aus welchem Raum verschmolzen sind (#114). Die Flags tragen keine Identität. Die Raum-Id benennt nur den Kanal, der in derselben Zeile ohnehin steht.
   - Die bisherige Liste `IdentifyingKeys` wird damit überflüssig. Der Umsetzer darf sie entfernen, die Tests unten ersetzen ihre Fälle.
+  - **Sol-Befund 3.1 — Nachschärfung:** Die Warning loggt neben `{TagBlock}` auch `e.ChatMessage.RoomId` als eigenen Wert, in Message und Properties. TwitchLib 4.0.1 übernimmt den rohen `room-id`-Wert, bei einem Splice also etwa `111111111@display-name=EvilName@user-id=444444444` (vgl. `IrcLineSpliceRuleTests.cs:318`). Deshalb gilt:
+    - `{RoomId}` wird nur ausgegeben, wenn der Wert aus höchstens 20 Ziffern besteht. Sonst steht dort die Marke.
+    - `{Channel}` kommt aus dem IRC-Parameter `#kanal` und nicht aus dem Tag-Block; er bleibt.
+    - Weitere `ChatMessage`-Felder loggt die Warning nicht.
+    - Die Felder der Warning werden in einer reinen Hilfsfunktion neben `TagBlockForLog` aufbereitet, damit sie testbar sind.
 
 ### 4.3 Tests und Akzeptanz T0
 
@@ -168,6 +173,7 @@ Wirkung: In 20 h fallen rund 13.156 Zeilen aus der Api-Console weg.
   - Alle Allowlist-Schlüssel und alle Präfix-Fälle kommen durch.
   - Echte aufgezeichnete Twitch-Zeilen (PRIVMSG, USERNOTICE, NOTICE, CLEARCHAT, ROOMSTATE, USERSTATE) haben `withheldTagKeys` = 0, die Allowlist ist also nicht zu eng.
   - Zu R1, für `TagBlockForLog` mit einer gespleißten Zeile und je oben und eingebettet nach `@`: `system-msg=SomeUser\ssubscribed…`, `msg-param-recipient-display-name=SomeDisplayName`, `msg-param-sender-login=someone`, `msg-param-login=someone`, `display-name=X`, `reply-parent-display-name=Y`, `color=#ABCDEF`, `id=<uuid>`. Kein Wert erscheint, jeder Schlüssel schon. `tmi-sent-ts`, `room-id` und die Flags behalten ihren Wert; ein formatfremder Wert dieser Schlüssel (`room-id=abc`) wird ersetzt.
+  - Zu 3.1: Die Testzeilen laufen durch TwitchLibs eigenen IRC-Parser zu einer `ChatMessage` und von dort durch die Hilfsfunktion in einen erfassenden Logger. Geprüft werden die gerenderte Message und **jede** Property (`channel`, `roomid`, `tagblock`): „EvilName“ und „444444444“ kommen nirgends vor.
   - Der Weg bis in den Speicher steht in AK 4.
 - Live (Regel 16): Lokaler Worker gegen echtes Twitch, ein Kanal mit Sub-, Raid- oder Watch-Streak-Aufkommen (z. B. `handofblood`). Die Console zeigt keine `Unaccounted for … command=USERNOTICE` mehr. Die lokale Api zeigt bei einem Seitenaufruf keine `Executed DbCommand`-Zeilen mehr.
 - Ein DECISIONS-Eintrag (englisch) nennt die Messzahlen aus §2.6, beide Änderungen und die Begründung „Rauschen an der Quelle statt Stummschalten in der Ansicht“.
@@ -242,7 +248,7 @@ Wirkung: In 20 h fallen rund 13.156 Zeilen aus der Api-Console weg.
   | `write_unconfirmed` | Batch auch nach idempotenter Wiederholung ohne bestätigten Commit (S4). Die Einträge können trotzdem gespeichert sein, die Seite sagt deshalb „möglicherweise nicht gespeichert“ |
 
   Die Zähler sind prozesslokal und atomar.
-- **Drops werden sichtbar,** und zwar als **synthetischer Eintrag** in der Log-Tabelle. Der Schreiber erzeugt ihn selbst, er läuft nicht über `ILogger`. Kategorie `EmotePurge.LogCapture`, Level Warning, Message `"{n} log entries were dropped ({reason breakdown})"`, Properties `dropped`, `droppederrors` (davon Error und Critical, R5; das Level ist bei jeder Zulassung vor dem Verwerfen bekannt), `queuefull`, `budget`, `writeunconfirmed`, `capturefailed`, `reentrant`, `rejected`, `firstdroputc`, `lastdroputc`. Höchstens einer je 60 s und Prozess, nur wenn seit dem letzten etwas verworfen wurde. Synthetische Einträge umgehen Puffer und Budget. Damit erscheinen Drops im Histogramm, sind über `cat:LogCapture` filterbar, verschwinden mit der normalen Retention und lassen sich je Zeitraum summieren (§8).
+- **Drops werden sichtbar,** und zwar als **synthetischer Eintrag** in der Log-Tabelle. Der Schreiber erzeugt ihn selbst, er läuft nicht über `ILogger`. Kategorie `EmotePurge.LogCapture`, Level Warning, Message `"{n} log entries were dropped ({reason breakdown})"`, Properties `dropped`, `queuefull`, `budget`, `writeunconfirmed`, `capturefailed`, `reentrant`, `rejected`, `firstdroputc`, `lastdroputc`. Höchstens einer je 60 s und Prozess, nur wenn seit dem letzten etwas verworfen wurde. Synthetische Einträge umgehen Puffer und Budget. Damit erscheinen Drops im Histogramm, sind über `cat:LogCapture` filterbar, verschwinden mit der normalen Retention und lassen sich je Zeitraum summieren (§8).
 
   **Entscheidung des Autors (offen für Einspruch), A8.** Grenze: Drops, die bis zum Prozessende nicht mehr geschrieben werden konnten, etwa weil Postgres bis zum Shutdown weg war, sind verloren. Die Console hat die Originalzeilen weiterhin, und der Schreiber meldet die Restzahl beim Shutdown in der Console.
 
@@ -279,7 +285,7 @@ Zusätzlich gilt für den Live-Pfad (§5.6): Eine Zustellung von `logs.appended`
   - **Alles andere gilt als vorübergehend** und läuft über die idempotente Wiederholung oben.
 
   Die Halbierung ist auf 64 Statements je Ursprungsbatch begrenzt; was danach übrig ist, zählt als `rejected`. Wegen der Normalisierung (§5.2) sollte der Fall praktisch nicht mehr auftreten. Die Isolierung ist die zweite Linie. Danach wartet er mit wachsendem Abstand (1 s, 2 s, 4 s … höchstens 30 s) auf den nächsten Versuch. Währenddessen füllt sich der Puffer, und neue Einträge laufen als `queue_full` in den Drop-Zähler. Die App merkt davon nichts. Kommt die DB zurück, schreibt der Schreiber zuerst den synthetischen Drop-Eintrag, dann den Puffer.
-- **Status-Herzschlag. Entscheidung des Autors (offen für Einspruch), A9:** Mit jedem erfolgreichen Batch und sonst **mindestens alle 60 s** schreibt der Schreiber `LastFlushUtc` in die Zeile seiner Instanz in `LogCaptureStatus` (§6.2), auch ohne neue Einträge. Bei `LogCapture:Enabled = false` schreibt ein Herzschlag-Dienst dieselbe Zeile im selben Takt mit `CaptureEnabled = false` (S9). Begründung: Die Kachel (§11) darf bei toter Erfassung nicht „0 Fehler“ zeigen. Ohne Herzschlag sähe eine Api, die stundenlang nichts loggt (gemessen: ~11 Einträge in 20 h), genauso aus wie eine kaputte Erfassung.
+- **Status-Herzschlag. Entscheidung des Autors (offen für Einspruch), A9:** Mit jedem erfolgreichen Batch und sonst **mindestens alle 60 s** schreibt der Schreiber `LastFlushUtc` und `LastIncompleteAtUtc` (§11, 3.3) in die Zeile seiner Instanz in `LogCaptureStatus` (§6.2), auch ohne neue Einträge. Bei `LogCapture:Enabled = false` schreibt ein Herzschlag-Dienst dieselbe Zeile im selben Takt mit `CaptureEnabled = false` (S9). Begründung: Die Kachel (§11) darf bei toter Erfassung nicht „0 Fehler“ zeigen. Ohne Herzschlag sähe eine Api, die stundenlang nichts loggt (gemessen: ~11 Einträge in 20 h), genauso aus wie eine kaputte Erfassung.
 - **Redis down:** Das betrifft nur den Hinweis `logs.appended` (§5.6). Der Publish läuft losgelöst von der Schreibschleife (fire and forget); ein Fehlschlag wird verworfen und gedrosselt in die eigene Kategorie geloggt. Die Ansicht bleibt trotzdem richtig, weil sie periodisch abgleicht (§8.3). **Der Schreiber wartet nie auf Redis.**
 - **Postgres down:** siehe „Fehler“ oben. Die App läuft weiter. Postgres beim Start nicht erreichbar betrifft die Erfassung nicht eigens, denn `PendingMigrationGuard` beendet den Prozess dann ohnehin.
 - **Start:** Der Sink existiert ab dem Bau der `LoggerFactory`. Einträge aus der Zeit, bevor die Hosted Services starten (Host-Build, `PendingMigrationGuard`), liegen im Puffer und werden mit dem ersten Batch geschrieben, mit ihren eigenen Zeitstempeln. Bricht der Guard den Start ab, gehen sie verloren; die Console hat sie.
@@ -336,6 +342,8 @@ Die Entität liegt in `EmotePurge.Core/Entities`. `Properties` ist dort ein `str
 | `ProcessStartedUtc` | Prozessstart |
 | `LastFlushUtc` | letzter erfolgreicher Batch oder Herzschlag |
 | `CaptureEnabled` | `false`, wenn der Prozess mit `LogCapture:Enabled = false` läuft (S9) |
+| `LastIncompleteAtUtc` | letzter Zeitpunkt, ab dem die Fehlererfassung dieses Prozesses nicht lückenlos ist; Upsert nur monoton steigend (`GREATEST`) (3.3) |
+| `CleanShutdownAtUtc` | gesetzt vom letzten Herzschlag eines Prozesses, dessen Shutdown-Drain ohne verlorenen Error endete; sonst `null` (3.3) |
 
 Eine Zeile pro Prozessinstanz, per Upsert geschrieben (§5.5). Sie dient der Lebendigkeitsanzeige und `instance:latest`.
 
@@ -460,7 +468,7 @@ Alle neuen Routen liegen in der Gruppe `/api/admin` und erben `RequireAuthorizat
 | `GET /api/admin/logs` | `q`, Zeitraum (§8.2), `before` (Cursor, optional), `limit` (Default 100, höchstens 200); für den Abgleich (§8.3) zusätzlich `keysOnly=true` (dann `limit` bis 2.500, Antwort nur `{ id, timestampUtc }` je Eintrag) oder `ids=<bis zu 200 Ids>` (gezielt nachladen, ohne Zeitraum) | `{ entries: [Eintrag], nextCursor: string\|null, rangeFromUtc, rangeToUtc, truncated }`, sortiert neueste zuerst nach `(TimestampUtc DESC, Id DESC)`. `rangeFromUtc`/`rangeToUtc` sind die **exakten**, nicht eingerasteten Grenzen (R4) | `400 invalid_log_filter` (§7.3), `400 invalid_log_range`, `503` (§8.4) |
 | `GET /api/admin/logs/{id}` | — | Eintrag plus `exception`, `processStartedUtc`, `uptimeSeconds` | `404 log_entry_not_found` (z. B. inzwischen gelöscht) |
 | `GET /api/admin/logs/summary` | `q`, Zeitraum | `{ rangeFromUtc, rangeToUtc` (exakt, R4)`, bucketFromUtc, bucketToUtc` (eingerastet, nur fürs Histogramm)`, bucketSeconds, bucketStartsUtc: [...], counts: { info: [...], warn: [...], error: [...] }, total, facets: { source: [{value,count}], level: [{value,count}], category: [{value, short, count}], categoryOther: n }, dropped: { total, queueFull, budget, writeUnconfirmed, captureFailed, reentrant }, processStarts: [{source, instanceId, startedUtc}] }` | wie `GET /logs` |
-| `GET /api/admin/logs/status` | — | `{ generatedAtUtc, sources: [{ source, state: "healthy"\|"stale"\|"disabled"\|"missing", instanceId?, startedUtc?, lastFlushUtc? }], coverage24h: { complete, recordedErrors, droppedErrors, gaps: [{ source, fromUtc, toUtc }] }, retention: { oldestEntryUtc?, overdue } }`. `sources` enthält **immer** genau `api` und `worker` (S9). Lebendigkeit (`sources`) und Abdeckung (`coverage24h`) sind getrennt (R5, §11) | — |
+| `GET /api/admin/logs/status` | — | `{ generatedAtUtc, sources: [{ source, state: "healthy"\|"stale"\|"disabled"\|"missing", instanceId?, startedUtc?, lastFlushUtc? }], coverage24h: { complete, recordedErrors, incompleteSince: [{ source, lastIncompleteAtUtc }] }, retention: { oldestEntryUtc?, overdue } }`. `sources` enthält **immer** genau `api` und `worker` (S9). Lebendigkeit (`sources`) und Abdeckung (`coverage24h`) sind getrennt (R5, §11) | — |
 | `GET /api/admin/log-filters` | — | `[{ id, name, filter, sortOrder }]` nach `sortOrder` | — |
 | `POST /api/admin/log-filters` | `{ name, filter }` | `201` + Filter | `400 invalid_log_filter_name` (leer oder > 60 Zeichen), `400 invalid_log_filter` (gleicher Parser), `409 log_filter_name_taken`, `409 log_filter_limit_reached` (höchstens 30) |
 | `PUT /api/admin/log-filters/{id}` | `{ name, filter }` | `200` + Filter | wie `POST`, dazu `404 log_filter_not_found` |
@@ -505,10 +513,10 @@ Alle neuen Routen liegen in der Gruppe `/api/admin` und erben `RequireAuthorizat
 
 - **Cursor:** opak, kodiert `(TimestampUtc, Id)` des letzten Eintrags. Die Folgeseite liest Keyset-basiert `(TimestampUtc, Id) < Cursor` im selben Zeitraum. Bei relativem `range` friert der Client die **exakten** Grenzen der ersten Antwort ein und schickt sie beim Nachladen als absolutes `from`/`to` mit (R4).
 - **Live-Abgleich.** **Sol-Befund 2.2 — Auflösung** (zusammen mit 2.3 und 2.7; ersetzt S6, S7 und A34)**:** Der Änderungsabruf über eine Einfügezeit mit fester Überlappung ist gestrichen. Seine Annahme „sichtbar spätestens 5 s nach Statement-Beginn“ hält nicht: Postgres 16 schaltet `statement_timeout` vor dem Commit ab, und ein hängender WAL-Flush kann einen Commit beliebig verzögern. Ersatz ist ein **begrenzter REST-Abgleich des geladenen Intervalls**. Er ist ohne Annahmen über Commit-Zeiten oder Zustellung korrekt.
-  - **Geladenes Intervall:** von `from_L` bis jetzt. `from_L` ist der Zeitstempel des ältesten geladenen Eintrags, **bei leerer Liste `rangeFromUtc`** (R7). So entdeckt eine leere „Alle Fehler“-Liste ihren ersten Fehler ohne Sonderfall.
+  - **Geladenes Intervall:** von `from_L` bis jetzt. `from_L` ist der Zeitstempel des ältesten geladenen Eintrags. **`from_L` = `rangeFromUtc`**, wenn die Liste leer ist (R7) **oder** die Paginierung ihr Ende erreicht hat (`nextCursor = null`). **Sol-Befund 3.2 — Nachschärfung:** Sonst bliebe ein verspätet committeter Eintrag, der älter ist als jeder geladene, für immer weg, weil es keine Folgeseite mehr gibt, die ihn holen könnte.
   - **Ein Abgleich** besteht aus `GET /logs?q&from=<from_L>&keysOnly=true` (ohne `to`, also bis zur Anfragezeit; höchstens 2.500 Schlüssel). Der Client vergleicht die Ids mit den geladenen und holt die fehlenden mit `GET /logs?ids=…`, in höchstens drei Aufrufen zu 200. Sie werden **per `id`** an der sortierten Position `(TimestampUtc, Id)` eingefügt, auch mitten in geladenen Seiten. Mehr als 500 fehlende Einträge oder `truncated` ergeben den ausdrücklichen Hinweis „Zu viele neue Einträge — Liste neu laden“, statt still eine Lücke zu lassen. Ids, die serverseitig fehlen (Retention), bleiben bis zum Neuladen stehen.
   - **Auslöser:** ein `logs.appended`-Hinweis, die Rückkehr des Tabs in den Vordergrund, das (Wieder-)Öffnen des Admin-Streams und **periodisch alle 30 s**. Das gilt nur bei sichtbarem Tab, im Live-Modus und solange nicht pausiert (S1). Höchstens ein Abgleich läuft gleichzeitig, und zwischen zwei Abgleichen liegen mindestens 5 s. Auslöser in dieser Wartezeit ergeben **einen** nachlaufenden Abgleich.
-  - **Abgedeckt ohne Zusatzmechanik:** verspätete Commits mitten im Intervall (2.2), ein verlorener oder ungehörter Hinweis (2.3) und die leere Liste (2.7). Spätestens der nächste periodische Abgleich holt sie. Einträge älter als `from_L` kommen beim normalen Nachladen, weil die Keyset-Paginierung sie erreicht.
+  - **Abgedeckt ohne Zusatzmechanik:** verspätete Commits mitten im Intervall (2.2), ein verlorener oder ungehörter Hinweis (2.3) und die leere Liste (2.7). Spätestens der nächste periodische Abgleich holt sie. Einträge älter als `from_L` gibt es nur, solange die Paginierung noch nicht am Ende ist, und dann holt sie das Nachladen.
   - **Höchste Last je offener Seite:** ≤ 1 Schlüsselabfrage je 5 s (typisch 1 je 30 s) plus bei Abweichung ≤ 3 Id-Abfragen, dazu die Summary alle 30 s. Bei drei offenen Tabs sind das höchstens 0,6 Schlüssel- und 0,1 Summary-Abfragen je Sekunde. Die DB-Parallelität bleibt unabhängig davon durch das Gate in §8.4 auf 2 je Api-Instanz begrenzt. Die Schlüsselabfrage gehört zum Performance-Gate (§13.3).
 
   **Entscheidung des Autors (offen für Einspruch), A36:** 30-s-Takt, 5-s-Mindestabstand, 2.500 Schlüssel, 500 nachzuladende Einträge.
@@ -597,7 +605,7 @@ Regeln:
 - **Folgeladen:** Die letzten Werte bleiben stehen.
 - **Leer:** `<app-empty-state>` „Keine Einträge für diesen Filter im Zeitraum“, mit Angebot, den Zeitraum auf 7 Tage zu erweitern, wenn er kürzer ist.
 - **Drops im Zeitraum:** `NoticeBanner` (`warning`) über der Liste: „Im Zeitraum wurden n Einträge nicht oder möglicherweise nicht gespeichert (Puffer voll: …, Tagesbudget: …, Schreiben nicht bestätigt: …, Wiedereintritt: …)“, dazu ein Link „Anzeigen“ auf `cat:LogCapture`.
-- **Abdeckung lückenhaft** (`coverage24h.gaps`, R5): `NoticeBanner` (`warning`) „Für {source} fehlen Einträge von {von} bis {bis} UTC“, wenn eine Lücke den angezeigten Zeitraum schneidet.
+- **Abdeckung lückenhaft** (`coverage24h`, R5): `NoticeBanner` (`warning`) „Die Erfassung von {source} war um {lastIncompleteAtUtc} UTC nicht lückenlos — Error-Einträge können fehlen“, wenn der Zeitpunkt im angezeigten Zeitraum liegt.
 - **Erfassung unvollständig** (`status.sources[].state` ≠ `healthy`, §11): `NoticeBanner` (`warning`) je betroffener Quelle. Bei `stale`: „Die Log-Erfassung von {source} hat seit {hh:mm} UTC nichts geschrieben — neuere Einträge fehlen hier, `docker logs` hat sie“. Bei `disabled`: „… ist abgeschaltet“. Bei `missing`: „… hat sich nie gemeldet“.
 - **Löschung überfällig** (`status.retention.overdue`, S5): `NoticeBanner` (`warning`) „Log-Einträge älter als 7 Tage sind noch vorhanden (ältester: …)“.
 - **Abfragefehler:** `invalid_log_filter` am Feld (§9.2); `log_query_timeout` und `503` als `NoticeBanner` (`error`) im Listenbereich. Die letzte gute Antwort bleibt dabei stehen und wird als veraltet markiert, wie bei #381.
@@ -621,14 +629,20 @@ Regeln:
 Inhalt:
 
 - „Fehler der letzten 24 h: **n**“ und „Ansehen →“. Der Link führt auf `/admin/logs?q=level%3E%3Derror&range=24h`, also exakt den Seed „Alle Fehler“.
-- **Sol-Befund 2.5 — Auflösung:** **Lebendigkeit und Abdeckung sind getrennt.** Ein gesunder Herzschlag jetzt sagt nichts über die letzten 24 h: Nach erschöpftem Budget wird ein Error verworfen, die Herzschläge bleiben gesund, und nach einem Restore fehlt die verworfene Geschichte. Die Zahl gilt deshalb nur als **vollständig**, wenn beide Quellen `healthy` sind **und** `coverage24h.complete` wahr ist. `complete` ist falsch, sobald eine der folgenden Bedingungen in den letzten 24 h zutrifft:
-  1. Ein synthetischer Drop-Eintrag meldet `droppederrors > 0`. Diese Zahl steht als `droppedErrors`. Drops nur von Information oder Warning machen die Fehlerzahl nicht unvollständig.
-  2. Eine **Abdeckungslücke**. Je Quelle bilden die Instanz-Intervalle `[ProcessStartedUtc, LastFlushUtc]` aus `LogCaptureStatus` mit `CaptureEnabled = true` eine Vereinigung. Jede Lücke darin über **5 min** im 24-h-Fenster zählt, auch die vom Fensteranfang bis zur ersten bekannten Instanz. Damit erscheinen ein Restore ohne Statusdaten, abgeschaltete Zeiten und ein Prozess, der nie mehr schreiben konnte, als Lücke.
+- **Sol-Befund 2.5 — Auflösung:** **Lebendigkeit und Abdeckung sind getrennt.** Ein gesunder Herzschlag jetzt sagt nichts über die letzten 24 h: Nach erschöpftem Budget wird ein Error verworfen, die Herzschläge bleiben gesund, und nach einem Restore fehlt die verworfene Geschichte. Die Zahl gilt deshalb nur als **vollständig**, wenn beide Quellen `healthy` sind **und** `coverage24h.complete` wahr ist.
+
+  **Sol-Befund 3.3 — Nachschärfung:** Die Instanz-Intervalle und die Drop-Zählung aus 2.5 sind gestrichen. Eine Lebenszeit von Prozessstart bis letztem Herzschlag überdeckte einen DB-Ausfall innerhalb desselben Prozesses rückwirkend. Ein Drop-Bericht über einen verlorenen Error konnte selbst verloren gehen. Ersatz ist ein **monotoner Marker je Prozess**: `LastIncompleteAtUtc`.
+  - **Er wird im Speicher auf „jetzt“ gesetzt,** wenn ein Eintrag mit Level Error oder höher verworfen wird (jeder Drop-Grund, auch `write_unconfirmed`), wenn ein Batch scheitert oder unbestätigt bleibt, der einen solchen Eintrag enthält, und wenn der Schreiber die DB nicht erreicht (jeder gescheiterte Batch oder Herzschlag).
+  - **Jeder Herzschlag trägt ihn mit.** Das Upsert erhöht ihn nur. Weil der Wert im Speicher bleibt, bis ein Herzschlag gelingt, kann ein gescheiterter Drop-Bericht ihn nicht verlieren.
+  - **Beim Start** wird er auf den Prozessstart gesetzt. Damit sind Kaltstart, Restore und jeder Absturz abgedeckt.
+  - **Ausnahme bei sauberer Übergabe:** Die neue Instanz übernimmt den Marker der vorigen Instanz derselben Quelle, wenn deren Zeile `CaptureEnabled = true` und `CleanShutdownAtUtc` trägt und dieser Zeitpunkt höchstens 5 min vor dem eigenen Start liegt. Sonst zeigte jeder Deploy 24 h lang „unvollständig“.
+  - **Entscheidung des Autors (offen für Einspruch), A37:** saubere Übergabe innerhalb von 5 min. Die Prozessstart-Initialisierung ist vom Orchestrator vorgeschlagen.
+
+  `coverage24h.complete` ist wahr, wenn für **beide** Quellen der Marker der jüngsten Instanz älter als 24 h ist.
 - **Darstellung:**
   - **Vollständig:** n = 0 neutral „keine“, n > 0 `StatusBadge tone="danger"` mit der Zahl.
-  - **Unvollständig:** im Ton `warning` „mindestens n“ mit n = `recordedErrors` + `droppedErrors`, bei n = 0 „0 erfasst, unvollständig“, dazu der Grund (Lücke von–bis je Quelle, „d Fehler nicht gespeichert“, Zustand je Quelle).
+  - **Unvollständig:** im Ton `warning` „mindestens n“ mit n = `recordedErrors`, bei n = 0 „0 erfasst, unvollständig“, dazu der Grund („Erfassung von {source} unvollständig seit {Zeit}“ bzw. Zustand je Quelle).
   - **„keine“ erscheint nie ohne Vollständigkeit.**
-  - **Entscheidung des Autors (offen für Einspruch), A37:** 5-min-Toleranz für Lücken, wie die `stale`-Schwelle; Neustarts beim Deploy bleiben darunter.
 - **Sol-Befund 9 (P2) — Auflösung:** `status.sources` enthält **immer** `api` und `worker`, jeweils mit einem Zustand:
 
   | Zustand | Bedingung |
@@ -692,14 +706,16 @@ Die Fristaussage folgt dem stündlichen Löschlauf (S5, A32); bleibt es bei täg
   - **Abgleich (R2/R7):**
     - Geladen sind t1 … t100. Ein Eintrag mit Zeitstempel zwischen t40 und t41 wird erst danach geschrieben, **mit einem Commit, der künstlich 30 s verzögert ist** (Test-Hook hält die Schreibtransaktion offen, während parallel Abgleiche laufen). Der erste Abgleich nach dem Commit liefert seine Id.
     - `keysOnly` mit `from` = `rangeFromUtc` bei leerer Liste liefert den ersten passenden Eintrag.
+    - Nach dem Ende der Paginierung (zwei geladene Einträge 11:59 und 11:58, `nextCursor = null`) wird ein Eintrag mit Zeitstempel 11:57 verspätet committet. Der nächste Abgleich (Client: `from_L` = `rangeFromUtc`) liefert ihn (3.2).
     - Mehr als 2.500 Schlüssel setzen `truncated`.
     - `ids=` liefert genau die angefragten Einträge, auch ohne Zeitraum.
   - **Datensatz-Isolierung (R6):** 499 gültige Einträge und einer, der deterministisch scheitert (per Test-Seam eine Kategorie über 256 Zeichen an der Kürzung vorbei). Gespeichert werden 499, einer zählt als `rejected`, und der Drop-Eintrag nennt `rejected=1`. Ein vorübergehender Fehler (Verbindung getrennt) führt **nicht** zur Halbierung, sondern zur Wiederholung. Ein Eintrag mit NUL in Message und Property-Wert sowie einer mit unpaarigem Surrogat wird mit `␀` bzw. `U+FFFD` gespeichert.
   - **Abdeckung (R5):**
-    - Nach erschöpftem Tagesbudget wird ein Error verworfen; `coverage24h.complete = false` und `droppedErrors = 1`, obwohl beide Quellen `healthy` sind.
-    - Ein simulierter Restore (`LogEntries` und `LogCaptureStatus` geleert) mit danach frischen Herzschlägen ergibt `healthy` und trotzdem eine Lücke vom Fensteranfang bis zum Instanzstart, also `complete = false`.
-    - Eine Lücke von 4 min zwischen zwei Instanzen ist unschädlich, eine von 6 min nicht.
-    - Ein abgeschalteter Zeitraum ist eine Lücke.
+    - Nach erschöpftem Tagesbudget wird ein Error verworfen. Ergebnis: `complete = false`, obwohl beide Quellen `healthy` sind.
+    - **Ausfall, bei dem der Error-Batch und danach auch sein Drop-Bericht scheitern** (3.3). Nach der Erholung kommen frische Herzschläge, und der Marker steht trotzdem auf dem Ausfall: `complete = false`, die Zeile zeigt nicht „keine“.
+    - Ein simulierter Restore (Statuszeilen geleert) mit frischen Herzschlägen ergibt `complete = false` für 24 h ab Prozessstart.
+    - **Saubere Übergabe:** Ein Neustart nach Shutdown mit `CleanShutdownAtUtc` innerhalb von 5 min übernimmt den Marker. Nach einem Absturz ohne `CleanShutdownAtUtc` oder nach 6 min Pause gilt der Prozessstart.
+    - Ein Herzschlag mit älterem Marker senkt den gespeicherten Wert nicht.
   - **Unterdrückungsbereich der Ansicht (S1):** Bei laufendem Schreiber liefert der Query-Service 20-mal hintereinander ein Timeout (`pg_sleep`-Hook). Danach ist `LogEntries` um **null** Einträge der Kategorien `Microsoft.EntityFrameworkCore.*`, `Npgsql*` und der Ansichtskategorien gewachsen, und es wurde **kein** `logs.appended` veröffentlicht, das auf diese Fehler zurückgeht.
   - **Schreiber:** Batch landet vollständig; Postgres-Ausfall (Container pausieren) führt zu `write_unconfirmed`/`queue_full` und zu **keiner** Verzögerung eines parallel loggenden Aufrufers (gemessen: `Log()` p99 unter 1 ms während des Ausfalls); nach der Rückkehr kommt zuerst der synthetische Drop-Eintrag mit korrekter Aufschlüsselung, dann der Puffer; Herzschlag ohne Einträge aktualisiert `LastFlushUtc`; Shutdown leert den Puffer innerhalb von 3 s.
   - **Kein Schreiber-SQL in den Logs:** Weder ein EF- noch ein Npgsql-Eintrag des Schreibpfads landet in `LogEntries` oder im erfassenden Test-Provider. Das gilt mit einem Konfigurationstest, der `Microsoft.EntityFrameworkCore` und `Npgsql` absichtlich auf Debug stellt.
@@ -732,9 +748,9 @@ Die Fristaussage folgt dem stündlichen Löschlauf (S5, A32); bleibt es bei täg
 - **Vitest:**
   - `core/admin` Service mit `HttpTestingController`: Parameter, Cursor, eingefrorene exakte Grenzen als `from`/`to` (R4).
   - Filter-Stringwerkzeuge: Quoten, Anhängen ohne Dublette, Fehlerposition.
-  - Abgleich (R2/R3/R7): Auslöser, 5-s-Mindestabstand mit genau einem nachlaufenden Abgleich, 30-s-Takt ohne Hinweis, `from_L` = `rangeFromUtc` bei leerer Liste, Einfügen mitten in geladene Seiten nach `(Zeit, Id)`, Dedupe per `id`, Zurückhalten bei „gelesen“, Neu-laden-Hinweis bei > 500 fehlenden oder `truncated`.
+  - Abgleich (R2/R3/R7): Auslöser, 5-s-Mindestabstand mit genau einem nachlaufenden Abgleich, 30-s-Takt ohne Hinweis, `from_L` = `rangeFromUtc` bei leerer Liste und nach Paginierungsende, Einfügen mitten in geladene Seiten nach `(Zeit, Id)`, Dedupe per `id`, Zurückhalten bei „gelesen“, Neu-laden-Hinweis bei > 500 fehlenden oder `truncated`.
   - Pause nach Fehler (S1): Nach einer Fehlerantwort lösen weitere Live-Ereignisse keine Anfrage aus, bis ein manueller Abruf gelingt.
-  - Monitoring-Zeile (S9/R5): `missing`/`disabled`/`stale`, `droppedErrors > 0` und Lücken ergeben „mindestens n“ bzw. „0 erfasst, unvollständig“ und nie „keine“.
+  - Monitoring-Zeile (S9/R5): `missing`/`disabled`/`stale` und `complete = false` ergeben „mindestens n“ bzw. „0 erfasst, unvollständig“ und nie „keine“.
   - Entscheidung „oben vs. gelesen“ inklusive aufgeklappter Zeile.
   - Chip-Aktiv-Erkennung mit Whitespace-Normalisierung.
   - Kurzname-Wahl der Kategorie-Facette.
@@ -805,8 +821,10 @@ Reißt eine Grenze, gibt es zwei Wege: eine Summary-Abfrage mit gemeinsamer Teil
 24. **Einrasten (S8):** Die Testfälle aus §13.1 sind grün. `/logs/summary?from=…T10:03:01Z&to=…T10:17:01Z` zählt einen Eintrag um 10:03:05 mit.
 25. **Fehlender Status und Abdeckung (S9/R5):**
     - Nach dem Leeren von `LogCaptureStatus` bei gestopptem Worker zeigt `/admin/monitoring` „worker: keine Statusmeldung“ und nie „keine“.
-    - Nach erschöpftem Budget und einem danach verworfenen Error zeigt die Zeile „mindestens 1“ (bzw. „mindestens n+1“), nicht „keine“.
-    - Nach einem Restore mit frischen Herzschlägen zeigt sie für 24 h „unvollständig“ mit der Lücke.
+    - Nach erschöpftem Budget und einem danach verworfenen Error zeigt die Zeile „mindestens n“ bzw. „0 erfasst, unvollständig“, nicht „keine“.
+    - Dasselbe gilt nach einem Postgres-Ausfall, in dem ein Error und sein Drop-Bericht verloren gingen, auch mit frischen Herzschlägen danach (3.3).
+    - Nach einem Restore zeigt die Zeile für 24 h „unvollständig“.
+    - Nach einem gewöhnlichen Deploy mit sauberer Übergabe bleibt eine zuvor vollständige Zahl vollständig.
 27. **Splice-Zeile (R1):** siehe AK 4. Lokal mit dem Worker gegen echtes Twitch zeigt eine provozierte oder aufgezeichnete Splice-Zeile in Console und `LogEntries` Schlüssel ohne Werte, außer den in §4.2b erlaubten.
 28. **Datensatzfehler (R6):** Der Test „499 gültig + 1 abgelehnt“ aus §13.1 ist grün. Ein lokal provozierter 7TV-Frame mit NUL (`SevenTvEventClient`-Pfad über einen Test-Seam) landet mit `␀` in `LogEntries`, ohne dass benachbarte Einträge verloren gehen.
 26. **Rollback ohne Restbestand (S5):** Der Rollback-Ablauf aus §18 ist einmal lokal durchgespielt. Danach sind `LogEntries` und `LogCaptureStatus` leer bzw. entfernt, **bevor** ein Image ohne Log-Ablauf läuft.
@@ -830,7 +848,7 @@ Auf Prod gibt es keine Verifikation durch die Session (kein SSH, globale Regel).
 | **T0** | Rauschen an der Quelle (§4) | — | nein |
 | **T0** (Ergänzung) | Tag-Schlüssel-Allowlist für `Redact` und `TagBlockForLog` (§4.2b, S2); Splice-Zeile nur mit Schlüsseln (R1) | — | nein |
 | **T1** | Schema und Retention: Entitäten `LogEntry` (mit `CaptureId`), `LogCaptureStatus` (mit `CaptureEnabled`), `LogFilter`, Enum `LogSource`; eine Migration `AddLogCapture` mit drei Tabellen, Indizes (§6) und den vier Seeds (§7.5, als Strings, deren Parse-Test in T3 nachgezogen wird); `RetentionPolicy.LogEntry`, isolierter stündlicher Log-Ablauf in `DataRetentionWorker` (S5); `scripts/backup-postgres.sh` (A14) | — | **ja**, additiv |
-| **T2** | Erfassung: Sink mit Zulassungsreihenfolge und Wiedereintritts-Sperre (S3), Puffer, Budget, Scrubber, begrenzte Property- und Exception-Darstellung, Postgres-Normalisierung der Zeichenketten (R6), Schreiber mit eigener Datenquelle, idempotentem Insert (S4) und Datensatz-Isolierung (R6), Herzschlag inklusive `disabled`-Modus (S9), Drop-Einträge mit `droppederrors`, `AsyncLocal`-Sperre, Shutdown-Drain, `AddLogCapture` in Api und Worker (nicht Harness), `logs.appended` als gedrosselter Hinweis mit Rekursionsbremse; Compose-Variable `LOG_CAPTURE_ENABLED` | T1 | nein |
+| **T2** | Erfassung: Sink mit Zulassungsreihenfolge und Wiedereintritts-Sperre (S3), Puffer, Budget, Scrubber, begrenzte Property- und Exception-Darstellung, Postgres-Normalisierung der Zeichenketten (R6), Schreiber mit eigener Datenquelle, idempotentem Insert (S4) und Datensatz-Isolierung (R6), Herzschlag inklusive `disabled`-Modus (S9), Drop-Einträge, Abdeckungsmarker `LastIncompleteAtUtc` (3.3), `AsyncLocal`-Sperre, Shutdown-Drain, `AddLogCapture` in Api und Worker (nicht Harness), `logs.appended` als gedrosselter Hinweis mit Rekursionsbremse; Compose-Variable `LOG_CAPTURE_ENABLED` | T1 | nein |
 | **T3** | Abfragen: Parser, Endpoint-Filter mit Unterdrückungsbereich (S1), `ILogQueryService` (Seite mit `keysOnly`/`ids` für den Abgleich (R2), Detail, Summary mit Einrasten (S8/R4), Status mit Lebendigkeit, Abdeckung und `overdue` (S9, R5, S5)), `ILogFilterService` (CRUD), Fehlercodes plus `api-error.ts` und Locales, Zeitlimit und Parallelitäts-Gate, `TtlCache` herausziehen, Api.Tests, Performance-Gate | T1 (parallel zu T2 möglich, mit gesetzten Testzeilen) | nein |
 | **T4** | Seite `/admin/logs`: Tab, Route, Service, Stringwerkzeuge, Histogramm-Primitiv mit Designsprache-Abschnitt, Facetten, Liste, Details, Kopieren, Live ohne Sprünge, gespeicherte Filter, Telefon, i18n, Vitest, E2E, Audit | T3-Vertrag (gegen Mocks schon vorher baubar) | nein |
 | **T5** | Monitoring-Zeile (§11), Doku (§17), Übergabe des Datenschutztexts an den Betreiber, Live-Verifikation, Abschluss-AK | T2, T3, T4 | nein |
@@ -925,7 +943,7 @@ Doku:
 | A34 | ~~Änderungsabruf mit 15-s-Überlappung~~ — gestrichen mit R2 | — |
 | A35 | Splice-Werte nur für `tmi-sent-ts`, `room-id` (Ziffern) und Ja/Nein-Flags | §4.2b |
 | A36 | Abgleich alle 30 s, ≥ 5 s Abstand, 2.500 Schlüssel, 500 nachzuladende Einträge | §8.3 |
-| A37 | Abdeckungslücken zählen ab 5 min | §11 |
+| A37 | Marker-Übernahme nur bei sauberem Shutdown innerhalb von 5 min (ersetzt „Lücken ab 5 min“) | §11 |
 
 **A21 ist ersetzt**, erst durch S7, dann durch R2 (Abgleich). **A20** gilt mit der Obergrenze aus A33.
 
@@ -957,11 +975,11 @@ Doku:
 
 | Nr. | Befund | Auflösung | Abschnitte |
 |---|---|---|---|
-| R1 (2.1, P1) | Splice-Zeile gibt `system-msg` und `msg-param-*`-Identitäten im Klartext aus (bestehende Prod-Lücke) | T0: Splice-Zeile nur mit Schlüsseln; Werte nur für `tmi-sent-ts`, `room-id` und Ja/Nein-Flags mit exaktem Format; Ende-zu-Ende-Tests | §4.2b, §4.3, AK 4, AK 27 |
-| R2 (2.2, P2) | Statement-Timeout begründet die Überlappung des Änderungsabrufs nicht (Commit kann sich verzögern) | Änderungsabruf und `InsertedAtUtc` gestrichen; begrenzter REST-Abgleich des geladenen Intervalls per Ids; Test mit 30 s verzögertem Commit | §5.5, §6.1, §8.1, §8.3, §13, AK 12, AK 23 |
+| R1 (2.1, P1; 3.1) | Splice-Zeile gibt `system-msg` und `msg-param-*`-Identitäten im Klartext aus (bestehende Prod-Lücke); dazu das separat geloggte `RoomId` | T0: Splice-Zeile nur mit Schlüsseln; Werte nur für `tmi-sent-ts`, `room-id` und Ja/Nein-Flags mit exaktem Format; `{RoomId}` nur mit ≤ 20 Ziffern; Tests über TwitchLibs Parser, Message und alle Properties | §4.2b, §4.3, AK 4, AK 27 |
+| R2 (2.2, P2; 3.2) | Statement-Timeout begründet die Überlappung des Änderungsabrufs nicht (Commit kann sich verzögern); nach Paginierungsende fehlte der Rest des Bereichs | Änderungsabruf und `InsertedAtUtc` gestrichen; begrenzter REST-Abgleich des geladenen Intervalls per Ids, ab `rangeFromUtc` nach Paginierungsende; Tests mit 30 s verzögertem Commit und mit Commit älter als alle geladenen Einträge | §5.5, §6.1, §8.1, §8.3, §13, AK 12, AK 23 |
 | R3 (2.3, P2) | Erfolgreicher Publish beweist keinen Empfänger | `logs.appended` nur Hinweis; Dirty-Flag und Wiederholung gestrichen; periodischer Abgleich trägt die Zusage | §5.5, §5.6, §8.3, AK 12, §15 |
 | R4 (2.4, P2) | Eingerastete 7-Tage-Grenzen sind als Eingabe ungültig | Listen mit exakten Grenzen, Einrasten nur fürs Histogramm; `to` bis 12 h in der Zukunft; Tests für Rückgabe als Eingabe um 12:01 UTC und Grenzspannen | §8.1, §8.2, §8.3, §13 |
-| R5 (2.5, P2) | Gesunde Herzschläge bescheinigen unvollständige Fehlerzahlen | Abdeckung getrennt von Lebendigkeit (`coverage24h`: verworfene Fehler und Lücken); „mindestens n“ statt „keine“; Tests für Budget-Drop und Restore | §5.3, §8.1, §9.7, §11, §13, AK 25 |
+| R5 (2.5, P2; 3.3) | Gesunde Herzschläge bescheinigen unvollständige Fehlerzahlen; Prozess-Lebenszeit überdeckt Ausfälle | Abdeckung getrennt von Lebendigkeit über den monotonen Marker `LastIncompleteAtUtc` je Prozess (Herzschlag, Start = Prozessstart, Übernahme nur bei sauberem Shutdown); Intervall- und Drop-Zählung gestrichen; „mindestens n“ statt „keine“; Tests für Budget-Drop, doppelten Schreibfehler, Restore und Übergabe | §5.3, §8.1, §9.7, §11, §13, AK 25 |
 | R6 (2.6, P2) | Ein ungültiger Datensatz vernichtet den Batch (NUL aus 7TV-Frames) | Normalisierung vor dem Einreihen, deterministische Fehler per Halbierung isoliert (`rejected`), vorübergehende idempotent wiederholt; Test 499 + 1 | §5.2, §5.3, §5.5, §13, AK 28 |
 | R7 (2.7, P2) | Leere Liste kann keinen Live-Abruf bilden | `from_L` = `rangeFromUtc` bei leerer Liste, durch den Abgleich ohne Sonderfall; E2E | §8.3, §13.2, AK 23 |
 
