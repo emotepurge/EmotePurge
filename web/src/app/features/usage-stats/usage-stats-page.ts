@@ -1898,6 +1898,8 @@ export class UsageStatsPage {
   /** Whether the bounded series refetch is in flight or a `load()` series request is — the latest
    *  one only, see `latestSeries`. A plain field: nothing reads it reactively. */
   private seriesInFlight = false;
+  /** A quiet refresh was asked for while a series request was out; run once when it ends. */
+  private seriesRefreshQueued = false;
 
   /** The drift signatures already refetched for, since the last `load()`. */
   private readonly seriesRefetchSignatures = new Set<string>();
@@ -2988,7 +2990,12 @@ export class UsageStatsPage {
         // not held back for the status (AK 52): should the status make the chosen set the active
         // one, `liveMembersParams` turns `undefined` and the resource drops this request itself.
         this.reloadLiveMembers();
-        this.refreshSetStatus({ reloadRowsAfter: true });
+        // A flush in the same burst moved the numbers under the series too; the status-first path
+        // refreshes it once the set is known to have stayed.
+        this.refreshSetStatus({
+          reloadRowsAfter: true,
+          refreshSeriesAfter: seen.has(LIVE_EVENT_TYPES.usageFlushed),
+        });
         return;
       }
       // A burst of nothing but `backfill.progress` has no rows to reload.
@@ -3000,6 +3007,7 @@ export class UsageStatsPage {
       // requested for that placeholder would briefly claim to be the chosen set's.
       if (!this.awaitingEmoteSetId()) {
         this.loadTotals(this.channelName(), this.from(), this.to(), this.selectedEmoteSetId());
+        this.refreshSeriesQuietly();
       }
       if (
         seen.has(LIVE_EVENT_TYPES.usageFlushed) &&
@@ -3870,7 +3878,9 @@ export class UsageStatsPage {
   // the selected set — unless the status itself moved the selected set (the load effect reloads
   // then) or flipped `viewKindStale` (the stale effect does). Either way exactly one request per
   // status. A stale flag that stays `true` (an earlier stale reload failed) reloads here: a retry.
-  private refreshSetStatus(options: { reloadRowsAfter?: boolean } = {}): void {
+  private refreshSetStatus(
+    options: { reloadRowsAfter?: boolean; refreshSeriesAfter?: boolean } = {},
+  ): void {
     const channelName = this.channelName();
     this.emoteAdminService
       .getSetStatus(channelName)
@@ -3890,11 +3900,14 @@ export class UsageStatsPage {
           }
           untracked(() => {
             const selected = this.selectedEmoteSetId();
-            if (
-              selected !== before.selected ||
-              this.viewKindStale() !== before.stale ||
-              this.awaitingEmoteSetId()
-            ) {
+            // A moved set reloads everything through the load effect, series included.
+            if (selected !== before.selected || this.awaitingEmoteSetId()) {
+              return;
+            }
+            if (options.refreshSeriesAfter) {
+              this.refreshSeriesQuietly();
+            }
+            if (this.viewKindStale() !== before.stale) {
               return;
             }
             this.loadTotals(channelName, this.from(), this.to(), selected);
@@ -4087,6 +4100,8 @@ export class UsageStatsPage {
     this.seriesFailed.set(false);
     // load() is the only caller: a fresh series may refetch for any drift again (plan 377, 2.11).
     this.seriesRefetchSignatures.clear();
+    // This request is the fresh read; a refresh queued behind the superseded one has nothing to add.
+    this.seriesRefreshQueued = false;
     const scope: SeriesScope = { channelName, emoteSetId, from, to };
     this.seriesInFlight = true;
     this.usageStatService
@@ -4097,6 +4112,58 @@ export class UsageStatsPage {
         error: () => {
           this.seriesInFlight = false;
           this.seriesFailed.set(true);
+          this.runQueuedSeriesRefresh();
+        },
+      });
+  }
+
+  /**
+   * Re-reads the channel series after the data underneath it moved (`usage.flushed`), without the
+   * reset `loadChannelSeries` does: the held series stays on screen until the answer replaces it,
+   * so the sidecar does not flicker. Clearing the service cache is what makes both the series and
+   * any drilldown opened afterwards ask the server again — the cache otherwise lives until the
+   * channel, range or set changes. Any further "the numbers changed" trigger can call this too.
+   */
+  private refreshSeriesQuietly(): void {
+    // Same hold-back as loadTotals: while the range is a placeholder (all time, status not in yet)
+    // the load effect will ask once it resolves, and a request now would carry the wrong dates.
+    if (!this.rangeResolved()) {
+      return;
+    }
+    const scope: SeriesScope = {
+      channelName: this.channelName(),
+      emoteSetId: this.selectedEmoteSetId(),
+      from: this.from(),
+      to: this.to(),
+    };
+    // Always, even when the request below has to wait: a drilldown opened meanwhile must not be
+    // served the pre-flush answer.
+    this.usageStatService.clearSeriesCache();
+    // A newer request would supersede the one out (`latestSeries`) and discard its answer, so under
+    // flushes arriving faster than /series answers nothing would ever land. Wait for it instead and
+    // ask once more afterwards.
+    if (this.seriesInFlight) {
+      this.seriesRefreshQueued = true;
+      return;
+    }
+    this.seriesInFlight = true;
+    this.usageStatService
+      .getChannelSeries(scope.channelName, scope.from, scope.to, scope.emoteSetId)
+      .pipe(this.latestSeries)
+      .subscribe({
+        next: (series) => {
+          // A refresh that lands is a series load that worked, whatever the earlier one did.
+          this.seriesFailed.set(false);
+          this.adoptSeries(series, scope);
+        },
+        error: () => {
+          this.seriesInFlight = false;
+          // A held series stays; with none (the refresh superseded the initial load), "pending"
+          // would otherwise last forever.
+          if (this.channelSeries() === null) {
+            this.seriesFailed.set(true);
+          }
+          this.runQueuedSeriesRefresh();
         },
       });
   }
@@ -4105,7 +4172,17 @@ export class UsageStatsPage {
     this.seriesInFlight = false;
     this.channelSeries.set(series);
     this.seriesScope.set(scope);
+    // Before the drift check: a queued refresh puts a request in flight, and the drift check then
+    // waits for its answer, which supersedes this one anyway.
+    this.runQueuedSeriesRefresh();
     this.refetchDriftedSeries();
+  }
+
+  private runQueuedSeriesRefresh(): void {
+    if (this.seriesRefreshQueued) {
+      this.seriesRefreshQueued = false;
+      this.refreshSeriesQuietly();
+    }
   }
 
   /**
@@ -4162,6 +4239,7 @@ export class UsageStatsPage {
         next: (series) => this.adoptSeries(series, scope),
         error: () => {
           this.seriesInFlight = false;
+          this.runQueuedSeriesRefresh();
         },
       });
   }
