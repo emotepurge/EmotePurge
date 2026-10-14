@@ -3000,6 +3000,7 @@ export class UsageStatsPage {
       // requested for that placeholder would briefly claim to be the chosen set's.
       if (!this.awaitingEmoteSetId()) {
         this.loadTotals(this.channelName(), this.from(), this.to(), this.selectedEmoteSetId());
+        this.refreshSeriesQuietly();
       }
       if (
         seen.has(LIVE_EVENT_TYPES.usageFlushed) &&
@@ -4097,6 +4098,33 @@ export class UsageStatsPage {
         error: () => {
           this.seriesInFlight = false;
           this.seriesFailed.set(true);
+        },
+      });
+  }
+
+  /**
+   * Re-reads the channel series after the data underneath it moved (`usage.flushed`), without the
+   * reset `loadChannelSeries` does: the held series stays on screen until the answer replaces it,
+   * so the sidecar does not flicker. Clearing the service cache is what makes both the series and
+   * any drilldown opened afterwards ask the server again — the cache otherwise lives until the
+   * channel, range or set changes. Any further "the numbers changed" trigger can call this too.
+   */
+  private refreshSeriesQuietly(): void {
+    const scope: SeriesScope = {
+      channelName: this.channelName(),
+      emoteSetId: this.selectedEmoteSetId(),
+      from: this.from(),
+      to: this.to(),
+    };
+    this.usageStatService.clearSeriesCache();
+    this.seriesInFlight = true;
+    this.usageStatService
+      .getChannelSeries(scope.channelName, scope.from, scope.to, scope.emoteSetId)
+      .pipe(this.latestSeries)
+      .subscribe({
+        next: (series) => this.adoptSeries(series, scope),
+        error: () => {
+          this.seriesInFlight = false;
         },
       });
   }

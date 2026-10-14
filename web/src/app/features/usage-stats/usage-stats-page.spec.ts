@@ -879,6 +879,48 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     expect(component['selectionPrunedFeedback']()).toBeNull();
   });
 
+  it('refetches the channel series after usage.flushed and keeps showing the held one meanwhile (#415)', () => {
+    mount([emote('a', 'PeepoA')]);
+    const held = component['channelSeries']();
+    expect(held).not.toBeNull();
+
+    FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+
+    const seriesRequests = httpMock.match(
+      (req) => req.url === '/api/channels/a/usage-stats/series',
+    );
+    expect(seriesRequests).toHaveLength(1);
+    // Quiet: the sidecar must not drop to its empty state while the request is out.
+    expect(component['channelSeries']()).toBe(held);
+
+    seriesRequests[0].flush({
+      from: '2026-01-01',
+      to: '2026-09-08',
+      liveDays: [],
+      emotes: [],
+    });
+    expect(component['channelSeries']()).not.toBe(held);
+  });
+
+  it('a drilldown series requested before usage.flushed is fetched again afterwards (#415)', () => {
+    mount([emote('a', 'PeepoA')]);
+    const usageStatService = TestBed.inject(UsageStatService);
+    const daily = (): void => {
+      usageStatService.getDailySeries('a', 'a', '2026-01-01', '2026-09-08', null).subscribe();
+    };
+
+    daily();
+    expect(httpMock.match((req) => req.url.endsWith('/usage-stats/daily'))).toHaveLength(1);
+    daily();
+    expect(httpMock.match((req) => req.url.endsWith('/usage-stats/daily'))).toHaveLength(0);
+
+    silentReload([emote('a', 'PeepoA')]);
+    daily();
+    expect(httpMock.match((req) => req.url.endsWith('/usage-stats/daily'))).toHaveLength(1);
+  });
+
   it('a merely filtered-out but still-loaded emote survives a silent reload and shows no feedback', () => {
     // This is the case that decides retainAmong(emotes) over atlasOrder(): 'c' starts above the
     // min-usage filter, gets selected, and the reload lowers its count below that same filter — so
@@ -8816,6 +8858,18 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
       component['inspectedPoints']()
         .slice(0, 3)
         .map((point) => point.useCount);
+
+    // Every flush now also re-reads the series quietly (#415). This block is about the drift
+    // refetch on top of that, so the flush's own series request is answered with what is held:
+    // the drift check then runs when it lands, as it ran when the totals landed before.
+    const silentReload = (totals: EmoteUsageTotalDto[]): void => {
+      const held = component['channelSeries']();
+      FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      fixture.detectChanges();
+      flushByPath(httpMock, '/api/channels/a/usage-stats/totals', totals);
+      flushByPath(httpMock, SERIES_URL, held ?? {});
+    };
 
     it('settles over live events without a manual refresh: no flat curve, one refetch past the cache, then a curve per slot (S4)', () => {
       mount([emote('x', 'ome44', 40), other()], [seriesEntry('7tv-x', null, 'ome44', [[0, 40]])]);
