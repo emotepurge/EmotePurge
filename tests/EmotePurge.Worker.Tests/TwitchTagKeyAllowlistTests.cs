@@ -65,6 +65,62 @@ public class TwitchTagKeyAllowlistTests
         Assert.False(TwitchTagKeyAllowlist.IsAllowed(key));
 
     [Fact]
+    public void TotalLengthCap_AppliesOnTopOfThePrefixRestLimit()
+    {
+        const string prefix = "reply-thread-parent-";
+
+        // Rest of 44 gives exactly 64 characters in total; a rest of 45 is within the 48 rest limit but exceeds 64.
+        Assert.True(TwitchTagKeyAllowlist.IsAllowed(prefix + new string('a', 44)));
+        Assert.False(TwitchTagKeyAllowlist.IsAllowed(prefix + new string('a', 45)));
+    }
+
+    // The agreed fixed names (A30 plus the documented additions), spelled out independently of the constant
+    // so deleting a name from FixedKeys fails here.
+    [Theory]
+    [InlineData("badge-info")]
+    [InlineData("badges")]
+    [InlineData("bits")]
+    [InlineData("client-nonce")]
+    [InlineData("color")]
+    [InlineData("display-name")]
+    [InlineData("emote-only")]
+    [InlineData("emote-sets")]
+    [InlineData("emotes")]
+    [InlineData("first-msg")]
+    [InlineData("flags")]
+    [InlineData("followers-only")]
+    [InlineData("id")]
+    [InlineData("login")]
+    [InlineData("message-id")]
+    [InlineData("mod")]
+    [InlineData("msg-id")]
+    [InlineData("r9k")]
+    [InlineData("returning-chatter")]
+    [InlineData("room-id")]
+    [InlineData("slow")]
+    [InlineData("subs-only")]
+    [InlineData("subscriber")]
+    [InlineData("system-msg")]
+    [InlineData("target-msg-id")]
+    [InlineData("target-user-id")]
+    [InlineData("ban-duration")]
+    [InlineData("thread-id")]
+    [InlineData("tmi-sent-ts")]
+    [InlineData("turbo")]
+    [InlineData("user-id")]
+    [InlineData("user-type")]
+    [InlineData("vip")]
+    [InlineData("animation-id")]
+    [InlineData("custom-reward-id")]
+    [InlineData("gifs")]
+    [InlineData("msg-param-displayName")]
+    [InlineData("msg-param-viewerCount")]
+    [InlineData("msg-param-profileImageURL")]
+    [InlineData("msg-param-copoReward")]
+    public void AgreedFixedNames_AreAllowed(string key) =>
+        Assert.True(TwitchTagKeyAllowlist.IsAllowed(key));
+
+    [Fact]
     public void KeyLongerThanGrammarLimit_IsRejected() =>
         Assert.False(TwitchTagKeyAllowlist.IsAllowed("msg-param-" + new string('a', 60)));
 
