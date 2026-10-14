@@ -79,8 +79,8 @@ public partial class ChatLogImportRemovalServiceTests(PostgresFixture fixture) :
 
     // ---------------------------------------------------------------- Result, live rows, audit, events (S1, S3, S8, S9)
 
-    // S3 (tables only; the GetCoverageAsync readers follow in T7) and AK 2: with the current coverage as
-    // the expectation every imported row of every set and every coverage day goes; the counters match.
+    // S3 (tables only; the GetCoverageAsync readers are in the .Backfill.cs part) and AK 2: with the current
+    // coverage as the expectation every imported row of every set and every coverage day goes; the counters match.
     [Fact]
     public async Task Remove_WithTheCurrentCoverage_DeletesEveryImportedRowAndDay_AndCountsThem()
     {
