@@ -217,7 +217,7 @@ The ramp carries the whole interface. In dark it is glass, in light it is paper 
   `#a2a9b1`): five steps. *fg-muted* is the weakest text step allowed; its tightest case is
   fg-muted on surface-inset — light 4.81:1, dark 5.06:1. fg-muted is
   not permitted on surface-inset-hover (light 4.34:1, dark 4.45:1, under 4.5:1): text on a surface that turns
-  into surface-inset-hover on hover is fg-secondary or stronger (7.01:1 light, 6.98:1 dark).
+  into surface-inset-hover on hover is fg-secondary or stronger (7.01:1 light, 6.98:1 dark). Decorative aria-hidden glyphs (the ▾ chevron in the neutral-button menu triggers) stay fg-muted: they owe 3:1, which 4.34:1 / 4.45:1 clears.
 
 ### Tertiary
 

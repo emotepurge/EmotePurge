@@ -15,16 +15,18 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 **Betrifft:** `docs/UI-Designsprache.md` (§10 contrast checklist) · `DESIGN.md` · `web/src/styles.css`
 
 `fg-muted` on `surface-inset-hover` measures 4.34:1 (light, `#5d656e` on `#dadde1`) and 4.45:1 (dark,
-`#8b939b` on `#282d35`), under the 4.5:1 text gate. Inventory of `web/src/app`: no muted text renders on
-that surface today; its hover users (`Button` neutral, `SegmentedControl`, two segment groups on the vote
-detail page) use `fg-body`/`fg-secondary` (7.01:1 / 6.98:1 on the hover surface), the code chip and the
-progress track carry `fg-body` or no text. Decision: a pairing rule instead of a token shift. Text on an
+`#8b939b` on `#282d35`), under the 4.5:1 text gate. Inventory by inherited surface (a `text-fg-muted` descendant of an element that turns into the hover surface,
+not only the literal class): neutral `appButton` triggers, `SegmentedControl` segments and the two vote-detail
+segment groups were checked. One text case: `(active)` in the `EmoteSetMenu` trigger (`emote-set-menu.ts`),
+now `text-fg-secondary`. Three decorative `aria-hidden` `▾` chevrons (`emote-set-menu.ts`, `usage-range-menu.ts`,
+`date-range-menu.ts`) stay `fg-muted`: a graphic owes 3:1, which 4.34:1 / 4.45:1 clears. The rest of the hover
+users carry `fg-body`/`fg-secondary` (7.01:1 / 6.98:1 on the hover surface). Decision: a pairing rule instead of a token shift. Text on an
 inset surface that changes to `surface-inset-hover` on hover is `fg-secondary` or stronger; the documented
 tightest case remains `fg-muted` on `surface-inset` (4.81:1 / 5.06:1) for resting surfaces. Rejected:
 shifting `fg-muted` just enough (light `#5a626b`, dark `#8c949c`) reaches only 4.54:1 / 4.50:1 on the hover
 surface, a razor-thin margin, and would change every muted text (page 5.17 to 5.42, surface 5.71 to 5.97,
 inset 4.81 to 5.03 in light; +0.07 in dark). Lightening/darkening the hover surface instead would cost its
-step from `surface-inset`. No CSS changed.
+step from `surface-inset`. One class changed.
 
 ---
 
