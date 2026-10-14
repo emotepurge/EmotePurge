@@ -34,6 +34,13 @@ StackExchange.Redis, xUnit + Testcontainers + NSubstitute + `FakeTimeProvider`, 
 
 **Spec:** [`docs/superpowers/specs/2026-10-14-admin-log-viewer-383-spec.md`](../specs/2026-10-14-admin-log-viewer-383-spec.md)
 
+> **Sol-Prüfung Plan (2026-10-14, adversarial, 6 × P2, kein P1) — eingearbeitet, markiert „Sol-Plan n":**
+> (1) AK 4 bekommt in B6 einen deterministischen Kettentest Wrapper → Provider → Schreiber → Postgres mit parallelem
+> Console-Stellvertreter und Pflicht-Splice-Replay; Infrastructure.Tests referenziert dafür den Worker. (2) `preflightReconcile`
+> in B13 entscheidet „Neu laden" vor jeder Anfrage, B17 ruft sie zuerst. (3) Namensunikat über `NameKey` statt `lower()` (L16).
+> (4) B5-Bytegrenze mit ≈ 400 voll gerenderten Einträgen statt fünf. (5) A2: `Message` nur äußerer Typ + Marke, `ToString()` die Kette.
+> (6) B20 prüft `disabled` und `stale` getrennt (L17); nach dem ersten Einschalten ist die Fehlerzahl 24 h erwartbar unvollständig.
+
 **Stand:** 2026-10-14, geplant gegen `main` @ `92608b70`. Letzte Migration dort:
 `20261013092051_SwitchBackfillSnapshotToSlotKey`.
 
@@ -93,7 +100,8 @@ Test im besitzenden Task:
    → Tests `Status_TwoLiveInstancesOfOneSource_ReportsNewest`, `InstanceLatest_IgnoresOlderInstanceStillWriting` in **B10**.
 3. **Lang offene Live-Seite mit `7d`:** das eingefrorene `from_L` wandert über die 8-Tage-Spanne. Erwartet:
    die Seite wechselt in den Hinweis „Zu viele neue Einträge — Liste neu laden", statt mit `400` in „pausiert"
-   zu kippen oder still zu stehen. → Vitest `reconcile_spanBeyondEightDays_requestsReloadWithoutRequest` in **B13** (s. Lücke L3).
+   zu kippen oder still zu stehen. → Vitest für `preflightReconcile` in **B13**, Seitentest
+   `reconcile_spanBeyondEightDays_showsReloadWithoutRequest` (`HttpTestingController.expectNone`) in **B17** (s. Lücke L3).
 4. **Kaputter Deep-Link** (`?range=2d`, `?from=…` ohne `to`, `q` > 512 Zeichen). Erwartet: sichtbarer Fehler
    (Feldfehler bzw. Banner), Zeitwahl bedienbar, **keine** Anfrageschleife. → E2E
    `malformed deep link shows an error and settles` in **B15**.
@@ -174,8 +182,9 @@ beginnen; B4 wartet auf den Merge, danach Rebase auf `main`.
 - [ ] **Tests (rot):** `ParsingError_WithException_ForwardsWithheldReplacement` — präparierte Exception,
   deren `Message` und Inner-`Message` Chattext und `display-name=EvilName` tragen: beim inneren Logger
   kommt `WithheldMessageException` an; weder `Message` noch `ToString()` enthält einen präparierten
-  Text; beide enthalten beide Originaltypen und ≥ 1 Stackframe (Exception vorher werfen/fangen, damit
-  Stacks existieren). `UnaccountedFor_WithException_IsReplacedToo`, `LeavingChannel_WithException_IsReplacedToo`.
+  Text. `Message` enthält genau den äußeren Originaltyp und die Marke `message withheld (#246)`;
+  `ToString()` enthält die Typen **beider** Glieder und ≥ 1 Stackframe (Exception vorher
+  werfen/fangen, damit Stacks existieren) (Sol-Plan 5). `UnaccountedFor_WithException_IsReplacedToo`, `LeavingChannel_WithException_IsReplacedToo`.
   `OtherEvent_WithException_PassesOriginalThrough` (Referenzgleichheit). `From_AggregateException_ListsAllInnerTypes`,
   `From_DeepChain_StopsAtEightLevels`.
 - [ ] **Lauf:** `dotnet test tests/EmotePurge.Worker.Tests --filter "FullyQualifiedName~RedactingTwitchClientLoggerFactoryTests"` — rot.
@@ -208,6 +217,7 @@ beginnen; B4 wartet auf den Merge, danach Rebase auf `main`.
 - Produces: `public sealed record SpliceWarningFields(string Channel, string RoomId, string TagBlock)` und
   `public static SpliceWarningFields IrcLineSpliceRule.ForSpliceWarning(string channel, string? roomId, string? rawIrc)`
   — `RoomId` nur bei ≤ 20 Ziffern, sonst `<entfernt>`; TwitchLib-frei, damit testbar.
+- Produces: `public const string IrcLineSpliceRule.SpliceWarningTemplate` — das heutige Template aus `TwitchChatManager.cs:1086` unverändert, dort verwendet; B6 replayt damit die Splice-Warning durch die ganze Kette.
 
 - [ ] **Twitch-Referenz abgleichen** (Regel „Fremd-APIs live prüfen"): Allowlist gegen
   `https://dev.twitch.tv/docs/chat/irc/` (Tags-Referenz) prüfen; Abweichungen von A30 im DECISIONS-Absatz nennen.
@@ -278,12 +288,15 @@ Eintrag **5** (Histogramm-Primitiv) B14.
 - `LogCaptureStatus`: PK `(Source, InstanceId)`, `DateTime ProcessStartedUtc`, `DateTime LastFlushUtc`,
   `bool CaptureEnabled`, `DateTime LastIncompleteAtUtc` (nicht null, beim Start gesetzt — L15),
   `DateTime? CleanShutdownAtUtc`. Tabelle `LogCaptureStatus`.
-- `LogFilter`: `int Id`, `string Name` (`varchar(60)`), `string Filter` (`varchar(512)`), `int SortOrder`, `DateTime CreatedAtUtc`, `DateTime UpdatedAtUtc`.
+- `LogFilter`: `int Id`, `string Name` (`varchar(60)`), `string NameKey` (`varchar(60)`, **unique**), `string Filter` (`varchar(512)`), `int SortOrder`, `DateTime CreatedAtUtc`, `DateTime UpdatedAtUtc`.
+- `public static string LogFilterNames.NormalizeKey(string name)` (Core, `src/EmotePurge.Core/Entities/LogFilterNames.cs`): trimmen,
+  Leerraumfolgen zu einem Leerzeichen, `Normalize(FormC)`, `ToLowerInvariant()`. **Nicht** `lower()` in Postgres: unter der
+  `C`-Locale des Alpine-Postgres faltet es nur ASCII (§2.7), `Ärger`/`ärger` blieben verschieden (Sol-Plan 3, L16).
 - Indizes (A11): `(TimestampUtc DESC, Id DESC)`; unique `(CaptureId)`; partiell `(TimestampUtc) WHERE "Level" >= 4`;
-  `(Source, ProcessStartedUtc DESC)`. Für `LogFilters` ein funktionaler Unique-Index per `migrationBuilder.Sql`:
-  `CREATE UNIQUE INDEX "IX_LogFilters_Name_Lower" ON "LogFilters" (lower("Name"));` (Plan-Entscheidung: Unikat ohne Groß-/Klein in der DB, nicht nur im Service).
+  `(Source, ProcessStartedUtc DESC)`; für `LogFilters` unique `(NameKey)`.
 - Seeds **nur** per `migrationBuilder.InsertData` in der Migration, **nicht** per `HasData` im Modell (A13),
-  `SortOrder` 1–4, Zeitstempel fest `2026-10-14T00:00:00Z`. Exakte Strings (§7.5):
+  `SortOrder` 1–4, Zeitstempel fest `2026-10-14T00:00:00Z`, `NameKey` als Literal (`start nach deploy`, `twitch-reconnects`,
+  `7tv-sync/eventapi`, `alle fehler` — die Migration ruft keinen App-Code). Exakte Strings (§7.5):
 
 ```
 1  Start nach Deploy     instance:latest uptime<15m
@@ -295,9 +308,10 @@ Eintrag **5** (Histogramm-Primitiv) B14.
 - [ ] **Tests (rot):** `Migration_CreatesThreeTablesWithPlannedIndexes` (Indexnamen/-definitionen aus `pg_indexes`, partieller Filter `"Level" >= 4`);
   `Migration_SeedsFourFiltersExactly` (Name, Filter bytegleich, SortOrder); `SeedDeleted_StaysDeleted_AfterReapplyingContext`
   (Zeile löschen, neuen `AppDbContext` erzeugen, `Database.MigrateAsync()` erneut → 3 Zeilen); `CaptureId_IsUnique`;
-  `FilterName_UniqueIgnoringCase` (`"Alle Fehler"` neben `"alle fehler"` → 23505).
+  `FilterNameKey_IsUnique` (zweite Zeile mit gleichem `NameKey` → 23505); `SeedNameKeys_EqualNormalizeKeyOfSeedNames`;
+  Unit `NormalizeKey_FoldsUnicodeCaseAndWhitespace` (`"  Ärger  im   Chat "` = `"ärger im chat"`).
 - [ ] **Lauf:** `dotnet test tests/EmotePurge.Infrastructure.Tests --filter "FullyQualifiedName~AddLogCaptureMigrationTests"` — rot.
-- [ ] **Umsetzen:** Entitäten, Mapping (`Properties` → `jsonb`, Enums als `smallint`), Migration erzeugen und um Seed + funktionalen Index ergänzen; `Down` entfernt alles.
+- [ ] **Umsetzen:** Entitäten, Mapping (`Properties` → `jsonb`, Enums als `smallint`), Migration erzeugen und um den Seed ergänzen; `Down` entfernt alles.
 - [ ] **Lauf:** grün; `dotnet test tests/EmotePurge.Infrastructure.Tests --filter "FullyQualifiedName~CoreAssemblyReferenceTests|FullyQualifiedName~PendingMigrationGuardTests"` grün.
 - [ ] **DECISIONS-Eintrag 2 anlegen** („In-app log capture in Postgres"): drei Tabellen, 7 Tage, globale gespeicherte Filter mit einmaligem Migrations-Seed (A12/A13), Indizes ohne GIN/Trigramm (A11). Weitere Absätze folgen in B3/B5/B6/B7.
 - [ ] **Commit:** Entitäten, `AppDbContext.cs`, Migration + Designer + `AppDbContextModelSnapshot.cs`, Test, DECISIONS — `feat(infrastructure): add log capture tables with seeded saved filters`
@@ -411,7 +425,10 @@ Eintrag **5** (Histogramm-Primitiv) B14.
   `EfCommand_BelowWarning_NotCaptured_WarningCaptured`; `Npgsql_BelowWarning_NotCaptured`; `OwnCategory_NeverCaptured_AnyLevel`;
   `ProviderAlias_CanRaise_CannotLower` (Konfiguration `Logging:LogCapture:LogLevel:Foo=Error` hebt; `…:Default=Debug` senkt nicht);
   `Scopes_OnlyRequestPathAndTraceId`; `QueueFull_ReturnsImmediately_CountsQueueFull`; `ByteLimit_HitsBeforeCountLimit`
-  (5 × große Exceptions füllen 8 MiB vor 5.000); `Budget_InfoStopsAt80Percent_WarningsUntil100_ResetAtUtcMidnight` (`FakeTimeProvider`;
+  (Sol-Plan 4: über den echten `Log()`-Pfad, ohne Leser, 400 maximal große, **voll gerenderte** Einträge — Message 4.096, Exception
+  an der 16.384-Grenze, Properties nahe 4 KiB, ≈ 49 KB geschätzt je Eintrag → die 8-MiB-Grenze reißt nach ≈ 171, weit unter 5.000;
+  erwartet: ab dort `TryCommit` abgelehnt, jeder weitere als `QueueFull` gezählt, gespeicherte Anzahl < 200, belegte Slots = gepufferte
+  Einträge (Reservierung freigegeben); nach Leeren des Readers wird ein kleiner Eintrag wieder angenommen); `Budget_InfoStopsAt80Percent_WarningsUntil100_ResetAtUtcMidnight` (`FakeTimeProvider`;
   25.000 Info → 16.000 zugelassen, danach Warnungen bis 20.000, AK 7); `FullBufferOrBudget_FormatterNeverCalled` (zählender Formatter);
   `FormatterThatLogs_CountsReentrant_OuterEntryCaptured`; `FormatterThrows_CountsCaptureFailed_DoesNotThrow`;
   `Suppressed_DroppedSilently_NotCounted_OutsideCaptured`; `ErrorDrop_MarksCoverageIncomplete`, `InfoDrop_DoesNotMark`;
@@ -427,10 +444,14 @@ Eintrag **5** (Histogramm-Primitiv) B14.
 **Files:**
 - Create in `src/EmotePurge.Infrastructure/Logging/`: `ILogCaptureStore.cs`, `PostgresLogCaptureStore.cs`, `LogCaptureDataSource.cs`, `LogCaptureWriter.cs`, `LogCaptureHeartbeat.cs`, `LogsAppendedNotifier.cs`
 - Test: Create `tests/EmotePurge.Infrastructure.Tests/Integration/LogCaptureWriterTests.cs` (eigene DB im `PostgresFixture`; für Ausfälle ein **eigener** `PostgreSqlContainer`, damit das Pausieren die Collection nicht stört), `tests/EmotePurge.Infrastructure.Tests/Unit/LogsAppendedNotifierTests.cs`
+- Test (AK 4, Sol-Plan 1): Create `tests/EmotePurge.Infrastructure.Tests/Integration/LogCaptureRedactionChainTests.cs`, `tests/EmotePurge.Infrastructure.Tests/Fixtures/RedactionChainFixtures.cs`;
+  Modify `tests/EmotePurge.Infrastructure.Tests/EmotePurge.Infrastructure.Tests.csproj` (+ `ProjectReference` auf `src/EmotePurge.Worker/EmotePurge.Worker.csproj`). **Entscheidung:** Der Test liegt in
+  Infrastructure.Tests, weil nur dieses Projekt Testcontainers hat und `Worker.Tests` bewusst container-frei bleibt (CLAUDE.md „Tests"); die Referenz Test → Worker ist zyklenfrei
+  (Worker → Infrastructure → Core) und berührt keine Produktiv-Schicht. Voraussetzung: Teil A gemergt (A2 `WithheldMessageException`, A3 Allowlist und `SpliceWarningTemplate`).
 - Modify: `docs/DECISIONS.md` (Einträge 2 und 3 fortschreiben)
 
 **Interfaces:**
-- Consumes: B5-Typen; `IRedisPublisher` (lazy aus dem `IServiceProvider` beim ersten Publish); `LiveEvents.LogsAppended` (Konstante legt **dieser** Task in `src/EmotePurge.Core/Messaging/LiveEvents.cs` an, Aufnahme in `AdminTypes` folgt in B7).
+- Consumes: `RedactingTwitchClientLoggerFactory`, `IrcLineSpliceRule.ForSpliceWarning`, `IrcLineSpliceRule.SpliceWarningTemplate` (A2/A3, public im Worker); B5-Typen; `IRedisPublisher` (lazy aus dem `IServiceProvider` beim ersten Publish); `LiveEvents.LogsAppended` (Konstante legt **dieser** Task in `src/EmotePurge.Core/Messaging/LiveEvents.cs` an, Aufnahme in `AdminTypes` folgt in B7).
 - Produces:
   - `internal interface ILogCaptureStore { Task InsertAsync(IReadOnlyList<CapturedLogEntry> batch, CancellationToken ct); Task UpsertStatusAsync(LogCaptureStatusWrite status, CancellationToken ct); Task<LogCaptureStatusWrite?> ReadLatestOtherInstanceAsync(LogSource source, string ownInstanceId, CancellationToken ct); }`
     mit `internal sealed record LogCaptureStatusWrite(LogSource Source, string InstanceId, DateTime ProcessStartedUtc, DateTime LastFlushUtc, bool CaptureEnabled, DateTime LastIncompleteAtUtc, DateTime? CleanShutdownAtUtc)`.
@@ -458,8 +479,18 @@ Eintrag **5** (Histogramm-Primitiv) B14.
   (EF und Npgsql per Konfiguration auf Debug, Schreiber + EF-Abfragen im selben Prozess: weder `LogEntries` noch erfassender Test-Provider sieht Schreiber-SQL — erfüllt die Umsetzungsauflage zu §5.4/1);
   Abdeckung: `BudgetDroppedError_MarksIncomplete`, `FailedErrorBatchAndFailedDropReport_MarkerSurvives` (3.3), `MarkerNeverDecreases`, `CleanHandover_Within5Min_AdoptsMarker`,
   `CrashOrSixMinutePause_UsesProcessStart`, `DisabledHeartbeat_WritesCaptureEnabledFalse`.
+  **AK 4, ganze Kette (deterministisch, Sol-Plan 1):** `Ak4Fixture_ThroughRealChain_LeaksNothing` (Theory über jede Fixture) — echte `LoggerFactory` mit `LogCaptureProvider`
+  **und** parallelem erfassendem Provider (Stellvertreter der Console), davor `RedactingTwitchClientLoggerFactory`, echter `LogCaptureWriter` mit `PostgresLogCaptureStore` gegen die
+  Fixture-DB; Einträge per `LoggerMessage.Define` mit TwitchLibs EventIds/-Namen (Muster `RedactingTwitchClientLoggerFactoryTests`), Warten auf die Zeile. Fixtures in `RedactionChainFixtures`:
+  (a) `LogParsingError` mit Chattext und `display-name=EvilName`; (b) `LogUnaccountedFor` und (c) `LogParsingError` mit `@reply-parent-msg-body=hello;GEHEIMTEXT PRIVMSG …`;
+  (d) (a)–(c) zusätzlich mit Exception, deren `Message` und Inner-`Message` den Rohtext tragen; (e) umgangener Wrapper: dieselbe Exception direkt auf Kategorie `TwitchLib.Client.TwitchClient`, EventName `LogParsingError`;
+  (f) **Splice-Replay** einer aufgezeichneten gespleißten Zeile (Form aus `IrcLineSpliceRuleTests.cs:318`, `room-id=111111111@display-name=EvilName@user-id=444444444`, dazu
+  `msg-param-recipient-display-name=SomeDisplayName`, `system-msg=…SomeUser…` und das nackte Fragment `GEHEIMTEXT`) — durch TwitchLibs IRC-Parser zu `ChatMessage`, Felder über
+  `ForSpliceWarning`, geloggt mit `SpliceWarningTemplate` auf Kategorie `EmotePurge.Worker.TwitchChatManager`. Erwartet je Fixture: weder `LogEntries` (`Message`, `Exception`, `ExceptionType`, `Properties`)
+  noch die Ausgabe des parallelen Providers (gerenderte Message, `exception.ToString()`, State-Werte) enthält `EvilName`, `444444444`, `SomeDisplayName`, `SomeUser`, `GEHEIMTEXT` oder den Chattext;
+  (a)–(d) ohne Properties und in der Form `command=…, tagKeys=[…]`, (b)/(c) mit `withheldTagKeys=1`, (f) mit `<withheld>`; mit Exception: `ExceptionType` = Originaltyp, `Exception` mit beiden Gliedtypen und ≥ 1 Stackframe; (e) nur Typen und Stacks.
   **Unit:** `Notifier_ThrottlesToOnePer2Seconds`, `Notifier_SkipsSyntheticOnlyBatch`, `Notifier_SkipsDeliveryCategoryOnlyBatch`, `Notifier_RedisThrows_DoesNotPropagate`.
-- [ ] **Lauf:** `dotnet test tests/EmotePurge.Infrastructure.Tests --filter "FullyQualifiedName~LogCaptureWriterTests|FullyQualifiedName~LogsAppendedNotifierTests"` — rot.
+- [ ] **Lauf:** `dotnet test tests/EmotePurge.Infrastructure.Tests --filter "FullyQualifiedName~LogCaptureWriterTests|FullyQualifiedName~LogsAppendedNotifierTests|FullyQualifiedName~LogCaptureRedactionChainTests"` — rot.
 - [ ] **Umsetzen.** **Lauf:** grün (Docker nötig).
 - [ ] **DECISIONS:** Eintrag 2 + synthetische Drop-Einträge (A8), Herzschlag (A9), eigener Datenweg (Schicht 1); Eintrag 3 + `CaptureId`/`ON CONFLICT`, Datensatz-Isolierung, `logs.appended` als Hinweis mit Rekursionsbremse.
 - [ ] **Commit:** genannte Dateien + `LiveEvents.cs` — `feat(infrastructure): add the idempotent log capture writer and heartbeat`
@@ -520,7 +551,7 @@ Eintrag **5** (Histogramm-Primitiv) B14.
   Bucket-Fälle **exakt** aus §13.1 (Presets 24h/1h/6h/7d mit den genannten Uhrzeiten und Zählungen, unausgerichtet 10:03:01–10:17:01 → 10 s/85, Schwellen 50:00/50:01, 1 h nie 30 s, Eingrenzen 15 min → 10 s/90, 2 h → 2 min/60),
   Idempotenz je Fall, Eigenschaftstest über zufällige gültige Bereiche (beide Grenzen abgedeckt, ≤ 100, Breite minimal, jeder Bucket zurückgeschickt gültig).
   Zeitraum (R4): um 12:01 mit `7d` exakte Grenzen; 8 Tage angenommen, 8 Tage + 1 s abgelehnt; `to` = jetzt + 12 h angenommen, + 12 h 1 s abgelehnt; gemischt → Fehler.
-  Seeds: `AllFourSeeds_Parse`; `SeedCategories_ExistInSource` — **Quelltext-Scan** über `src/` (Muster `AdminDashboardQueryServiceStructureTests`), weil Infrastructure.Tests den Worker nicht referenziert (L4):
+  Seeds: `AllFourSeeds_Parse`; `SeedCategories_ExistInCode` — per Reflection über Worker- und Infrastructure-Assembly (die Worker-Referenz besteht seit B6, L4):
   `TwitchConnectionWatchdog`, `TwitchChatManager` existieren als Klassen, `SevenTv*`-Klassen im Worker und in Infrastructure; `SeedPhrases_StillInSource` — „angestoßen (Quelle" und „ gejoint." stehen in `TwitchChatManager.cs`.
 - [ ] **Lauf:** `dotnet test tests/EmotePurge.Infrastructure.Tests --filter "FullyQualifiedName~Unit.LogFilterParserTests|FullyQualifiedName~Unit.LogTimeRangeTests|FullyQualifiedName~Unit.LogHistogramBucketsTests|FullyQualifiedName~Unit.LogFilterSeedTests"` — rot.
 - [ ] **Umsetzen.** **Lauf:** grün.
@@ -587,12 +618,14 @@ Eintrag **5** (Histogramm-Primitiv) B14.
 - Produces: `ILogFilterService`: `Task<IReadOnlyList<LogFilterView>> ListAsync(CancellationToken)`, `Task<LogFilterWriteResult> CreateAsync(string name, string filter, CancellationToken)`,
   `Task<LogFilterWriteResult> UpdateAsync(int id, string name, string filter, CancellationToken)`, `Task<bool> DeleteAsync(int id, CancellationToken)`;
   `LogFilterView(int Id, string Name, string Filter, int SortOrder)`; `LogFilterWriteResult` mit `LogFilterWriteStatus { Ok, InvalidName, InvalidFilter, NameTaken, LimitReached, NotFound }`, `LogFilterView? Filter`, Parser-Fehler (`Reason`, `Position`, `Length`) bei `InvalidFilter`.
-  Name getrimmt, 1–60; Filter über `LogFilterParser`; ≤ 30; neue `SortOrder` = max + 1; 23505 auf dem Namensindex → `NameTaken`. Kein Audit (A12). Filterstring wird **nicht** normalisiert gespeichert.
+  Name getrimmt, 1–60; `NameKey = LogFilterNames.NormalizeKey(name)` bei Create und Update; Vorprüfung auf gleichen `NameKey` (andere Id) und 23505 auf dem `NameKey`-Index → `NameTaken`; Filter über `LogFilterParser`; ≤ 30; neue `SortOrder` = max + 1. Kein Audit (A12). Filterstring wird **nicht** normalisiert gespeichert.
 
 - [ ] **Tests (rot):** Status (S9): Kaltstart → beide `missing`, `Complete = false`; erster Herzschlag → `healthy`; geleerte Tabelle → `missing`; nach 7 Tagen abgelaufene letzte Zeile → `missing`, bleibt in der Liste;
   `CaptureEnabled = false` → `disabled`; `LastFlushUtc` 6 min alt → `stale`. Abdeckung (R5): Budget-Drop-Error → `Complete = false` trotz `healthy`; simulierter Restore → 24 h unvollständig; `overdue` bei 7 d + 2 h + 1 s.
   **Review Focus 2:** `Status_TwoLiveInstancesOfOneSource_ReportsNewest`, `InstanceLatest_IgnoresOlderInstanceStillWriting` (zweite Instanz schreibt weiter Herzschläge).
-  Cache: zwei Aufrufe binnen 30 s → eine Füllung. Filter: CRUD, `log_filter_limit_reached` bei 31., Parser-Validierung; **Review Focus 5:** `Create_TrimmedCaseVariant_IsNameTaken`, `Update_OwnNameDifferentCase_Succeeds`, `Update_SeedUnchanged_KeepsFilterByteIdentical`.
+  Cache: zwei Aufrufe binnen 30 s → eine Füllung. Filter: CRUD, `log_filter_limit_reached` bei 31., Parser-Validierung; **Review Focus 5:** `Create_TrimmedCaseVariant_IsNameTaken`, `Update_OwnNameDifferentCase_Succeeds`, `Update_SeedUnchanged_KeepsFilterByteIdentical`;
+  Nicht-ASCII auf dem echten Postgres-16-Alpine-Container (Sol-Plan 3): `Create_NonAsciiCaseVariant_IsNameTaken` (`Ärger` vorhanden → `ärger` = `NameTaken`),
+  `Update_ToNonAsciiCaseVariantOfOtherFilter_IsNameTaken`, `Update_OwnNameNonAsciiCaseChange_Succeeds` (`Ärger` → `ÄRGER`).
 - [ ] **Lauf:** `dotnet test tests/EmotePurge.Infrastructure.Tests --filter "FullyQualifiedName~LogStatusTests|FullyQualifiedName~LogFilterServiceTests|FullyQualifiedName~AdminDashboardReaderTests"` — rot (nur die neuen).
 - [ ] **Umsetzen.** **Lauf:** grün.
 - [ ] **DECISIONS:** Eintrag 4 + vier Lebendigkeitszustände, getrennte 24-h-Abdeckung über `LastIncompleteAtUtc`, globale gespeicherte Filter; `TtlCache` als gemeinsame `internal`-Klasse.
@@ -654,12 +687,14 @@ Eintrag **5** (Histogramm-Primitiv) B14.
 - Produces: `AdminLogsService` — `getPage(q, range, before?, limit?)`, `getKeys(q, fromUtc)`, `getByIds(ids)`, `getEntry(id)`, `getSummary(q, range)`, `getStatus()`, `listFilters()`, `createFilter(name, filter)`, `updateFilter(id, name, filter)`, `deleteFilter(id)` (alle `Observable`).
 - Produces: `quoteFilterValue(value: string): string`, `appendFilterTerm(q: string, term: string): string` (kein Anhängen, wenn der Term schon als ganzer Term vorkommt), `filterTerm(key: string, value: string, exclude: boolean): string`, `normalizeFilterWhitespace(q: string): string`, `filterErrorSelection(error: LogFilterApiError): { start: number; end: number }`.
 - Produces: `mergeLogEntries(loaded: readonly LogEntry[], incoming: readonly LogEntry[]): LogEntry[]` (sortiert `(timestampUtc desc, id desc)`, Dedupe per `id`); `reconcileFromUtc(loaded, rangeFromUtc, nextCursor): string`;
+  `preflightReconcile(fromL: string, nowMs: number, range: LogRangeQuery): { kind: 'request' } | { kind: 'skip' } | { kind: 'reload' }` — **vor** jedem `getKeys` (Sol-Plan 2):
+  absoluter Bereich → `skip`; `nowMs − fromL` > 8 Tage → `reload` ohne Anfrage; sonst `request`. `nowMs` injiziert, rein.
   `planReconcile(keys: LogKeyPage, loadedIds: ReadonlySet<number>): { kind: 'none' } | { kind: 'fetch'; idBatches: number[][] } | { kind: 'reload' }` (> 500 fehlend oder `truncated` → `reload`, sonst Batches ≤ 200, ≤ 3);
   `class LogReconcileScheduler(now: () => number, run: () => Promise<void>)` — `trigger(): void`, `pause()`, `resume()`; ≤ 1 gleichzeitig, ≥ 5.000 ms Abstand, genau ein nachlaufender Abgleich.
 
 - [ ] **Tests (rot):** Service mit `HttpTestingController`: Parameter, Cursor, eingefrorene exakte Grenzen als `from`/`to` (R4), `keysOnly`-Aufruf ohne `to`. Werkzeuge: Quoten bei Leerraum/Komma/Doppelpunkt/`"`, Anhängen ohne Dublette, Selektion aus `position`/`length` inkl. Emoji.
   Abgleich: `from_L = rangeFromUtc` bei leerer Liste und nach `nextCursor = null`, sonst ältester geladener; Einfügen mitten in geladene Seiten; Dedupe; `reload` bei > 500 bzw. `truncated`; Scheduler: Mindestabstand mit genau einem Nachläufer, `pause` unterdrückt alle Auslöser bis `resume`.
-  **Review Focus 3:** `reconcile_spanBeyondEightDays_requestsReloadWithoutRequest` — liegt `from_L` mehr als 8 Tage zurück, liefert der Planer `reload`, ohne Anfrage (L3).
+  **Review Focus 3:** `preflightReconcile` — 8 Tage − 1 s → `request`, 8 Tage + 1 s → `reload`, absoluter Bereich → `skip` (L3).
 - [ ] **Lauf:** `npm --prefix web test -- --watch=false --include src/app/core/admin/admin-logs.service.spec.ts --include src/app/core/admin/log-filter-text.spec.ts --include src/app/core/admin/log-reconcile.spec.ts` — rot.
 - [ ] **Umsetzen.** **Lauf:** grün; `npm --prefix web run lint`.
 - [ ] **Commit:** genannte Dateien — `feat(web): add the admin logs service, filter text tools and reconciliation`
@@ -724,13 +759,15 @@ Eintrag **5** (Histogramm-Primitiv) B14.
 - Modify: `web/src/app/features/admin/admin-logs-page.ts` (+ `.spec.ts`), `admin-log-list.ts`, `web/e2e/admin-logs.e2e.spec.ts`, `web/e2e/audit/ui-audit.audit.ts` (Route `/admin/logs`, `afterLoad` mit geöffnetem Facetten-Sheet und aufgeklappter Zeile; geänderte Monitoring-Seite folgt in B18)
 
 **Interfaces:**
-- Consumes: `LogReconcileScheduler`, `planReconcile`, `mergeLogEntries`, `reconcileFromUtc` (B13); `liveEvents(ADMIN_LIVE_URL, [LIVE_EVENT_TYPES.logsAppended])` (`core/live/live-reload.ts`); `pollWhileVisible`.
+- Consumes: `LogReconcileScheduler`, `preflightReconcile`, `planReconcile`, `mergeLogEntries`, `reconcileFromUtc` (B13); `liveEvents(ADMIN_LIVE_URL, [LIVE_EVENT_TYPES.logsAppended])` (`core/live/live-reload.ts`); `pollWhileVisible`.
 - Verhalten §8.3/§9.4: Auslöser `logs.appended`, Tab wieder sichtbar, Stream (wieder) offen, alle 30 s — nur sichtbar, nur bei relativem `range`, nur ungepaust; Summary ≤ 1 je 30 s.
   „Oben" = erste Zeile sichtbar unter den Sticky-Leisten **und** keine Zeile aufgeklappt → einfügen an sortierter Position, ~2 s Akzent-Wash (bei `prefers-reduced-motion` ohne Animation), eine höfliche Live-Meldung je Nachladen („3 neue Einträge").
   Sonst nichts einfügen, zählen, „n neue ↑" im reservierten Platz; Klick scrollt hoch und fügt ein. Jede Nicht-2xx-Antwort eines automatischen Abrufs → `pause()`, Live-Status „pausiert", „Live pausiert nach Fehler — Erneut versuchen"; erst ein erfolgreicher Nutzerabruf `resume()`.
-  `reload` aus dem Planer → „Zu viele neue Einträge — Liste neu laden". Absoluter Bereich: kein Nachladen, Hinweis sagt das. Stream geschlossen → Status wie Monitoring-Seite + „Neu laden", kein Polling-Fallback.
+  Jeder Abgleich ruft **zuerst** `preflightReconcile` (`reload` → Hinweis ohne Anfrage, `skip` → nichts), erst bei `request` `getKeys`.
+  `reload` aus Vorprüfung oder Planer → „Zu viele neue Einträge — Liste neu laden". Absoluter Bereich: kein Nachladen, Hinweis sagt das. Stream geschlossen → Status wie Monitoring-Seite + „Neu laden", kein Polling-Fallback.
 
-- [ ] **Tests (rot):** Vitest: Entscheidung „oben vs. gelesen" inkl. aufgeklappter Zeile; eine Live-Meldung je Nachladen; nach Fehlerantwort lösen weitere Ereignisse keine Anfrage aus, bis ein manueller Abruf gelingt.
+- [ ] **Tests (rot):** Vitest: Entscheidung „oben vs. gelesen" inkl. aufgeklappter Zeile; eine Live-Meldung je Nachladen; nach Fehlerantwort lösen weitere Ereignisse keine Anfrage aus, bis ein manueller Abruf gelingt;
+  **Review Focus 3:** `reconcile_spanBeyondEightDays_showsReloadWithoutRequest` (Uhr 8 Tage + 1 s nach `from_L`, Auslöser feuern → `HttpTestingController.expectNone` auf `/api/admin/logs`, Hinweis sichtbar, nicht „pausiert").
   E2E (`installLiveStub`/`__emitLive`, `page.clock.install()` vor `goto`, `runFor`): `logs.appended` oben fügt ein und hebt hervor; nach Scrollen „n neue" ohne Verschiebung (Ankerelement-Position vor/nach gleich, AK 12); verspäteter Eintrag mitten in einer Seite erscheint beim nächsten Abgleich an der richtigen Stelle (R2);
   leere „Alle Fehler"-Liste: erster Eintrag ohne Hinweis nach ≤ 30 s, mit Hinweis sofort (R7/R3, AK 23); „Zu viele neue Einträge" bei `truncated`; Fehlerantwort pausiert, weitere `__emitLive` und Takte erzeugen keine Requests (S1, AK 20).
 - [ ] **Lauf:** `npm --prefix web test -- --watch=false --include src/app/features/admin/admin-logs-page.spec.ts`; `npm --prefix web run e2e -- admin-logs.e2e.spec.ts` — rot. **Umsetzen**, **Lauf** grün.
@@ -769,9 +806,12 @@ Eintrag **5** (Histogramm-Primitiv) B14.
   `dotnet format EmotePurge.slnx --verify-no-changes`, `npm --prefix web run lint`, `npm --prefix web run format:check`. Rote E2E unter Speicherdruck: Suite allein wiederholen.
 - [ ] **Live (§15, lokal, `docker compose up -d --build`, echtes Twitch/7TV):** AK 2, 5, 6, 10, 12, 14 von Hand; `docker compose restart worker` → „Start nach Deploy" zeigt die Boot-Recovery der neuen Instanz, keine Zeile der alten (AK 10);
   `docker compose stop redis` 1 min bei offener Seite: Einträge werden gespeichert, ein Eintrag aus dem Ausfall erscheint ≤ 30 s später ohne Neuladen (AK 12, R3); AK 14 mit provoziertem Error (7TV-Sync gegen erfundenen Kanal): Zeile ≤ 91 s ab Log-Aufruf „Fehler der letzten 24 h: 1",
-  `LogCapture__Enabled=false` nur am Worker → „Log-Erfassung worker steht seit …" frühestens 5 min, spätestens 5 min + 90 s nach dem letzten Herzschlag; AK 20 mit `LogViewer__QueryTimeoutMilliseconds=1` an der Api: genau eine Fehlerantwort, danach 2 min keine Anfrage, kein `logs.appended`, kein `Microsoft.EntityFrameworkCore.*` in `LogEntries`;
-  AK 25 (Statuszeilen leeren bei gestopptem Worker → „worker: keine Statusmeldung"; Budget-Drop; Restore 24 h unvollständig; Deploy mit sauberer Übergabe bleibt vollständig); AK 22: `docker compose restart postgres` unter Last → keine doppelte `CaptureId`;
-  AK 26: Rollback-Ablauf §18 einmal lokal (Erfassung aus, `TRUNCATE "LogEntries", "LogCaptureStatus";`, dann altes Image); AK 27: Splice-Zeile in Console und `LogEntries` nur mit erlaubten Werten (falls live auftretend); AK 13: Filter auf zweitem Gerät (LAN-Weg) gleich, gelöschter Seed bleibt nach Neustart weg; AK 16 am Gerät.
+  Zustände getrennt prüfen (Sol-Plan 6, L17): `LogCapture__Enabled=false` nur am Worker → „… abgeschaltet" (`disabled`) ≤ 90 s nach dem ersten Herzschlag der neuen Instanz;
+  `stale` durch Anhalten der Herzschläge (`docker compose stop worker`) → „Log-Erfassung worker steht seit …" frühestens 5 min, spätestens 5 min + 90 s nach dem letzten Herzschlag, vorher nicht; AK 20 mit `LogViewer__QueryTimeoutMilliseconds=1` an der Api: genau eine Fehlerantwort, danach 2 min keine Anfrage, kein `logs.appended`, kein `Microsoft.EntityFrameworkCore.*` in `LogEntries`;
+  AK 25 (Statuszeilen leeren bei gestopptem Worker → „worker: keine Statusmeldung"; Budget-Drop; Restore 24 h unvollständig; erhaltene Vollständigkeit **getrennt** (nach erstem Einschalten
+  ist die Zahl 24 h unvollständig, das ist erwartet): `docker compose up -d --force-recreate worker` bei eingeschalteter Erfassung → per `psql` trägt die Statuszeile der neuen Instanz
+  denselben `LastIncompleteAtUtc` wie die alte (Marker übernommen, nicht der eigene Start); die 24-h-Folge deckt `CleanHandover_Within5Min_AdoptsMarker` in B6); AK 22: `docker compose restart postgres` unter Last → keine doppelte `CaptureId`;
+  AK 26: Rollback-Ablauf §18 einmal lokal (Erfassung aus, `TRUNCATE "LogEntries", "LogCaptureStatus";`, dann altes Image); AK 27: durch den Splice-Replay in B6 gedeckt (Pflicht); tritt live eine Splice-Zeile auf, zusätzlich Console und `LogEntries` prüfen; AK 13: Filter auf zweitem Gerät (LAN-Weg) gleich, gelöschter Seed bleibt nach Neustart weg; AK 16 am Gerät.
 - [ ] Push `feat/admin-log-viewer`, PR (englisch, Performance-Protokoll aus B12, Live-Ergebnisse, Attributionszeile). **Orchestrator:** Codex-Zweitmeinung `/codex:review --model gpt-6.1-sol` über den Branch, dem Nutzer vorlegen (Regel 22); Merge macht der Nutzer.
 - [ ] **Betreiber-Übergabe** (vorbereitet, nie von der Session ausgeführt; jede Stufe ist Voraussetzung der nächsten, §16):
   1. **Migration vor den Images.** Tunnel `ssh -N -L 15432:127.0.0.1:5433 vps`, dann in zweiter Shell
@@ -781,7 +821,9 @@ Eintrag **5** (Histogramm-Primitiv) B14.
   3. **Host-Backup-Skript:** neue Fassung nach `<HOST_BACKUP_SCRIPT>` (Pfad in `infra-docs`); `sha256sum <HOST_BACKUP_SCRIPT>` gegen `sha256sum scripts/backup-postgres.sh` des gemergten Stands; Skript einmal von Hand;
      `zcat <DUMP> | grep -c '^COPY public."LogEntries"'` → `0`, `zcat <DUMP> | grep -c '^COPY public."LogCaptureStatus"'` → `0`, `zcat <DUMP> | grep -c 'CREATE TABLE public."LogEntries"'` → `1`.
   4. **Datenschutztext** aus Spec §12 (de maßgeblich, en) in `privacy.de.md`/`privacy.en.md` unter `Legal:ContentPath` eintragen.
-  5. **Einschalten:** `LOG_CAPTURE_ENABLED=true`, Container neu erstellen; Prüfung: „Start nach Deploy" gegen `sudo docker logs --since 15m <API_CONTAINER>` bzw. `<WORKER_CONTAINER>`, Monitoring-Zeile vollständig.
+  5. **Einschalten:** `LOG_CAPTURE_ENABLED=true`, Container neu erstellen; Prüfung: „Start nach Deploy" gegen `sudo docker logs --since 15m <API_CONTAINER>` bzw. `<WORKER_CONTAINER>`; beide Quellen `healthy`.
+     **Erwartet:** Die Monitoring-Zeile zeigt **24 h lang „mindestens n" bzw. „0 erfasst, unvollständig"** — die abgeschalteten Vorgänger übergeben keinen Marker (A37), der Marker steht auf dem Prozessstart. Das ist kein Fehler.
+     Erhaltene Vollständigkeit erst nach diesen 24 h prüfen: beim nächsten gewöhnlichen Deploy (eingeschaltet → eingeschaltet, sauberer Stop) bleibt die Zahl vollständig.
   Fehlt Stufe 3 oder 4, bleibt die Erfassung aus. **Rollback** (§18): `LOG_CAPTURE_ENABLED=false` + neu erstellen → über den Tunnel `psql "host=localhost port=15432 dbname=emotepurge user=emotepurge password=<PROD-PW>" -c 'TRUNCATE "LogEntries", "LogCaptureStatus";'`
   (oder `dotnet ef database update <Migration vor AddLogCapture laut list> … --connection '…<PROD-PW>'`) → erst dann alte Images. Nach dem ersten Prod-Tag: Kategorie-Facette des Seeds „Twitch-Reconnects" prüfen (§21).
 
@@ -794,7 +836,7 @@ Plan-Annahmen sind im Text mit „L<n>" markiert; der Orchestrator bestätigt od
 - **L1** `summary.dropped` (§8.1) nennt kein `rejected`, obwohl `rejected` Drop-Grund und Property ist (§5.3, R6, AK 28); das Banner (§9.7) nennt weder `capture_failed` noch `rejected`. Plan: `dropped.rejected` ergänzt, Banner listet alle Gründe > 0.
 - **L2** §8.3 schickt den Abgleich mit `from` **ohne** `to`; §8.2 erklärt gemischte Angaben für `400 invalid_log_range`. Plan: nur im `keysOnly`-Modus ist `to` optional (= Anfragezeit), Spanne- und Zukunftsgrenze gelten weiter.
 - **L3** Bei offener `7d`-Seite wandert das eingefrorene `from_L` nach ~1 Tag über die 8-Tage-Spanne; der Abgleich bekäme `400` und die Seite pausierte (S1) — die Spec sagt dazu nichts. Plan: Client erkennt das vorab und zeigt „Zu viele neue Einträge — Liste neu laden" (Review Focus 3).
-- **L4** Der Seed-Kategorietest soll in Infrastructure.Tests „im Code existieren" prüfen; das Projekt referenziert den Worker nicht. Plan: Quelltext-Scan über `src/` wie `AdminDashboardQueryServiceStructureTests`.
+- **L4** Der Seed-Kategorietest soll in Infrastructure.Tests „im Code existieren" prüfen; das Projekt referenzierte den Worker nicht. Plan: seit B6 (Sol-Plan 1) referenziert es den Worker, Kategorien per Reflection, Phrasen per Quelltext-Scan.
 - **L5** §13.1 verortet den Stream-Vertragstest in Api.Tests; der bestehende `LiveEventTests` liegt in `tests/EmotePurge.Infrastructure.Tests/Unit/` (wie schon bei #381). Plan: dort erweitert.
 - **L6** §5.1 skizziert `AddLogCapture(LogSource source)`; `LogCapture:Enabled` entscheidet aber die Registrierung, also braucht die Methode `IConfiguration`, und `AddWorkerHostedServices` bekommt dafür einen `IConfiguration`-Parameter.
 - **L7** AK 20 verlangt ein „künstlich kurzes Abfragelimit (Testkonfiguration)", §8.4 legt 5 s fest. Plan: `LogViewer:QueryTimeoutMilliseconds` (Default 5000), nur als Test-Schalter dokumentiert, nicht in Compose.
@@ -806,10 +848,12 @@ Plan-Annahmen sind im Text mit „L<n>" markiert; der Orchestrator bestätigt od
 - **L13** Ob ein Eintrag, der nach der Zulassung an der Byte-Grenze scheitert, Budget zurückbekommt, ist offen. Plan: nein (nur der Pufferplatz wird frei).
 - **L14** Kosmetik: AK-Nummern 26–28 und DECISIONS-Nummern 1–7 in §17 stehen außer Reihe; der Plan referenziert die Nummern, wie sie in der Spec stehen.
 - **L15** `LastIncompleteAtUtc` ist in §6.2 ohne Nullbarkeit; da er beim Start auf den Prozessstart gesetzt wird, ist er im Plan `not null`.
+- **L16** §6.3 verlangt Namensunikat ohne Groß-/Kleinschreibung; `lower()` faltet unter der `C`-Locale nur ASCII (§2.7). Plan: zusätzliche Spalte `LogFilters.NameKey` (app-seitig normalisiert, unique) — eine Spalte mehr als die Tabelle in §6.3.
+- **L17** AK 14 erwartet bei `LogCapture__Enabled=false` am Worker „steht seit …" nach 5 min; laut §11/S9 meldet der Herzschlag-Dienst dann aber `disabled` („abgeschaltet"). Plan folgt §11: `disabled` per Abschalten, `stale` per angehaltenen Herzschlägen geprüft.
 
 ## Selbstprüfung
 
-- **Spec-Abdeckung:** §4/AK 1, 4 (Teil T0), 27 → A1–A4; §5.1–5.6 → B4–B7; §6.1–6.3 → B1; §6.4/AK 8, 26 → B2, B3, B20; AK 9 → B3; §7 → B8, B9; §8.1–8.4 → B9–B11; §9 → B13–B17; §10/AK 15 → B11, B15; §11/AK 14, 25 → B10, B18; §12 → B20 Stufe 4, B19;
+- **Spec-Abdeckung:** §4/AK 1 → A1–A4; AK 4, 27 → A1–A3 (Bausteine) und B6 (Kettentest mit Splice-Replay); §5.1–5.6 → B4–B7; §6.1–6.3 → B1; §6.4/AK 8, 26 → B2, B3, B20; AK 9 → B3; §7 → B8, B9; §8.1–8.4 → B9–B11; §9 → B13–B17; §10/AK 15 → B11, B15; §11/AK 14, 25 → B10, B18; §12 → B20 Stufe 4, B19;
   §13.1 → B2–B11; §13.2 → B13–B18; §13.3/AK 17 → B12; §13.4/AK 19 → B20; §15 → B7, B20; §16 → Teil A/B, B20; §17 → Verteilung oben, B19; §18 → B19, B20; AK 2, 3, 5, 6, 18 → B7; AK 7, 21 → B5, B6; AK 10, 11, 13 → B9, B15, B16, B20; AK 12, 20, 23 → B9, B13, B17; AK 22, 28 → B6; AK 24 → B8, B9.
 - **Typkonsistenz:** `LogSource`, `LogEntryLevel`, `CapturedLogEntry`, `LogCaptureSuppression`, `ILogCaptureStore`, `LogRangeRequest`, `LogDropTotals.Rejected`, `LIVE_EVENT_TYPES.logsAppended` sind je einmal definiert und in den konsumierenden Tasks gleich benannt.
 - **Proportion:** keine Methodenrümpfe; Codeblock nur für die gepinnten Seed-Strings.
