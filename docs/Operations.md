@@ -1117,8 +1117,11 @@ matters:
    ran only once per database, so such seeds stay behind as inert rows (no numbers, no cards, no 409). Find
    them with `EmoteSlotRollbackSql.CountRowlessUnsettledSeedsSql` and remove them with
    `EmoteSlotRollbackSql.SweepRowlessUnsettledSeedsSql`, both quoted in "Sweeping row-less unsettled seeds
-   (#379, part B)". Those statements are not scoped to a channel: they match every row-less unsettled seed in
-   every set. Look at the count first and run the sweep only when it is the number of seeds you expect.
+   (#379, part B)". The sweep may be re-run on a database that runs an image from #379 part B on, because
+   no runtime path creates unsettled seeds any more and a row-less one is always a leftover. The worker may
+   stay up; stopping it first removes any doubt. Use the statements verbatim (count, delete, count in one
+   transaction) as in that section, and never run them against an image from before part B. They are not
+   scoped to a channel and match every row-less unsettled seed in every set.
 5. **Close the runs that are still open:**
 
    ```sql
