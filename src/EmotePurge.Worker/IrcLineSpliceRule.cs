@@ -53,35 +53,50 @@ public static class IrcLineSpliceRule
     public const int DefaultMaxTagBlockLengthForLog = 512;
 
     /// <summary>
-    /// Replaces the value of every free-text or identifying tag in <see cref="TagBlockForLog"/>.
+    /// Replaces every tag value in <see cref="TagBlockForLog"/> except the format-checked ones.
     /// German because it is log output, like the message it is interpolated into.
     /// </summary>
     private const string RedactedValue = "<entfernt>";
 
     /// <summary>
+    /// Stands in <see cref="TagBlockForLog"/> for a whole fragment whose key is not on the
+    /// <see cref="TwitchTagKeyAllowlist"/> (or that has no <c>=</c> at all): key and value are
+    /// withheld together, because after a splice such a fragment can be chat text (S2).
+    /// </summary>
+    private const string WithheldFragment = "<withheld>";
+
+    private const int MaxNumericValueLength = 20;
+
+    /// <summary>
     /// A tag key ending in this carries chat text written by someone else — today that is
     /// <c>reply-parent-msg-body</c>, and the suffix also covers the thread-parent variant Twitch
     /// may add. Matched as a suffix rather than a fixed list so a new sibling tag is excluded by
-    /// default instead of leaking on its first appearance.
+    /// default instead of leaking on its first appearance. Only <see cref="IsSpliced"/> still needs
+    /// it: logging redacts every value regardless.
     /// </summary>
     private const string FreeTextKeySuffix = "msg-body";
 
     /// <summary>
-    /// Exact tag keys whose value identifies the chatter or reveals their badges (#246) —
-    /// <c>display-name</c>/<c>login</c>/<c>user-id</c> for the sender, <c>badges</c>/<c>badge-info</c>
-    /// for their sub/mod/VIP status, and the Shared Chat (#73) <c>source-*</c> equivalents of the
-    /// badge tags. Redacted the same way as a free-text tag: the key stays, only the value is
-    /// replaced, so the diagnostic structure (which tags were present, in which order) survives.
+    /// The message template of the splice warning (#114) in <c>TwitchChatManager</c>, kept here
+    /// next to <see cref="ForSpliceWarning"/> so the warning and its tests render the very same
+    /// text. German because it is log output.
     /// </summary>
-    private static readonly string[] IdentifyingKeys =
+    public const string SpliceWarningTemplate =
+        "Gespleißte IRC-Zeile erkannt (#114) in Channel {Channel}, RoomId {RoomId}: {TagBlock}";
+
+    /// <summary>
+    /// Tags whose value is a pure number (at most <see cref="MaxNumericValueLength"/> digits) and
+    /// therefore safe to log: they let a reader tell which two lines were merged (#114). The room id
+    /// names only the channel the line already names.
+    /// </summary>
+    private static readonly string[] NumericValueKeys = ["tmi-sent-ts", "room-id"];
+
+    /// <summary>
+    /// Tags whose value is a yes/no flag (exactly <c>0</c> or <c>1</c>) and carries no identity.
+    /// </summary>
+    private static readonly string[] FlagValueKeys =
     [
-        "display-name",
-        "login",
-        "user-id",
-        "badges",
-        "badge-info",
-        "source-badges",
-        "source-badge-info",
+        "subscriber", "mod", "turbo", "vip", "first-msg", "returning-chatter", "emote-only",
     ];
 
     /// <summary>
@@ -123,14 +138,14 @@ public static class IrcLineSpliceRule
 
     /// <summary>
     /// Extracts the tag block of <paramref name="rawLine"/> for logging: the segment up to the
-    /// first space, or the whole line if there is no space, with the value of every free-text tag
-    /// and every identifying tag (<see cref="IdentifyingKeys"/>, #246) replaced by
-    /// <see cref="RedactedValue"/>, and the result capped at <paramref name="maxLength"/>
-    /// characters. Used by the splice sentinel (#114) to log enough of the line to diagnose the
-    /// defect without ever including message text or the chatter's identity — neither this line's
-    /// text (it sits after the first space) nor a stranger's (that is what the free-text redaction
-    /// is for) nor the sender's own display name/login/user id/badges (the identifying-tag
-    /// redaction) — and without letting a pathologically long tag block blow up a log line.
+    /// first space, or the whole line if there is no space, reduced to its <em>keys</em> and capped
+    /// at <paramref name="maxLength"/> characters. Every value — at the top level and inside a tag
+    /// a splice embedded after an <c>@</c> — is replaced by <see cref="RedactedValue"/>, except the
+    /// format-checked ones: <c>tmi-sent-ts</c> and <c>room-id</c> (digits only, at most 20) and the
+    /// yes/no flags (exactly <c>0</c> or <c>1</c>). A fragment without <c>=</c> or whose key is not
+    /// on the <see cref="TwitchTagKeyAllowlist"/> is replaced as a whole by
+    /// <see cref="WithheldFragment"/>. Used by the splice sentinel (#114) to log enough of the line
+    /// to diagnose the defect without ever including message text or any identity (#246).
     /// <c>null</c> or empty input yields an empty string, so callers never need to guard the result.
     /// </summary>
     public static string TagBlockForLog(string? rawLine, int maxLength = DefaultMaxTagBlockLengthForLog)
@@ -143,6 +158,16 @@ public static class IrcLineSpliceRule
         var tagBlock = RedactValues(TagBlockSpan(rawLine));
         return tagBlock.Length > maxLength ? tagBlock[..maxLength] : tagBlock;
     }
+
+    /// <summary>
+    /// Prepares the three arguments of <see cref="SpliceWarningTemplate"/>. <c>ChatMessage.RoomId</c>
+    /// is TwitchLib's raw <c>room-id</c> value, which on a splice can carry a second line's tags
+    /// (<c>111111111@display-name=…@user-id=…</c>), so it is logged only as up to 20 digits and as
+    /// <see cref="RedactedValue"/> otherwise. The channel comes from the IRC parameter, not from the
+    /// tag block, and is kept. TwitchLib-free so it can be tested without a parsed message.
+    /// </summary>
+    public static SpliceWarningFields ForSpliceWarning(string channel, string? roomId, string? rawIrc) =>
+        new(channel, IsDigitsUpTo(roomId, MaxNumericValueLength) ? roomId! : RedactedValue, TagBlockForLog(rawIrc));
 
     /// <summary>
     /// The segment up to the first space, or the whole line if there is no space — including the
@@ -168,55 +193,6 @@ public static class IrcLineSpliceRule
         key.EndsWith(FreeTextKeySuffix, StringComparison.Ordinal);
 
     /// <summary>
-    /// True if <paramref name="tag"/> is a <c>key=value</c> pair whose key identifies the chatter or
-    /// their badges. Three shapes, all exact-key or exact-suffix matches (never a bare substring, so
-    /// an unrelated tag that merely contains e.g. <c>login</c> is not swept in):
-    /// <list type="number">
-    /// <item>An exact key from <see cref="IdentifyingKeys"/>.</item>
-    /// <item>A <c>reply-parent-*</c> or <c>reply-thread-parent-*</c> tag ending in <c>user-id</c>,
-    /// <c>user-login</c> or <c>display-name</c> — the reply's <em>parent</em> message is written by a
-    /// different chatter than the one <see cref="IdentifyingKeys"/> already covers, e.g.
-    /// <c>reply-parent-user-login</c>, <c>reply-thread-parent-display-name</c>.</item>
-    /// <item>A <c>source-*</c> tag ending in <c>user-id</c> or <c>login</c> — Shared Chat (#73) does
-    /// not send one today (only the badge/room/message ids <see cref="IdentifyingKeys"/> already
-    /// lists), but the shape matches Twitch's naming convention for the rest of its per-user tags,
-    /// so a future addition is redacted by default instead of leaking on first appearance.</item>
-    /// </list>
-    /// </summary>
-    private static bool IsIdentifyingTag(ReadOnlySpan<char> tag)
-    {
-        var equalsIndex = tag.IndexOf('=');
-        return equalsIndex >= 0 && IsIdentifyingKey(tag[..equalsIndex]);
-    }
-
-    private static bool IsIdentifyingKey(ReadOnlySpan<char> key)
-    {
-        foreach (var identifyingKey in IdentifyingKeys)
-        {
-            if (key.Equals(identifyingKey, StringComparison.Ordinal))
-            {
-                return true;
-            }
-        }
-
-        if (key.StartsWith("reply-parent-", StringComparison.Ordinal) ||
-            key.StartsWith("reply-thread-parent-", StringComparison.Ordinal))
-        {
-            return key.EndsWith("user-id", StringComparison.Ordinal) ||
-                   key.EndsWith("user-login", StringComparison.Ordinal) ||
-                   key.EndsWith("display-name", StringComparison.Ordinal);
-        }
-
-        if (key.StartsWith("source-", StringComparison.Ordinal))
-        {
-            return key.EndsWith("user-id", StringComparison.Ordinal) ||
-                   key.EndsWith("login", StringComparison.Ordinal);
-        }
-
-        return false;
-    }
-
-    /// <summary>
     /// True if <paramref name="tag"/> contains an <c>@</c> followed by a non-empty tag key and an
     /// <c>=</c> — the shape of a second tag block spliced into the first one. An <c>@nutzername</c>
     /// mention fails this: a login is followed by a space (escaped as <c>\s</c>) or the end of the
@@ -228,7 +204,7 @@ public static class IrcLineSpliceRule
     /// Finds the first splice-embedded tag-block start in <paramref name="value"/> — the same shape
     /// <see cref="ContainsTagBlockStart"/> tests for, an <c>@</c> followed by a non-empty tag key and
     /// an <c>=</c> — and returns where the <c>@</c> and the terminating <c>=</c> sit. Used by
-    /// <see cref="AppendTagWithEmbeddedRedaction"/> (Codex review finding P1) to redact an embedded
+    /// <see cref="AppendTag"/> (Codex review finding P1) to redact an embedded
     /// tag's own value, not just top-level ones: <see cref="IsSpliced"/> already proves a splice can
     /// land inside a typed tag's value (<c>subscriber=0@badge-info=...</c>) rather than cleanly
     /// between two <c>;</c>-separated tags, and that embedded fragment can itself be an identifying
@@ -277,12 +253,8 @@ public static class IrcLineSpliceRule
     private static bool IsTagKeyChar(char c) => char.IsAsciiLetterOrDigit(c) || c == '-';
 
     /// <summary>
-    /// Rebuilds <paramref name="tagBlock"/> with the value of every free-text tag (<see cref="IsFreeTextTag"/>)
-    /// and every identifying tag (<see cref="IsIdentifyingTag"/>, #246) replaced. Only ever runs on
-    /// the rare sentinel-hit path, so the allocation is irrelevant — unlike the free-text-only
-    /// version this replaced, it has no fast path back to the unredacted span, because at least one
-    /// identifying tag (typically <c>user-id</c>, <c>display-name</c> and <c>badges</c>) is present
-    /// on almost every ordinary message.
+    /// Rebuilds <paramref name="tagBlock"/> as described at <see cref="TagBlockForLog"/>. Only ever
+    /// runs on the rare sentinel-hit path, so the allocation is irrelevant.
     /// </summary>
     private static string RedactValues(ReadOnlySpan<char> tagBlock)
     {
@@ -307,15 +279,7 @@ public static class IrcLineSpliceRule
             }
 
             isFirst = false;
-
-            if (IsFreeTextTag(tag) || IsIdentifyingTag(tag))
-            {
-                builder.Append(tag[..(tag.IndexOf('=') + 1)]).Append(RedactedValue);
-            }
-            else
-            {
-                AppendTagWithEmbeddedRedaction(builder, tag);
-            }
+            AppendTag(builder, tag);
 
             if (separator < 0)
             {
@@ -329,57 +293,129 @@ public static class IrcLineSpliceRule
     }
 
     /// <summary>
-    /// Appends <paramref name="tag"/> — already established by the caller to be neither a top-level
-    /// free-text nor a top-level identifying tag — while still redacting the value of any tag a
-    /// splice embedded inside it (Codex review finding P1, follow-up to #246). <see cref="IsSpliced"/>
-    /// fires on a line like <c>subscriber=0@badge-info=subscriber/12</c> just as much as on a clean
-    /// <c>;</c>-separated splice, because a splice can land mid-value: the second line's tag block
-    /// starts right after the first line's incomplete value, with no <c>;</c> between them. Without
-    /// this, that embedded <c>badge-info</c> — or a <c>display-name</c>, a <c>user-id</c>, a
-    /// <c>*msg-body</c> — would reach the log unchanged, because the outer splitter sees only one
-    /// tag, <c>subscriber</c>, and that key alone is not identifying. Every embedded key is kept
-    /// (splice keys are structural, like any other key in this class); every embedded value is
-    /// redacted exactly like a top-level one would be, so the splice's shape survives but nothing it
-    /// dragged along does.
+    /// Appends one <c>;</c>-separated fragment: withheld as a whole unless it is <c>key=value</c>
+    /// with an allowlisted key; otherwise the key and its value, which is replaced unless it is a
+    /// format-checked one (<see cref="AppendValue"/>). A free-text value is replaced wholesale
+    /// without looking inside: it is chat text and may imitate anything. For every other tag a
+    /// splice can land mid-value (<c>subscriber=0@badge-info=…</c>, see <see cref="IsSpliced"/>);
+    /// each embedded tag after an <c>@</c> followed by a tag key and <c>=</c> (escaping is not considered, see <see cref="TryFindEmbeddedKeyStart"/>) is treated exactly like a top-level one, so the
+    /// splice's shape survives and nothing it dragged along does.
+    /// An embedded free-text value is replaced whole like a top-level one: nothing after it is scanned.
     /// </summary>
-    private static void AppendTagWithEmbeddedRedaction(StringBuilder builder, ReadOnlySpan<char> tag)
+    private static void AppendTag(StringBuilder builder, ReadOnlySpan<char> tag)
     {
-        var firstEquals = tag.IndexOf('=');
-        if (firstEquals < 0)
+        if (tag.IsEmpty)
         {
-            builder.Append(tag);
             return;
         }
 
-        builder.Append(tag[..(firstEquals + 1)]);
+        var firstEquals = tag.IndexOf('=');
+        if (firstEquals < 0 || !TwitchTagKeyAllowlist.IsAllowed(tag[..firstEquals]))
+        {
+            builder.Append(WithheldFragment);
+            return;
+        }
+
+        var currentKey = tag[..firstEquals];
+        builder.Append(currentKey).Append('=');
         var cursor = tag[(firstEquals + 1)..];
 
-        while (TryFindEmbeddedKeyStart(cursor, out var at, out var eq))
+        if (IsFreeTextKey(currentKey))
         {
-            // Everything up to and including the embedded key's own '=' is structural — the outer
-            // tag's own (corrupted, but not identifying) value fragment, the splice's '@', and the
-            // embedded key — and is always kept, same as every other key in this class.
-            builder.Append(cursor[..(eq + 1)]);
-            var embeddedKey = cursor[(at + 1)..eq];
-            var afterEmbeddedKey = cursor[(eq + 1)..];
+            builder.Append(RedactedValue);
+            return;
+        }
 
-            var embeddedValueEnd = TryFindEmbeddedKeyStart(afterEmbeddedKey, out var nextAt, out _)
-                ? nextAt
-                : afterEmbeddedKey.Length;
-            var embeddedValue = afterEmbeddedKey[..embeddedValueEnd];
-
-            if (IsFreeTextKey(embeddedKey) || IsIdentifyingKey(embeddedKey))
+        while (true)
+        {
+            var found = TryFindEmbeddedKeyStart(cursor, out var at, out var eq);
+            AppendValue(builder, currentKey, found ? cursor[..at] : cursor);
+            if (!found)
             {
-                builder.Append(RedactedValue);
+                return;
+            }
+
+            builder.Append('@');
+            var embeddedKey = cursor[(at + 1)..eq];
+            if (TwitchTagKeyAllowlist.IsAllowed(embeddedKey))
+            {
+                builder.Append(embeddedKey).Append('=');
+                if (IsFreeTextKey(embeddedKey))
+                {
+                    builder.Append(RedactedValue);
+                    return;
+                }
+
+                currentKey = embeddedKey;
             }
             else
             {
-                builder.Append(embeddedValue);
+                builder.Append(WithheldFragment);
+                currentKey = default;
             }
 
-            cursor = afterEmbeddedKey[embeddedValueEnd..];
+            cursor = cursor[(eq + 1)..];
+        }
+    }
+
+    /// <summary>
+    /// Appends <paramref name="value"/> of <paramref name="key"/> only if it has one of the two
+    /// harmless formats (digits for <see cref="NumericValueKeys"/>, exactly <c>0</c>/<c>1</c> for
+    /// <see cref="FlagValueKeys"/>), otherwise <see cref="RedactedValue"/>. An empty
+    /// <paramref name="key"/> means the value belongs to a withheld fragment and is dropped.
+    /// </summary>
+    private static void AppendValue(StringBuilder builder, ReadOnlySpan<char> key, ReadOnlySpan<char> value)
+    {
+        if (key.IsEmpty)
+        {
+            return;
         }
 
-        builder.Append(cursor);
+        var keep = (ContainsKey(NumericValueKeys, key) && IsDigitsUpTo(value, MaxNumericValueLength)) ||
+                   (ContainsKey(FlagValueKeys, key) && (value.SequenceEqual("0") || value.SequenceEqual("1")));
+        if (keep)
+        {
+            builder.Append(value);
+        }
+        else
+        {
+            builder.Append(RedactedValue);
+        }
+    }
+
+    private static bool ContainsKey(string[] keys, ReadOnlySpan<char> key)
+    {
+        foreach (var candidate in keys)
+        {
+            if (key.Equals(candidate, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsDigitsUpTo(ReadOnlySpan<char> value, int maxLength)
+    {
+        if (value.IsEmpty || value.Length > maxLength)
+        {
+            return false;
+        }
+
+        foreach (var c in value)
+        {
+            if (!char.IsAsciiDigit(c))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }
+
+/// <summary>
+/// The arguments of <see cref="IrcLineSpliceRule.SpliceWarningTemplate"/>, already safe to log.
+/// </summary>
+public sealed record SpliceWarningFields(string Channel, string RoomId, string TagBlock);
