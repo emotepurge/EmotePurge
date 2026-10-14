@@ -904,6 +904,66 @@ describe('UsageStatsPage — silent reload reconciles the selection (#94)', () =
     expect(component['channelSeries']()).not.toBe(held);
   });
 
+  const emitFlush = (): void => {
+    FakeEventSource.instances[0].emit({ type: LIVE_EVENT_TYPES.usageFlushed, channel: 'a' });
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    fixture.detectChanges();
+  };
+  const SERIES = '/api/channels/a/usage-stats/series';
+
+  it('marks the series failed when the quiet refresh fails and nothing is held (#415)', () => {
+    mount([emote('a', 'PeepoA')]);
+    // An initial load is out and holds no series yet; the flush supersedes it.
+    component['load']('a', '2026-01-01', '2026-09-08', true, null, false);
+    expect(component['channelSeries']()).toBeNull();
+    emitFlush();
+    const requests = httpMock.match((req) => req.url === SERIES);
+    const quiet = requests[requests.length - 1];
+    quiet.error(new ProgressEvent('error'));
+
+    expect(component['seriesFailed']()).toBe(true);
+    expect(component['seriesPending']()).toBe(false);
+  });
+
+  it('keeps the held series quietly when the quiet refresh fails (#415)', () => {
+    mount([emote('a', 'PeepoA')]);
+    const held = component['channelSeries']();
+    emitFlush();
+    httpMock.match((req) => req.url === SERIES)[0].error(new ProgressEvent('error'));
+
+    expect(component['channelSeries']()).toBe(held);
+    expect(component['seriesFailed']()).toBe(false);
+  });
+
+  it('clears an earlier series failure once a quiet refresh succeeds (#415)', () => {
+    mount([emote('a', 'PeepoA')]);
+    component['seriesFailed'].set(true);
+    emitFlush();
+    httpMock
+      .match((req) => req.url === SERIES)[0]
+      .flush({
+        from: '2026-01-01',
+        to: '2026-09-08',
+        liveDays: [],
+        emotes: [],
+      });
+
+    expect(component['seriesFailed']()).toBe(false);
+  });
+
+  it('asks for no series on usage.flushed while the range is still unresolved (#415)', () => {
+    mount([emote('a', 'PeepoA')]);
+    // "All time" waits for the status of this channel: pretend it is another channel's.
+    component['setStatusChannel'].set('other');
+    fixture.detectChanges();
+    httpMock.match(() => true);
+    expect(component['rangeResolved']()).toBe(false);
+
+    emitFlush();
+
+    expect(httpMock.match((req) => req.url === SERIES)).toHaveLength(0);
+  });
+
   it('a drilldown series requested before usage.flushed is fetched again afterwards (#415)', () => {
     mount([emote('a', 'PeepoA')]);
     const usageStatService = TestBed.inject(UsageStatService);

@@ -4110,6 +4110,11 @@ export class UsageStatsPage {
    * channel, range or set changes. Any further "the numbers changed" trigger can call this too.
    */
   private refreshSeriesQuietly(): void {
+    // Same hold-back as loadTotals: while the range is a placeholder (all time, status not in yet)
+    // the load effect will ask once it resolves, and a request now would carry the wrong dates.
+    if (!this.rangeResolved()) {
+      return;
+    }
     const scope: SeriesScope = {
       channelName: this.channelName(),
       emoteSetId: this.selectedEmoteSetId(),
@@ -4122,9 +4127,18 @@ export class UsageStatsPage {
       .getChannelSeries(scope.channelName, scope.from, scope.to, scope.emoteSetId)
       .pipe(this.latestSeries)
       .subscribe({
-        next: (series) => this.adoptSeries(series, scope),
+        next: (series) => {
+          // A refresh that lands is a series load that worked, whatever the earlier one did.
+          this.seriesFailed.set(false);
+          this.adoptSeries(series, scope);
+        },
         error: () => {
           this.seriesInFlight = false;
+          // A held series stays; with none (the refresh superseded the initial load), "pending"
+          // would otherwise last forever.
+          if (this.channelSeries() === null) {
+            this.seriesFailed.set(true);
+          }
         },
       });
   }
