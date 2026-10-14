@@ -464,10 +464,22 @@ test.describe('channel settings tab (imported data removal)', () => {
       section.getByRole('button', { name: 'Importierte Daten entfernen' }),
     ).toBeEnabled();
     const before = status.requests();
-    // The refetch behind the 409 sees the run the server saw.
+    // The refetch behind the 409 sees the run the server saw. Its answer is held back: the error
+    // only lives until that answer shows the run, so the alert can be checked only meanwhile.
     status.set({
       coverage: [backfillCoverageBody()],
       activeRun: backfillRunBody({ status: 'running', queuePosition: null }),
+    });
+    let releaseRefetch!: () => void;
+    const refetchHeld = new Promise<void>((resolve) => (releaseRefetch = resolve));
+    let refetchAsked = false;
+    await page.route('**/api/channels/sensitron/backfill', async (route) => {
+      if (route.request().method() !== 'GET') {
+        return route.fallback();
+      }
+      refetchAsked = true;
+      await refetchHeld;
+      return route.fallback();
     });
     await section.getByRole('button', { name: 'Importierte Daten entfernen' }).click();
     await page
@@ -478,7 +490,14 @@ test.describe('channel settings tab (imported data removal)', () => {
     await expect(
       page.getByRole('alert').filter({ hasText: 'wartet oder läuft gerade' }),
     ).toBeVisible();
+    await expect.poll(() => refetchAsked).toBe(true);
+    releaseRefetch();
+
     await expect.poll(() => status.requests()).toBeGreaterThan(before);
+    await expect(section.locator('#backfill-remove-blocked')).toBeVisible();
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'wartet oder läuft gerade' }),
+    ).toHaveCount(0);
     await expect(
       section.getByRole('button', { name: 'Importierte Daten entfernen' }),
     ).toBeDisabled();
