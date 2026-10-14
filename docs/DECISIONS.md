@@ -10,6 +10,30 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-14 — TwitchLib log noise is removed at the source; Api EF Core logs at Warning (#383)
+
+**Betrifft:** `src/EmotePurge.Api/appsettings.json` · `src/EmotePurge.Worker/RedactingTwitchClientLoggerFactory.cs` · `src/EmotePurge.Worker/TwitchLibRawLineRedaction.cs`
+
+Measured on prod over about 20 h from the container start on 2026-10-13 17:27 UTC: the Api wrote 13,167 entries
+(8.0 MB), of which 13,156 were `Microsoft.EntityFrameworkCore.Database.Command` at Information; the Worker wrote
+3,542 entries, of which 332 were warnings, and 312 of those were `TwitchLib.Client.TwitchClient[1006327295]`
+(`LogUnaccountedFor`): roughly 308 `USERNOTICE` lines (viewer milestones, watch streaks, subs, gift subs, raids,
+announcements that we do not evaluate) and 4 `NOTICE`. Principle: noise is removed at the source, not hidden in
+the log viewer. Two changes:
+
+1. The Api sets `Microsoft.EntityFrameworkCore` to `Warning` (the whole namespace, as the Worker already does).
+   Below Warning EF logs only commands plus start-up and model messages, so nothing useful is lost.
+2. `RedactingTwitchClientLoggerFactory` forwards `LogUnaccountedFor` at `Debug` instead of `Warning`, and only
+   when the recognised command is exactly `USERNOTICE`. The command comes from the new
+   `TwitchLibRawLineRedaction.RedactLine` as its own value (same allow-list recognition as before, the output
+   string of `Redact` is byte-identical); the output string is never re-parsed. Message and event id are
+   unchanged. Because the Worker minimum for the category is Information, the entry is dropped for every
+   provider. `NOTICE`, `<unparsed>`, `<none>` and every other command stay `Warning`, `LogParsingError` stays
+   `Error`, `LogLeavingChannel` stays `Information`.
+
+Expected effect: about 13,156 Api lines and about 308 of 312 Worker warnings per 20 h disappear (about 24
+warnings per day remain in the Worker).
+
 ### 2026-10-14 — Muted text is not permitted on the inset hover surface (#402)
 
 **Betrifft:** `docs/UI-Designsprache.md` (§10 contrast checklist) · `DESIGN.md` · `web/src/styles.css`

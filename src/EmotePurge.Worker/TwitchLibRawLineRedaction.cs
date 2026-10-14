@@ -1,6 +1,13 @@
 namespace EmotePurge.Worker;
 
 /// <summary>
+/// A redacted raw IRC line: the safe <see cref="Text"/> plus the recognised <see cref="Command"/> as its
+/// own value (<c>&lt;none&gt;</c>, <c>&lt;unparsed&gt;</c>, a known IRC command or three digits), so
+/// callers never have to parse <see cref="Text"/> again.
+/// </summary>
+public readonly record struct RedactedRawLine(string Text, string Command);
+
+/// <summary>
 /// Reduces a raw IRC line to a diagnosable but safe form for <see cref="RedactingTwitchClientLoggerFactory"/>
 /// (#246): the tag block's <em>keys</em> only — never a value, since a value can carry chat text, a
 /// display name, a login, a numeric user id, or (on a reply) the quoted parent message — plus,
@@ -46,11 +53,13 @@ public static class TwitchLibRawLineRedaction
         "USERNOTICE", "MODE",
     };
 
-    public static string Redact(string? rawLine)
+    public static string Redact(string? rawLine) => RedactLine(rawLine).Text;
+
+    public static RedactedRawLine RedactLine(string? rawLine)
     {
         if (string.IsNullOrEmpty(rawLine))
         {
-            return $"command={NoCommandMarker}, tagKeys=[]";
+            return new RedactedRawLine($"command={NoCommandMarker}, tagKeys=[]", NoCommandMarker);
         }
 
         var remaining = rawLine.AsSpan();
@@ -96,7 +105,7 @@ public static class TwitchLibRawLineRedaction
             commandText = UnparsedCommandMarker;
         }
 
-        return $"command={commandText}, tagKeys=[{tagKeys}]";
+        return new RedactedRawLine($"command={commandText}, tagKeys=[{tagKeys}]", commandText);
     }
 
     /// <summary>

@@ -54,6 +54,12 @@ public sealed class RedactingTwitchClientLoggerFactory(ILoggerFactory inner) : I
     // public static void LogLeavingChannel(this ILogger<TwitchClient> logger, string channel);
     private const string LeavingChannelEventName = "LogLeavingChannel";
 
+    // TwitchLib.Client 4.0.1, LogExtensions: LogUnaccountedFor is Warning. For a USERNOTICE it fires on every
+    // sub, raid, milestone or watch streak we do not evaluate (~308 of 312 warnings in 20 h on prod), so only
+    // that command is downgraded to Debug at the source; any other unaccounted line stays a Warning.
+    private const string UnaccountedForEventName = "LogUnaccountedFor";
+    private const string UsernoticeCommand = "USERNOTICE";
+
     public void AddProvider(ILoggerProvider provider) => inner.AddProvider(provider);
 
     public ILogger CreateLogger(string categoryName)
@@ -77,8 +83,13 @@ public sealed class RedactingTwitchClientLoggerFactory(ILoggerFactory inner) : I
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            if (TryRedact(eventId, state, out var redactedMessage))
+            if (TryRedact(eventId, state, out var redactedMessage, out var command))
             {
+                if (eventId.Name == UnaccountedForEventName && command == UsernoticeCommand)
+                {
+                    logLevel = LogLevel.Debug;
+                }
+
                 inner.Log(logLevel, eventId, new RedactedState(redactedMessage), exception,
                     static (redacted, _) => redacted.Message);
                 return;
@@ -87,8 +98,9 @@ public sealed class RedactingTwitchClientLoggerFactory(ILoggerFactory inner) : I
             inner.Log(logLevel, eventId, state, exception, formatter);
         }
 
-        private static bool TryRedact<TState>(EventId eventId, TState state, out string redactedMessage)
+        private static bool TryRedact<TState>(EventId eventId, TState state, out string redactedMessage, out string? command)
         {
+            command = null;
             if (eventId.Name == LeavingChannelEventName)
             {
                 // Not a raw line — the payload is only the channel login — but withheld all the same
@@ -104,7 +116,7 @@ public sealed class RedactingTwitchClientLoggerFactory(ILoggerFactory inner) : I
             var rawLineParameterName = eventId.Name switch
             {
                 "LogParsingError" => "message",
-                "LogUnaccountedFor" => "ircString",
+                UnaccountedForEventName => "ircString",
                 _ => null,
             };
 
@@ -115,8 +127,9 @@ public sealed class RedactingTwitchClientLoggerFactory(ILoggerFactory inner) : I
             }
 
             var rawLine = FindNamedParameter(parameters, rawLineParameterName) as string;
-            var redactedLine = TwitchLibRawLineRedaction.Redact(rawLine);
-            redactedMessage = $"TwitchLib.{eventId.Name} (redacted, #246): {redactedLine}";
+            var redactedLine = TwitchLibRawLineRedaction.RedactLine(rawLine);
+            command = redactedLine.Command;
+            redactedMessage = $"TwitchLib.{eventId.Name} (redacted, #246): {redactedLine.Text}";
             return true;
         }
 

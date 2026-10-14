@@ -95,6 +95,90 @@ public class RedactingTwitchClientLoggerFactoryTests
     }
 
     [Fact]
+    public void UnaccountedFor_Usernotice_ForwardsAtDebugWithSameRedactedMessage()
+    {
+        var (provider, redactingFactory) = CreateFactory();
+        var logger = redactingFactory.CreateLogger(TwitchClientCategory);
+        var rawLine = "@msg-id=viewermilestone;user-id=555555555 :tmi.twitch.tv USERNOTICE #targetchannel_test :text";
+
+        LogUnaccountedForCallback(logger, rawLine, null);
+
+        var entry = Assert.Single(provider.Entries);
+        Assert.Equal(LogLevel.Debug, entry.Level);
+        Assert.Equal(UnaccountedForEventId, entry.EventId);
+        Assert.Equal(
+            $"TwitchLib.LogUnaccountedFor (redacted, #246): {TwitchLibRawLineRedaction.Redact(rawLine)}",
+            entry.Message);
+    }
+
+    [Theory]
+    [InlineData("@msg-id=x :tmi.twitch.tv NOTICE #room :text")]
+    [InlineData("@user-id=1 :a!a@a.tmi.twitch.tv WHISPER target :secret")]
+    [InlineData("@id=1 SECRET #room :more")]
+    [InlineData("@id=1")]
+    [InlineData("")]
+    public void UnaccountedFor_NonUsernoticeCommand_StaysWarning(string rawLine)
+    {
+        var (provider, redactingFactory) = CreateFactory();
+        var logger = redactingFactory.CreateLogger(TwitchClientCategory);
+
+        LogUnaccountedForCallback(logger, rawLine, null);
+
+        Assert.Equal(LogLevel.Warning, Assert.Single(provider.Entries).Level);
+    }
+
+    [Fact]
+    public void UnaccountedFor_Unparsed_StaysWarning_AndNeverLeaksTheFragment()
+    {
+        var (provider, redactingFactory) = CreateFactory();
+        var logger = redactingFactory.CreateLogger(TwitchClientCategory);
+
+        LogUnaccountedForCallback(logger, "@reply-parent-msg-body=hello SECRET PRIVMSG #room :more", null);
+
+        var entry = Assert.Single(provider.Entries);
+        Assert.Equal(LogLevel.Warning, entry.Level);
+        Assert.Contains("command=<unparsed>", entry.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("SECRET", entry.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ParsingError_KeepsError_EvenForUsernotice()
+    {
+        var (provider, redactingFactory) = CreateFactory();
+        var logger = redactingFactory.CreateLogger(TwitchClientCategory);
+
+        LogParsingErrorCallback(logger, "@id=1 :tmi.twitch.tv USERNOTICE #room :text", new InvalidOperationException("boom"));
+
+        Assert.Equal(LogLevel.Error, Assert.Single(provider.Entries).Level);
+    }
+
+    [Fact]
+    public void LeavingChannel_KeepsInformation()
+    {
+        var (provider, redactingFactory) = CreateFactory();
+        var logger = redactingFactory.CreateLogger(TwitchClientCategory);
+
+        LogLeavingChannelCallback(logger, "somechannel_test", null);
+
+        Assert.Equal(LogLevel.Information, Assert.Single(provider.Entries).Level);
+    }
+
+    [Fact]
+    public void UnaccountedFor_Usernotice_ReachesNoProviderAtInformationMinimum()
+    {
+        var provider = new CapturingLoggerProvider();
+        using var innerFactory = LoggerFactory.Create(b => b
+            .SetMinimumLevel(LogLevel.Information)
+            .AddProvider(provider));
+        var redactingFactory = new RedactingTwitchClientLoggerFactory(innerFactory);
+        var logger = redactingFactory.CreateLogger(TwitchClientCategory);
+
+        LogUnaccountedForCallback(logger, "@msg-id=viewermilestone :tmi.twitch.tv USERNOTICE #room :text", null);
+
+        Assert.Empty(provider.Entries);
+    }
+
+    [Fact]
     public void OtherLogCallsOnTwitchClientCategory_PassThroughUnchanged()
     {
         var (provider, redactingFactory) = CreateFactory();
