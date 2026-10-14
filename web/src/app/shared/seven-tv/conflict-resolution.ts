@@ -220,17 +220,18 @@ export function sameDecisions(a: ResolutionDecisions, b: ResolutionDecisions): b
   return true;
 }
 
-/** One name-collision row as {@link applyBulkDecision} sees it: its key and whether "replace
- *  target" can be chosen there at all (the step disables it when the live target no longer holds
- *  the colliding name). */
+/** One row as {@link applyBulkDecision} sees it: its key and whether the non-skip action a bulk
+ *  click sets can be chosen there at all — "replace target" in the name-collision group (disabled
+ *  when the live target no longer holds the colliding name), "adopt name" in the alias-mismatch
+ *  group (disabled where `adoptBlocked` is set). */
 export interface BulkDecisionRow {
   key: string;
-  replaceAvailable: boolean;
+  available: boolean;
 }
 
-/** The action a bulk click sets — the two that can be applied to many rows at once. A bulk rename
+/** The action a bulk click sets — the ones that can be applied to many rows at once. A bulk rename
  *  does not exist: every rename needs its own typed name. */
-export type BulkDecisionKind = 'skip' | 'replaceTarget';
+export type BulkDecisionKind = 'skip' | 'replaceTarget' | 'adoptSourceName';
 
 /** {@link applyBulkDecision}'s result. */
 export interface BulkDecisionResult {
@@ -242,17 +243,18 @@ export interface BulkDecisionResult {
   changed: number;
   /** Rows left on `renameSource` — a typed name is never overwritten in bulk. */
   renamesKept: number;
-  /** Rows a bulk replace could not take because "replace target" is disabled there and the row is
-   *  not already on it. Always `0` for a bulk skip. */
-  replaceUnavailable: number;
+  /** Rows a bulk replace or adopt could not take because that action is disabled there and the row
+   *  is not already on it. Always `0` for a bulk skip. */
+  unavailable: number;
 }
 
 /**
- * Sets every name-collision row on `skip` or `replaceTarget` to `kind`, leaving the rest alone:
+ * Sets every row on `skip`, `replaceTarget` or `adoptSourceName` to `kind`, leaving the rest alone:
  * a row on `renameSource` keeps its decision (and with it its typed alias), and a row whose
- * "replace target" is unavailable stays where it is when `kind` is `replaceTarget`. Pure, so the
- * step can run it with the current decisions both to compute a click's result and to tell whether
- * the click would change anything (`changed === 0`).
+ * requested action is unavailable stays where it is. Pure, so the step can run it with the current
+ * decisions both to compute a click's result and to tell whether the click would change anything
+ * (`changed === 0`). It does not look at cross-row rules: a bulk choice that breaks one surfaces
+ * through `validateResolution` exactly like the same choice made row by row.
  */
 export function applyBulkDecision(
   rows: readonly BulkDecisionRow[],
@@ -261,7 +263,7 @@ export function applyBulkDecision(
 ): BulkDecisionResult {
   const changes = new Map<string, RowDecision>();
   let renamesKept = 0;
-  let replaceUnavailable = 0;
+  let unavailable = 0;
 
   for (const row of rows) {
     const current = decisionFor(decisions, row.key);
@@ -269,14 +271,14 @@ export function applyBulkDecision(
       renamesKept++;
     } else if (current.kind === kind) {
       continue;
-    } else if (kind === 'replaceTarget' && !row.replaceAvailable) {
-      replaceUnavailable++;
-    } else if (current.kind === 'skip' || current.kind === 'replaceTarget') {
-      changes.set(row.key, { kind });
+    } else if (kind !== 'skip' && !row.available) {
+      unavailable++;
+    } else {
+      changes.set(row.key, { kind } as RowDecision);
     }
   }
 
-  return { changes, changed: changes.size, renamesKept, replaceUnavailable };
+  return { changes, changed: changes.size, renamesKept, unavailable };
 }
 
 /** The summary numbers behind a confirm dialog and a run protocol — see {@link TransferPlanSummary}

@@ -411,6 +411,64 @@ test.describe('push flow: picker to confirmation dialog', () => {
     await expect(confirm.getByRole('button', { name: 'Alle überspringen' })).toBeFocused();
   });
 
+  test('the "for all" line in the name-mismatch step adopts every name at once and resets it again', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, SOURCE_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 3,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    // Both selected emotes are already in the target set under other names: two alias mismatches.
+    await mockEmoteList(page, TARGET_CHANNEL, [
+      { sevenTvEmoteId: '7tv-1', name: 'CatJAMOld' },
+      { sevenTvEmoteId: '7tv-2', name: 'KEKWOld' },
+    ]);
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+    await cell(page, 'CatJAM').click();
+    await cell(page, 'KEKW').click({ modifiers: ['Shift'] });
+    await copyButton(page).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const confirm = await waitForImportConfirmDialog(page);
+    await confirm.getByRole('button', { name: 'Abweichende Namen auflösen' }).click();
+
+    const adoptRadios = confirm.getByRole('radio', { name: 'Namen übernehmen' });
+    await expect(adoptRadios).toHaveCount(2);
+
+    await confirm.getByRole('button', { name: 'Alle Namen übernehmen' }).click();
+    await expect(adoptRadios.nth(0)).toBeChecked();
+    await expect(adoptRadios.nth(1)).toBeChecked();
+    await expect(confirm.getByRole('status').filter({ hasText: 'gesetzt' })).toContainText(
+      '2 auf „Namen übernehmen“ gesetzt',
+    );
+    // aria-disabled, not disabled: focus must stay on the button that was just used.
+    await expect(confirm.getByRole('button', { name: 'Alle Namen übernehmen' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    await expect(confirm.getByRole('button', { name: 'Alle Namen übernehmen' })).toBeFocused();
+
+    await confirm.getByRole('button', { name: 'Alle überspringen' }).click();
+    await expect(adoptRadios.nth(0)).not.toBeChecked();
+    await expect(adoptRadios.nth(1)).not.toBeChecked();
+    await expect(confirm.getByRole('radio', { name: 'Überspringen' }).first()).toBeChecked();
+    await expect(confirm.getByRole('button', { name: 'Alle überspringen' })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    await expect(confirm.getByRole('button', { name: 'Alle überspringen' })).toBeFocused();
+  });
+
   /**
    * The dock's second entry point into the same flow (#80, §8.7): same verb, but `forcedScope:
    * 'selection'` skips the scope question outright instead of merely defaulting to it. Proven two

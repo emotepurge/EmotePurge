@@ -80,7 +80,7 @@ interface BulkOutcome {
   kind: BulkDecisionKind;
   changed: number;
   renamesKept: number;
-  replaceUnavailable: number;
+  unavailable: number;
 }
 
 /** Row heights in px: the wide layout puts source, target and actions side by side, the narrow one
@@ -339,8 +339,8 @@ export function violationMessages(
       (focusout)="onContainerFocusOut($event)"
     >
       <!-- "For all" sits above the table, outside the column header: that header is aria-hidden and
-           absent in the stacked layout, and this must work in both. Only the name-collision group
-           has it (adopting a name is never done in bulk), and only from two rows on. The status
+           absent in the stacked layout, and this must work in both. Both groups have it, from two
+           rows on; a rename is never set in bulk (each needs its own typed name). The status
            region stays mounted so the result of a click is announced. -->
       @if (showBulk()) {
         <div class="flex flex-wrap items-center gap-x-3 gap-y-1 pb-2">
@@ -368,10 +368,15 @@ export function violationMessages(
               type="button"
               appButton="outline"
               class="aria-disabled:cursor-not-allowed aria-disabled:border-transparent aria-disabled:bg-surface-inset aria-disabled:text-fg-disabled"
-              [attr.aria-disabled]="replaceAll().changed === 0 ? 'true' : null"
-              (click)="applyBulk('replaceTarget')"
+              [attr.aria-disabled]="resolveAll().changed === 0 ? 'true' : null"
+              (click)="applyBulk(bulkKind())"
             >
-              {{ 'import.resolve.bulk.replaceAll' | transloco }}
+              {{
+                (bulkKind() === 'replaceTarget'
+                  ? 'import.resolve.bulk.replaceAll'
+                  : 'import.resolve.bulk.adoptAll'
+                ) | transloco
+              }}
             </button>
           </div>
           <span role="status" class="text-sm text-fg-muted">{{ bulkStatus() }}</span>
@@ -731,11 +736,13 @@ export class ImportConflictResolutionStep {
   protected readonly narrow = computed(() => this.containerWidth() < NARROW_BELOW_PX);
   protected readonly rowPx = computed(() => (this.narrow() ? ROW_NARROW_PX : ROW_WIDE_PX));
 
-  protected readonly showBulk = computed(
-    () => this.group() === 'nameCollision' && this.rows().length >= 2,
+  protected readonly showBulk = computed(() => this.rows().length >= 2);
+  /** The non-skip action the "for all" line offers: the group's own resolution. */
+  protected readonly bulkKind = computed<BulkDecisionKind>(() =>
+    this.group() === 'nameCollision' ? 'replaceTarget' : 'adoptSourceName',
   );
   protected readonly skipAll = computed(() => this.bulkResult('skip'));
-  protected readonly replaceAll = computed(() => this.bulkResult('replaceTarget'));
+  protected readonly resolveAll = computed(() => this.bulkResult(this.bulkKind()));
 
   /** The sentence announced after a "for all" click — the count that was set, then each remainder
    *  that is above zero. Empty until the first click. */
@@ -763,12 +770,12 @@ export class ImportConflictResolutionStep {
         ),
       );
     }
-    if (outcome.replaceUnavailable > 0) {
+    if (outcome.unavailable > 0) {
+      const family = outcome.kind === 'adoptSourceName' ? 'adoptUnavailable' : 'replaceUnavailable';
       parts.push(
-        this.translate.translate(
-          pluralKey(outcome.replaceUnavailable, 'import.resolve.bulk.replaceUnavailable'),
-          { count: outcome.replaceUnavailable },
-        ),
+        this.translate.translate(pluralKey(outcome.unavailable, `import.resolve.bulk.${family}`), {
+          count: outcome.unavailable,
+        }),
       );
     }
     return parts.join(' · ');
@@ -923,7 +930,7 @@ export class ImportConflictResolutionStep {
   }
 
   protected applyBulk(kind: BulkDecisionKind): void {
-    const result = kind === 'skip' ? this.skipAll() : this.replaceAll();
+    const result = kind === 'skip' ? this.skipAll() : this.resolveAll();
     if (result.changed === 0) {
       return;
     }
@@ -931,7 +938,7 @@ export class ImportConflictResolutionStep {
       kind,
       changed: result.changed,
       renamesKept: result.renamesKept,
-      replaceUnavailable: result.replaceUnavailable,
+      unavailable: result.unavailable,
     });
     this.decideMany.emit(result.changes);
   }
@@ -1049,8 +1056,7 @@ export class ImportConflictResolutionStep {
   private bulkResult(kind: BulkDecisionKind): BulkDecisionResult {
     const rows = this.rows().map((row) => ({
       key: row.key,
-      replaceAvailable:
-        row.options.find((option) => option.kind === 'replaceTarget')?.disabledReasonKey === null,
+      available: row.options.find((option) => option.kind === kind)?.disabledReasonKey === null,
     }));
     return applyBulkDecision(rows, this.decisions(), kind);
   }

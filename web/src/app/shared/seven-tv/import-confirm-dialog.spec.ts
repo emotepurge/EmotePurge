@@ -163,6 +163,7 @@ const DE_TRANSLATIONS = {
         label: 'Für alle:',
         skipAll: 'Alle überspringen',
         replaceAll: 'Alle ersetzen',
+        adoptAll: 'Alle Namen übernehmen',
         done: '{{ count }} auf „{{ action }}“ gesetzt',
         renamesKept: {
           one: '{{ count }} Umbenennung bleibt',
@@ -171,6 +172,10 @@ const DE_TRANSLATIONS = {
         replaceUnavailable: {
           one: '{{ count }} nicht ersetzbar, Ziel hat sich geändert',
           other: '{{ count }} nicht ersetzbar, Ziel hat sich geändert',
+        },
+        adoptUnavailable: {
+          one: '{{ count }} nicht möglich',
+          other: '{{ count }} nicht möglich',
         },
       },
       listLabelCollisions: 'Namenskollisionen',
@@ -1703,6 +1708,28 @@ describe('ImportConfirmDialog', () => {
       expect(
         dialog.element(applyButton.getAttribute('aria-describedby') ?? '')?.textContent,
       ).toContain('Dasselbe Ziel wird ersetzt und umbenannt: PogOld, Pog.');
+    });
+
+    it('lets a bulk adopt meet a replace of the same target in the other group, and locks Übernehmen', async () => {
+      // Same constellation as above, but the adopt comes from "Alle Namen übernehmen" over two
+      // mismatch rows: the cross-group rule must still catch it, nothing is left out silently.
+      const dialog = render({
+        source: channelSource([row('src-m', 'Pog'), row('src-k', 'Kek'), row('src-z', 'PogOld')]),
+        target: readyTarget({ emotes: [emote('src-m', 'PogOld'), emote('src-k', 'KekOld')] }),
+      });
+      await openStep(dialog, 'aliasMismatch');
+      dialog.button('Alle Namen übernehmen').click();
+      dialog.detect();
+      apply(dialog);
+
+      await openStep(dialog, 'nameCollision');
+      choose(dialog, 'PogOld', 'replaceTarget');
+
+      const applyButton = dialog.button('Übernehmen');
+      expect(applyButton.disabled).toBe(true);
+      expect(
+        dialog.element(applyButton.getAttribute('aria-describedby') ?? '')?.textContent,
+      ).toContain('Dasselbe Ziel wird ersetzt und umbenannt');
     });
 
     it('widens the pane only while the resolution step is up', async () => {
