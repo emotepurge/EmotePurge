@@ -87,7 +87,6 @@ Ohne das EF-Rauschen sind das rund 3,6k Einträge pro Tag, also etwa 25k Zeilen 
   - `TwitchLibRawLineRedaction.ExtractKeys` (`TwitchLibRawLineRedaction.cs:132-150`) übernimmt jedes `;`-Fragment bis zum ersten `=` als Schlüssel, auch ein Fragment **ohne** `=`. Aus `@reply-parent-msg-body=hello;SECRET PRIVMSG …` wird `tagKeys=[reply-parent-msg-body,SECRET]`.
   - Dieselbe Lücke hat `IrcLineSpliceRule.AppendTagWithEmbeddedRedaction` (`IrcLineSpliceRule.cs`, Zweig `firstEquals < 0`): Ein Fragment ohne `=` geht wörtlich in die Splice-Zeile. Diese zweite Stelle hat Sol nicht genannt, sie wurde beim Nachprüfen gefunden (S2).
   - `DataRetentionService.RunAsync` (`:92-99`) ruft die Kategorien vor System-Load **ohne** Isolierung auf. Eine Ausnahme dort verhindert jede spätere Kategorie. `DataRetentionWorker` wartet zudem zuerst auf `BootRecoveryGate.Completed` (`DataRetentionWorker.cs:23`) (S5).
-  - `RedisLiveEventStream` hält Abos über Redis-Ausfälle offen (`:130-150`), und StackExchange.Redis stellt sie selbst wieder her. Ein Ereignis aus der Ausfallzeit geht verloren, ohne dass der Browser neu verbindet (S6).
   - `scripts/backup-postgres.sh` läuft laut `docs/Operations.md` „Database backup and restore“ **auf dem Host** per Cron, nicht im Image. Ein Image-Deploy ändert ihn nicht (S10).
 
 ## 3. Bindende Betreiberentscheidungen (B1–B12, 2026-10-14)
@@ -149,7 +148,14 @@ Wirkung: In 20 h fallen rund 13.156 Zeilen aus der Api-Console weg.
   - Feste Namen: `badge-info`, `badges`, `bits`, `client-nonce`, `color`, `display-name`, `emote-only`, `emote-sets`, `emotes`, `first-msg`, `flags`, `followers-only`, `id`, `login`, `message-id`, `mod`, `msg-id`, `r9k`, `returning-chatter`, `room-id`, `slow`, `subs-only`, `subscriber`, `system-msg`, `target-msg-id`, `target-user-id`, `ban-duration`, `thread-id`, `tmi-sent-ts`, `turbo`, `user-id`, `user-type`, `vip`, `animation-id`, `custom-reward-id`.
   - Präfixe `msg-param-`, `reply-parent-`, `reply-thread-parent-`, `pinned-chat-paid-` und `source-`, jeweils mit einem Rest aus `[a-z0-9-]{1,48}`.
   - Der Umsetzer gleicht die Liste mit der Twitch-Tag-Referenz ab („Fremd-APIs live prüfen“) und legt sie als **eine** gemeinsame Konstante für beide Stellen ab.
-- **Ausgabeform:** `command=<…>, tagKeys=[a,b,…]`. Nur wenn Schlüssel zurückgehalten wurden, kommt `, withheldTagKeys=<n>` hinzu. In der Splice-Zeile steht an der Stelle jedes zurückgehaltenen Fragments `<withheld>`. Für Zeilen ohne zurückgehaltene Schlüssel bleibt die Ausgabe bytegleich, das schränkt die Zusage aus §4.2 ein. Ein Splice in den **Wert** eines bekannten Schlüssels bleibt bei der bestehenden Wert-Redaction von `IrcLineSpliceRule`; `Redact` gibt ohnehin keine Werte aus.
+- **Ausgabeform:** `command=<…>, tagKeys=[a,b,…]`. Nur wenn Schlüssel zurückgehalten wurden, kommt `, withheldTagKeys=<n>` hinzu. In der Splice-Zeile steht an der Stelle jedes zurückgehaltenen Fragments `<withheld>`. Für Zeilen ohne zurückgehaltene Schlüssel bleibt die Ausgabe von `Redact` bytegleich, das schränkt die Zusage aus §4.2 ein. `Redact` gibt ohnehin keine Werte aus.
+- **Sol-Befund 2.1 — Auflösung:** **Die Splice-Zeile gibt nur noch Schlüssel aus, keine Werte.** Die bestehende Wert-Redaction von `IrcLineSpliceRule` deckt nur Freitext- und einzelne Identitätsschlüssel ab. `system-msg` (enthält den Anzeigenamen) und `msg-param-*`-Identitäten (`msg-param-recipient-display-name`, `msg-param-sender-login`, `msg-param-login` …) gehen heute im Klartext in die Warning aus `TwitchChatManager.cs:1075-1088`. Nachgeprüft: `IsIdentifyingKey` kennt kein `msg-param-*` und kein `system-msg`. Diese Datenschutzlücke besteht schon heute auf Prod, sie gehört deshalb in T0.
+  - **Neu für `TagBlockForLog`:** Jeder Wert, ob oben im Tag-Block oder in einem eingebetteten Splice-Tag nach `@`, wird durch die bestehende Marke ersetzt.
+  - **Ausnahme nur für Werte mit nachweislich ungefährlichem Format,** und nur wenn der Wert das Format exakt erfüllt (sonst ebenfalls Marke):
+    - `tmi-sent-ts` und `room-id`: nur Ziffern, höchstens 20 Stellen;
+    - die Ja/Nein-Flags `subscriber`, `mod`, `turbo`, `vip`, `first-msg`, `returning-chatter`, `emote-only`: genau `0` oder `1`.
+  - **Entscheidung des Autors (offen für Einspruch), A35:** Zeitstempel und Raum-Id reichen, um zu erkennen, welche zwei Zeilen aus welchem Raum verschmolzen sind (#114). Die Flags tragen keine Identität. Die Raum-Id benennt nur den Kanal, der in derselben Zeile ohnehin steht.
+  - Die bisherige Liste `IdentifyingKeys` wird damit überflüssig. Der Umsetzer darf sie entfernen, die Tests unten ersetzen ihre Fälle.
 
 ### 4.3 Tests und Akzeptanz T0
 
@@ -161,6 +167,7 @@ Wirkung: In 20 h fallen rund 13.156 Zeilen aus der Api-Console weg.
   - Ein Fragment, das die Grammatik verletzt, wird zurückgehalten.
   - Alle Allowlist-Schlüssel und alle Präfix-Fälle kommen durch.
   - Echte aufgezeichnete Twitch-Zeilen (PRIVMSG, USERNOTICE, NOTICE, CLEARCHAT, ROOMSTATE, USERSTATE) haben `withheldTagKeys` = 0, die Allowlist ist also nicht zu eng.
+  - Zu R1, für `TagBlockForLog` mit einer gespleißten Zeile und je oben und eingebettet nach `@`: `system-msg=SomeUser\ssubscribed…`, `msg-param-recipient-display-name=SomeDisplayName`, `msg-param-sender-login=someone`, `msg-param-login=someone`, `display-name=X`, `reply-parent-display-name=Y`, `color=#ABCDEF`, `id=<uuid>`. Kein Wert erscheint, jeder Schlüssel schon. `tmi-sent-ts`, `room-id` und die Flags behalten ihren Wert; ein formatfremder Wert dieser Schlüssel (`room-id=abc`) wird ersetzt.
   - Der Weg bis in den Speicher steht in AK 4.
 - Live (Regel 16): Lokaler Worker gegen echtes Twitch, ein Kanal mit Sub-, Raid- oder Watch-Streak-Aufkommen (z. B. `handofblood`). Die Console zeigt keine `Unaccounted for … command=USERNOTICE` mehr. Die lokale Api zeigt bei einem Seitenaufruf keine `Executed DbCommand`-Zeilen mehr.
 - Ein DECISIONS-Eintrag (englisch) nennt die Messzahlen aus §2.6, beide Änderungen und die Begründung „Rauschen an der Quelle statt Stummschalten in der Ansicht“.
@@ -204,6 +211,8 @@ Wirkung: In 20 h fallen rund 13.156 Zeilen aus der Api-Console weg.
   - Grenzen: je Wert höchstens 256 Zeichen, höchstens 16 Schlüssel, serialisiert höchstens 4 KiB. Was darüber hinausgeht, fällt weg, und `Truncated` wird gesetzt.
 - **Scopes. Entscheidung des Autors (offen für Einspruch), A4:** Aus aktiven Scopes werden nur `RequestPath` und `TraceId` übernommen, als Properties `requestpath` und `traceid`, wenn vorhanden. Der Provider unterstützt dafür externe Scopes. Begründung: Ein ungefangener Api-Fehler (`Microsoft.AspNetCore.Diagnostics…` auf Error) nennt den Pfad nur im Scope. Weitere Scope-Werte (ConnectionId, RequestId, SpanId) bringen für den Betreiber nichts. `RequestPath` enthält keinen Query-String, kann aber Twitch-IDs in Pfaden tragen, z. B. `/api/admin/users/{id}`. Das ist dieselbe Datenklasse wie die Messages (§12).
 
+**Postgres-taugliche Zeichenketten.** **Sol-Befund 2.6 — Auflösung:** Postgres kann `U+0000` weder in `text` noch in `jsonb` speichern, und ein einzelnes Surrogat ist kein gültiges UTF-8. `SevenTvEventClient.cs:195` loggt einen unparsbaren Frame wörtlich, ein NUL darin würde also den ganzen Batch scheitern lassen. Deshalb werden vor dem Einreihen **alle** zu speichernden Zeichenketten normalisiert: Message, Exception, `ExceptionType`, Kategorie, `EventName` sowie Property-Schlüssel und -Werte. `U+0000` wird zu `U+2400` („␀“), ein unpaariges Surrogat zu `U+FFFD`. Das passiert vor der Byte-Schätzung. Die Console sieht weiter das Original.
+
 **Secret-Scrubber. Entscheidung des Autors (offen für Einspruch), A5:** Ein kleiner, getesteter Scrubber läuft vor dem Puffer über Message, Exception und Property-Werte. Er ersetzt nur eng definierte Geheimnis-Formen durch `[redacted]`: `Password=…` bis `;` oder Zeilenende (Connection-Strings), `oauth:` plus Token-Zeichen, `Bearer` plus Token und `access_token=`/`refresh_token=`/`client_secret=` plus Wert. Das ist eine Verteidigungslinie für Fremd-Exceptions und ersetzt nicht das Prinzip „Redaction an der Quelle“ (#246). Mehr Muster gibt es nicht, damit der Scrubber keine Diagnose-Texte zerstört.
 
 ### 5.3 Nicht blockieren: Puffer, Budget, Drops
@@ -229,10 +238,11 @@ Wirkung: In 20 h fallen rund 13.156 Zeilen aus der Api-Console weg.
   | `budget` | Tagesbudget erschöpft |
   | `capture_failed` | Ausnahme in `Log()` |
   | `reentrant` | Wiedereintritt während der eigenen Formatierung (S3) |
+  | `rejected` | einzelner Datensatz, den Postgres deterministisch ablehnt (R6) |
   | `write_unconfirmed` | Batch auch nach idempotenter Wiederholung ohne bestätigten Commit (S4). Die Einträge können trotzdem gespeichert sein, die Seite sagt deshalb „möglicherweise nicht gespeichert“ |
 
   Die Zähler sind prozesslokal und atomar.
-- **Drops werden sichtbar,** und zwar als **synthetischer Eintrag** in der Log-Tabelle. Der Schreiber erzeugt ihn selbst, er läuft nicht über `ILogger`. Kategorie `EmotePurge.LogCapture`, Level Warning, Message `"{n} log entries were dropped ({reason breakdown})"`, Properties `dropped`, `queuefull`, `budget`, `writeunconfirmed`, `capturefailed`, `reentrant`, `firstdroputc`, `lastdroputc`. Höchstens einer je 60 s und Prozess, nur wenn seit dem letzten etwas verworfen wurde. Synthetische Einträge umgehen Puffer und Budget. Damit erscheinen Drops im Histogramm, sind über `cat:LogCapture` filterbar, verschwinden mit der normalen Retention und lassen sich je Zeitraum summieren (§8).
+- **Drops werden sichtbar,** und zwar als **synthetischer Eintrag** in der Log-Tabelle. Der Schreiber erzeugt ihn selbst, er läuft nicht über `ILogger`. Kategorie `EmotePurge.LogCapture`, Level Warning, Message `"{n} log entries were dropped ({reason breakdown})"`, Properties `dropped`, `droppederrors` (davon Error und Critical, R5; das Level ist bei jeder Zulassung vor dem Verwerfen bekannt), `queuefull`, `budget`, `writeunconfirmed`, `capturefailed`, `reentrant`, `rejected`, `firstdroputc`, `lastdroputc`. Höchstens einer je 60 s und Prozess, nur wenn seit dem letzten etwas verworfen wurde. Synthetische Einträge umgehen Puffer und Budget. Damit erscheinen Drops im Histogramm, sind über `cat:LogCapture` filterbar, verschwinden mit der normalen Retention und lassen sich je Zeitraum summieren (§8).
 
   **Entscheidung des Autors (offen für Einspruch), A8.** Grenze: Drops, die bis zum Prozessende nicht mehr geschrieben werden konnten, etwa weil Postgres bis zum Shutdown weg war, sind verloren. Die Console hat die Originalzeilen weiterhin, und der Schreiber meldet die Restzahl beim Shutdown in der Console.
 
@@ -251,22 +261,26 @@ Die Erfassung schreibt nichts, was sie selbst wieder erfasst. Vier Schichten sor
 
    **Entscheidung des Autors (offen für Einspruch), A31:** Ein eigener `DbContext` für die Lesepfade ist nicht nötig; das Flag reicht und wird getestet. Bewusster Preis: Fehler der Log-Ansicht selbst stehen nicht im Log-Speicher, sondern nur in der Console und im Fehlerbanner der Seite.
 
-   **Client:** Nach einem fehlgeschlagenen automatischen Nachladen (jede Antwort außer 2xx) pausiert die Seite **alle** automatischen Abrufe, also Änderungsabruf und Summary-Takt. Sie zeigt „Live pausiert nach Fehler — Erneut versuchen“ und nimmt erst nach einem erfolgreichen, vom Nutzer ausgelösten Abruf wieder auf (§9.4).
+   **Client:** Nach einem fehlgeschlagenen automatischen Nachladen (jede Antwort außer 2xx) pausiert die Seite **alle** automatischen Abrufe, also Abgleich und Summary-Takt. Sie zeigt „Live pausiert nach Fehler — Erneut versuchen“ und nimmt erst nach einem erfolgreichen, vom Nutzer ausgelösten Abruf wieder auf (§9.4).
 
 Zusätzlich gilt für den Live-Pfad (§5.6): Eine Zustellung von `logs.appended` darf keine Folge erzeugen, die selbst wieder ein `logs.appended` auslöst.
 
 ### 5.5 Schreiber: Batches, Ausfälle, Start und Shutdown
 
-- **Batching:** Der Schreiber nimmt bis zu **500 Einträge** oder wartet höchstens **1 s** und schreibt dann einen Batch als **ein einzelnes Statement im Autocommit** (keine explizite Transaktion). Für die Sitzung gelten `statement_timeout = 5 s` und `idle_in_transaction_session_timeout = 5 s`, dazu der Client-Command-Timeout von 5 s.
+- **Batching:** Der Schreiber nimmt bis zu **500 Einträge** oder wartet höchstens **1 s** und schreibt dann einen Batch als **ein einzelnes Statement** mit **5 s** Command-Timeout.
 - **Sol-Befund 4 (P2) — Auflösung:** **Idempotentes Schreiben.**
   - Jeder Eintrag bekommt schon bei der Zulassung im Sink eine stabile **`CaptureId`** (UUID v7).
   - Ein synthetischer Drop-Eintrag bekommt seine `CaptureId`, sobald er aus den Zählern geschnitten wird. Ab dann ist er ein fester Datensatz mit festen Zahlen; neue Drops sammeln sich für den nächsten.
   - `LogEntries.CaptureId` ist unique (§6.1). Geschrieben wird mit `ON CONFLICT ("CaptureId") DO NOTHING`, Binary-COPY scheidet damit aus.
   - Geht die Bestätigung eines tatsächlich erfolgten Commits verloren, schreibt die Wiederholung **nichts doppelt**; der Drop-Eintrag ebenfalls nicht.
-- **Sol-Befund 7 (P2) — Auflösung:** **Einfügezeit für den Änderungsabruf:** `InsertedAtUtc` wird von der Datenbank gesetzt (`DEFAULT now()`, also der Beginn des Statements). Weil jedes Statement im Autocommit nach höchstens 5 s abgebrochen wird, ist ein Eintrag spätestens ~5 s nach seiner `InsertedAtUtc` sichtbar. Darauf beruht die Überlappung von 15 s in §8.3. Diese Invariante (sichtbar ≤ `InsertedAtUtc` + 5 s, Überlappung 15 s, also dreifache Reserve) ist Teil des Vertrags. Ein späterer Umbau auf mehrteilige Transaktionen muss sie neu belegen.
-- **Fehler:** Scheitert ein Batch, auch mehrdeutig mit verlorener Bestätigung, wiederholt der Schreiber ihn **einmal** nach 2 s, idempotent (S4). Scheitert auch das, verwirft er ihn und zählt jeden seiner Einträge als `write_unconfirmed`. Danach wartet er mit wachsendem Abstand (1 s, 2 s, 4 s … höchstens 30 s) auf den nächsten Versuch. Währenddessen füllt sich der Puffer, und neue Einträge laufen als `queue_full` in den Drop-Zähler. Die App merkt davon nichts. Kommt die DB zurück, schreibt der Schreiber zuerst den synthetischen Drop-Eintrag, dann den Puffer.
+- **Fehler:** Scheitert ein Batch, auch mehrdeutig mit verlorener Bestätigung, wiederholt der Schreiber ihn **einmal** nach 2 s, idempotent (S4). Scheitert auch das, verwirft er ihn und zählt jeden seiner Einträge als `write_unconfirmed`.
+- **Sol-Befund 2.6 — Auflösung:** **Datensatzfehler isolieren statt Batch verwerfen.** Der Schreiber unterscheidet zwei Arten von Fehlern:
+  - **Deterministisch:** Postgres-SQLSTATE-Klassen `22` (Datenfehler) und `54` (Programmgrenze) sowie Kodierungsfehler des Treibers vor dem Senden. Eine Wiederholung desselben Batches ist dann sinnlos. Der Schreiber **halbiert** den Batch und schreibt die Hälften getrennt, rekursiv bis zum Einzeldatensatz. Ein Einzeldatensatz, der weiter deterministisch scheitert, wird verworfen und als **`rejected`** gezählt. Alle anderen werden gespeichert.
+  - **Alles andere gilt als vorübergehend** und läuft über die idempotente Wiederholung oben.
+
+  Die Halbierung ist auf 64 Statements je Ursprungsbatch begrenzt; was danach übrig ist, zählt als `rejected`. Wegen der Normalisierung (§5.2) sollte der Fall praktisch nicht mehr auftreten. Die Isolierung ist die zweite Linie. Danach wartet er mit wachsendem Abstand (1 s, 2 s, 4 s … höchstens 30 s) auf den nächsten Versuch. Währenddessen füllt sich der Puffer, und neue Einträge laufen als `queue_full` in den Drop-Zähler. Die App merkt davon nichts. Kommt die DB zurück, schreibt der Schreiber zuerst den synthetischen Drop-Eintrag, dann den Puffer.
 - **Status-Herzschlag. Entscheidung des Autors (offen für Einspruch), A9:** Mit jedem erfolgreichen Batch und sonst **mindestens alle 60 s** schreibt der Schreiber `LastFlushUtc` in die Zeile seiner Instanz in `LogCaptureStatus` (§6.2), auch ohne neue Einträge. Bei `LogCapture:Enabled = false` schreibt ein Herzschlag-Dienst dieselbe Zeile im selben Takt mit `CaptureEnabled = false` (S9). Begründung: Die Kachel (§11) darf bei toter Erfassung nicht „0 Fehler“ zeigen. Ohne Herzschlag sähe eine Api, die stundenlang nichts loggt (gemessen: ~11 Einträge in 20 h), genauso aus wie eine kaputte Erfassung.
-- **Redis down:** Das betrifft nur `logs.appended` (§5.6). Der Publish läuft losgelöst von der Schreibschleife, höchstens einer gleichzeitig. Eine fällige Ankündigung **geht nicht verloren**, sie bleibt als „dirty“ stehen (S6, §5.6). Fehler werden gedrosselt in die eigene Kategorie geloggt. **Der Schreiber wartet nie auf Redis.**
+- **Redis down:** Das betrifft nur den Hinweis `logs.appended` (§5.6). Der Publish läuft losgelöst von der Schreibschleife (fire and forget); ein Fehlschlag wird verworfen und gedrosselt in die eigene Kategorie geloggt. Die Ansicht bleibt trotzdem richtig, weil sie periodisch abgleicht (§8.3). **Der Schreiber wartet nie auf Redis.**
 - **Postgres down:** siehe „Fehler“ oben. Die App läuft weiter. Postgres beim Start nicht erreichbar betrifft die Erfassung nicht eigens, denn `PendingMigrationGuard` beendet den Prozess dann ohnehin.
 - **Start:** Der Sink existiert ab dem Bau der `LoggerFactory`. Einträge aus der Zeit, bevor die Hosted Services starten (Host-Build, `PendingMigrationGuard`), liegen im Puffer und werden mit dem ersten Batch geschrieben, mit ihren eigenen Zeitstempeln. Bricht der Guard den Start ab, gehen sie verloren; die Console hat sie.
 - **Shutdown:** Der Schreiber stoppt als letzter Hosted Service. In `StopAsync` leert er den Puffer höchstens **3 s** lang, unter dem Docker-Stop-Grace von 10 s. Danach geschriebene oder verbliebene Einträge verwirft er und nennt die Zahl einmal in der Console. Nach dem Stop verwirft der Sink still.
@@ -274,18 +288,10 @@ Zusätzlich gilt für den Live-Pfad (§5.6): Eine Zustellung von `logs.appended`
 ### 5.6 Live-Signal `logs.appended`
 
 - **Neuer Ereignistyp** `logs.appended` in `LiveEvents`, aufgenommen in `AdminTypes`, **ohne** Kanal und Payload. Er ist dünn wie alle anderen.
-- Jeder Schreiber veröffentlicht ihn nach einem committeten Batch mit mindestens einem echten (nicht synthetischen) Eintrag, **höchstens einmal je 2 s** und Prozess.
-- **Sol-Befund 6 (P2) — Auflösung:** **Dirty-Flag mit nachlaufender Ankündigung.** Ein committeter, ankündigungspflichtiger Batch setzt `dirty`. Ein eigener Ankündiger veröffentlicht, sobald `dirty` gesetzt ist, die 2-s-Drossel abgelaufen ist und kein Publish mehr offen ist. `dirty` wird erst nach einem **erfolgreichen** Publish gelöscht. Scheitert der Publish (Redis weg), versucht der Ankündiger es mit wachsendem Abstand erneut (2, 4, 8 … höchstens 30 s), bis er gelingt.
-
-  Dadurch gilt dreierlei:
-  - Der letzte Batch innerhalb einer Drosselperiode wird nachlaufend angekündigt.
-  - Ein Batch während eines offenen Publish wird danach angekündigt.
-  - Nach einer Redis-Erholung kommt genau eine Ankündigung, ohne dass ein Browser neu verbinden muss (Abo bleibt warm, §2.7).
-
-  Die Drossel bleibt bei höchstens einem Publish je 2 s.
+- Jeder Schreiber veröffentlicht ihn nach einem committeten Batch mit mindestens einem echten (nicht synthetischen) Eintrag, **höchstens einmal je 2 s** und Prozess, fire and forget.
+- **Sol-Befund 2.3 — Auflösung:** **Das Ereignis ist nur ein Hinweis, keine Zustellgarantie.** Ein erfolgreicher `PUBLISH` beweist nicht, dass ein Abonnent zuhörte: `RedisPublisher.cs:11` verwirft die Empfängerzahl, und nach einem Redis-Ausfall kann der Worker veröffentlichen, bevor die Api ihr Abo wiederhergestellt hat. Deshalb gibt es weder Dirty-Flag noch nachlaufende Ankündigung noch Wiederholungen (S6 gestrichen). Richtig wird die Ansicht durch den periodischen Abgleich in §8.3; der Hinweis macht ihn nur schneller.
 - **Entscheidung des Autors (offen für Einspruch), A10:** **Rekursionsbremse:** Ein Batch, der ausschließlich aus Einträgen der Zustellkategorien besteht (`EmotePurge.Infrastructure.Redis.RedisLiveEventStream`, `EmotePurge.Api.Endpoints.LiveEndpoints`), löst kein `logs.appended` aus. Sonst könnte ein dauerhaft scheiternder Zustellversuch (Warning je Ereignis) über Batch → Publish → Zustellung → Warning einen endlosen Takt alle 2 s erzeugen.
-- **Der Client lädt über den Änderungsabruf nach (§8.3), das Ereignis trägt keine Einträge.** Damit bleibt der dünne Vertrag des Streams erhalten, und kein Admin-Stream wird mit Logdaten geflutet.
-- Verworfene Alternative: 5-s-Polling der Seite ohne neues Ereignis. Das wäre einfacher und hätte kein Rekursionsrisiko, widerspräche aber dem Muster „Stream meldet, REST liefert“. Der Admin-Stream ist ohnehin offen.
+- **Der Client gleicht über REST ab (§8.3), das Ereignis trägt keine Einträge.** Damit bleibt der dünne Vertrag des Streams erhalten, und kein Admin-Stream wird mit Logdaten geflutet.
 
 ## 6. Speicherung
 
@@ -295,7 +301,6 @@ Zusätzlich gilt für den Live-Pfad (§5.6): Eine Zustellung von `logs.appended`
 |---|---|---|
 | `Id` | `bigint` Identity, PK | Tie-Breaker der Sortierung, Kennung im Client |
 | `CaptureId` | `uuid` not null, **unique** | stabile Erzeuger-Kennung aus dem Sink, Grundlage des idempotenten Schreibens (S4) |
-| `InsertedAtUtc` | `timestamptz` not null, `DEFAULT now()` | Einfügezeit laut DB, Grundlage des Änderungsabrufs (S7) |
 | `TimestampUtc` | `timestamptz` not null | Zeitpunkt des `Log`-Aufrufs |
 | `Source` | `smallint` not null | `LogSource`: 1 = Api, 2 = Worker. Neues Core-Enum, bewusst nicht `SystemLoadSource` |
 | `InstanceId` | `varchar(8)` not null | Prozesskennung |
@@ -318,7 +323,6 @@ Die Entität liegt in `EmotePurge.Core/Entities`. `Properties` ist dort ein `str
 |---|---|
 | `(TimestampUtc DESC, Id DESC)` | Seiten, Zeitbereich für Summary und Retention |
 | unique `(CaptureId)` | idempotentes Schreiben (S4) |
-| `(InsertedAtUtc)` | Änderungsabruf (S7) |
 | partiell `(TimestampUtc) WHERE "Level" >= 4` | Fehlerzahl der Kachel |
 | `(Source, ProcessStartedUtc DESC)` | `instance:latest` |
 
@@ -453,11 +457,10 @@ Alle neuen Routen liegen in der Gruppe `/api/admin` und erben `RequireAuthorizat
 
 | Route | Parameter | Antwort | Fehler |
 |---|---|---|---|
-| `GET /api/admin/logs` | `q`, Zeitraum (§8.2), `before` (Cursor, optional), `limit` (Default 100, höchstens 200) | `{ entries: [Eintrag], nextCursor: string\|null, rangeFromUtc, rangeToUtc }`, sortiert neueste zuerst nach `(TimestampUtc DESC, Id DESC)` | `400 invalid_log_filter` (§7.3), `400 invalid_log_range`, `503` (§8.4) |
-| `GET /api/admin/logs/changes` | `q`, `from` (ältester geladener Zeitstempel), `since` (Server-Cursor der vorigen Antwort), `limit` (Default und Maximum 500) | `{ entries: [Eintrag], cursor, truncated }`: alle Einträge zum Filter mit `TimestampUtc ≥ from` und `InsertedAtUtc ≥ since − 15 s`, sortiert wie die Liste. `cursor` ist die DB-Zeit der Abfrage (S7, §8.3) | wie `GET /logs`, dazu `400 invalid_log_cursor` |
+| `GET /api/admin/logs` | `q`, Zeitraum (§8.2), `before` (Cursor, optional), `limit` (Default 100, höchstens 200); für den Abgleich (§8.3) zusätzlich `keysOnly=true` (dann `limit` bis 2.500, Antwort nur `{ id, timestampUtc }` je Eintrag) oder `ids=<bis zu 200 Ids>` (gezielt nachladen, ohne Zeitraum) | `{ entries: [Eintrag], nextCursor: string\|null, rangeFromUtc, rangeToUtc, truncated }`, sortiert neueste zuerst nach `(TimestampUtc DESC, Id DESC)`. `rangeFromUtc`/`rangeToUtc` sind die **exakten**, nicht eingerasteten Grenzen (R4) | `400 invalid_log_filter` (§7.3), `400 invalid_log_range`, `503` (§8.4) |
 | `GET /api/admin/logs/{id}` | — | Eintrag plus `exception`, `processStartedUtc`, `uptimeSeconds` | `404 log_entry_not_found` (z. B. inzwischen gelöscht) |
-| `GET /api/admin/logs/summary` | `q`, Zeitraum | `{ rangeFromUtc, rangeToUtc, bucketSeconds, bucketStartsUtc: [...], counts: { info: [...], warn: [...], error: [...] }, total, facets: { source: [{value,count}], level: [{value,count}], category: [{value, short, count}], categoryOther: n }, dropped: { total, queueFull, budget, writeUnconfirmed, captureFailed, reentrant }, processStarts: [{source, instanceId, startedUtc}] }` | wie `GET /logs` |
-| `GET /api/admin/logs/status` | — | `{ generatedAtUtc, errorsLast24h, complete, sources: [{ source, state: "healthy"\|"stale"\|"disabled"\|"missing", instanceId?, startedUtc?, lastFlushUtc? }], retention: { oldestEntryUtc?, overdue } }`. `sources` enthält **immer** genau `api` und `worker` (S9, §11) | — |
+| `GET /api/admin/logs/summary` | `q`, Zeitraum | `{ rangeFromUtc, rangeToUtc` (exakt, R4)`, bucketFromUtc, bucketToUtc` (eingerastet, nur fürs Histogramm)`, bucketSeconds, bucketStartsUtc: [...], counts: { info: [...], warn: [...], error: [...] }, total, facets: { source: [{value,count}], level: [{value,count}], category: [{value, short, count}], categoryOther: n }, dropped: { total, queueFull, budget, writeUnconfirmed, captureFailed, reentrant }, processStarts: [{source, instanceId, startedUtc}] }` | wie `GET /logs` |
+| `GET /api/admin/logs/status` | — | `{ generatedAtUtc, sources: [{ source, state: "healthy"\|"stale"\|"disabled"\|"missing", instanceId?, startedUtc?, lastFlushUtc? }], coverage24h: { complete, recordedErrors, droppedErrors, gaps: [{ source, fromUtc, toUtc }] }, retention: { oldestEntryUtc?, overdue } }`. `sources` enthält **immer** genau `api` und `worker` (S9). Lebendigkeit (`sources`) und Abdeckung (`coverage24h`) sind getrennt (R5, §11) | — |
 | `GET /api/admin/log-filters` | — | `[{ id, name, filter, sortOrder }]` nach `sortOrder` | — |
 | `POST /api/admin/log-filters` | `{ name, filter }` | `201` + Filter | `400 invalid_log_filter_name` (leer oder > 60 Zeichen), `400 invalid_log_filter` (gleicher Parser), `409 log_filter_name_taken`, `409 log_filter_limit_reached` (höchstens 30) |
 | `PUT /api/admin/log-filters/{id}` | `{ name, filter }` | `200` + Filter | wie `POST`, dazu `404 log_filter_not_found` |
@@ -475,45 +478,42 @@ Alle neuen Routen liegen in der Gruppe `/api/admin` und erben `RequireAuthorizat
 
 **Prozessstarts:** `processStarts` sind die `ProcessStartedUtc` aller Instanzen, deren Start im Zeitraum liegt. Sie werden als Marken im Histogramm gezeigt.
 
-**Neue `ApiErrorCodes`:** `invalid_log_filter`, `invalid_log_range`, `invalid_log_filter_name`, `log_filter_name_taken`, `log_filter_limit_reached`, `log_filter_not_found`, `log_entry_not_found`, `log_query_timeout`, `invalid_log_cursor`. Jeder bekommt seinen Eintrag in `web/src/app/core/i18n/api-error.ts` und in beiden Locale-Dateien (Regel 7; `api-error-locales.spec.ts` prüft die hinteren beiden Schritte).
+**Neue `ApiErrorCodes`:** `invalid_log_filter`, `invalid_log_range`, `invalid_log_filter_name`, `log_filter_name_taken`, `log_filter_limit_reached`, `log_filter_not_found`, `log_entry_not_found`, `log_query_timeout`. Jeder bekommt seinen Eintrag in `web/src/app/core/i18n/api-error.ts` und in beiden Locale-Dateien (Regel 7; `api-error-locales.spec.ts` prüft die hinteren beiden Schritte).
 
 ### 8.2 Zeitraum und Buckets
 
-- **Parameter:** entweder `range` = `1h` | `6h` | `24h` | `7d` (Default `24h`; das Ende ist die Anfragezeit) **oder** `from` + `to`, beide ISO-UTC, für einen absoluten Bereich. `from < to`, höchstens 8 Tage Spanne, `to` höchstens 1 h in der Zukunft. Gemischte oder ungültige Angaben ergeben `400 invalid_log_range`.
+- **Parameter:** entweder `range` = `1h` | `6h` | `24h` | `7d` (Default `24h`; das Ende ist die Anfragezeit) **oder** `from` + `to`, beide ISO-UTC, für einen absoluten Bereich. `from < to`, höchstens 8 Tage Spanne, `to` höchstens **12 h** in der Zukunft. Gemischte oder ungültige Angaben ergeben `400 invalid_log_range`.
+- **Sol-Befund 2.4 — Auflösung:** **Listen rasten nicht ein, nur das Histogramm.** Vorher lehnte die Prüfung um 12:01 UTC bei `7d` die eigene eingerastete Grenze 14:00 beim Nachladen und beim Klick auf den laufenden Bucket ab. Jetzt gilt:
+  - `GET /logs` und der Abgleich arbeiten mit den **exakten** Grenzen. Bei `range` ist das `[Anfragezeit − Spanne, Anfragezeit]`. Die Antwort nennt genau diese Grenzen, das Nachladen schickt sie zurück, und weil `to` dann in der Vergangenheit liegt, ist die Rückgabe immer gültig.
+  - Nur `GET /logs/summary` rastet zusätzlich ein und meldet die eingerasteten Grenzen getrennt (`bucketFromUtc`/`bucketToUtc`).
+  - Ein Balken-Klick schickt die Grenzen dieses Buckets. Deren Ende liegt höchstens eine Bucketbreite (≤ 12 h) in der Zukunft, und darauf ist die neue Grenze ausgelegt.
 
   **Entscheidung des Autors (offen für Einspruch), A20:** Die Voreinstellung ist 24 h, umschaltbar bis 7 Tage. Diese Werte hat der Autor im Chat vorgeschlagen.
-- **Buckets und Einrasten.** **Sol-Befund 8 (P2) — Auflösung (ersetzt O4):** Die O4-Fassung war in zwei Punkten falsch:
-  - Bei unausgerichtetem `from` schloss sie den Anfang aus. Aus 10:03:01–10:17:01 wurde 10:03:10–10:17:10.
-  - Ihre Leiter widersprach dem eigenen `1h`-Beispiel: Bei höchstens 120 Buckets wäre die kleinste Breite 30 s, nicht 1 min.
-
-  **Neue Regel für relative und absolute Bereiche gleich:**
+- **Buckets und Einrasten (nur Histogramm).** **Sol-Befund 8 (P2) — Auflösung** (ersetzt O4, das den Anfang unausgerichteter Bereiche abschnitt und dessen Leiter dem 1h-Beispiel widersprach)**:**
   - **Angefragter Bereich:** `[from, to)`; bei `range` gilt `to` = Anfragezeit und `from` = `to` − nominelle Spanne.
   - **Breite** `w` ist die kleinste Stufe der Leiter 10 s, 30 s, 1, 2, 5, 10, 15, 30 min, 1, 2, 3, 6, 12 h, für die die **eingerastete** Spanne höchstens **100 Buckets** ergibt.
   - **Eingerastet** wird mit Start = `from` **abgerundet** auf ein UTC-Vielfaches von `w` und Ende = `to` **aufgerundet** auf ein Vielfaches von `w` (liegt es schon darauf, bleibt es). Beide angefragten Grenzen sind damit immer abgedeckt.
-  - **Idempotenz:** Eingerastete Grenzen erneut geschickt ergeben dieselbe Breite. Mit `w` bleibt die Zahl gleich, und jede kleinere Stufe lag schon für die kürzere Ursprungsspanne über 100. Abrunden und Aufrunden sind auf Vielfachen von `w` die Identität. Das ist die Grundlage des Nachladens (§8.3).
+  - **Idempotenz:** Eingerastete Grenzen erneut geschickt ergeben dieselbe Breite und dieselben Grenzen. Das ist die Grundlage des Balken-Klicks. Das Nachladen braucht es seit R4 nicht mehr.
   - **Presets:** `1h` → 1 min (60, unausgerichtet 61), `6h` → 5 min (72/73), `24h` → 15 min (96/97), `7d` → 2 h (84/85). Bei 30 s wären es 120 > 100, bei 2 min 180, bei 10 min 144 und bei 1 h 168.
   - **Eingrenzen:** Ein Klick auf einen Balken setzt `from`/`to` auf dessen Grenzen und wird mit derselben Regel feiner gebucketet. Ein 15-min-Bucket ergibt 10 s mit 90 Buckets, ein 2-h-Bucket 2 min mit 60.
 
   **Entscheidung des Autors (offen für Einspruch), A33:** Die Obergrenze sinkt von 120 auf **100**. Das ist die kleinste Änderung, mit der alle Preset-Werte gültig bleiben.
-- **Antwort:** `rangeFromUtc`/`rangeToUtc` in jeder Antwort (Seite **und** Summary) sind die **eingerasteten** Grenzen. Der letzte Bucket reicht bei relativen Bereichen in die Zukunft und ist unvollständig; das Histogramm kennzeichnet ihn so. Ein relativer Bereich umfasst durch das Abrunden bis zu einen Bucket mehr Vergangenheit, als er nominell hat. Das ist gewollt, denn nichts Angefragtes fällt heraus.
+- **Antwort der Summary:** `bucketFromUtc`/`bucketToUtc` sind die eingerasteten Grenzen. Der letzte Bucket reicht bei relativen Bereichen in die Zukunft und ist unvollständig; das Histogramm kennzeichnet ihn so. `counts` zählen nur Einträge innerhalb der **exakten** Grenzen, damit Histogramm und Liste dieselbe Menge beschreiben.
 - `counts` trennt Information, Warning und Error+Critical je Bucket. Leere Buckets sind 0 und nicht `null`, denn eine Zählung kennt keine Unbekannten.
 
 ### 8.3 Paginierung und Live-Abruf
 
-- **Cursor:** opak, kodiert `(TimestampUtc, Id)` des letzten Eintrags. Die Folgeseite liest Keyset-basiert `(TimestampUtc, Id) < Cursor` im selben Zeitraum. Bei relativem `range` friert der Client den **eingerasteten** Bereich der ersten Antwort (`rangeFromUtc`/`rangeToUtc`, O4) ein und schickt ihn beim Nachladen als absolutes `from`/`to` mit. Wegen der Idempotenz des Einrastens bleibt er zwischen den Seiten gleich. Sonst verschöbe sich der Bereich.
-- **Live-Abruf.** **Sol-Befund 7 (P2) — Auflösung (ersetzt A21):** Das Neuladen nur der Kopfseite verlor Einträge, die verspätet mit einem Zeitstempel **mitten** in einer schon geladenen Seite committen, etwa nach Schreiber-Backoff oder wenn zwei Schreiber gleichzeitig schreiben. Neu gilt der **Änderungsabruf über die Einfügezeit**:
-  - Auf `logs.appended` ruft der Client gedrosselt (höchstens alle 2 s) `GET /logs/changes` mit dem Filter, `from` = Zeitstempel des ältesten geladenen Eintrags und `since` = `cursor` der vorigen Antwort.
-  - Den ersten `cursor` liefert die erste Seitenantwort; dafür bekommt `GET /logs` dasselbe Feld `cursor`.
-  - Der Server liefert alles mit `InsertedAtUtc ≥ since − 15 s` im geladenen Zeitfenster. Die Überlappung deckt jede Commit-Verzögerung ab (Invariante in §5.5).
-  - Der Client führt das Ergebnis **per `id`** an der sortierten Position `(TimestampUtc, Id)` zusammen, **auch mitten in geladenen Seiten**; Doppelte fallen weg.
-  - **Lückenerkennung ist ausdrücklich:** Bei mehr als 500 Treffern setzt der Server `truncated`, und die Seite bietet „Zu viele neue Einträge — Liste neu laden“ an.
-  - Einträge älter als der älteste geladene kommen beim normalen Nachladen nach unten, weil die Keyset-Paginierung sie erreicht.
-  - Verworfen: ein `afterId`-Hochwasserzeichen (Ids committen außer der Reihe) und das Neuladen des ganzen geladenen Intervalls (bis zu 2.000 Zeilen je Ereignis).
+- **Cursor:** opak, kodiert `(TimestampUtc, Id)` des letzten Eintrags. Die Folgeseite liest Keyset-basiert `(TimestampUtc, Id) < Cursor` im selben Zeitraum. Bei relativem `range` friert der Client die **exakten** Grenzen der ersten Antwort ein und schickt sie beim Nachladen als absolutes `from`/`to` mit (R4).
+- **Live-Abgleich.** **Sol-Befund 2.2 — Auflösung** (zusammen mit 2.3 und 2.7; ersetzt S6, S7 und A34)**:** Der Änderungsabruf über eine Einfügezeit mit fester Überlappung ist gestrichen. Seine Annahme „sichtbar spätestens 5 s nach Statement-Beginn“ hält nicht: Postgres 16 schaltet `statement_timeout` vor dem Commit ab, und ein hängender WAL-Flush kann einen Commit beliebig verzögern. Ersatz ist ein **begrenzter REST-Abgleich des geladenen Intervalls**. Er ist ohne Annahmen über Commit-Zeiten oder Zustellung korrekt.
+  - **Geladenes Intervall:** von `from_L` bis jetzt. `from_L` ist der Zeitstempel des ältesten geladenen Eintrags, **bei leerer Liste `rangeFromUtc`** (R7). So entdeckt eine leere „Alle Fehler“-Liste ihren ersten Fehler ohne Sonderfall.
+  - **Ein Abgleich** besteht aus `GET /logs?q&from=<from_L>&keysOnly=true` (ohne `to`, also bis zur Anfragezeit; höchstens 2.500 Schlüssel). Der Client vergleicht die Ids mit den geladenen und holt die fehlenden mit `GET /logs?ids=…`, in höchstens drei Aufrufen zu 200. Sie werden **per `id`** an der sortierten Position `(TimestampUtc, Id)` eingefügt, auch mitten in geladenen Seiten. Mehr als 500 fehlende Einträge oder `truncated` ergeben den ausdrücklichen Hinweis „Zu viele neue Einträge — Liste neu laden“, statt still eine Lücke zu lassen. Ids, die serverseitig fehlen (Retention), bleiben bis zum Neuladen stehen.
+  - **Auslöser:** ein `logs.appended`-Hinweis, die Rückkehr des Tabs in den Vordergrund, das (Wieder-)Öffnen des Admin-Streams und **periodisch alle 30 s**. Das gilt nur bei sichtbarem Tab, im Live-Modus und solange nicht pausiert (S1). Höchstens ein Abgleich läuft gleichzeitig, und zwischen zwei Abgleichen liegen mindestens 5 s. Auslöser in dieser Wartezeit ergeben **einen** nachlaufenden Abgleich.
+  - **Abgedeckt ohne Zusatzmechanik:** verspätete Commits mitten im Intervall (2.2), ein verlorener oder ungehörter Hinweis (2.3) und die leere Liste (2.7). Spätestens der nächste periodische Abgleich holt sie. Einträge älter als `from_L` kommen beim normalen Nachladen, weil die Keyset-Paginierung sie erreicht.
+  - **Höchste Last je offener Seite:** ≤ 1 Schlüsselabfrage je 5 s (typisch 1 je 30 s) plus bei Abweichung ≤ 3 Id-Abfragen, dazu die Summary alle 30 s. Bei drei offenen Tabs sind das höchstens 0,6 Schlüssel- und 0,1 Summary-Abfragen je Sekunde. Die DB-Parallelität bleibt unabhängig davon durch das Gate in §8.4 auf 2 je Api-Instanz begrenzt. Die Schlüsselabfrage gehört zum Performance-Gate (§13.3).
 
-  **Entscheidung des Autors (offen für Einspruch), A34:** Überlappung 15 s, `limit` 500.
-- Die **Summary** wird im Live-Modus höchstens alle 15 s neu geladen.
+  **Entscheidung des Autors (offen für Einspruch), A36:** 30-s-Takt, 5-s-Mindestabstand, 2.500 Schlüssel, 500 nachzuladende Einträge.
+- Die **Summary** (Histogramm, Facetten) wird im Live-Modus höchstens alle 30 s neu geladen.
 - **Live gibt es nur bei relativem `range`.** Bei einem absoluten Bereich lädt die Seite nicht nach, und der Live-Hinweis sagt das.
-- Öffnet sich der Admin-Stream neu (Reconnect nach `MaxConnectionLifetime` oder nach einem Fehler), ruft die Seite den Änderungsabruf einmal mit dem letzten `cursor` auf. Das schließt die Lücke ohne Sonderfall.
 - Nach einem fehlgeschlagenen automatischen Abruf pausiert die Seite alle automatischen Abrufe (S1, §5.4).
 
 ### 8.4 Last- und Missbrauchsgrenzen
@@ -521,7 +521,7 @@ Alle neuen Routen liegen in der Gruppe `/api/admin` und erben `RequireAuthorizat
 Die Gruppe hat bewusst keine Rate-Limit-Policy (§2.3), und das bleibt so. Stattdessen gilt **Entscheidung des Autors (offen für Einspruch), A22:**
 
 - **Jede Log-Abfrage hat ein Zeitlimit von 5 s** (Command-Timeout bzw. `SET LOCAL statement_timeout`). Bei Überschreitung antwortet die Api `503 { errorCode: "log_query_timeout" }`. Das Frontend sagt dann: „Abfrage zu aufwendig — Zeitraum oder Filter eingrenzen“.
-- **Höchstens 2 Log-Abfragen gleichzeitig je Api-Instanz,** gezählt über `logs`, `logs/changes`, `logs/summary` und `logs/{id}`. Eine dritte wartet höchstens 5 s und bekommt dann `503` mit `Retry-After: 5` ohne Body, wie bei `/dashboard/load` in #381. Zwei, weil ein Seitenaufruf Seite und Summary parallel lädt. Mehr Admins gibt es nicht.
+- **Höchstens 2 Log-Abfragen gleichzeitig je Api-Instanz,** gezählt über `logs` (alle Varianten), `logs/summary` und `logs/{id}`. Eine dritte wartet höchstens 5 s und bekommt dann `503` mit `Retry-After: 5` ohne Body, wie bei `/dashboard/load` in #381. Zwei, weil ein Seitenaufruf Seite und Summary parallel lädt. Mehr Admins gibt es nicht.
 - `GET /logs/status` ist über das `TtlCache`-Muster aus #381 **30 s** gecacht (wie `SnapshotTtl`), mit Single-Flight (O2, §11). `TtlCache<T>` wird dafür aus `AdminDashboardReader` in eine eigene `internal`-Klasse in Infrastructure herausgezogen; Verhalten und Tests bleiben. Seite und Summary werden nicht gecacht, denn sie hängen am Filter.
 
 ## 9. Oberfläche `/admin/logs`
@@ -566,7 +566,7 @@ Von oben nach unten, alles innerhalb der einen Inhaltsbreite (`docs/UI-Designspr
 ### 9.4 Live, ohne Sprünge (B8)
 
 - **„Oben“** heißt: die erste Listenzeile liegt im sichtbaren Bereich unter den Sticky-Leisten, **und** keine Zeile ist aufgeklappt.
-- **Steht der Nutzer oben,** werden neue Einträge an ihrer sortierten Position eingefügt, auch mitten in der Liste (S7), und kurz hervorgehoben: Hintergrund mit Akzent-Wash, der über ~2 s ausblendet, bei `prefers-reduced-motion` ohne Animation, nur für 2 s markiert. Ein Screenreader bekommt **eine** höfliche Live-Meldung je Nachladen („3 neue Einträge“), nicht je Eintrag.
+- **Steht der Nutzer oben,** werden neue Einträge an ihrer sortierten Position eingefügt, auch mitten in der Liste (R2), und kurz hervorgehoben: Hintergrund mit Akzent-Wash, der über ~2 s ausblendet, bei `prefers-reduced-motion` ohne Animation, nur für 2 s markiert. Ein Screenreader bekommt **eine** höfliche Live-Meldung je Nachladen („3 neue Einträge“), nicht je Eintrag.
 - **Hat der Nutzer gescrollt oder eine Zeile aufgeklappt,** fügt die Seite **nichts** in die Liste ein, auch nicht unterhalb des sichtbaren Bereichs. Alles wartet und wird gezählt. Der reservierte Platz in der Filterleiste zeigt dann „n neue ↑“. Ein Klick scrollt nach oben und fügt ein. Der Platz ist auch bei n = 0 reserviert (unsichtbar), damit die Leiste nicht springt (Regel „keine Layout-Sprünge“).
 - Ist der Stream geschlossen, zeigt der Live-Status das wie auf der Monitoring-Seite, und es gibt ein „Neu laden“. Es gibt **kein** Polling-Fallback, wie im ganzen `LiveUpdateService`.
 - **Nach einem fehlgeschlagenen automatischen Abruf (S1)** geht der Live-Status auf „pausiert“. Weitere `logs.appended` lösen **keine** Anfrage aus, bis „Erneut versuchen“ erfolgreich war.
@@ -597,6 +597,7 @@ Regeln:
 - **Folgeladen:** Die letzten Werte bleiben stehen.
 - **Leer:** `<app-empty-state>` „Keine Einträge für diesen Filter im Zeitraum“, mit Angebot, den Zeitraum auf 7 Tage zu erweitern, wenn er kürzer ist.
 - **Drops im Zeitraum:** `NoticeBanner` (`warning`) über der Liste: „Im Zeitraum wurden n Einträge nicht oder möglicherweise nicht gespeichert (Puffer voll: …, Tagesbudget: …, Schreiben nicht bestätigt: …, Wiedereintritt: …)“, dazu ein Link „Anzeigen“ auf `cat:LogCapture`.
+- **Abdeckung lückenhaft** (`coverage24h.gaps`, R5): `NoticeBanner` (`warning`) „Für {source} fehlen Einträge von {von} bis {bis} UTC“, wenn eine Lücke den angezeigten Zeitraum schneidet.
 - **Erfassung unvollständig** (`status.sources[].state` ≠ `healthy`, §11): `NoticeBanner` (`warning`) je betroffener Quelle. Bei `stale`: „Die Log-Erfassung von {source} hat seit {hh:mm} UTC nichts geschrieben — neuere Einträge fehlen hier, `docker logs` hat sie“. Bei `disabled`: „… ist abgeschaltet“. Bei `missing`: „… hat sich nie gemeldet“.
 - **Löschung überfällig** (`status.retention.overdue`, S5): `NoticeBanner` (`warning`) „Log-Einträge älter als 7 Tage sind noch vorhanden (ältester: …)“.
 - **Abfragefehler:** `invalid_log_filter` am Feld (§9.2); `log_query_timeout` und `503` als `NoticeBanner` (`error`) im Listenbereich. Die letzte gute Antwort bleibt dabei stehen und wird als veraltet markiert, wie bei #381.
@@ -620,7 +621,14 @@ Regeln:
 Inhalt:
 
 - „Fehler der letzten 24 h: **n**“ und „Ansehen →“. Der Link führt auf `/admin/logs?q=level%3E%3Derror&range=24h`, also exakt den Seed „Alle Fehler“.
-- Bei n = 0 neutral „keine“, bei n > 0 `StatusBadge tone="danger"` mit der Zahl.
+- **Sol-Befund 2.5 — Auflösung:** **Lebendigkeit und Abdeckung sind getrennt.** Ein gesunder Herzschlag jetzt sagt nichts über die letzten 24 h: Nach erschöpftem Budget wird ein Error verworfen, die Herzschläge bleiben gesund, und nach einem Restore fehlt die verworfene Geschichte. Die Zahl gilt deshalb nur als **vollständig**, wenn beide Quellen `healthy` sind **und** `coverage24h.complete` wahr ist. `complete` ist falsch, sobald eine der folgenden Bedingungen in den letzten 24 h zutrifft:
+  1. Ein synthetischer Drop-Eintrag meldet `droppederrors > 0`. Diese Zahl steht als `droppedErrors`. Drops nur von Information oder Warning machen die Fehlerzahl nicht unvollständig.
+  2. Eine **Abdeckungslücke**. Je Quelle bilden die Instanz-Intervalle `[ProcessStartedUtc, LastFlushUtc]` aus `LogCaptureStatus` mit `CaptureEnabled = true` eine Vereinigung. Jede Lücke darin über **5 min** im 24-h-Fenster zählt, auch die vom Fensteranfang bis zur ersten bekannten Instanz. Damit erscheinen ein Restore ohne Statusdaten, abgeschaltete Zeiten und ein Prozess, der nie mehr schreiben konnte, als Lücke.
+- **Darstellung:**
+  - **Vollständig:** n = 0 neutral „keine“, n > 0 `StatusBadge tone="danger"` mit der Zahl.
+  - **Unvollständig:** im Ton `warning` „mindestens n“ mit n = `recordedErrors` + `droppedErrors`, bei n = 0 „0 erfasst, unvollständig“, dazu der Grund (Lücke von–bis je Quelle, „d Fehler nicht gespeichert“, Zustand je Quelle).
+  - **„keine“ erscheint nie ohne Vollständigkeit.**
+  - **Entscheidung des Autors (offen für Einspruch), A37:** 5-min-Toleranz für Lücken, wie die `stale`-Schwelle; Neustarts beim Deploy bleiben darunter.
 - **Sol-Befund 9 (P2) — Auflösung:** `status.sources` enthält **immer** `api` und `worker`, jeweils mit einem Zustand:
 
   | Zustand | Bedingung |
@@ -630,7 +638,7 @@ Inhalt:
   | `disabled` | jüngste Zeile frisch, aber `CaptureEnabled = false` |
   | `healthy` | sonst |
 
-  `complete` ist nur wahr, wenn **beide** `healthy` sind. Nur dann zeigt die Zeile „keine“ bzw. die Zahl ohne Zusatz. Sonst steht in **derselben** Zeile im Ton `warning` „unvollständig“ mit dem Grund je Quelle („Log-Erfassung worker steht seit {hh:mm} UTC“, „… abgeschaltet“, „… keine Statusmeldung“), und die Zahl gilt ausdrücklich als Untergrenze. „keine“ erscheint nie bei einer fehlenden Quelle.
+  Ein Zustand außer `healthy` macht die Zahl ebenfalls unvollständig. Der Grund steht in **derselben** Zeile („Log-Erfassung worker steht seit {hh:mm} UTC“, „… abgeschaltet“, „… keine Statusmeldung“).
 - Ist `retention.overdue` wahr (S5), nennt dieselbe Zeile „Log-Löschung überfällig“.
 - **Daten** kommen aus `GET /api/admin/logs/status`: Cache **30 s**. Der Refresh hängt am bestehenden 60-s-Timer der Seite, der bei verstecktem Tab pausiert.
 
@@ -663,11 +671,12 @@ Die Fristaussage folgt dem stündlichen Löschlauf (S5, A32); bleibt es bei täg
   - **Seeds:** Alle vier parsen; jede genannte Kategorie existiert im Code; für „Twitch-Reconnects“ der Treffer-/Nicht-Treffer-Test aus §7.5 (O1).
   - **Bucket-Leiter und Einrasten (S8, ersetzt O4):**
     - **Presets:** `24h` um 12:07:30 → 12:00:00 des Vortags bis 12:15:00, 15 min, 97 Buckets; um genau 12:15:00 → 12:15:00 des Vortags bis 12:15:00, 96. `1h` um 12:00:01 → 11:00:00–12:01:00, 1 min, 61; um 12:00:00 → 60. `6h` um 23:58 → 17:55–00:00, 5 min, 73. `7d` um Di 13:30 → Di 12:00 der Vorwoche bis Di 14:00, 2 h, 85.
-    - **Unausgerichtet:** 10:03:01–10:17:01 → 10:03:00–10:17:10, 10 s, 85 Buckets; der erste angefragte Eintrag um 10:03:01 ist enthalten.
+    - **Unausgerichtet:** 10:03:01–10:17:01 → Buckets 10:03:00–10:17:10, 10 s, 85; der erste angefragte Eintrag um 10:03:01 ist enthalten, einer um 10:03:00,5 (vor `from`) zählt nicht.
+    - **Rückgabe als Eingabe (R4):** Um 12:01 UTC mit `7d`: Die Liste nennt exakt 12:01 der Vorwoche bis 12:01, das Nachladen mit diesen Grenzen wird angenommen; die Summary rastet auf 12:00–14:00 ein, und ein Klick auf den laufenden Bucket 12:00–14:00 wird angenommen (2 min, 60 Buckets). Genau 8 Tage Spanne werden angenommen, 8 Tage + 1 s abgelehnt; `to` = jetzt + 12 h wird angenommen, + 12 h 1 s abgelehnt.
     - **Schwellen:** 10:00:00–10:50:00 → 30 s, 100 Buckets; 10:00:00–10:50:01 → 30 s ergäbe 101, also 1 min, 10:00–10:51, 51 Buckets. 1 h ausgerichtet ist nie 30 s (120 > 100).
     - **Eingrenzen:** 15-min-Bucket → 10 s, 90; 2-h-Bucket → 2 min, 60.
-    - **Idempotenz** für jeden dieser Fälle.
-    - **Eigenschaftstest** über zufällige `from`/`to`: Beide Grenzen sind abgedeckt, höchstens 100 Buckets, Breite minimal, Zurückschicken ist idempotent.
+    - **Idempotenz** der eingerasteten Histogrammgrenzen für jeden dieser Fälle.
+    - **Eigenschaftstest** über zufällige gültige `from`/`to`: Beide Grenzen sind abgedeckt, höchstens 100 Buckets, Breite minimal, und jeder Bucket als Klick zurückgeschickt ist eine gültige Eingabe.
   - **Sink:** Untergrenze und Ausschlussregeln inklusive Provider-Alias, der anheben, aber nicht senken darf; Kürzungen und `Truncated`; Property-Normalisierung (kleingeschrieben, ISO-Zeit, Aufzählungen, 16er-Grenze, 4 KiB); Scope-Übernahme nur `RequestPath`/`TraceId`; Scrubber-Muster und Nicht-Treffer (normale Diagnose-Texte bleiben unverändert).
   - **Nicht-Blockieren:** Bei vollem Puffer kehrt `Log()` ohne Wartezeit zurück und zählt `queue_full`; die Byte-Grenze greift vor der Zählgrenze; Budget mit 80/20-Aufteilung und Mitternachtsreset über `FakeTimeProvider`; eine Ausnahme im Formatter wird `capture_failed` und nicht geworfen.
   - **Zulassung und Wiedereintritt (S3):**
@@ -680,21 +689,22 @@ Die Fristaussage folgt dem stündlichen Löschlauf (S5, A32); bleibt es bei täg
   - **`AsyncLocal`-Sperre:** Ein im Schreiberkontext geloggter Eintrag wird verworfen und nicht gezählt; derselbe Aufruf außerhalb wird erfasst.
 - **`tests/EmotePurge.Infrastructure.Tests/Integration`, Testcontainers-Postgres:**
   - **Idempotenz (S4):** Ein Fehler-Hook im Schreiber führt den Insert aus und wirft danach wie bei einer verlorenen Bestätigung. Die Wiederholung lässt genau **eine** Zeile je `CaptureId`. Dasselbe gilt für einen synthetischen Drop-Eintrag, dessen Summe in `summary.dropped` genau einmal zählt. Zwei Fehlschläge ergeben `write_unconfirmed`, nicht doppelte Zeilen.
-  - **Ankündiger (S6, `FakeTimeProvider`, substituierter Publisher):**
-    - Batch bei t = 0 wird sofort veröffentlicht; ein letzter Batch bei t = 1 nachlaufend bei t = 2, ohne weiteren Batch.
-    - Ein Batch während eines offenen Publish wird danach angekündigt.
-    - Dreimal scheiternder Publish, dann Erfolg: genau eine Ankündigung nach der Erholung, ohne neuen Batch.
-    - Nie mehr als eine Ankündigung je 2 s.
-  - **Änderungsabruf (S7):**
-    - Geladen sind die Einträge t1 … t100. Danach committet ein Eintrag mit Zeitstempel zwischen t40 und t41, und `/logs/changes` liefert ihn.
-    - Ein Eintrag mit `InsertedAtUtc = since − 14 s` (lang laufendes Statement) wird geliefert, einer mit `since − 16 s` nicht.
-    - Mehr als 500 Treffer setzen `truncated`.
-    - Der Schreiber setzt `statement_timeout` und `idle_in_transaction_session_timeout`, abgefragt über `SHOW` in seiner Sitzung.
-  - **Unterdrückungsbereich der Ansicht (S1):** Bei laufendem Schreiber liefert der Query-Service 20-mal hintereinander ein Timeout (`pg_sleep`-Hook). Danach ist `LogEntries` um **null** Einträge der Kategorien `Microsoft.EntityFrameworkCore.*`, `Npgsql*` und der Ansichtskategorien gewachsen, und der Ankündiger hat **keine** Ankündigung erzeugt, die auf diese Fehler zurückgeht.
+  - **Abgleich (R2/R7):**
+    - Geladen sind t1 … t100. Ein Eintrag mit Zeitstempel zwischen t40 und t41 wird erst danach geschrieben, **mit einem Commit, der künstlich 30 s verzögert ist** (Test-Hook hält die Schreibtransaktion offen, während parallel Abgleiche laufen). Der erste Abgleich nach dem Commit liefert seine Id.
+    - `keysOnly` mit `from` = `rangeFromUtc` bei leerer Liste liefert den ersten passenden Eintrag.
+    - Mehr als 2.500 Schlüssel setzen `truncated`.
+    - `ids=` liefert genau die angefragten Einträge, auch ohne Zeitraum.
+  - **Datensatz-Isolierung (R6):** 499 gültige Einträge und einer, der deterministisch scheitert (per Test-Seam eine Kategorie über 256 Zeichen an der Kürzung vorbei). Gespeichert werden 499, einer zählt als `rejected`, und der Drop-Eintrag nennt `rejected=1`. Ein vorübergehender Fehler (Verbindung getrennt) führt **nicht** zur Halbierung, sondern zur Wiederholung. Ein Eintrag mit NUL in Message und Property-Wert sowie einer mit unpaarigem Surrogat wird mit `␀` bzw. `U+FFFD` gespeichert.
+  - **Abdeckung (R5):**
+    - Nach erschöpftem Tagesbudget wird ein Error verworfen; `coverage24h.complete = false` und `droppedErrors = 1`, obwohl beide Quellen `healthy` sind.
+    - Ein simulierter Restore (`LogEntries` und `LogCaptureStatus` geleert) mit danach frischen Herzschlägen ergibt `healthy` und trotzdem eine Lücke vom Fensteranfang bis zum Instanzstart, also `complete = false`.
+    - Eine Lücke von 4 min zwischen zwei Instanzen ist unschädlich, eine von 6 min nicht.
+    - Ein abgeschalteter Zeitraum ist eine Lücke.
+  - **Unterdrückungsbereich der Ansicht (S1):** Bei laufendem Schreiber liefert der Query-Service 20-mal hintereinander ein Timeout (`pg_sleep`-Hook). Danach ist `LogEntries` um **null** Einträge der Kategorien `Microsoft.EntityFrameworkCore.*`, `Npgsql*` und der Ansichtskategorien gewachsen, und es wurde **kein** `logs.appended` veröffentlicht, das auf diese Fehler zurückgeht.
   - **Schreiber:** Batch landet vollständig; Postgres-Ausfall (Container pausieren) führt zu `write_unconfirmed`/`queue_full` und zu **keiner** Verzögerung eines parallel loggenden Aufrufers (gemessen: `Log()` p99 unter 1 ms während des Ausfalls); nach der Rückkehr kommt zuerst der synthetische Drop-Eintrag mit korrekter Aufschlüsselung, dann der Puffer; Herzschlag ohne Einträge aktualisiert `LastFlushUtc`; Shutdown leert den Puffer innerhalb von 3 s.
   - **Kein Schreiber-SQL in den Logs:** Weder ein EF- noch ein Npgsql-Eintrag des Schreibpfads landet in `LogEntries` oder im erfassenden Test-Provider. Das gilt mit einem Konfigurationstest, der `Microsoft.EntityFrameworkCore` und `Npgsql` absichtlich auf Debug stellt.
-  - **Status (S9):** Kaltstart ohne Zeilen ergibt beide `missing`, `complete = false`; nach dem ersten Herzschlag `healthy`; geleerte Tabelle (Restore ohne Statusdaten) ergibt `missing`; eine nach 7 Tagen abgelaufene letzte Zeile ergibt `missing` und fällt **nicht** aus der Liste; Herzschlag mit `CaptureEnabled = false` ergibt `disabled`.
-  - **Query-Service:** jede Filterart gegen gesetzte Zeilen; Keyset-Paginierung ohne Lücken und Doppelte bei gleichen Zeitstempeln; eingefrorener eingerasteter Bereich beim Nachladen; `instance:latest` mit zwei Instanzen je Quelle; `uptime`; Summary (Bucket-Zählung je Levelklasse, Facetten Top 15 plus Rest, `dropped` unabhängig vom Filter, `processStarts`); `status` mit `stale`; 5-s-Zeitlimit liefert `log_query_timeout` (z. B. durch `pg_sleep` in einem Test-Hook).
+  - **Status (S9, Lebendigkeit):** Kaltstart ohne Zeilen ergibt beide `missing`, `complete = false`; nach dem ersten Herzschlag `healthy`; geleerte Tabelle (Restore ohne Statusdaten) ergibt `missing`; eine nach 7 Tagen abgelaufene letzte Zeile ergibt `missing` und fällt **nicht** aus der Liste; Herzschlag mit `CaptureEnabled = false` ergibt `disabled`.
+  - **Query-Service:** jede Filterart gegen gesetzte Zeilen; Keyset-Paginierung ohne Lücken und Doppelte bei gleichen Zeitstempeln; eingefrorene exakte Grenzen beim Nachladen; `instance:latest` mit zwei Instanzen je Quelle; `uptime`; Summary (Bucket-Zählung je Levelklasse, Facetten Top 15 plus Rest, `dropped` unabhängig vom Filter, `processStarts`); `status` mit `stale`; 5-s-Zeitlimit liefert `log_query_timeout` (z. B. durch `pg_sleep` in einem Test-Hook).
   - **Retention (S5):**
     - Ein Eintrag knapp unter 7 Tagen bleibt, knapp darüber geht.
     - Der Trockenlauf zählt nur.
@@ -720,16 +730,15 @@ Die Fristaussage folgt dem stündlichen Löschlauf (S5, A32); bleibt es bei täg
 ### 13.2 Frontend (Regel 12)
 
 - **Vitest:**
-  - `core/admin` Service mit `HttpTestingController`: Parameter, Cursor, eingefrorener eingerasteter Bereich als `from`/`to` (O4).
+  - `core/admin` Service mit `HttpTestingController`: Parameter, Cursor, eingefrorene exakte Grenzen als `from`/`to` (R4).
   - Filter-Stringwerkzeuge: Quoten, Anhängen ohne Dublette, Fehlerposition.
-  - Zusammenführen des Änderungsabrufs (S7): Einfügen mitten in geladene Seiten nach `(Zeit, Id)`, Dedupe per `id`, Zurückhalten bei „gelesen“, `truncated` ergibt den Neu-laden-Hinweis.
+  - Abgleich (R2/R3/R7): Auslöser, 5-s-Mindestabstand mit genau einem nachlaufenden Abgleich, 30-s-Takt ohne Hinweis, `from_L` = `rangeFromUtc` bei leerer Liste, Einfügen mitten in geladene Seiten nach `(Zeit, Id)`, Dedupe per `id`, Zurückhalten bei „gelesen“, Neu-laden-Hinweis bei > 500 fehlenden oder `truncated`.
   - Pause nach Fehler (S1): Nach einer Fehlerantwort lösen weitere Live-Ereignisse keine Anfrage aus, bis ein manueller Abruf gelingt.
-  - Monitoring-Zeile (S9): `missing`/`disabled`/`stale` ergeben „unvollständig“ und nie „keine“.
+  - Monitoring-Zeile (S9/R5): `missing`/`disabled`/`stale`, `droppedErrors > 0` und Lücken ergeben „mindestens n“ bzw. „0 erfasst, unvollständig“ und nie „keine“.
   - Entscheidung „oben vs. gelesen“ inklusive aufgeklappter Zeile.
   - Chip-Aktiv-Erkennung mit Whitespace-Normalisierung.
   - Kurzname-Wahl der Kategorie-Facette.
   - Histogramm-Klick auf `from`/`to`.
-  - Zeile auf `/admin/monitoring`: `stale` macht die Zahl „unvollständig“, n = 0 und n > 0.
   - Accessibility-Semantik (Disclosure, zugängliche Namen der Facetten-Aktionen, Live-Meldung einmal je Nachladen). Keine CSS- oder Vorlagen-Assertions.
 - **Playwright** mit gemocktem `/api/**` und `installLiveStub`/`__emitLive`:
   - Deep-Link `?q=…` öffnet vorgefiltert.
@@ -740,9 +749,10 @@ Die Fristaussage folgt dem stündlichen Löschlauf (S5, A32); bleibt es bei täg
   - Balken-Klick grenzt ein, „Zurück zu 24 h“.
   - Scroll-Nachladen bis zur 2.000er-Grenze mit Hinweis.
   - `logs.appended` oben fügt ein und hebt hervor; nach Scrollen zeigt es „n neue“ ohne Verschiebung des sichtbaren Inhalts (Position eines Ankerelements vor und nach dem Ereignis gleich).
-  - Verspäteter Eintrag mitten in einer geladenen Seite erscheint nach `__emitLive` an der richtigen Stelle (S7).
+  - Verspäteter Eintrag mitten in einer geladenen Seite erscheint beim nächsten Abgleich an der richtigen Stelle (R2).
+  - Leere „Alle Fehler“-Liste: Der erste passende Eintrag erscheint **ohne** Hinweis-Ereignis nach spätestens 30 s (`page.clock`) und mit Hinweis sofort (R7, R3).
   - „Zu viele neue Einträge“ bei `truncated`.
-  - Fehlerantwort auf den Änderungsabruf pausiert Live; weitere `__emitLive` erzeugen keine Requests (S1).
+  - Fehlerantwort auf den Abgleich pausiert Live; weitere `__emitLive` und Takte erzeugen keine Requests (S1).
   - Monitoring-Zeile mit `missing` zeigt „unvollständig“ (S9).
   - Drop-Banner, Stale-Banner, Timeout-Banner.
   - Die Monitoring-Zeile verlinkt auf den Seed.
@@ -772,7 +782,7 @@ Reißt eine Grenze, gibt es zwei Wege: eine Summary-Abfrage mit gemeinsamer Teil
 1. **Lärm (T0):** Nach T0 schreibt die lokale Api bei einem Seitenaufruf keine `Microsoft.EntityFrameworkCore.Database.Command`-Zeile in die Console. Der lokale Worker an einem Kanal mit Sub- oder Watch-Streak-Ereignissen schreibt keine `Unaccounted for … command=USERNOTICE` mehr. Ein injiziertes unbekanntes NOTICE erscheint weiter als Warning (Worker.Tests).
 2. **Erfassung:** Nach dem Start von Api und Worker stehen binnen 5 s die `Microsoft.Hosting.Lifetime`-Zeilen beider Prozesse in `LogEntries`, mit `Source`, `InstanceId` und `ProcessStartedUtc`.
 3. **Untergrenze:** Auch mit `Logging__LogLevel__Default=Debug` landet keine Debug- oder Trace-Zeile und keine `Microsoft.EntityFrameworkCore.Database.Command`-Zeile unter Warning in `LogEntries`. Die Console zeigt sie.
-4. **Redaction:** Ein im Test über den `RedactingTwitchClientLoggerFactory`-Pfad geloggtes `LogParsingError` mit präpariertem Rohtext (Chattext und `display-name=`) steht in `LogEntries` nur in der redigierten Form `command=…, tagKeys=[…]`, ohne Tag-Werte und ohne Chattext, und ohne Properties. **Nackte Fragmente (S2):** Eine präparierte Zeile `@reply-parent-msg-body=hello;GEHEIMTEXT PRIVMSG …` als `LogUnaccountedFor` und `LogParsingError` sowie dieselbe Form in der Splice-Zeile (#114) ergeben Einträge mit `withheldTagKeys=1` bzw. `<withheld>`. „GEHEIMTEXT“ steht weder in `LogEntries` (Message, Exception, Properties) noch in der Ausgabe des Test-Providers. **Mit Exception (O3):** Trägt der Aufruf eine Exception, deren `Message` und Inner-Exception-`Message` denselben präparierten Rohtext enthalten, kommt der Text weder in `Message`, `Exception` noch `ExceptionType` des Eintrags vor, noch in der Ausgabe eines parallel registrierten Test-Providers (Stellvertreter für die Console). `ExceptionType` ist der Originaltyp, und `Exception` enthält die Typen beider Glieder und mindestens einen Stackframe. Derselbe Fall mit umgangenem Wrapper (Exception direkt auf der Kategorie geloggt) speichert ebenfalls nur Typen und Stacks.
+4. **Redaction:** Ein im Test über den `RedactingTwitchClientLoggerFactory`-Pfad geloggtes `LogParsingError` mit präpariertem Rohtext (Chattext und `display-name=`) steht in `LogEntries` nur in der redigierten Form `command=…, tagKeys=[…]`, ohne Tag-Werte und ohne Chattext, und ohne Properties. **Splice-Werte (R1):** Die Warning des Splice-Sentinels aus einer präparierten Zeile mit `msg-param-recipient-display-name=SomeDisplayName` und `system-msg=…SomeUser…` landet in `LogEntries` ohne „SomeDisplayName“ und „SomeUser“, auch nicht in den Properties (`tagblock`). **Nackte Fragmente (S2):** Eine präparierte Zeile `@reply-parent-msg-body=hello;GEHEIMTEXT PRIVMSG …` als `LogUnaccountedFor` und `LogParsingError` sowie dieselbe Form in der Splice-Zeile (#114) ergeben Einträge mit `withheldTagKeys=1` bzw. `<withheld>`. „GEHEIMTEXT“ steht weder in `LogEntries` (Message, Exception, Properties) noch in der Ausgabe des Test-Providers. **Mit Exception (O3):** Trägt der Aufruf eine Exception, deren `Message` und Inner-Exception-`Message` denselben präparierten Rohtext enthalten, kommt der Text weder in `Message`, `Exception` noch `ExceptionType` des Eintrags vor, noch in der Ausgabe eines parallel registrierten Test-Providers (Stellvertreter für die Console). `ExceptionType` ist der Originaltyp, und `Exception` enthält die Typen beider Glieder und mindestens einen Stackframe. Derselbe Fall mit umgangenem Wrapper (Exception direkt auf der Kategorie geloggt) speichert ebenfalls nur Typen und Stacks.
 5. **Nicht-Blockieren:** Während Postgres gestoppt ist (`docker compose stop postgres`, 2 min), beantwortet die Api `GET /api/health` weiter. Der Worker zählt weiter Chatzeilen, soweit sein eigener Pfad ohne DB geht; der Flush puffert wie heute. Kein Prozess stürzt ab. Nach dem Start von Postgres erscheint binnen 60 s ein `EmotePurge.LogCapture`-Warning-Eintrag mit `dropped > 0`. Die Seite zeigt das Drop-Banner für diesen Zeitraum.
 6. **Keine Rekursion:** Bei ruhigem System (kein Chat, kein Seitenaufruf) wächst `LogEntries` über 10 min um höchstens die normalen periodischen Zeilen (Live-Poll, Roster usw.) und nicht durch Einträge des Schreibers, seines SQL oder von `logs.appended`-Zustellungen. Gezählt wird nach Kategorie.
 7. **Budget:** Eine Testschleife mit 25.000 Information-Zeilen je Prozess in einer Minute führt dazu, dass höchstens 16.000 Information-Zeilen dieses UTC-Tages gespeichert werden; Warnungen danach werden weiter gespeichert, bis 20.000 erreicht sind. Ein Drop-Eintrag nennt `budget`. Die Seite zeigt das Banner.
@@ -780,7 +790,7 @@ Reißt eine Grenze, gibt es zwei Wege: eine Summary-Abfrage mit gemeinsamer Teil
 9. **Backup:** Ein lokaler Lauf von `scripts/backup-postgres.sh` erzeugt einen Dump mit `CREATE TABLE` für `LogEntries` und `LogCaptureStatus`, aber ohne `COPY`-Block für beide. Auf Prod gilt die Host-Prüfung aus §16 (S10) als bestanden, bevor `LOG_CAPTURE_ENABLED=true` gesetzt wird.
 10. **Filter:** Jeder Seed liefert lokal die erwarteten Zeilen. „Start nach Deploy“ zeigt nach `docker compose restart worker` die Boot-Recovery der neuen Instanz und keine Zeile der alten. „Alle Fehler“ zeigt nur Error/Critical. Ein ungültiger Filter liefert `400 invalid_log_filter` mit korrekter `position`, und die Seite markiert die Stelle.
 11. **Deep-Link:** `/admin/logs?q=level%3E%3Dwarn&range=7d` öffnet die Seite mit genau diesem Filter und Zeitraum; Ändern und Anwenden schreibt die URL um.
-12. **Live:** Mit offener Seite oben und erreichbarem Redis erscheint ein neu geloggter Warning-Eintrag binnen 5 s oben und hervorgehoben, auch wenn er der letzte Eintrag einer Drosselperiode ist (S6). Ein während eines Redis-Ausfalls geloggter Eintrag erscheint spätestens 35 s nach der Erholung (Ankündiger-Backoff ≤ 30 s plus Abruf), ohne SSE-Neuverbindung und ohne neuen Eintrag. Nach Scrollen um eine Bildschirmhöhe bleibt der sichtbare Inhalt stehen, und „1 neue“ erscheint.
+12. **Live (R2/R3):** Bei offener Seite oben und sichtbarem Tab erscheint ein neu geloggter Warning-Eintrag hervorgehoben. Mit funktionierendem Hinweis (Redis und SSE da) geschieht das typisch binnen 6 s (Hinweis-Drossel 2 s + Mindestabstand 5 s, im Mittel weniger). **Ohne Hinweis** (Redis weg, Abo noch nicht wiederhergestellt, Hinweis verloren) spätestens 30 s plus Abfragezeit nach dem Commit; das ist die zugesagte Obergrenze. Nach Scrollen um eine Bildschirmhöhe bleibt der sichtbare Inhalt stehen, und „1 neue“ erscheint.
 13. **Gespeicherte Filter:** Anlegen, Bearbeiten und Löschen funktionieren und sind nach Neuladen auf einem zweiten Gerät gleich. Ein gelöschter Seed kommt nach einem Neustart von Api und Worker nicht zurück.
 14. **Kachel:** Nach einem bewusst ausgelösten Error (Testroute nur in der Integrationsumgebung oder ein gezielt provozierter Fehler, z. B. 7TV-Sync gegen einen erfundenen Kanal) zeigt `/admin/monitoring` bei sichtbarem Tab **spätestens 90 s** nach dem Commit des Batches „Fehler der letzten 24 h: 1“ (30 s Cache + 60 s Timer, O2; der Batch-Commit liegt höchstens 1 s nach dem Log-Aufruf, gemessen wird mit 91 s Toleranz ab dem Log-Aufruf). Der Klick öffnet `/admin/logs?q=level%3E%3Derror&range=24h`, und der Chip „Alle Fehler“ ist aktiv. Bei gestopptem Worker-Schreiber (`LogCapture__Enabled=false` nur am Worker) zeigt die Zeile **frühestens 5 min, spätestens 5 min + 90 s** nach dem letzten Worker-Herzschlag „Log-Erfassung worker steht seit …“; vor Ablauf von 5 min erscheint sie nicht.
 15. **Berechtigung:** Jede neue Route antwortet ohne Session mit `401` und für einen eingeloggten Nicht-Admin mit `403` (Api.Tests). Der Tab ist für Nicht-Admins nicht erreichbar.
@@ -791,9 +801,14 @@ Reißt eine Grenze, gibt es zwei Wege: eine Summary-Abfrage mit gemeinsamer Teil
 20. **Kein Selbstauslösen (S1):** Lokal mit künstlich kurzem Abfragelimit (Testkonfiguration) und offener Log-Seite im Live-Modus führt eine fehlschlagende Abfrage zu genau einer Fehlerantwort. Danach pausiert die Seite. Über 2 min entstehen keine weiteren Anfragen der Seite, keine `logs.appended`-Ankündigung als Folge und kein `Microsoft.EntityFrameworkCore.*`-Eintrag in `LogEntries`.
 21. **Wiedereintritt und Zulassung (S3):** Die Testfälle aus §13.1 („Zulassung und Wiedereintritt“) sind grün. Ein Live-Lauf mit hohem Logtakt bei vollem Puffer zeigt keinen Anstieg der `Log()`-Latenz über die eines Laufs ohne unseren Provider hinaus (Vergleich p99).
 22. **Verlorene Bestätigung (S4):** Der Fehler-Hook-Test aus §13.1 ist grün. Nach `docker compose restart postgres` mitten in einem Lauf mit hohem Logtakt gibt es in `LogEntries` keine doppelte `CaptureId`; der Unique-Index erzwingt das.
-23. **Verspäteter Commit (S7):** Der Integrationstest und das E2E zum Eintrag mitten in einer geladenen Seite sind grün.
+23. **Verspäteter Commit und leere Liste (R2/R7):** Ein Eintrag, dessen Commit 30 s verzögert ist und dessen Zeitstempel mitten in einer geladenen Seite liegt, erscheint spätestens 30 s nach dem Commit an der richtigen Stelle. Eine leer geöffnete „Alle Fehler“-Liste zeigt ihren ersten Fehler spätestens 30 s nach dessen Commit, ohne Neuladen. Integrationstest und E2E aus §13 sind grün.
 24. **Einrasten (S8):** Die Testfälle aus §13.1 sind grün. `/logs/summary?from=…T10:03:01Z&to=…T10:17:01Z` zählt einen Eintrag um 10:03:05 mit.
-25. **Fehlender Status (S9):** Nach dem Leeren von `LogCaptureStatus` bei gestopptem Worker zeigt `/admin/monitoring` „unvollständig — worker: keine Statusmeldung“ und nie „keine“.
+25. **Fehlender Status und Abdeckung (S9/R5):**
+    - Nach dem Leeren von `LogCaptureStatus` bei gestopptem Worker zeigt `/admin/monitoring` „worker: keine Statusmeldung“ und nie „keine“.
+    - Nach erschöpftem Budget und einem danach verworfenen Error zeigt die Zeile „mindestens 1“ (bzw. „mindestens n+1“), nicht „keine“.
+    - Nach einem Restore mit frischen Herzschlägen zeigt sie für 24 h „unvollständig“ mit der Lücke.
+27. **Splice-Zeile (R1):** siehe AK 4. Lokal mit dem Worker gegen echtes Twitch zeigt eine provozierte oder aufgezeichnete Splice-Zeile in Console und `LogEntries` Schlüssel ohne Werte, außer den in §4.2b erlaubten.
+28. **Datensatzfehler (R6):** Der Test „499 gültig + 1 abgelehnt“ aus §13.1 ist grün. Ein lokal provozierter 7TV-Frame mit NUL (`SevenTvEventClient`-Pfad über einen Test-Seam) landet mit `␀` in `LogEntries`, ohne dass benachbarte Einträge verloren gehen.
 26. **Rollback ohne Restbestand (S5):** Der Rollback-Ablauf aus §18 ist einmal lokal durchgespielt. Danach sind `LogEntries` und `LogCaptureStatus` leer bzw. entfernt, **bevor** ein Image ohne Log-Ablauf läuft.
 
 ## 15. Live-Verifikation (Regel 16)
@@ -802,7 +817,7 @@ Lokaler Stack mit echtem Postgres, Redis, Twitch und 7TV (`docker compose up -d 
 
 - AK 2, 5, 6, 10, 12 und 14 von Hand.
 - `docker compose restart worker` mit anschließendem „Start nach Deploy“.
-- `docker compose stop redis` für 1 min mit offener Log-Seite: Die App läuft weiter, Live bleibt aus, die Einträge werden trotzdem gespeichert. Nach dem Start erscheint der zuletzt während des Ausfalls geloggte Eintrag ohne Neuladen und ohne neuen Eintrag (AK 12, S6).
+- `docker compose stop redis` für 1 min mit offener Log-Seite: Die App läuft weiter, die Einträge werden trotzdem gespeichert. Ein während des Ausfalls geloggter Eintrag erscheint über den periodischen Abgleich spätestens 30 s später, ohne Neuladen (AK 12, R3).
 - AK 20 (Selbstauslösen) und AK 25 (fehlender Status) von Hand.
 - Ein absichtlich hoher Logtakt über einen Testschalter **nur** in der Integrationsumgebung, kein Prod-Code-Pfad für Lasttests.
 
@@ -813,10 +828,10 @@ Auf Prod gibt es keine Verifikation durch die Session (kein SSH, globale Regel).
 | Ticket | Inhalt | Abhängig von | Migration |
 |---|---|---|---|
 | **T0** | Rauschen an der Quelle (§4) | — | nein |
-| **T0** (Ergänzung) | Tag-Schlüssel-Allowlist für `Redact` und `TagBlockForLog` (§4.2b, S2) | — | nein |
-| **T1** | Schema und Retention: Entitäten `LogEntry` (mit `CaptureId`, `InsertedAtUtc`), `LogCaptureStatus` (mit `CaptureEnabled`), `LogFilter`, Enum `LogSource`; eine Migration `AddLogCapture` mit drei Tabellen, Indizes (§6) und den vier Seeds (§7.5, als Strings, deren Parse-Test in T3 nachgezogen wird); `RetentionPolicy.LogEntry`, isolierter stündlicher Log-Ablauf in `DataRetentionWorker` (S5); `scripts/backup-postgres.sh` (A14) | — | **ja**, additiv |
-| **T2** | Erfassung: Sink mit Zulassungsreihenfolge und Wiedereintritts-Sperre (S3), Puffer, Budget, Scrubber, begrenzte Property- und Exception-Darstellung, Schreiber mit eigener Datenquelle, idempotentem Insert (S4) und Sitzungs-Timeouts (S7), Herzschlag inklusive `disabled`-Modus (S9), Drop-Einträge, `AsyncLocal`-Sperre, Shutdown-Drain, `AddLogCapture` in Api und Worker (nicht Harness), `logs.appended` mit Drossel, Dirty-Flag (S6) und Rekursionsbremse; Compose-Variable `LOG_CAPTURE_ENABLED` | T1 | nein |
-| **T3** | Abfragen: Parser, Endpoint-Filter mit Unterdrückungsbereich (S1), `ILogQueryService` (Seite, Änderungsabruf (S7), Detail, Summary mit Einrasten (S8), Status mit Zuständen und `overdue` (S9, S5)), `ILogFilterService` (CRUD), Fehlercodes plus `api-error.ts` und Locales, Zeitlimit und Parallelitäts-Gate, `TtlCache` herausziehen, Api.Tests, Performance-Gate | T1 (parallel zu T2 möglich, mit gesetzten Testzeilen) | nein |
+| **T0** (Ergänzung) | Tag-Schlüssel-Allowlist für `Redact` und `TagBlockForLog` (§4.2b, S2); Splice-Zeile nur mit Schlüsseln (R1) | — | nein |
+| **T1** | Schema und Retention: Entitäten `LogEntry` (mit `CaptureId`), `LogCaptureStatus` (mit `CaptureEnabled`), `LogFilter`, Enum `LogSource`; eine Migration `AddLogCapture` mit drei Tabellen, Indizes (§6) und den vier Seeds (§7.5, als Strings, deren Parse-Test in T3 nachgezogen wird); `RetentionPolicy.LogEntry`, isolierter stündlicher Log-Ablauf in `DataRetentionWorker` (S5); `scripts/backup-postgres.sh` (A14) | — | **ja**, additiv |
+| **T2** | Erfassung: Sink mit Zulassungsreihenfolge und Wiedereintritts-Sperre (S3), Puffer, Budget, Scrubber, begrenzte Property- und Exception-Darstellung, Postgres-Normalisierung der Zeichenketten (R6), Schreiber mit eigener Datenquelle, idempotentem Insert (S4) und Datensatz-Isolierung (R6), Herzschlag inklusive `disabled`-Modus (S9), Drop-Einträge mit `droppederrors`, `AsyncLocal`-Sperre, Shutdown-Drain, `AddLogCapture` in Api und Worker (nicht Harness), `logs.appended` als gedrosselter Hinweis mit Rekursionsbremse; Compose-Variable `LOG_CAPTURE_ENABLED` | T1 | nein |
+| **T3** | Abfragen: Parser, Endpoint-Filter mit Unterdrückungsbereich (S1), `ILogQueryService` (Seite mit `keysOnly`/`ids` für den Abgleich (R2), Detail, Summary mit Einrasten (S8/R4), Status mit Lebendigkeit, Abdeckung und `overdue` (S9, R5, S5)), `ILogFilterService` (CRUD), Fehlercodes plus `api-error.ts` und Locales, Zeitlimit und Parallelitäts-Gate, `TtlCache` herausziehen, Api.Tests, Performance-Gate | T1 (parallel zu T2 möglich, mit gesetzten Testzeilen) | nein |
 | **T4** | Seite `/admin/logs`: Tab, Route, Service, Stringwerkzeuge, Histogramm-Primitiv mit Designsprache-Abschnitt, Facetten, Liste, Details, Kopieren, Live ohne Sprünge, gespeicherte Filter, Telefon, i18n, Vitest, E2E, Audit | T3-Vertrag (gegen Mocks schon vorher baubar) | nein |
 | **T5** | Monitoring-Zeile (§11), Doku (§17), Übergabe des Datenschutztexts an den Betreiber, Live-Verifikation, Abschluss-AK | T2, T3, T4 | nein |
 
@@ -842,9 +857,9 @@ Neue DECISIONS-Einträge auf Englisch, je im Commit der Änderung (Regel 3):
 
 1. **T0:** Api EF Core auf Warning und USERNOTICE-Herabstufung von `LogUnaccountedFor`, mit Messzahlen und „Rauschen an der Quelle“.
 2. **T1/T2:** In-App-Log-Erfassung in Postgres. 7 Tage `RetentionPolicy.LogEntry`, Untergrenze Information, Ausschlussregeln, Puffer- und Budgetgrenzen, Drop-Gründe als synthetische Einträge, Herzschlag, vier Rekursionsschichten (inklusive Unterdrückungsbereich der Lesepfade, S1), Registrierung außerhalb von `AddEmotePurgeInfrastructure` und ohne Harness, Schreiber als erster Hosted Service, Backup ohne Logdaten.
-3. **T2:** Neuer Admin-Ereignistyp `logs.appended` (dünn, gedrosselt, Dirty-Flag mit nachlaufender Ankündigung, Rekursionsbremse) und Erweiterung von `AdminTypes`. Idempotentes Schreiben über `CaptureId`. Zulassungsreihenfolge, Wiedereintritts-Sperre und Typ-Allowlist der Properties.
-4. **T3:** Filtersprache und Endpunktverträge (Grammatik, Fehlervokabular, Änderungsabruf über `InsertedAtUtc` mit 15-s-Überlappung statt `afterId` oder Kopfseite, Einrasten mit höchstens 100 Buckets, Status mit vier Zuständen, Zeitlimit und Parallelitäts-Gate ohne Rate-Limit-Policy, Unterdrückungsbereich für Lesepfade), globale gespeicherte Filter mit einmaligem Migrations-Seed.
-6. **T0 (Ergänzung):** Tag-Schlüssel nur aus einer Allowlist, in beiden Redaction-Stellen (S2).
+3. **T2:** Neuer Admin-Ereignistyp `logs.appended`: nur ein Hinweis, gedrosselt, mit Rekursionsbremse; Korrektheit kommt aus dem REST-Abgleich. Erweiterung von `AdminTypes`. Idempotentes Schreiben über `CaptureId`, Normalisierung der Zeichenketten und Datensatz-Isolierung. Zulassungsreihenfolge, Wiedereintritts-Sperre und Typ-Allowlist der Properties.
+4. **T3:** Filtersprache und Endpunktverträge (Grammatik, Fehlervokabular, periodischer REST-Abgleich des geladenen Intervalls statt `afterId`, Kopfseite oder Einfüge-Cursor, exakte Listengrenzen und Einrasten nur fürs Histogramm mit höchstens 100 Buckets, Status mit vier Lebendigkeitszuständen und getrennter 24-h-Abdeckung, Zeitlimit und Parallelitäts-Gate ohne Rate-Limit-Policy, Unterdrückungsbereich für Lesepfade), globale gespeicherte Filter mit einmaligem Migrations-Seed.
+6. **T0 (Ergänzung):** Tag-Schlüssel nur aus einer Allowlist, in beiden Redaction-Stellen (S2); Splice-Zeile nur mit Schlüsseln und wenigen formatgeprüften Werten (R1).
 7. **T1:** Isolierter, stündlicher Log-Ablauf außerhalb von `RunAsync` und ohne Boot-Gate (S5).
 5. **T4:** Zweites Chart-Primitiv `app-time-histogram`, im selben Commit wie die Erweiterung von `docs/UI-Designsprache.md` §2.6.
 
@@ -907,9 +922,12 @@ Doku:
 | A31 | Kein eigener `DbContext` für Lesepfade, `AsyncLocal`-Bereich per Endpoint-Filter genügt; Fehler der Ansicht nur in Console und Banner | §5.4 |
 | A32 | Log-Ablauf stündlich, Datenschutztext „höchstens etwa eine Stunde länger“ | §6.4, §12 |
 | A33 | Bucket-Obergrenze 100 statt 120 | §8.2 |
-| A34 | Änderungsabruf mit 15-s-Überlappung und `limit` 500 | §8.3 |
+| A34 | ~~Änderungsabruf mit 15-s-Überlappung~~ — gestrichen mit R2 | — |
+| A35 | Splice-Werte nur für `tmi-sent-ts`, `room-id` (Ziffern) und Ja/Nein-Flags | §4.2b |
+| A36 | Abgleich alle 30 s, ≥ 5 s Abstand, 2.500 Schlüssel, 500 nachzuladende Einträge | §8.3 |
+| A37 | Abdeckungslücken zählen ab 5 min | §11 |
 
-**A21 ist durch S7 ersetzt** (Änderungsabruf statt Kopfseite). **A20** gilt mit der Obergrenze aus A33.
+**A21 ist ersetzt**, erst durch S7, dann durch R2 (Abgleich). **A20** gilt mit der Obergrenze aus A33.
 
 **Entscheidungen des Orchestrators (Builder-Check), 2026-10-14:**
 
@@ -918,7 +936,7 @@ Doku:
 | O1 | Seed „Twitch-Reconnects“ schließt mit exakten Phrasen `"angestoßen (Quelle"` und `" gejoint."` aus; der Seed-Test belegt, dass die Reconnect-Zeilen (`TwitchConnectionWatchdog.cs:218`, `TwitchChatManager.cs:998`) treffen und die Join-Zeilen (`:540`, `:1010`) nicht | §7.5, §13.1 |
 | O2 | `GET /logs/status` mit 30-s-Cache, 60-s-Timer bleibt; neuer Fehler ≤ 90 s sichtbar, „Erfassung steht“ ≤ 5 min + 90 s | §8.4, §11, AK 14 |
 | O3 | Exceptions der redigierten TwitchLib-Ereignisse: Der Wrapper ersetzt sie in T0 durch Typen und Stacks der Kette ohne Message; der Sink speichert den Originaltyp und hat eine zweite Linie für den Fall eines umgangenen Wrappers | §4.2a, §4.3, §5.2, AK 4 |
-| O4 | Bereich auf Bucket-Grenzen eingerastet; die Antwort nennt den eingerasteten Bereich, das Nachladen nutzt ihn. **Die ursprüngliche Regel (Ende aufgerundet, Start = Ende − Spanne, Leiter mit 120 Buckets) ist durch S8 ersetzt:** Start abgerundet, Ende aufgerundet, höchstens 100 Buckets über die eingerastete Spanne, idempotent | §8.2, §8.3, §13.1, §13.2 |
+| O4 | ~~Einrasten von Seite und Summary, Ende aufgerundet, Start = Ende − Spanne~~ — ersetzt durch S8 (Regel) und R4 (nur Histogramm) | §8.2 |
 
 **Auflösungen der adversarialen Prüfung (Codex Sol, 2026-10-14; vom Betreiber zur Übernahme freigegeben):**
 
@@ -929,11 +947,23 @@ Doku:
 | S3 (P2) | Synchrone Arbeit und Wiedereintritt vor dem Einreihen unbegrenzt | Zulassung vor dem Formatieren, Thread-lokale Wiedereintritts-Sperre (`reentrant`), Typ-Allowlist ohne `ToString`/Enumeration, begrenzte Exception-Darstellung; Tests für loggende Formatter und endlose Aufzählungen | §5.2, §5.3, §13.1, AK 21 |
 | S4 (P2) | Wiederholung nach mehrdeutigem Commit verdoppelt | `CaptureId` je Eintrag und Drop-Eintrag, Unique-Index, `ON CONFLICT DO NOTHING`; Fehler-Hook-Test; Drop-Grund `write_unconfirmed` | §5.3, §5.5, §6.1, §13.1, AK 22 |
 | S5 (P2) | 7-Tage-Löschung ohne verlässliche Durchsetzung | isolierte stündliche Schleife im `DataRetentionWorker` ohne Boot-Gate und außerhalb von `RunAsync`, `overdue` im Status, Rollback nur mit vorherigem `TRUNCATE`, Datenschutztext an den Takt angepasst; Vorschlag eines eigenen Issues für die übrigen Kategorien (§21) | §6.4, §8.1, §9.7, §11, §12, §18, AK 8, AK 26 |
-| S6 (P2) | Gedrosselte oder verlorene Ankündigungen lassen Ansichten veralten | Dirty-Flag, nachlaufende Ankündigung, Wiederholung bis Erfolg nach Redis-Ausfall; Tests für letzten gedrosselten Batch und Redis-Erholung ohne SSE-Neuverbindung | §5.5, §5.6, §13.1, AK 12, §15 |
-| S7 (P2) | Kopfseiten-Abgleich verliert verspätete Commits mitten in geladenen Seiten | Änderungsabruf über `InsertedAtUtc` mit 15-s-Überlappung (Autocommit und Sitzungs-Timeouts als Invariante), Einfügen mitten in Seiten, `truncated` als ausdrückliche Lückenerkennung; ersetzt A21 | §5.5, §6.1, §8.1, §8.3, §9.4, §13, AK 23 |
-| S8 (P2) | Einrasten schloss angefragte Einträge aus, Leiter widersprach dem 1h-Beispiel | Start abgerundet, Ende aufgerundet, höchstens 100 Buckets über die eingerastete Spanne, idempotent; Tests mit unausgerichteten Grenzen und Schwellen; ersetzt O4 | §8.2, §8.3, §13.1, AK 24, O4 |
-| S9 (P2) | Fehlender Status erscheint als „keine Fehler“ | `sources` immer `api` und `worker` mit `healthy`/`stale`/`disabled`/`missing`, `complete`; Herzschlag auch im abgeschalteten Modus; Tests für Kaltstart, Restore und abgelaufene Statuszeile | §5.1, §5.5, §6.2, §8.1, §9.7, §11, §13, AK 25 |
+| S6 (P2) — **ersetzt durch R3** | Gedrosselte oder verlorene Ankündigungen lassen Ansichten veralten | Dirty-Flag samt Wiederholung gestrichen; siehe R3 | — |
+| S7 (P2) — **ersetzt durch R2** | Kopfseiten-Abgleich verliert verspätete Commits mitten in geladenen Seiten | Änderungsabruf gestrichen; siehe R2 | — |
+| S8 (P2) — **eingeschränkt durch R4** (Einrasten nur fürs Histogramm) | Einrasten schloss angefragte Einträge aus, Leiter widersprach dem 1h-Beispiel | Start abgerundet, Ende aufgerundet, höchstens 100 Buckets über die eingerastete Spanne, idempotent; Tests mit unausgerichteten Grenzen und Schwellen; ersetzt O4 | §8.2, §8.3, §13.1, AK 24, O4 |
+| S9 (P2) — **ergänzt durch R5** | Fehlender Status erscheint als „keine Fehler“ | `sources` immer `api` und `worker` mit `healthy`/`stale`/`disabled`/`missing`, `complete`; Herzschlag auch im abgeschalteten Modus; Tests für Kaltstart, Restore und abgelaufene Statuszeile | §5.1, §5.5, §6.2, §8.1, §9.7, §11, §13, AK 25 |
 | S10 (P2) | Deploy aktualisiert das Host-Backup-Skript nicht | Installation und Prüfung (`sha256sum`, kein `COPY`-Block im Dump) als Stufe 3 vor dem Einschalten; Operations-Hinweis | §6.4, §12, §16, §17, AK 9 |
+
+**Auflösungen der zweiten adversarialen Prüfung (Codex Sol, 2026-10-14; S1, S3, S4, S5, S10 dort als geschlossen bestätigt; vom Betreiber samt Vereinfachung freigegeben):**
+
+| Nr. | Befund | Auflösung | Abschnitte |
+|---|---|---|---|
+| R1 (2.1, P1) | Splice-Zeile gibt `system-msg` und `msg-param-*`-Identitäten im Klartext aus (bestehende Prod-Lücke) | T0: Splice-Zeile nur mit Schlüsseln; Werte nur für `tmi-sent-ts`, `room-id` und Ja/Nein-Flags mit exaktem Format; Ende-zu-Ende-Tests | §4.2b, §4.3, AK 4, AK 27 |
+| R2 (2.2, P2) | Statement-Timeout begründet die Überlappung des Änderungsabrufs nicht (Commit kann sich verzögern) | Änderungsabruf und `InsertedAtUtc` gestrichen; begrenzter REST-Abgleich des geladenen Intervalls per Ids; Test mit 30 s verzögertem Commit | §5.5, §6.1, §8.1, §8.3, §13, AK 12, AK 23 |
+| R3 (2.3, P2) | Erfolgreicher Publish beweist keinen Empfänger | `logs.appended` nur Hinweis; Dirty-Flag und Wiederholung gestrichen; periodischer Abgleich trägt die Zusage | §5.5, §5.6, §8.3, AK 12, §15 |
+| R4 (2.4, P2) | Eingerastete 7-Tage-Grenzen sind als Eingabe ungültig | Listen mit exakten Grenzen, Einrasten nur fürs Histogramm; `to` bis 12 h in der Zukunft; Tests für Rückgabe als Eingabe um 12:01 UTC und Grenzspannen | §8.1, §8.2, §8.3, §13 |
+| R5 (2.5, P2) | Gesunde Herzschläge bescheinigen unvollständige Fehlerzahlen | Abdeckung getrennt von Lebendigkeit (`coverage24h`: verworfene Fehler und Lücken); „mindestens n“ statt „keine“; Tests für Budget-Drop und Restore | §5.3, §8.1, §9.7, §11, §13, AK 25 |
+| R6 (2.6, P2) | Ein ungültiger Datensatz vernichtet den Batch (NUL aus 7TV-Frames) | Normalisierung vor dem Einreihen, deterministische Fehler per Halbierung isoliert (`rejected`), vorübergehende idempotent wiederholt; Test 499 + 1 | §5.2, §5.3, §5.5, §13, AK 28 |
+| R7 (2.7, P2) | Leere Liste kann keinen Live-Abruf bilden | `from_L` = `rangeFromUtc` bei leerer Liste, durch den Abgleich ohne Sonderfall; E2E | §8.3, §13.2, AK 23 |
 
 Weitere Festlegungen ohne eigene Nummer, aber ebenso offen: Tabname „Logs“ und Position (§9), Zeiten in UTC wie im Dashboard (§9.2), Grenzwerte in §7.1 und §8.1 sowie `stale` ab 5 min (§11).
 
