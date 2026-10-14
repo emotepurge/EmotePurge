@@ -595,10 +595,10 @@ describe('withoutSkips and sameDecisions', () => {
 
 describe('applyBulkDecision', () => {
   const rows = [
-    { key: 'a', replaceAvailable: true },
-    { key: 'b', replaceAvailable: true },
-    { key: 'c', replaceAvailable: false },
-    { key: 'd', replaceAvailable: true },
+    { key: 'a', available: true },
+    { key: 'b', available: true },
+    { key: 'c', available: false },
+    { key: 'd', available: true },
   ];
 
   it('reports only the changed rows, counting from the current decisions', () => {
@@ -615,7 +615,7 @@ describe('applyBulkDecision', () => {
       ]),
     );
     expect(result.changed).toBe(2);
-    expect(result.replaceUnavailable).toBe(1);
+    expect(result.unavailable).toBe(1);
     expect(result.renamesKept).toBe(0);
   });
 
@@ -635,7 +635,7 @@ describe('applyBulkDecision', () => {
     const result = applyBulkDecision(rows, new Map(), 'replaceTarget');
 
     expect(result.changes.has('c')).toBe(false);
-    expect(result.replaceUnavailable).toBe(1);
+    expect(result.unavailable).toBe(1);
     expect(result.changed).toBe(3);
   });
 
@@ -655,7 +655,42 @@ describe('applyBulkDecision', () => {
         ['c', { kind: 'skip' }],
       ]),
     );
-    expect(result.replaceUnavailable).toBe(0);
+    expect(result.unavailable).toBe(0);
+  });
+
+  it('adopts every row where adopt is possible and counts the blocked ones', () => {
+    const result = applyBulkDecision(
+      rows,
+      new Map<string, RowDecision>([['a', { kind: 'adoptSourceName' }]]),
+      'adoptSourceName',
+    );
+
+    expect(result.changes).toEqual(
+      new Map<string, RowDecision>([
+        ['b', { kind: 'adoptSourceName' }],
+        ['d', { kind: 'adoptSourceName' }],
+      ]),
+    );
+    expect(result.changed).toBe(2);
+    expect(result.unavailable).toBe(1);
+  });
+
+  it('moves adopting rows back to skip, including a blocked one', () => {
+    const result = applyBulkDecision(
+      rows,
+      new Map<string, RowDecision>([
+        ['a', { kind: 'adoptSourceName' }],
+        ['c', { kind: 'adoptSourceName' }],
+      ]),
+      'skip',
+    );
+
+    expect(result.changes).toEqual(
+      new Map<string, RowDecision>([
+        ['a', { kind: 'skip' }],
+        ['c', { kind: 'skip' }],
+      ]),
+    );
   });
 
   it('is idempotent: applying its own result again changes nothing', () => {
