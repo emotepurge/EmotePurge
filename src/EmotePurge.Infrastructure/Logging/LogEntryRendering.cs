@@ -182,7 +182,7 @@ internal static class LogEntryRendering
         return -1;
     }
 
-    private static string CutSafely(string value, int length)
+    internal static string CutSafely(string value, int length)
     {
         if (value.Length <= length)
         {
