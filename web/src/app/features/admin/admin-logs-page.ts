@@ -45,7 +45,7 @@ import { Popover } from '../../shared/ui/popover';
 import { SegmentedControl, SegmentedControlOption } from '../../shared/ui/segmented-control';
 import { SkeletonRows } from '../../shared/ui/skeleton-rows';
 import { AdminLogFacets } from './admin-log-facets';
-import { openLogFilterDialog } from './admin-log-filter-dialog';
+import { openLogFacetsDialog } from './admin-log-facets-dialog';
 import { AdminLogList, formatLogLine } from './admin-log-list';
 
 /** The loaded list stops here and asks for a narrower range or filter (spec §9.2, A25). */
@@ -708,7 +708,7 @@ export class AdminLogsPage {
   }
 
   protected openFilterDialog(): void {
-    openLogFilterDialog(this.dialog, {
+    openLogFacetsDialog(this.dialog, {
       rangeOptions: this.rangeOptions,
       rangeValue: this.rangeValue,
       backRange: this.backRange,

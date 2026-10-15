@@ -14,7 +14,7 @@ import { AdminLogFacets } from './admin-log-facets';
  * (spec §9.1) and the counts behind the dialog follow the new filter. Signals and callbacks rather than
  * a snapshot for that reason. The saved-filter chips join this list when they exist.
  */
-export interface LogFilterDialogData {
+export interface LogFacetsDialogData {
   rangeOptions: SegmentedControlOption[];
   rangeValue: Signal<string>;
   /** "Back to 24 h" label parameters, or null when there is nothing to go back to. */
@@ -27,7 +27,7 @@ export interface LogFilterDialogData {
 
 /** The phone form of the filter bar's secondary controls: time range and facets (spec §9.3). */
 @Component({
-  selector: 'app-admin-log-filter-dialog',
+  selector: 'app-admin-log-facets-dialog',
   imports: [AdminLogFacets, Button, DialogShell, SegmentedControl, TranslocoPipe],
   template: `
     <app-dialog-shell [dialogTitle]="'admin.logs.filter.dialogTitle' | transloco">
@@ -62,11 +62,11 @@ export interface LogFilterDialogData {
     </app-dialog-shell>
   `,
 })
-export class AdminLogFilterDialog {
-  protected readonly data = inject<LogFilterDialogData>(DIALOG_DATA);
+export class AdminLogFacetsDialog {
+  protected readonly data = inject<LogFacetsDialogData>(DIALOG_DATA);
   protected readonly ref = inject<DialogRef<void>>(DialogRef);
 }
 
-export function openLogFilterDialog(dialog: Dialog, data: LogFilterDialogData): DialogRef<void> {
-  return openAppDialog<void, LogFilterDialogData>(dialog, AdminLogFilterDialog, { data });
+export function openLogFacetsDialog(dialog: Dialog, data: LogFacetsDialogData): DialogRef<void> {
+  return openAppDialog<void, LogFacetsDialogData>(dialog, AdminLogFacetsDialog, { data });
 }
