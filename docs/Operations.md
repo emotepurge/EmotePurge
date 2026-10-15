@@ -1581,6 +1581,22 @@ name pattern.
 | `OFFSITE_ENABLED` | `0` | optional `rclone` copy, off by default |
 | `OFFSITE_RCLONE_REMOTE` | *(empty)* | e.g. `b2:my-bucket/emotepurge` |
 
+The dump **excludes the data** of `LogEntries` and `LogCaptureStatus` (`--exclude-table-data`);
+their `CREATE TABLE` statements stay, so a restore recreates the empty tables. Captured logs are
+diagnostics with a seven-day retention and must not live on in the backup chain for up to
+`RETENTION_DAYS` plus the off-site generations. After any restore the log viewer is therefore
+empty until new lines arrive. Saved log filters (`LogFilters`) are user data and stay in the dump.
+
+**Operator step before `LOG_CAPTURE_ENABLED=true`.** The script runs on the host from cron, so
+deploying an image does not update it. Install the current `scripts/backup-postgres.sh` on the
+host, compare `sha256sum` against the repository copy, run it once, and check the dump:
+`zcat <dump>.sql.gz | grep -c '^COPY public."LogEntries"'` and the same for
+`"LogCaptureStatus"` must both print `0`, while
+`zcat <dump>.sql.gz | grep -c 'CREATE TABLE public."LogEntries"'` prints `1`. Only then set
+`LOG_CAPTURE_ENABLED=true`; otherwise log lines would sit in backups far longer than the
+retention stated in the privacy text. Every later change to the script needs the same install
+and check.
+
 A dump contains user records including stored Twitch tokens; restrict the target directory
 (`chmod 700`). The optional off-site step copies the finished dump with
 [`rclone`](https://rclone.org/) and only logs a warning if `rclone` is missing or the remote
@@ -1614,7 +1630,8 @@ docker exec emotepurge-postgres psql -U emotepurge -d postgres \
 **Without `ON_ERROR_STOP=1` the drill is worthless:** `psql` otherwise skips past errors and
 still exits 0, so a restore missing tables would look successful. Expect exit code 0 and no
 output. Comparing row counts against the live database is a useful second step, but differences
-are normal: `UsageStats` and `Votes` keep growing (the flush runs every 30 seconds), and
+are normal: `LogEntries` and `LogCaptureStatus` are empty after a restore by design,
+`UsageStats` and `Votes` keep growing (the flush runs every 30 seconds), and
 `__EFMigrationsHistory` is behind if a migration was added after the dump was taken.
 
 ### Restoring for real

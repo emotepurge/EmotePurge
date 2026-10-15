@@ -20,13 +20,15 @@ Captured log entries expire after seven days (`RetentionPolicy.LogEntry`, exclus
 
 ### 2026-10-15 — In-app log capture in Postgres (#383)
 
-**Betrifft:** `src/EmotePurge.Core/Entities/LogEntry.cs` · `src/EmotePurge.Core/Entities/LogCaptureStatus.cs` · `src/EmotePurge.Core/Entities/LogFilter.cs` · `src/EmotePurge.Core/Entities/LogFilterNames.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/*_AddLogCapture.cs`
+**Betrifft:** `src/EmotePurge.Core/Entities/LogEntry.cs` · `src/EmotePurge.Core/Entities/LogCaptureStatus.cs` · `src/EmotePurge.Core/Entities/LogFilter.cs` · `src/EmotePurge.Core/Entities/LogFilterNames.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/*_AddLogCapture.cs` · `scripts/backup-postgres.sh`
 
 Application logs (Information and above) of Api and Worker are captured into Postgres so the admin can search them over seven days without shell access. Three tables: `LogEntries` (one row per captured line, `CaptureId` unique for idempotent writes, `Properties` as jsonb), `LogCaptureStatus` (one heartbeat row per process instance, key `(Source, InstanceId)`) and `LogFilters` (saved filters). Retention is seven days via `RetentionPolicy`, enforced by the existing `DataRetentionWorker` (a later step of the same work).
 
 Saved filters are global, the same for every admin. The four starter filters ("Start nach Deploy", "Twitch-Reconnects", "7TV-Sync/EventAPI", "Alle Fehler") are inserted once by the migration (`InsertData`), not by `HasData` and not at startup, so a filter the operator deletes stays deleted. Filter names are unique case-insensitively through a stored `NameKey` column filled by `LogFilterNames.NormalizeKey` (trim, collapse whitespace, NFC, invariant lower case): Postgres `lower()` folds only ASCII under the C locale of the Alpine image, so a database-side unique index on `lower("Name")` would treat `Ärger` and `ärger` as different. The seed rows carry their keys as literals because migrations never call application code.
 
 Indexes on `LogEntries`: `(TimestampUtc DESC, Id DESC)`, unique `(CaptureId)`, partial `(TimestampUtc) WHERE "Level" >= 4` and `(Source, ProcessStartedUtc DESC)`. No GIN or trigram index in v1: a scan bounded by the time range carries free-text and property filters at the expected volume (about 25k rows per week); `pg_trgm` is the fallback only if the performance gate fails and needs an operator decision because it is an extension.
+
+Backups exclude log data. `scripts/backup-postgres.sh` passes `--exclude-table-data` for `LogEntries` and `LogCaptureStatus`: the schema stays in the dump, the rows do not, so captured lines cannot sit in the backup chain for 14 days locally plus the off-site generations and falsify the seven-day statement of the privacy text. After a restore the logs are empty, which is acceptable because they are diagnostics, not user data; `LogFilters` stays in the dump. Because the script runs from cron on the host, an image deploy does not change it: installing the new version, comparing `sha256sum` and checking the dump for missing `COPY` blocks is an operator precondition for `LOG_CAPTURE_ENABLED=true` (documented in `docs/Operations.md`), and every later script change needs the same step.
 
 ---
 
