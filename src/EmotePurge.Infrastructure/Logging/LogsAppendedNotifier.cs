@@ -17,7 +17,8 @@ namespace EmotePurge.Infrastructure.Logging;
 /// failing with a warning per event cannot drive itself through batch → hint → delivery → warning.
 /// </para>
 /// The publisher (and the logger) are resolved from the provider on first use, not at construction: the
-/// sink is built with the logger factory, and the Redis multiplexer behind the publisher logs itself.
+/// sink is built with the logger factory, and the Redis multiplexer behind the publisher logs itself. That
+/// first resolution runs outside any suppression scope, so long-lived Redis components keep being captured.
 /// </summary>
 internal sealed class LogsAppendedNotifier(IServiceProvider services, TimeProvider time)
 {
@@ -57,8 +58,11 @@ internal sealed class LogsAppendedNotifier(IServiceProvider services, TimeProvid
             return;
         }
 
-        // Task.Run: even a publisher that blocks before returning its task cannot hold the writer up.
-        LastPublish = Task.Run(PublishAsync);
+        // Task.Run: even a publisher that blocks before returning its task cannot hold the writer up. The
+        // writer calls this inside its suppression scope; the task starts without that execution context, so
+        // the first resolution of the publisher (which builds the process-wide Redis multiplexer with its
+        // long-lived reader loop and pub/sub callbacks) never inherits the suppression flag.
+        LastPublish = LogCaptureSuppression.RunWithoutFlow(PublishAsync);
     }
 
     private async Task PublishAsync()
@@ -68,7 +72,11 @@ internal sealed class LogsAppendedNotifier(IServiceProvider services, TimeProvid
             var publisher = services.GetService<IRedisPublisher>();
             if (publisher is not null)
             {
-                await publisher.PublishAsync(LiveEvents.Channel, Payload);
+                // Only the publish itself is suppressed: Redis diagnostics of this call are not captured.
+                using (LogCaptureSuppression.Enter())
+                {
+                    await publisher.PublishAsync(LiveEvents.Channel, Payload);
+                }
             }
         }
         catch (Exception exception)

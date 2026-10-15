@@ -19,6 +19,35 @@ public static class LogCaptureSuppression
         return new Scope(previous);
     }
 
+    /// <summary>
+    /// Starts <paramref name="work"/> on the thread pool without the caller's execution context, so a
+    /// suppression scope of the caller does not flow into it — for work that may create long-lived
+    /// components (timers, reader loops, callbacks) which would otherwise carry the flag forever.
+    /// </summary>
+    internal static Task RunWithoutFlow(Func<Task> work) => WithoutFlow(() => Task.Run(work));
+
+    /// <summary>
+    /// Runs <paramref name="create"/> on this thread while execution-context flow is suppressed: anything it
+    /// schedules (timers, pool callbacks) captures no context, so a caller's suppression scope stays local.
+    /// </summary>
+    internal static T WithoutFlow<T>(Func<T> create)
+    {
+        if (ExecutionContext.IsFlowSuppressed())
+        {
+            return create();
+        }
+
+        var control = ExecutionContext.SuppressFlow();
+        try
+        {
+            return create();
+        }
+        finally
+        {
+            control.Undo();
+        }
+    }
+
     private sealed class Scope(int previous) : IDisposable
     {
         private int _disposed;

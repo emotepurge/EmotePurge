@@ -160,6 +160,56 @@ public class LogsAppendedNotifierTests
         never.SetResult();
     }
 
+    [Fact]
+    public async Task Notifier_ResolvesPublisherOutsideTheWritersSuppression_PublishesSuppressed()
+    {
+        // The writer calls the notifier inside its suppression scope. The first resolution builds the Redis
+        // multiplexer with its long-lived reader loop and callbacks: it must not inherit the flag, or every
+        // later Redis callback log would be dropped silently. Only the publish call itself is suppressed.
+        bool? suppressedWhileResolving = null;
+        bool? suppressedWhilePublishing = null;
+        var publisher = Substitute.For<IRedisPublisher>();
+        publisher.PublishAsync(default!, default!, default).ReturnsForAnyArgs(_ =>
+        {
+            suppressedWhilePublishing = LogCaptureSuppression.IsActive;
+            return Task.CompletedTask;
+        });
+        var services = Substitute.For<IServiceProvider>();
+        services.GetService(typeof(IRedisPublisher)).Returns(_ =>
+        {
+            suppressedWhileResolving = LogCaptureSuppression.IsActive;
+            return publisher;
+        });
+        var notifier = new LogsAppendedNotifier(services, _time);
+
+        using (LogCaptureSuppression.Enter())
+        {
+            notifier.OnBatchCommitted([Entry("A")]);
+        }
+
+        await WaitForPublishAsync(notifier);
+
+        Assert.False(suppressedWhileResolving);
+        Assert.True(suppressedWhilePublishing);
+    }
+
+    [Fact]
+    public async Task WithoutFlow_WorkStartedInsideASuppressionScopeIsNotSuppressed()
+    {
+        using var scope = LogCaptureSuppression.Enter();
+
+        var inherited = await Task.Run(() => LogCaptureSuppression.IsActive);
+        var withoutFlow = await LogCaptureSuppression.WithoutFlow(() => Task.Run(() => LogCaptureSuppression.IsActive));
+        var timerSaw = new TaskCompletionSource<bool>();
+        using var timer = LogCaptureSuppression.WithoutFlow(() => new Timer(_ => timerSaw.TrySetResult(LogCaptureSuppression.IsActive), null, 0, Timeout.Infinite));
+
+        Assert.True(inherited);
+        Assert.False(withoutFlow);
+        Assert.False(await timerSaw.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.True(LogCaptureSuppression.IsActive);
+        Assert.False(ExecutionContext.IsFlowSuppressed());
+    }
+
     private static async Task WaitForPublishAsync(LogsAppendedNotifier notifier)
     {
         if (notifier.LastPublish is { } publish)

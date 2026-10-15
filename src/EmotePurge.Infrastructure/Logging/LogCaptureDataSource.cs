@@ -27,7 +27,11 @@ internal sealed class LogCaptureDataSource : IDisposable, IAsyncDisposable
 
     internal LogCaptureDataSource(string connectionString, int connectTimeoutSeconds = DefaultConnectTimeoutSeconds)
     {
-        _dataSource = new Lazy<NpgsqlDataSource>(() => Build(connectionString, connectTimeoutSeconds), LazyThreadSafetyMode.ExecutionAndPublication);
+        // Built on first use, which happens inside the writer's suppression scope; built without flowing that
+        // context, so the pool's long-lived timers never carry the flag.
+        _dataSource = new Lazy<NpgsqlDataSource>(
+            () => LogCaptureSuppression.WithoutFlow(() => Build(connectionString, connectTimeoutSeconds)),
+            LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     public NpgsqlDataSource DataSource => _dataSource.Value;
