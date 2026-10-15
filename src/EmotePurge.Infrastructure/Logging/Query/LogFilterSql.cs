@@ -94,13 +94,17 @@ internal sealed class LogFilterSql
             if (term.Latest)
             {
                 // Per source the instance with the newest process start: from the status rows, else from the
-                // entries themselves. Uncorrelated, so it runs once, not per row.
-                var sources = string.Join(", ", Enum.GetValues<LogSource>().Select(s => ((short)s).ToString(CultureInfo.InvariantCulture) + "::smallint"));
-                parts.Add(
-                    "(e.\"Source\", e.\"InstanceId\") IN (SELECT src.s, COALESCE(" +
-                    "(SELECT st.\"InstanceId\" FROM \"LogCaptureStatus\" st WHERE st.\"Source\" = src.s ORDER BY st.\"ProcessStartedUtc\" DESC, st.\"InstanceId\" DESC LIMIT 1), " +
-                    "(SELECT le.\"InstanceId\" FROM \"LogEntries\" le WHERE le.\"Source\" = src.s ORDER BY le.\"ProcessStartedUtc\" DESC, le.\"InstanceId\" DESC LIMIT 1)) " +
-                    $"FROM unnest(ARRAY[{sources}]) AS src(s))");
+                // entries themselves. One literal branch per source, so nothing refers to the outer row: the
+                // planner resolves each lookup once (InitPlan) instead of once per candidate row, which also
+                // keeps the cost estimate low enough that Postgres does not JIT-compile the statement.
+                var branches = Enum.GetValues<LogSource>().Select(s =>
+                {
+                    var source = ((short)s).ToString(CultureInfo.InvariantCulture) + "::smallint";
+                    return $"SELECT {source} AS s, COALESCE(" +
+                        $"(SELECT st.\"InstanceId\" FROM \"LogCaptureStatus\" st WHERE st.\"Source\" = {source} ORDER BY st.\"ProcessStartedUtc\" DESC, st.\"InstanceId\" DESC LIMIT 1), " +
+                        $"(SELECT le.\"InstanceId\" FROM \"LogEntries\" le WHERE le.\"Source\" = {source} ORDER BY le.\"ProcessStartedUtc\" DESC, le.\"InstanceId\" DESC LIMIT 1)) AS i";
+                });
+                parts.Add($"(e.\"Source\", e.\"InstanceId\") IN ({string.Join(" UNION ALL ", branches)})");
             }
 
             if (term.Ids.Count > 0)
