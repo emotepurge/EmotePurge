@@ -38,6 +38,10 @@ internal sealed class LogQueryService(AppDbContext db, LogViewerOptions options,
     private const string NewestFirst = "ORDER BY e.\"TimestampUtc\" DESC, e.\"Id\" DESC";
     private const int CursorBytes = 16;
 
+    private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan CoverageWindow = TimeSpan.FromHours(24);
+    private static readonly TimeSpan OverdueGrace = TimeSpan.FromHours(2);
+
     public async Task<LogPage> GetPageAsync(string? filter, LogRangeRequest range, string? before, int limit, CancellationToken ct)
     {
         var where = LogFilterSql.Translate(LogFilterParser.Parse(filter).ExpressionOrThrow());
@@ -160,6 +164,64 @@ internal sealed class LogQueryService(AppDbContext db, LogViewerOptions options,
             ct);
 
         return BuildSummary(exact, buckets, groups, instances, statuses);
+    }
+
+    public async Task<LogCaptureStatusView> ComputeStatusAsync(CancellationToken ct)
+    {
+        var now = Now();
+        var coverageFrom = now - CoverageWindow;
+
+        // The status table holds one row per process instance of the last 7 days; entries are only counted
+        // and bounded. One snapshot, so the liveness rows and the error count describe the same moment.
+        var (rows, recordedErrors, oldest) = await RunAsync(
+            IsolationLevel.RepeatableRead,
+            async () => (
+                await db.LogCaptureStatuses.AsNoTracking().ToListAsync(ct),
+                await db.LogEntries.CountAsync(e => e.Level >= LogEntryLevel.Error && e.TimestampUtc >= coverageFrom, ct),
+                await db.LogEntries.MinAsync(e => (DateTime?)e.TimestampUtc, ct)),
+            ct);
+
+        // Only the newest instance of a source counts: after a restart the old one may still write heartbeats
+        // for a moment, and its fresher flush must not vouch for the new process (Review Focus 2).
+        var newest = rows
+            .GroupBy(r => r.Source)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(r => r.ProcessStartedUtc).ThenByDescending(r => r.InstanceId, StringComparer.Ordinal).First());
+
+        var sources = new List<LogSourceStatus>();
+        var incomplete = new List<LogIncompleteSince>();
+        var complete = true;
+        foreach (var source in new[] { LogSource.Api, LogSource.Worker })
+        {
+            if (!newest.TryGetValue(source, out var row))
+            {
+                sources.Add(new LogSourceStatus(source, LogSourceState.Missing, null, null, null));
+                complete = false;
+                continue;
+            }
+
+            var lastFlush = Utc(row.LastFlushUtc);
+            var state = lastFlush < now - StaleAfter
+                ? LogSourceState.Stale
+                : row.CaptureEnabled ? LogSourceState.Healthy : LogSourceState.Disabled;
+            sources.Add(new LogSourceStatus(source, state, row.InstanceId, Utc(row.ProcessStartedUtc), lastFlush));
+
+            var marker = Utc(row.LastIncompleteAtUtc);
+            if (marker >= coverageFrom)
+            {
+                complete = false;
+                incomplete.Add(new LogIncompleteSince(source, marker));
+            }
+        }
+
+        var oldestUtc = oldest is { } value ? Utc(value) : (DateTime?)null;
+        var overdue = oldestUtc is { } o && o < now - RetentionPolicy.LogEntry - OverdueGrace;
+        return new LogCaptureStatusView(
+            now,
+            sources,
+            new LogCoverage(complete, recordedErrors, incomplete),
+            new LogRetentionStatus(oldestUtc, overdue));
     }
 
     /// <summary>

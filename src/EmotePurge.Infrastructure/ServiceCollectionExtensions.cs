@@ -119,6 +119,10 @@ public static class ServiceCollectionExtensions
         logViewerOptions.Validate();
         services.AddSingleton(logViewerOptions);
         services.AddScoped<ILogQueryService, LogQueryService>();
+        // The cached status read (30 s, single-flight) is a singleton that opens a scope per fill, like
+        // IAdminDashboardReader; the saved filters are plain scoped CRUD.
+        services.AddSingleton<ILogStatusReader, LogStatusReader>();
+        services.AddScoped<ILogFilterService, LogFilterService>();
         services.AddScoped<IEmoteService, EmoteService>();
         services.AddScoped<IEmoteSetOwnershipService, EmoteSetOwnershipService>();
         services.AddScoped<ITrackedEmoteSetMembershipService, TrackedEmoteSetMembershipService>();

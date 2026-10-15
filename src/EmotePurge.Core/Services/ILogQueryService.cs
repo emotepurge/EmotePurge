@@ -37,6 +37,12 @@ public interface ILogQueryService
 
     /// <summary>Histogram, facets, drop totals and process starts of the filtered set in the range.</summary>
     Task<LogSummary> GetSummaryAsync(string? filter, LogRangeRequest range, CancellationToken ct);
+
+    /// <summary>
+    /// The uncached capture status: liveness per source, 24 h coverage and retention. Callers go through
+    /// <see cref="ILogStatusReader"/>, which caches and enters the suppression scope.
+    /// </summary>
+    Task<LogCaptureStatusView> ComputeStatusAsync(CancellationToken ct);
 }
 
 /// <summary>A captured entry as lists show it; the exception text is only in <see cref="LogEntryDetailView"/>.</summary>
