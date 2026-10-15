@@ -208,7 +208,40 @@ public class LogEntryRenderingTests
         Assert.True(rendered.Truncated);
     }
 
+    [Fact]
+    public void RenderException_BearerTokenStraddlingMessageLimit_LeavesNoTokenCharacters()
+    {
+        var token = new string('T', 200);
+        var message = new string('a', 1000) + " Bearer " + token + " tail";
+        var rendered = LogEntryRendering.RenderException(new Exception(message), false);
+        Assert.DoesNotContain("TTTT", rendered.Text);
+    }
+
     // --- properties ---
+
+    [Fact]
+    public void RenderProperties_PasswordInValue_IsScrubbedAndJsonStaysValid()
+    {
+        var rendered = LogEntryRendering.RenderProperties(State(("conn", "Host=x;Password=abc")), null, null);
+        Assert.Equal("Host=x;Password=[redacted]", Parse(rendered).GetProperty("conn").GetString());
+    }
+
+    [Fact]
+    public void RenderProperties_BearerStraddlingValueLimit_LeavesNoTokenCharacters()
+    {
+        var value = new string('a', 250) + " Bearer " + new string('T', 100);
+        var rendered = LogEntryRendering.RenderProperties(State(("v", value)), null, null);
+        Assert.DoesNotContain("TTTT", rendered.Json);
+    }
+
+    [Fact]
+    public void RenderProperties_HugeStringElementsInCollection_AreBounded()
+    {
+        var items = Enumerable.Range(0, 20).Select(_ => new string('x', 1_000_000)).ToArray();
+        var rendered = LogEntryRendering.RenderProperties(State(("c", items)), null, null);
+        Assert.Equal(256, Parse(rendered).GetProperty("c").GetString()!.Length);
+        Assert.True(rendered.Truncated);
+    }
 
     [Fact]
     public void RenderProperties_KeysLowercased_OriginalFormatDropped()
@@ -300,10 +333,12 @@ public class LogEntryRenderingTests
     [Fact]
     public void RenderProperties_LazyEndlessEnumerable_RendersTypeNameAndReturns()
     {
+        LogEntryRendering.RenderProperties(State(("lazy", Endless())), null, null); // warm-up (JIT)
         var sw = Stopwatch.StartNew();
         var rendered = LogEntryRendering.RenderProperties(State(("lazy", Endless())), null, null);
         sw.Stop();
-        Assert.True(sw.ElapsedMilliseconds < 1000);
+        // 50 ms instead of 1 ms: an endless enumeration would never return, and a loaded devbox cannot guarantee 1 ms.
+        Assert.True(sw.ElapsedMilliseconds < 50, $"took {sw.ElapsedMilliseconds} ms");
         Assert.StartsWith("<", Parse(rendered).GetProperty("lazy").GetString());
         Assert.Contains("Endless", Parse(rendered).GetProperty("lazy").GetString());
     }

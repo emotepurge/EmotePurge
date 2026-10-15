@@ -30,6 +30,7 @@ internal static class LogEntryRendering
     internal const int MaxPropertyValueLength = 256;
     internal const int MaxPropertiesJsonLength = 4096;
     internal const int MaxCollectionElements = 20;
+    private const int ScrubWindow = 8192;
     internal const string TruncatedMarker = "…[truncated]";
 
     private const string OriginalFormatKey = "{OriginalFormat}";
@@ -69,6 +70,7 @@ internal static class LogEntryRendering
         });
     }
 
+    /// <remarks>Does not scrub: the caller scrubs the formatted message before calling this.</remarks>
     public static (string Text, bool Truncated) TruncateMessage(string message)
     {
         if (message.Length <= MaxMessageLength)
@@ -79,6 +81,9 @@ internal static class LogEntryRendering
         return (CutSafely(message, MaxMessageLength) + TruncatedMarker, true);
     }
 
+    /// <remarks>
+    /// Link messages are scrubbed before the per-link cut. Stack traces are not scrubbed.
+    /// </remarks>
     public static RenderedException RenderException(Exception exception, bool withholdMessages)
     {
         ArgumentNullException.ThrowIfNull(exception);
@@ -102,6 +107,11 @@ internal static class LogEntryRendering
         return new RenderedException(NormalizeForPostgres(type), NormalizeForPostgres(text), truncated);
     }
 
+    /// <remarks>
+    /// String values are scrubbed with <see cref="SecretScrubber"/> here, before normalization and the
+    /// 256-character cut; the returned JSON must not be scrubbed again (a scrub over JSON can eat the
+    /// closing quote and brace).
+    /// </remarks>
     public static RenderedProperties RenderProperties<TState>(TState state, string? requestPath, string? traceId)
     {
         var entries = new List<(string Key, object? Value)>();
@@ -257,14 +267,17 @@ internal static class LogEntryRendering
         if (!string.IsNullOrEmpty(message))
         {
             Append(state, ": ");
-            if (message.Length > MaxExceptionMessageLength)
+            // Scrub before the cut so a limit cannot split a secret into an unrecognizable fragment.
+            // The pre-cut only bounds regex cost; anything past it is discarded by the final cut anyway.
+            var scrubbed = SecretScrubber.Scrub(CutSafely(message, ScrubWindow));
+            if (message.Length > MaxExceptionMessageLength || scrubbed.Length > MaxExceptionMessageLength)
             {
-                Append(state, CutSafely(message, MaxExceptionMessageLength));
+                Append(state, CutSafely(scrubbed, MaxExceptionMessageLength));
                 state.Truncated = true;
             }
             else
             {
-                Append(state, message);
+                Append(state, scrubbed);
             }
         }
 
@@ -406,7 +419,14 @@ internal static class LogEntryRendering
 
     private static string LimitValue(string value, ref bool truncated)
     {
-        value = NormalizeForPostgres(value);
+        // Scrub first (see RenderProperties); the pre-cut only bounds regex cost.
+        var wasCut = value.Length > ScrubWindow;
+        value = NormalizeForPostgres(SecretScrubber.Scrub(CutSafely(value, ScrubWindow)));
+        if (wasCut)
+        {
+            truncated = true;
+        }
+
         if (value.Length <= MaxPropertyValueLength)
         {
             return value;
@@ -479,18 +499,25 @@ internal static class LogEntryRendering
 
     private static string JoinCollection(IEnumerable collection)
     {
-        var parts = new List<string>(MaxCollectionElements);
+        // Stop accumulating once the joined text is past the value limit; the caller cuts it anyway.
+        var builder = new StringBuilder();
+        var count = 0;
         foreach (var element in collection)
         {
-            if (parts.Count >= MaxCollectionElements)
+            if (count++ >= MaxCollectionElements || builder.Length > MaxPropertyValueLength)
             {
                 break;
             }
 
-            parts.Add(RenderElement(element));
+            if (builder.Length > 0)
+            {
+                builder.Append(", ");
+            }
+
+            builder.Append(CutSafely(RenderElement(element), MaxPropertyValueLength + 1));
         }
 
-        return string.Join(", ", parts);
+        return builder.ToString();
     }
 
     private static string RenderElement(object? element)
