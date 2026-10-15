@@ -166,6 +166,9 @@ builder.Services.AddSingleton<LiveStreamKeepaliveOptions>();
 // instance shared by every request, like the options above. See LiveStreamConnectionRegistry.
 builder.Services.AddSingleton<LiveStreamConnectionRegistry>();
 
+// At most two log viewer queries run at once on this instance (spec section 8.4); a singleton so the slots are shared.
+builder.Services.AddSingleton(_ => new EmotePurge.Api.LogViewer.LogQueryConcurrencyGate());
+
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;

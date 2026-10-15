@@ -232,6 +232,18 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// </summary>
     public IChatLogBackfillService ChatLogBackfill { get; } = Substitute.For<IChatLogBackfillService>();
 
+    /// <summary>
+    /// Substituted for the admin log viewer routes (#383): the real services sit on <c>AppDbContext</c>.
+    /// The route's suppression scope and concurrency gate stay real.
+    /// </summary>
+    public ILogQueryService LogQuery { get; } = Substitute.For<ILogQueryService>();
+
+    /// <summary>Substituted like <see cref="LogQuery"/>; the real reader caches in front of Postgres.</summary>
+    public ILogStatusReader LogStatus { get; } = Substitute.For<ILogStatusReader>();
+
+    /// <summary>Substituted like <see cref="LogQuery"/>.</summary>
+    public ILogFilterService LogFilters { get; } = Substitute.For<ILogFilterService>();
+
     public ApiFactory()
     {
         LegalContent.GetAvailabilityAsync(Arg.Any<CancellationToken>())
@@ -306,6 +318,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => AdminUserQuery);
             services.AddScoped(_ => AdminDashboardQuery);
             services.AddScoped(_ => ChatLogBackfill);
+            services.AddScoped(_ => LogQuery);
+            services.AddSingleton(_ => LogStatus);
+            services.AddScoped(_ => LogFilters);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected
             // services *before* it runs the endpoint filter pipeline. A request the filter is about

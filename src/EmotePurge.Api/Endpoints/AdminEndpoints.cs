@@ -36,6 +36,8 @@ public static class AdminEndpoints
             .RequireAuthorization()
             .AddEndpointFilter<GlobalAdminAuthorizationFilter>();
 
+        group.MapAdminLogEndpoints();
+
         group.MapGet("/health", async (IWorkerHealthReader healthReader, CancellationToken ct) =>
         {
             // Admin counterpart to the public GET /api/worker/health (Z1 split): same snapshot, same
