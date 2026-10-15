@@ -334,6 +334,61 @@ describe('AdminLogsPage', () => {
     expect(FakeIntersectionObserver.instances.every((o) => o.disconnected)).toBe(true);
   });
 
+  it('clears rows and histogram when the URL turns invalid after a valid load', async () => {
+    await openAndLoad('/admin/logs');
+    expect(root().querySelectorAll('[data-log-id]').length).toBe(4);
+
+    await router.navigateByUrl('/admin/logs?range=2d');
+    await settle();
+    statusRequest().flush(healthyStatus());
+
+    expect(root().querySelectorAll('[data-log-id]').length).toBe(0);
+    expect(root().querySelector('app-time-histogram')).toBeNull();
+    expect(root().textContent).toContain('The time range in the address is not valid');
+  });
+
+  it('reports a failed next page without the stale sentence and retries that page', async () => {
+    await openAndLoad('/admin/logs', { page: page(200, 100, 'c1') });
+
+    FakeIntersectionObserver.instances
+      .filter((o) => !o.disconnected)
+      .at(-1)!
+      .fire();
+    listRequest((r) => r.params.get('before') === 'c1').flush(null, {
+      status: 500,
+      statusText: 'x',
+    });
+    await settle();
+
+    expect(root().textContent).toContain('More entries could not be loaded.');
+    expect(root().textContent).not.toContain('out of date');
+    expect(root().querySelectorAll('[data-log-id]').length).toBe(100);
+
+    buttonNamed('Try again').click();
+    const retry = listRequest((r) => r.params.get('before') === 'c1');
+    expect(retry.request.params.get('from')).toBe('2026-10-13T12:00:00Z');
+    retry.flush(page(100, 100, null));
+    await settle();
+
+    expect(root().querySelectorAll('[data-log-id]').length).toBe(200);
+    expect(root().textContent).not.toContain('More entries could not be loaded.');
+  });
+
+  it('pages on the request bounds when the first answer names none', async () => {
+    await openAndLoad('/admin/logs?from=2026-10-14T10%3A00%3A00Z&to=2026-10-14T11%3A00%3A00Z', {
+      page: { ...page(200, 100, 'c1'), rangeFromUtc: null, rangeToUtc: null },
+    });
+
+    FakeIntersectionObserver.instances
+      .filter((o) => !o.disconnected)
+      .at(-1)!
+      .fire();
+    const more = listRequest((r) => r.params.get('before') === 'c1');
+    expect(more.request.params.get('from')).toBe('2026-10-14T10:00:00Z');
+    expect(more.request.params.get('to')).toBe('2026-10-14T11:00:00Z');
+    more.flush(page(100, 100, null));
+  });
+
   describe('a broken deep link', () => {
     it.each([
       ['an unknown preset', '/admin/logs?range=2d'],

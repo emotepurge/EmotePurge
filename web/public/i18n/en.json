@@ -888,7 +888,8 @@
           "warn": "WRN",
           "error": "ERR",
           "crit": "CRT"
-        }
+        },
+        "loadMoreFailed": "More entries could not be loaded."
       },
       "row": {
         "timestamp": "Time (UTC)",

@@ -101,6 +101,25 @@ interface Banner {
   params: Record<string, string | number>;
 }
 
+const PRESET_SECONDS: Record<LogRangePreset, number> = {
+  '1h': 3600,
+  '6h': 6 * 3600,
+  '24h': 86400,
+  '7d': 7 * 86400,
+};
+
+/** The bounds a request itself names (absolute) or resolves to now (relative), for answers without any. */
+function boundsOf(range: LogRangeQuery): { from: string; to: string } | null {
+  if ('from' in range) {
+    return { from: range.from, to: range.to };
+  }
+  const to = Date.now();
+  return {
+    from: new Date(to - PRESET_SECONDS[range.range] * 1000).toISOString(),
+    to: new Date(to).toISOString(),
+  };
+}
+
 /** `yyyy-MM-dd HH:mm` of an ISO instant, cut from the string (it is UTC already). */
 function utcMinute(instant: string): string {
   return instant.slice(0, 16).replace('T', ' ');
@@ -347,6 +366,14 @@ function utcMinute(instant: string): string {
                 [processStarts]="summary()?.processStarts ?? []"
                 (termAdded)="addTerm($event)"
               />
+              @if (moreError()) {
+                <p class="flex flex-wrap items-center gap-3 text-sm text-danger-fg" role="alert">
+                  {{ 'admin.logs.list.loadMoreFailed' | transloco }}
+                  <button type="button" appButton="outline" (click)="loadMore()">
+                    {{ 'admin.logs.states.retry' | transloco }}
+                  </button>
+                </p>
+              }
               @if (moreLoading()) {
                 <p class="text-xs text-fg-muted" role="status">
                   {{ 'admin.logs.list.loadingMore' | transloco }}
@@ -478,6 +505,8 @@ export class AdminLogsPage {
   protected readonly listLoading = signal(false);
   protected readonly summaryLoading = signal(false);
   protected readonly moreLoading = signal(false);
+  /** The last "load more" failed; the loaded rows are fresh, only the next page is missing. */
+  protected readonly moreError = signal(false);
   protected readonly queryError = signal<HttpErrorResponse | null>(null);
   private readonly serverFilterError = signal<LogFilterApiError | null>(null);
 
@@ -750,6 +779,7 @@ export class AdminLogsPage {
       return;
     }
     this.moreLoading.set(true);
+    this.moreError.set(false);
     this.moreSub = this.service
       .getPage(request.q, { from: frozen.from, to: frozen.to }, cursor)
       .subscribe({
@@ -761,9 +791,9 @@ export class AdminLogsPage {
             return [...(current ?? []), ...page.entries.filter((entry) => !seen.has(entry.id))];
           });
         },
-        error: (error: unknown) => {
+        error: () => {
           this.moreLoading.set(false);
-          this.queryError.set(error instanceof HttpErrorResponse ? error : null);
+          this.moreError.set(true);
         },
       });
   }
@@ -775,7 +805,13 @@ export class AdminLogsPage {
     this.queryError.set(null);
     this.serverFilterError.set(null);
     this.loadStatus();
+    this.moreError.set(false);
     if (!request) {
+      // Nothing may sit under the invalid-range or filter-length notice.
+      this.entries.set(null);
+      this.summary.set(null);
+      this.cursor.set(null);
+      this.frozen = null;
       this.listLoading.set(false);
       this.summaryLoading.set(false);
       return;
@@ -784,7 +820,7 @@ export class AdminLogsPage {
     this.summaryLoading.set(true);
 
     this.pageSub = this.service.getPage(request.q, request.range).subscribe({
-      next: (page) => this.onFirstPage(page),
+      next: (page) => this.onFirstPage(page, request.range),
       error: (error: unknown) => this.onLoadError(error, 'list'),
     });
     this.summarySub = this.service.getSummary(request.q, request.range).subscribe({
@@ -796,14 +832,15 @@ export class AdminLogsPage {
     });
   }
 
-  private onFirstPage(page: LogPage): void {
+  private onFirstPage(page: LogPage, range: LogRangeQuery): void {
     this.listLoading.set(false);
     this.entries.set(page.entries);
-    this.cursor.set(page.nextCursor);
     this.frozen =
       page.rangeFromUtc && page.rangeToUtc
         ? { from: page.rangeFromUtc, to: page.rangeToUtc }
-        : null;
+        : boundsOf(range);
+    // Without bounds to page on there is no next page: show the end, not a dead sentinel.
+    this.cursor.set(this.frozen ? page.nextCursor : null);
   }
 
   private onLoadError(error: unknown, source: 'list' | 'summary'): void {
