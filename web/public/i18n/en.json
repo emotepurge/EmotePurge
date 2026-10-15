@@ -801,6 +801,24 @@
           "hourly": "Hourly ranges show stored hourly statistics: per bucket the highest hourly P95 and maximum, not a recomputed percentile. Container values come without a quota share; workload shows summed interval counters, not rates."
         }
       }
+    },
+    "logs": {
+      "histogram": {
+        "unit": "Entries per interval",
+        "utc": "times in UTC",
+        "empty": "No entries in this period",
+        "cursorHint": "{{ title }} – move with the arrow keys, Enter narrows to the interval",
+        "summary": "{{ total }} entries in {{ buckets }} intervals, at most {{ max }} per interval, {{ warnBuckets }} intervals with warnings, {{ errorBuckets }} with errors.",
+        "partial": "The last interval is still incomplete and may change.",
+        "partialShort": "incomplete",
+        "reading": "Information {{ info }}, Warning {{ warn }}, Error {{ error }}",
+        "processStart": "{{ source }} started {{ time }}",
+        "level": {
+          "info": "Information",
+          "warn": "Warning",
+          "error": "Error / Critical"
+        }
+      }
     }
   },
   "audit": {

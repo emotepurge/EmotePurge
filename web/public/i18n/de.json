@@ -801,6 +801,24 @@
           "hourly": "Stundenbereiche zeigen gespeicherte Stundenstatistik: je Bucket den höchsten Stunden-P95 und das höchste Stundenmaximum, kein neu berechnetes Perzentil. Container-Werte kommen ohne Quota-Anteil; die Arbeit sind aufsummierte Intervallzähler, keine Raten."
         }
       }
+    },
+    "logs": {
+      "histogram": {
+        "unit": "Einträge je Intervall",
+        "utc": "Zeiten in UTC",
+        "empty": "Keine Einträge in diesem Zeitraum",
+        "cursorHint": "{{ title }} – mit den Pfeiltasten lesen, Enter grenzt auf das Intervall ein",
+        "summary": "{{ total }} Einträge in {{ buckets }} Intervallen, höchstens {{ max }} je Intervall, {{ warnBuckets }} Intervalle mit Warnungen, {{ errorBuckets }} mit Fehlern.",
+        "partial": "Das letzte Intervall ist noch unvollständig und kann sich ändern.",
+        "partialShort": "unvollständig",
+        "reading": "Information {{ info }}, Warnung {{ warn }}, Fehler {{ error }}",
+        "processStart": "{{ source }} gestartet {{ time }}",
+        "level": {
+          "info": "Information",
+          "warn": "Warnung",
+          "error": "Fehler / Kritisch"
+        }
+      }
     }
   },
   "audit": {
