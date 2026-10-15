@@ -51,6 +51,13 @@ public static class LiveEvents
     public const string WorkerRoster = "worker.roster";
 
     /// <summary>
+    /// The log capture writer of this process committed a batch with at least one real entry. No channel
+    /// scope, no payload, at most one per 2 s and process. Only a hint that speeds up the admin log
+    /// page; its correctness comes from the page's periodic REST reconcile, never from this event.
+    /// </summary>
+    public const string LogsAppended = "logs.appended";
+
+    /// <summary>
     /// Heartbeat injected by the Api broker when a stream is idle; never published to Redis.
     /// Consumers drop it — it exists only to keep proxies from timing out an idle connection.
     /// </summary>

@@ -29,6 +29,12 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public async Task DisposeAsync() => await _container.DisposeAsync();
 
+    // Raw connection string of one database in this container — for code under test that opens its
+    // own Npgsql data source instead of an AppDbContext (the log capture writer). EF interceptors
+    // such as CommandHook never see that path; tests hook it at the store level instead.
+    public string ConnectionStringFor(string databaseName) =>
+        new Npgsql.NpgsqlConnectionStringBuilder(_container.GetConnectionString()) { Database = databaseName }.ConnectionString;
+
     // Fresh AppDbContext per call — tests get their own change tracker against the same
     // migrated database rather than sharing one long-lived context instance.
     public AppDbContext CreateDbContext()
