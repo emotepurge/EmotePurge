@@ -90,6 +90,13 @@ public static class AdminLogEndpoints
         if (keysOnly == true)
         {
             // The reconcile sends the frozen start of the loaded interval; `to` is optional (request time).
+            // A range preset on top of it is a mixed request (spec 8.2). `before` and `limit` are ignored here:
+            // the key query has no cursor and the service caps it at 2,500 keys.
+            if (!string.IsNullOrWhiteSpace(range))
+            {
+                throw new LogRangeException("keysOnly does not take a range preset.");
+            }
+
             var fromUtc = ParseInstant(from) ?? throw new LogRangeException("keysOnly needs a from.");
             var keys = await queries.GetKeysAsync(q, fromUtc, ParseInstant(to), ct);
             return Results.Ok(new

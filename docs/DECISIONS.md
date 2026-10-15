@@ -40,6 +40,8 @@ The Api side lives in `src/EmotePurge.Api/Endpoints/AdminLogEndpoints.cs` and th
 
 Only `GET /logs`, `GET /logs/summary` and `GET /logs/{id:long}` pass the `LogQueryConcurrencyFilter` (after the scope filter): a singleton `LogQueryConcurrencyGate` admits two at a time per Api instance, waits up to 5 s and then answers `503` with `Retry-After: 5` and no body. That is a plain concurrency gate and deliberately not a rate-limit policy (A22), consistent with the admin group having none. `ids=` is parsed in the endpoint (comma separated, at most 200, every token a positive integer, otherwise `400 invalid_log_range`); `from`/`to` are parsed from ISO-8601 text there too, because model binding would turn a trailing `Z` into local time. The eight new `ApiErrorCodes` (`invalid_log_filter`, `invalid_log_range`, `invalid_log_filter_name`, `log_filter_name_taken`, `log_filter_limit_reached`, `log_filter_not_found`, `log_entry_not_found`, `log_query_timeout`) have their entries in `api-error.ts` and both locale files.
 
+`GET /logs?keysOnly=true` requires `from`, rejects a `range` preset as a mixed request (`400 invalid_log_range`) and ignores `before` and `limit`, because the key query has no cursor and the service caps it at 2,500 keys. `GET /logs?ids=` answers the list shape with `nextCursor` and both range bounds `null` and `truncated` false, since no range applies to a targeted reload. A non-numeric `limit` is rejected by model binding as the generic `400 invalid_request_body`, not as `invalid_log_range`, and writes no Error-level log.
+
 ---
 
 ### 2026-10-15 — Bounded log entry rendering: property type allowlist, no ToString, Postgres-safe strings (#383)

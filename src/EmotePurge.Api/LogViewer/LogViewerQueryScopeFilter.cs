@@ -16,7 +16,7 @@ internal sealed class LogViewerQueryScopeFilter(ILoggerFactory loggerFactory) : 
 {
     // Not "EmotePurge.Infrastructure.Logging.*" by accident: the capture drops that whole namespace.
     private const string LogCategory = "EmotePurge.Infrastructure.Logging.ViewerQueries";
-    private static readonly long ThrottleTicks = Stopwatch.Frequency * 60;
+    internal static readonly long ThrottleTicks = Stopwatch.Frequency * 60;
     private static long _lastLoggedTimestamp;
 
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
@@ -53,16 +53,21 @@ internal sealed class LogViewerQueryScopeFilter(ILoggerFactory loggerFactory) : 
         }
     }
 
-    private void LogThrottled(Exception ex, string message)
+    /// <summary>Claims the single log slot of the current minute: true for the caller that moved <paramref name="last"/> forward.</summary>
+    internal static bool TryClaimLogSlot(ref long last, long now)
     {
-        var now = Stopwatch.GetTimestamp();
-        var last = Interlocked.Read(ref _lastLoggedTimestamp);
-        if (last != 0 && now - last < ThrottleTicks)
+        var seen = Interlocked.Read(ref last);
+        if (seen != 0 && now - seen < ThrottleTicks)
         {
-            return;
+            return false;
         }
 
-        if (Interlocked.CompareExchange(ref _lastLoggedTimestamp, now, last) == last)
+        return Interlocked.CompareExchange(ref last, now, seen) == seen;
+    }
+
+    private void LogThrottled(Exception ex, string message)
+    {
+        if (TryClaimLogSlot(ref _lastLoggedTimestamp, Stopwatch.GetTimestamp()))
         {
             loggerFactory.CreateLogger(LogCategory).LogWarning(ex, "{Message}", message);
         }

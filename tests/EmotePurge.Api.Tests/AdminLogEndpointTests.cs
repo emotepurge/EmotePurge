@@ -275,9 +275,10 @@ public class AdminLogEndpointTests : IClassFixture<ApiFactory>
             .Returns(_ => release.Task);
         using var host = NewHost(gate: new LogQueryConcurrencyGate(2, TimeSpan.FromMilliseconds(200)));
 
+        var releaseSummary = new TaskCompletionSource<LogSummary>(TaskCreationOptions.RunContinuationsAsynchronously);
         _factory.LogQuery
             .GetSummaryAsync(Arg.Any<string?>(), Arg.Any<LogRangeRequest>(), Arg.Any<CancellationToken>())
-            .Returns(_ => new TaskCompletionSource<LogSummary>(TaskCreationOptions.RunContinuationsAsynchronously).Task);
+            .Returns(_ => releaseSummary.Task);
         var first = SendAsync(host, "GET", "/api/admin/logs");
         var second = SendAsync(host, "GET", "/api/admin/logs/summary?q=x");
         await WaitUntilAsync(() => _factory.LogQuery.ReceivedCalls().Count() >= 2);
@@ -288,8 +289,102 @@ public class AdminLogEndpointTests : IClassFixture<ApiFactory>
         Assert.Equal("5", third.Headers.RetryAfter?.Delta?.TotalSeconds.ToString());
         Assert.Equal(string.Empty, third.Text);
         release.SetResult(new LogPage([], null, FromUtc, FromUtc, false));
-        Assert.Equal(HttpStatusCode.OK, (await first).Status);
-        _ = second;
+        releaseSummary.SetException(new LogQueryTimeoutException());
+        Assert.Equal(HttpStatusCode.OK, (await first.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await second.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+    }
+
+    [Fact]
+    public async Task KeysOnly_WithARangePreset_Answers400InvalidLogRange()
+    {
+        using var host = NewHost();
+
+        var result = await SendAsync(host, "GET", "/api/admin/logs?keysOnly=true&from=2026-10-14T10:00:00Z&range=7d");
+
+        Assert.Equal(HttpStatusCode.BadRequest, result.Status);
+        Assert.Equal("invalid_log_range", result.Json.RootElement.GetProperty("errorCode").GetString());
+        await _factory.LogQuery.DidNotReceiveWithAnyArgs().GetKeysAsync(default, default, default, default);
+    }
+
+    [Theory]
+    [InlineData("failure")]
+    [InlineData("timeout")]
+    public async Task Gate_ReleasesItsPermit_WhenTheServiceFails(string kind)
+    {
+        Exception error = kind == "timeout" ? new LogQueryTimeoutException() : new InvalidOperationException("boom");
+        _factory.LogQuery
+            .GetPageAsync(Arg.Any<string?>(), Arg.Any<LogRangeRequest>(), Arg.Any<string?>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(error);
+        using var host = NewHost(gate: new LogQueryConcurrencyGate(1, TimeSpan.FromMilliseconds(100)));
+
+        for (var i = 0; i < 4; i++)
+        {
+            var result = await SendAsync(host, "GET", "/api/admin/logs");
+            Assert.False(result.Headers.Contains("Retry-After"), $"request {i} was gated");
+        }
+    }
+
+    [Fact]
+    public async Task Gate_ReleasesItsPermit_WhenTheClientAborts()
+    {
+        var observedCancel = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hang = true;
+        _factory.LogQuery
+            .GetPageAsync(Arg.Any<string?>(), Arg.Any<LogRangeRequest>(), Arg.Any<string?>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+            .Returns(call =>
+            {
+                if (!hang)
+                {
+                    return Task.FromResult(new LogPage([], null, FromUtc, FromUtc, false));
+                }
+
+                var ct = call.Arg<CancellationToken>();
+                ct.Register(() => observedCancel.TrySetResult());
+                return Task.Delay(Timeout.Infinite, ct).ContinueWith<LogPage>(_ => throw new OperationCanceledException(ct), TaskScheduler.Default);
+            });
+        using var host = NewHost(gate: new LogQueryConcurrencyGate(1, TimeSpan.FromSeconds(3)));
+        using var client = host.CreateClient();
+        using var cts = new CancellationTokenSource();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/admin/logs");
+        request.Headers.Add(TestAuthHandler.UserIdHeader, Guid.NewGuid().ToString("N"));
+        request.Headers.Add(TestAuthHandler.LoginHeader, "someadmin");
+
+        var aborted = client.SendAsync(request, cts.Token);
+        await WaitUntilAsync(() => _factory.LogQuery.ReceivedCalls().Any());
+        await cts.CancelAsync();
+        await observedCancel.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => aborted);
+        hang = false;
+
+        // The gate waits up to 3 s, so the permit coming back a moment after the abort is enough.
+        var next = await SendAsync(host, "GET", "/api/admin/logs");
+
+        Assert.Equal(HttpStatusCode.OK, next.Status);
+    }
+
+    [Fact]
+    public async Task NonNumericLimit_IsInvalidRequestBody_AndWritesNoErrorLog()
+    {
+        var captured = new CapturingLoggerProvider();
+        using var host = NewHost(captured: captured);
+
+        var result = await SendAsync(host, "GET", "/api/admin/logs?limit=abc");
+
+        Assert.Equal(HttpStatusCode.BadRequest, result.Status);
+        Assert.Equal("invalid_request_body", result.Json.RootElement.GetProperty("errorCode").GetString());
+        Assert.Empty(captured.OutsideViewerCategory());
+    }
+
+    [Fact]
+    public void LogThrottle_ClaimsOneSlotPerMinute()
+    {
+        long last = 0;
+        var minute = LogViewerQueryScopeFilter.ThrottleTicks;
+
+        Assert.True(LogViewerQueryScopeFilter.TryClaimLogSlot(ref last, 1000));
+        Assert.False(LogViewerQueryScopeFilter.TryClaimLogSlot(ref last, 1000 + minute - 1));
+        Assert.True(LogViewerQueryScopeFilter.TryClaimLogSlot(ref last, 1000 + minute));
+        Assert.False(LogViewerQueryScopeFilter.TryClaimLogSlot(ref last, 1000 + minute + 5));
     }
 
     [Fact]
@@ -399,13 +494,14 @@ public class AdminLogEndpointTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
-    public async Task FilterOrder_AdminBeforeScope()
+    public async Task NonAdmin_IsRefusedBeforeAnyServiceRuns()
     {
         using var host = NewHost(admin: false);
 
         var result = await SendAsync(host, "GET", "/api/admin/logs?q=level:debug");
 
-        // A non-admin never reaches the scope filter, so the service is not asked and no query error leaks.
+        // A non-admin gets 403 and no service is asked, so a query error cannot leak. The order of the two
+        // filters is not observable from outside (403 either way); it is fixed by the registration order.
         Assert.Equal(HttpStatusCode.Forbidden, result.Status);
         Assert.Empty(_factory.LogQuery.ReceivedCalls());
     }
