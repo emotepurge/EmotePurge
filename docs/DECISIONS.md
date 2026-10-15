@@ -10,6 +10,20 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-15 — Sonar's agentic-workflow rules are ignored in developer scripts
+
+**Betrifft:** `.github/workflows/sonarcloud.yml`
+
+The main-branch quality gate has been in ERROR since the analysis of 8ede7413 (2026-10-13 07:36 UTC), on `new_security_rating` = C. Cause: two `jssecurity:S8707` issues in `scripts/dashboard-concurrency-gate-eval.mjs`, the `lstatSync`/`readFileSync` sinks fed from `process.argv[2]`. PR #410 already confines the path (`relative(base, resolved)` must stay inside the repo or `GATE_CSV_DIR`, the extension must be `.csv`, the target a regular file), so traversal is prevented in fact, but Sonar does not recognise that check as a sanitizer. PR analyses stayed green because they only rate their own diff.
+
+Decision: ignore the whole `jssecurity:S870*` family on `scripts/**` via multicriteria e5, not just S8707 and not by marking issues in the UI. The family exists as seven rules (S8701-S8707), and any script combining argv with spawn/fs would trip the next one. UI marking leaves no trace in the repo and only covers the current issue keys. Another code rewrite had no proven sanitizer pattern to aim at.
+
+What stays active: the family in `src/` and `web/`, and all classic taint rules (e.g. path or command injection from real untrusted sources) everywhere, `scripts/` included.
+
+Verification: after the merge, the next main analysis must show `vulnerabilities=0` and gate OK (`api/qualitygates/project_status?projectKey=emotepurge_EmotePurge&branch=main`). If Sonar rejects the wildcard, fall back to seven explicit entries.
+
+---
+
 ### 2026-10-14 — Log lines carry only allowlisted tag keys, and the splice warning carries no tag values (#383)
 
 **Betrifft:** `src/EmotePurge.Worker/TwitchTagKeyAllowlist.cs` · `src/EmotePurge.Worker/TwitchLibRawLineRedaction.cs` · `src/EmotePurge.Worker/IrcLineSpliceRule.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs`
