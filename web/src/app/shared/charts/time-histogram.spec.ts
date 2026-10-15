@@ -59,6 +59,8 @@ describe('TimeHistogram', () => {
       starts?: string[];
       processStarts?: { source: string; startedUtc: string }[];
       lastBucketPartial?: boolean;
+      bucketSeconds?: number;
+      compact?: boolean;
     } = {},
   ): HTMLElement {
     fixture = TestBed.createComponent(TimeHistogram);
@@ -66,7 +68,8 @@ describe('TimeHistogram', () => {
     fixture.componentRef.setInput('info', counts.info);
     fixture.componentRef.setInput('warn', counts.warn);
     fixture.componentRef.setInput('error', counts.error);
-    fixture.componentRef.setInput('bucketSeconds', 3600);
+    fixture.componentRef.setInput('bucketSeconds', extra.bucketSeconds ?? 3600);
+    fixture.componentRef.setInput('compact', extra.compact ?? false);
     fixture.componentRef.setInput('label', 'Log volume');
     fixture.componentRef.setInput('processStarts', extra.processStarts ?? []);
     fixture.componentRef.setInput('lastBucketPartial', extra.lastBucketPartial ?? false);
@@ -183,5 +186,99 @@ describe('TimeHistogram', () => {
     );
     press(root, 'End');
     expect(liveLine(root).textContent).toContain('incomplete');
+  });
+
+  function yTickLabels(root: HTMLElement): string[] {
+    return Array.from(root.querySelectorAll('svg[role="img"] text'))
+      .map((t) => t.textContent?.trim() ?? '')
+      .filter((t) => /^[\d.,]+$/.test(t));
+  }
+
+  it('uses whole-number y ticks for a small maximum', () => {
+    const three = render(
+      { info: [3, 1], warn: [0, 0], error: [0, 0] },
+      { starts: STARTS.slice(0, 2) },
+    );
+    expect(yTickLabels(three)).toEqual(['0', '1', '2', '3']);
+
+    const one = render(
+      { info: [1, 0], warn: [0, 0], error: [0, 0] },
+      { starts: STARTS.slice(0, 2) },
+    );
+    expect(yTickLabels(one)).toEqual(['0', '1']);
+  });
+
+  it('gives every instance its own hatch pattern that its fills reference', () => {
+    const a = render();
+    const b = render();
+    const idOf = (root: HTMLElement) => root.querySelector('pattern')?.getAttribute('id');
+    const refs = (root: HTMLElement) =>
+      Array.from(root.querySelectorAll('rect[fill^="url("]')).map((r) => r.getAttribute('fill'));
+
+    expect(idOf(a)).toBeTruthy();
+    expect(idOf(a)).not.toBe(idOf(b));
+    for (const [root] of [[a], [b]]) {
+      const expected = `url(#${idOf(root)})`;
+      expect(refs(root).length).toBeGreaterThan(0);
+      expect(refs(root).every((r) => r === expected)).toBe(true);
+    }
+  });
+
+  it.each([
+    [300, '2026-10-11T00:05:00Z'],
+    [86_400, '2026-10-12T00:00:00Z'],
+  ])('ends a selected bucket of %i seconds at start plus its width', (bucketSeconds, to) => {
+    const root = render(undefined, { bucketSeconds });
+    const selected: HistogramSelection[] = [];
+    fixture.componentInstance.bucketSelected.subscribe((s: HistogramSelection) => selected.push(s));
+
+    (root.querySelectorAll('[data-testid="histogram-hit"]')[0] as SVGElement).dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    );
+
+    expect(selected).toEqual([{ fromUtc: '2026-10-11T00:00:00Z', toUtc: to }]);
+  });
+
+  it('emits both ends of a selection in the same whole-second format', () => {
+    const root = render(undefined, {
+      starts: [
+        '2026-10-11T00:00:00.000Z',
+        '2026-10-11T01:00:00.000Z',
+        '2026-10-11T02:00:00.000Z',
+        '2026-10-11T03:00:00.000Z',
+      ],
+    });
+    const selected: HistogramSelection[] = [];
+    fixture.componentInstance.bucketSelected.subscribe((s: HistogramSelection) => selected.push(s));
+
+    (root.querySelectorAll('[data-testid="histogram-hit"]')[1] as SVGElement).dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    );
+
+    expect(selected).toEqual([{ fromUtc: '2026-10-11T01:00:00Z', toUtc: '2026-10-11T02:00:00Z' }]);
+  });
+
+  it('drops the caption and legend in compact mode but keeps the text alternative', () => {
+    const root = render(undefined, { compact: true });
+
+    expect(root.textContent).not.toContain('times in UTC');
+    expect(root.querySelector('[data-testid="histogram-legend"]')).toBeNull();
+    expect(root.querySelector('[data-testid="histogram-alternative"]')?.textContent).toContain(
+      '16 entries',
+    );
+    expect(root.querySelector('svg[role="img"]')?.getAttribute('aria-label')).toBe('Log volume');
+  });
+
+  it('writes to the live region for the keyboard only, never for the pointer', () => {
+    const root = render();
+    const svg = root.querySelector('svg') as SVGElement;
+    svg.getBoundingClientRect = () => ({ left: 0, width: 640, top: 0, height: 100 }) as DOMRect;
+
+    group(root).dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 100 }));
+    fixture.detectChanges();
+    expect(liveLine(root).textContent?.trim()).toBe('');
+
+    press(root, 'ArrowRight');
+    expect(liveLine(root).textContent).toContain('Information');
   });
 });

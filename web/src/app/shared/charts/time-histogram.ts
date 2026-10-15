@@ -40,6 +40,11 @@ const MIN_BAR_WIDTH = 1;
 
 let nextHistogramId = 0;
 
+/** Whole-second ISO form (`2026-10-11T02:00:00Z`), the same for both ends of a selection. */
+function toUtcIso(ms: number): string {
+  return new Date(ms).toISOString().replace('.000Z', 'Z');
+}
+
 /**
  * A stacked time histogram: one bar per bucket, three segments from the bottom (information,
  * warning, error and critical). Inline SVG without a library, sharing helpers with `app-line-chart`.
@@ -64,7 +69,7 @@ let nextHistogramId = 0;
         [attr.aria-label]="groupLabel()"
         (keydown)="onKeydown($event)"
         (pointermove)="onPointerMove($event)"
-        (pointerleave)="onPointerLeave($event)"
+        (pointerleave)="onPointerLeave()"
         (blur)="clearCursor()"
       >
         <svg
@@ -104,7 +109,7 @@ let nextHistogramId = 0;
                 class="fill-fg-muted"
                 [attr.font-size]="fontSize"
                 text-anchor="end"
-                [attr.x]="plot().x - Y_GAP"
+                [attr.x]="plot().x - yGap"
                 [attr.y]="plot().y + tick.y + 4"
               >
                 {{ tick.value }}
@@ -136,7 +141,22 @@ let nextHistogramId = 0;
           }
           <g [attr.transform]="'translate(' + plot().x + ' ' + plot().y + ')'">
             @for (bar of bars(); track bar.index) {
-              <g [class.opacity-60]="bar.partial" data-testid="histogram-bar">
+              <g data-testid="histogram-bar">
+                @if (bar.partial) {
+                  <rect
+                    class="text-fg"
+                    [attr.x]="bar.bandX"
+                    y="0"
+                    [attr.width]="bar.bandWidth"
+                    [attr.height]="plot().height"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1"
+                    stroke-dasharray="3 2"
+                    vector-effect="non-scaling-stroke"
+                    data-testid="histogram-partial-outline"
+                  />
+                }
                 <rect
                   [attr.x]="bar.bandX"
                   y="0"
@@ -155,7 +175,7 @@ let nextHistogramId = 0;
                     [attr.width]="bar.width"
                     [attr.height]="bar.info.height"
                     fill="currentColor"
-                    fill-opacity="0.55"
+                    fill-opacity="0.85"
                   />
                 }
                 @if (bar.warn.height > 0) {
@@ -224,7 +244,7 @@ let nextHistogramId = 0;
                 width="12"
                 height="12"
                 fill="currentColor"
-                fill-opacity="0.55"
+                fill-opacity="0.85"
               />
             </svg>
             <span>{{ levelName('info') }}</span>
@@ -273,14 +293,18 @@ export class TimeHistogram {
   private readonly destroyRef = inject(DestroyRef);
 
   protected readonly fontSize = TICK_FONT_SIZE;
-  protected readonly Y_GAP = Y_LABEL_GAP;
-  protected readonly descriptionId = `app-time-histogram-description-${nextHistogramId}`;
-  protected readonly hatchId = `app-time-histogram-hatch-${nextHistogramId++}`;
+  protected readonly yGap = Y_LABEL_GAP;
+  private readonly instanceId = nextHistogramId++;
+  protected readonly descriptionId = `app-time-histogram-description-${this.instanceId}`;
+  protected readonly hatchId = `app-time-histogram-hatch-${this.instanceId}`;
   protected readonly hatchFill = `url(#${this.hatchId})`;
 
   protected readonly width = signal(FALLBACK_WIDTH);
 
-  private readonly rawCursor = signal<number | null>(null);
+  /** Set by the keyboard only; it alone feeds the live region, so hovering never chatters. */
+  private readonly keyCursor = signal<number | null>(null);
+  /** Set by the pointer; drawn, never announced. */
+  private readonly pointerCursor = signal<number | null>(null);
 
   private readonly activeLang = toSignal(this.transloco.langChanges$, {
     initialValue: this.transloco.getActiveLang(),
@@ -308,11 +332,13 @@ export class TimeHistogram {
     }));
   });
 
-  private readonly cursorIndex = computed(() => {
-    const raw = this.rawCursor();
-    const count = this.bucketCount();
-    return raw === null || count === 0 ? null : Math.min(raw, count - 1);
-  });
+  /** The keyboard cursor, held inside the current buckets: inputs may shrink while it is set. */
+  private readonly keyIndex = computed(() => this.clampIndex(this.keyCursor()));
+
+  /** The cursor that is drawn: the pointer's while it hovers, else the keyboard's. */
+  private readonly cursorIndex = computed(
+    () => this.clampIndex(this.pointerCursor()) ?? this.keyIndex(),
+  );
 
   protected readonly empty = computed(() =>
     this.counts().every((c) => c.info + c.warn + c.error === 0),
@@ -472,7 +498,7 @@ export class TimeHistogram {
   /** The live-region text: bucket time, the three counts, process starts inside the bucket. */
   protected readonly cursorLine = computed(() => {
     this.activeLang();
-    const index = this.cursorIndex();
+    const index = this.keyIndex();
     if (index === null) {
       return '';
     }
@@ -528,7 +554,7 @@ export class TimeHistogram {
     if (count === 0) {
       return;
     }
-    const current = this.cursorIndex();
+    const current = this.keyIndex();
     let next: number | null;
 
     switch (event.key) {
@@ -558,30 +584,26 @@ export class TimeHistogram {
     }
 
     event.preventDefault();
-    this.rawCursor.set(next);
+    this.keyCursor.set(next);
   }
 
   protected onPointerMove(event: PointerEvent): void {
     const index = this.indexAt(event);
     if (index !== null) {
-      this.rawCursor.set(index);
+      this.pointerCursor.set(index);
     }
   }
 
-  protected onPointerLeave(event: PointerEvent): void {
-    // Keyboard focus keeps its cursor; only a pointer-set cursor goes with the pointer.
-    if (!(event.currentTarget as HTMLElement).matches(':focus')) {
-      this.rawCursor.set(null);
-    }
+  protected onPointerLeave(): void {
+    this.pointerCursor.set(null);
   }
 
   protected onBarClick(index: number): void {
-    this.rawCursor.set(index);
     this.select(index);
   }
 
   protected clearCursor(): void {
-    this.rawCursor.set(null);
+    this.keyCursor.set(null);
   }
 
   private select(index: number): void {
@@ -590,8 +612,15 @@ export class TimeHistogram {
     if (start === undefined || !Number.isFinite(startMs)) {
       return;
     }
-    const end = new Date(startMs + this.bucketSeconds() * 1000).toISOString();
-    this.bucketSelected.emit({ fromUtc: start, toUtc: end.replace('.000Z', 'Z') });
+    this.bucketSelected.emit({
+      fromUtc: toUtcIso(startMs),
+      toUtc: toUtcIso(startMs + this.bucketSeconds() * 1000),
+    });
+  }
+
+  private clampIndex(raw: number | null): number | null {
+    const count = this.bucketCount();
+    return raw === null || count === 0 ? null : Math.min(raw, count - 1);
   }
 
   /** Bucket index a process start falls into, or -1 outside the range. */

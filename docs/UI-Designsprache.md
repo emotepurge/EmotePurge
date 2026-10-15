@@ -151,7 +151,7 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
 - **Whole-number y axis** (`count`), and a range without any entry still draws the axes and says "no entries in this period" so the layout does not jump.
 - **Process starts** are thin dashed vertical marks; the reading line names the source and time of every start inside the cursor's bucket.
 - **Reading and selecting.** Arrow keys, Home, End and Escape move the cursor; Enter or a click on a bucket emits `bucketSelected` with that bucket's half-open range, which the page uses to narrow the time range. The group's accessible name says so.
-- **`compact`** draws a 32 px strip without axes and legend instead of the 96 px plot. **`lastBucketPartial`** draws the last bucket with a dashed outline (fills keep their contrast; opacity would drop the segments below 3:1) and names it as incomplete. Segment fills meet 3:1 against the page in both themes (information is `fg-muted` at 85 % opacity: 4.4:1 dark, 3.7:1 light).
+- **`compact`** draws a 32 px strip without axes and legend instead of the 96 px plot. **`lastBucketPartial`** draws the last bucket with a dashed outline (fills keep their contrast; opacity would drop the segments below 3:1) and names it as incomplete. Segment fills meet 3:1 against the page in both themes (information is `fg-muted` at 85 % opacity: 4.5:1 dark, 3.8:1 light at the lowest, the page background).
 
 ## 3. Typographic hierarchy
 
