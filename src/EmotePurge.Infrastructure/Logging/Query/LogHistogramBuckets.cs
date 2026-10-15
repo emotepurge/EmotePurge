@@ -41,10 +41,8 @@ internal static class LogHistogramBuckets
             }
         }
 
-        // Unreachable for the supported 8 days + 12 h; fall back to the widest step instead of failing.
-        var widest = Ladder[^1];
-        var widestCount = Snap(fromUtc, toUtc, widest, out var s, out var e);
-        return new LogBucketing(widest, s, e, (int)Math.Min(widestCount, int.MaxValue));
+        // Unreachable for the supported 8 days + 12 h (12 h steps give at most 18 buckets); never return more than 100 buckets.
+        throw new ArgumentOutOfRangeException(nameof(toUtc), "The range is too long for the widest bucket step.");
     }
 
     private static long Snap(DateTime from, DateTime to, TimeSpan width, out DateTime start, out DateTime end)

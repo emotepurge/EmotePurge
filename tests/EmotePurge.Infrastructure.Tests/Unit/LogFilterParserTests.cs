@@ -308,6 +308,12 @@ public class LogFilterParserTests
     public void FilterLength_TooLong_ReportsTheExcess() => Fails(string.Concat(Enumerable.Repeat("abc ", 150)), LogFilterErrorReasons.TooLong, 512, 88);
 
     [Fact]
+    public void WhitespaceOnly_513_IsTooLong() => Fails(new string(' ', 513), LogFilterErrorReasons.TooLong, 512, 1);
+
+    [Fact]
+    public void WhitespaceOnly_512_IsValid() => Assert.Empty(Ok(new string(' ', 512)).Terms);
+
+    [Fact]
     public void Terms_16_AreAccepted() => Assert.Equal(16, Ok(string.Join(' ', Enumerable.Repeat("ab", 16))).Terms.Count);
 
     [Fact]

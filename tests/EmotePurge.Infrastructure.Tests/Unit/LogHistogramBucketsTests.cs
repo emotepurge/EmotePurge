@@ -95,6 +95,10 @@ public class LogHistogramBucketsTests
     }
 
     [Fact]
+    public void RangeBeyondWidestStep_Throws() =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => LogHistogramBuckets.Compute(Utc(1, 0, 0), Utc(1, 0, 0).AddDays(60)));
+
+    [Fact]
     public void EmptyOrReversedRange_Throws()
     {
         Assert.Throws<ArgumentException>(() => LogHistogramBuckets.Compute(Utc(14, 10, 0), Utc(14, 10, 0)));

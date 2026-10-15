@@ -58,7 +58,7 @@ internal sealed record UptimeTerm(LogFilterOperator Operator, TimeSpan Duration,
 
 internal sealed record HasExceptionTerm(bool Negated = false) : LogFilterTerm(Negated);
 
-/// <summary>A property with the lower-cased <paramref name="Key"/>; a pattern that is just <c>*</c> means "property exists".</summary>
+/// <summary>A property with the lower-cased <paramref name="Key"/> (user text: bind it as a SQL parameter, never interpolate it); a pattern that is just <c>*</c> means "property exists".</summary>
 internal sealed record PropertyTerm(string Key, IReadOnlyList<LogTextPattern> Patterns, bool Negated = false) : LogFilterTerm(Negated)
 {
     public bool IsPresenceCheck => Patterns.Any(p => p.Value == "*");

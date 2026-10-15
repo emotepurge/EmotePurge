@@ -47,6 +47,16 @@ public class LogTimeRangeTests
         Assert.False(second.IsRelative);
     }
 
+    [Fact]
+    public void RunningBucketClick_At1201With7d_IsAccepted()
+    {
+        var bucket = LogHistogramBuckets.Compute(Now.AddDays(-7), Now);
+        Assert.Equal(new DateTime(2026, 10, 14, 14, 0, 0, DateTimeKind.Utc), bucket.BucketToUtc);
+        var from = new DateTime(2026, 10, 14, 12, 0, 0, DateTimeKind.Utc);
+        var range = LogTimeRange.Resolve(new LogRangeRequest(null, from, bucket.BucketToUtc), Now);
+        Assert.Equal((from, bucket.BucketToUtc), (range.FromUtc, range.ToUtc));
+    }
+
     [Theory]
     [InlineData("2d")]
     [InlineData("")]

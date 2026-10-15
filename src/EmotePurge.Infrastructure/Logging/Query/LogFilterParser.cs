@@ -17,6 +17,11 @@ internal static class LogFilterParser
 
     public static LogFilterParseResult Parse(string? filter)
     {
+        if (filter is { Length: > MaxFilterLength })
+        {
+            return LogFilterParseResult.Failure(LogFilterErrorReasons.TooLong, MaxFilterLength, filter.Length - MaxFilterLength);
+        }
+
         if (string.IsNullOrWhiteSpace(filter))
         {
             return LogFilterParseResult.Success(LogFilterExpression.Empty);
