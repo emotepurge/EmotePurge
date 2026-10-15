@@ -28,6 +28,7 @@ import { TabLink } from '../../shared/ui/tab-link';
         class="app-sticky-bar top-14 mb-6 flex h-10 gap-2 overflow-x-auto border-b border-border"
       >
         <app-tab-link link="monitoring" [label]="'admin.tabs.monitoring' | transloco" />
+        <app-tab-link link="logs" [label]="'admin.tabs.logs' | transloco" />
         <app-tab-link link="channels" [label]="'admin.tabs.channels' | transloco" />
         <app-tab-link link="users" [label]="'admin.tabs.users' | transloco" />
         <app-tab-link link="audit-log" [label]="'admin.tabs.auditLog' | transloco" />

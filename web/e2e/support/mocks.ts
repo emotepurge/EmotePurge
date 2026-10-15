@@ -2969,3 +2969,209 @@ export async function mockBackfillCancel(
   });
   return { requests: () => requests };
 }
+
+export interface MockLogEntry {
+  id: number;
+  timestampUtc: string;
+  level: 'info' | 'warn' | 'error' | 'crit';
+  source: 'api' | 'worker';
+  instanceId: string;
+  category: string;
+  eventId: number | null;
+  eventName: string | null;
+  message: string;
+  hasException: boolean;
+  exceptionType: string | null;
+  properties: Record<string, unknown>;
+  truncated: boolean;
+}
+
+/** One log entry; ids count down from the newest, one second apart, starting at 12:00:00 UTC. */
+export function buildLogEntry(id: number, overrides: Partial<MockLogEntry> = {}): MockLogEntry {
+  const second = Math.max(0, 3599 - id);
+  return {
+    id,
+    timestampUtc: `2026-10-14T11:${String(Math.floor(second / 60)).padStart(2, '0')}:${String(second % 60).padStart(2, '0')}Z`,
+    level: 'info',
+    source: 'worker',
+    instanceId: 'a1b2c3d4',
+    category: 'EmotePurge.Worker.TwitchChatManager',
+    eventId: null,
+    eventName: null,
+    message: `Entry number ${id}`,
+    hasException: false,
+    exceptionType: null,
+    properties: {},
+    truncated: false,
+    ...overrides,
+  };
+}
+
+export interface MockLogSummaryOptions {
+  buckets?: number;
+  total?: number;
+  dropped?: Partial<
+    Record<
+      | 'total'
+      | 'queueFull'
+      | 'budget'
+      | 'writeUnconfirmed'
+      | 'captureFailed'
+      | 'reentrant'
+      | 'rejected',
+      number
+    >
+  >;
+}
+
+/** `GET /api/admin/logs/summary` body: `buckets` 15-minute buckets from 2026-10-13T12:00:00Z. */
+export function buildLogSummary(options: MockLogSummaryOptions = {}): Record<string, unknown> {
+  const buckets = options.buckets ?? 8;
+  const starts = Array.from({ length: buckets }, (_, i) =>
+    new Date(Date.parse('2026-10-13T12:00:00Z') + i * 900_000).toISOString().replace('.000Z', 'Z'),
+  );
+  return {
+    rangeFromUtc: '2026-10-13T12:00:00Z',
+    rangeToUtc: '2026-10-14T12:00:00Z',
+    bucketFromUtc: starts[0],
+    bucketToUtc: '2026-10-14T12:00:00Z',
+    bucketSeconds: 900,
+    bucketStartsUtc: starts,
+    counts: {
+      info: starts.map((_, i) => 3 + i),
+      warn: starts.map((_, i) => (i % 3 === 0 ? 2 : 0)),
+      error: starts.map((_, i) => (i === 2 ? 1 : 0)),
+    },
+    total: options.total ?? 120,
+    facets: {
+      source: [
+        { value: 'worker', count: 100 },
+        { value: 'api', count: 20 },
+      ],
+      level: [
+        { value: 'info', count: 110 },
+        { value: 'warn', count: 8 },
+        { value: 'error', count: 2 },
+      ],
+      category: [
+        { value: 'EmotePurge.Worker.TwitchChatManager', short: 'TwitchChatManager', count: 90 },
+        { value: 'EmotePurge.Api.Startup', short: 'Startup', count: 30 },
+      ],
+      categoryOther: 0,
+    },
+    dropped: {
+      total: 0,
+      queueFull: 0,
+      budget: 0,
+      writeUnconfirmed: 0,
+      captureFailed: 0,
+      reentrant: 0,
+      rejected: 0,
+      ...options.dropped,
+    },
+    processStarts: [
+      { source: 'worker', instanceId: 'a1b2c3d4', startedUtc: '2026-10-13T20:00:00Z' },
+    ],
+  };
+}
+
+/** `GET /api/admin/logs/status` body: both sources healthy and complete unless overridden. */
+export function buildLogStatus(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const healthy = (source: string) => ({
+    source,
+    state: 'healthy',
+    instanceId: 'a1b2c3d4',
+    startedUtc: '2026-10-13T20:00:00Z',
+    lastFlushUtc: '2026-10-14T11:59:30Z',
+  });
+  return {
+    generatedAtUtc: '2026-10-14T12:00:00Z',
+    sources: [healthy('api'), healthy('worker')],
+    coverage24h: { complete: true, recordedErrors: 0, incompleteSince: [] },
+    retention: { oldestEntryUtc: '2026-10-08T12:00:00Z', overdue: false },
+    ...overrides,
+  };
+}
+
+export type MockLogReply = { status: number; body?: unknown };
+
+export interface MockAdminLogsOptions {
+  /** How many entries exist; the list pages through them 100 at a time by opaque `c<offset>` cursors. */
+  totalEntries?: number;
+  /** Rows to serve instead of the generated ones (first page only; no paging). */
+  entries?: MockLogEntry[];
+  summary?: MockLogSummaryOptions;
+  status?: Record<string, unknown>;
+  /** Overrides the answer to a list or summary request; return `undefined` to answer normally. */
+  fail?: (url: URL, endpoint: 'list' | 'summary') => MockLogReply | undefined;
+  /** Exception text served by `GET /api/admin/logs/{id}`. */
+  exception?: string;
+}
+
+export interface MockAdminLogsCalls {
+  list: URL[];
+  summary: URL[];
+  status: URL[];
+  entry: URL[];
+}
+
+/**
+ * The admin log viewer: `GET /api/admin/logs`, `/summary`, `/status` and `/{id}`. The returned log
+ * records every request URL per endpoint, in order.
+ */
+export async function mockAdminLogs(
+  page: Page,
+  options: MockAdminLogsOptions = {},
+): Promise<MockAdminLogsCalls> {
+  const calls: MockAdminLogsCalls = { list: [], summary: [], status: [], entry: [] };
+  const total = options.totalEntries ?? 8;
+  await page.route(
+    (url) => /^\/api\/admin\/logs(\/.*)?$/.test(url.pathname),
+    (route) => {
+      const url = new URL(route.request().url());
+      const path = url.pathname;
+      if (path === '/api/admin/logs/status') {
+        calls.status.push(url);
+        return fulfillJson(route, 200, buildLogStatus(options.status));
+      }
+      if (path === '/api/admin/logs/summary') {
+        calls.summary.push(url);
+        const reply = options.fail?.(url, 'summary');
+        return reply
+          ? fulfillJson(route, reply.status, reply.body ?? {})
+          : fulfillJson(route, 200, buildLogSummary(options.summary));
+      }
+      if (path === '/api/admin/logs') {
+        calls.list.push(url);
+        const reply = options.fail?.(url, 'list');
+        if (reply) {
+          return fulfillJson(route, reply.status, reply.body ?? {});
+        }
+        const before = url.searchParams.get('before');
+        const offset = before ? Number(before.slice(1)) : 0;
+        const rows =
+          options.entries ??
+          Array.from({ length: Math.max(0, Math.min(100, total - offset)) }, (_, i) =>
+            buildLogEntry(total - offset - i),
+          );
+        const more = !options.entries && offset + rows.length < total;
+        return fulfillJson(route, 200, {
+          entries: rows,
+          nextCursor: more ? `c${offset + rows.length}` : null,
+          rangeFromUtc: '2026-10-13T12:00:00Z',
+          rangeToUtc: '2026-10-14T12:00:00Z',
+          truncated: false,
+        });
+      }
+      calls.entry.push(url);
+      const id = Number(path.split('/').pop());
+      return fulfillJson(route, 200, {
+        ...buildLogEntry(id, { hasException: true, level: 'error' }),
+        exception: options.exception ?? 'System.InvalidOperationException: nope\n   at Foo.Bar()',
+        processStartedUtc: '2026-10-13T20:00:00Z',
+        uptimeSeconds: 56000,
+      });
+    },
+  );
+  return calls;
+}
