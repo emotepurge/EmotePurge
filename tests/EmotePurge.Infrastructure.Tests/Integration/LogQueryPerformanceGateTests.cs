@@ -119,6 +119,13 @@ public sealed class LogQueryPerformanceGateTests(ITestOutputHelper output)
         results.Add(await MeasureAsync(
             connectionString, "info: summary 24h [free text: timeout]", null, (service, ct) => service.GetSummaryAsync("timeout", Last24Hours, ct)));
 
+        // Not part of the spec table: a token that matches nothing makes the page scan the whole range, so this is the full-range scan cost.
+        foreach (var (rangeLabel, range) in new[] { ("24h", Last24Hours), ("7d", Last7Days) })
+        {
+            results.Add(await MeasureAsync(
+                connectionString, $"info: page {rangeLabel} [rare filter: no match]", null, (service, ct) => service.GetPageAsync("zzqxnomatch", range, null, 100, ct), allowEmpty: true));
+        }
+
         // The cached status reader is rebuilt per run, so every run is a cold fill (error count 24 h plus liveness).
         results.Add(await MeasureStatusAsync(connectionString));
         // instance:latest is a filter on the list; the spec's 50 ms covers the status read, this one is held to the page limit.
@@ -180,7 +187,7 @@ public sealed class LogQueryPerformanceGateTests(ITestOutputHelper output)
     }
 
     private async Task<CaseResult> MeasureAsync<T>(
-        string connectionString, string label, double? limitMs, Func<LogQueryService, CancellationToken, Task<T>> call)
+        string connectionString, string label, double? limitMs, Func<LogQueryService, CancellationToken, Task<T>> call, bool allowEmpty = false)
     {
         var times = new List<double>();
         var passes = new List<List<double>>();
@@ -195,7 +202,11 @@ public sealed class LogQueryPerformanceGateTests(ITestOutputHelper output)
             var timer = Stopwatch.StartNew();
             var result = await call(service, CancellationToken.None);
             timer.Stop();
-            AssertNotEmpty(label, result);
+            if (!allowEmpty)
+            {
+                AssertNotEmpty(label, result);
+            }
+
 
             lastCommands = recorder.Commands;
             if (run >= WarmupRuns)
