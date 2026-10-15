@@ -126,6 +126,12 @@ internal sealed class LogFilterService(AppDbContext db, TimeProvider time) : ILo
             return new LogFilterWriteResult(LogFilterWriteStatus.InvalidName);
         }
 
+        // A missing JSON property binds to null; the column is NOT NULL.
+        if (filter is null)
+        {
+            return new LogFilterWriteResult(LogFilterWriteStatus.InvalidFilter, null, LogFilterErrorReasons.EmptyTerm, 0, 0);
+        }
+
         var parsed = LogFilterParser.Parse(filter);
         return parsed.IsSuccess
             ? null

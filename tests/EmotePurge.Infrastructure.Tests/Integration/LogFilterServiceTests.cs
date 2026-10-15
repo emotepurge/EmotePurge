@@ -43,7 +43,7 @@ public class LogFilterServiceTests(PostgresFixture fixture) : IAsyncLifetime
         await db.SaveChangesAsync();
     }
 
-    public Task DisposeAsync() => LogEntrySeed.ReleasePoolAsync(fixture, DatabaseName);
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public async Task List_ReturnsTheFourSeedsInSortOrder()
@@ -122,6 +122,18 @@ public class LogFilterServiceTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.NotNull(result.Position);
         Assert.NotNull(result.Length);
         Assert.Null(result.Filter);
+        Assert.Equal(4, (await ListAsync()).Count);
+    }
+
+    [Fact]
+    public async Task NullFilter_IsInvalidFilter_OnCreateAndUpdate()
+    {
+        var created = await CreateAsync("Ohne Filter", null!);
+        var seed = (await ListAsync())[0];
+        var updated = await UpdateAsync(seed.Id, seed.Name, null!);
+
+        Assert.Equal(LogFilterWriteStatus.InvalidFilter, created.Status);
+        Assert.Equal(LogFilterWriteStatus.InvalidFilter, updated.Status);
         Assert.Equal(4, (await ListAsync()).Count);
     }
 

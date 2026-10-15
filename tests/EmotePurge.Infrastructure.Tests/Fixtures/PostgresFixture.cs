@@ -17,6 +17,9 @@ public sealed class PostgresFixture : IAsyncLifetime
         .WithDatabase("emotepurge")
         .WithUsername("emotepurge")
         .WithPassword("emotepurge-test")
+        // Test classes fan out parallel contexts across several databases, each with its own pool; the
+        // default of 100 was reached by the suite as a whole ("53300 too many clients").
+        .WithCommand("-c", "max_connections=400")
         .Build();
 
     public async Task InitializeAsync()

@@ -27,17 +27,6 @@ internal static class LogEntrySeed
         await db.Database.ExecuteSqlRawAsync("TRUNCATE \"LogEntries\", \"LogCaptureStatus\" RESTART IDENTITY;");
     }
 
-    /// <summary>
-    /// Closes the idle pooled connections to <paramref name="databaseName"/>. The shared container is close to
-    /// its connection limit across the whole suite; a test class that fans out parallel contexts hands its
-    /// peak back instead of holding it for the pool's idle lifetime.
-    /// </summary>
-    public static async Task ReleasePoolAsync(PostgresFixture fixture, string databaseName)
-    {
-        await using var db = fixture.CreateDbContext(databaseName);
-        NpgsqlConnection.ClearPool((NpgsqlConnection)db.Database.GetDbConnection());
-    }
-
     public static LogEntry Entry(
         DateTime timestampUtc,
         string message = "message",

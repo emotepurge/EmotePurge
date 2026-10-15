@@ -27,7 +27,7 @@ public class LogStatusTests(PostgresFixture fixture) : IAsyncLifetime
 
     public Task InitializeAsync() => LogEntrySeed.PrepareDatabaseAsync(fixture, DatabaseName);
 
-    public Task DisposeAsync() => LogEntrySeed.ReleasePoolAsync(fixture, DatabaseName);
+    public Task DisposeAsync() => Task.CompletedTask;
 
     [Fact]
     public async Task Status_ColdStart_ReportsBothSourcesMissingAndIncomplete()
@@ -316,7 +316,7 @@ public class LogStatusTests(PostgresFixture fixture) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Reader_Fill_RunsInSuppressionScopeAndInItsOwnScope()
+    public async Task Reader_Fill_RunsInSuppressionScope_AndNotInTheCallers()
     {
         var suppressed = false;
         var query = Substitute.For<ILogQueryService>();

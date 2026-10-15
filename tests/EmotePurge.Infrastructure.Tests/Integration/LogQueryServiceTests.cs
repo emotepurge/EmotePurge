@@ -345,6 +345,26 @@ public class LogQueryServiceTests(PostgresFixture fixture) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task InstanceLatest_IgnoresOlderInstanceStillWriting()
+    {
+        // Deploy overlap: the old instance still writes fresher heartbeats than the new one.
+        var oldRow = LogEntrySeed.Status(LogSource.Worker, "b0000001", Now.AddHours(-6), Now.AddSeconds(-1));
+        var newRow = LogEntrySeed.Status(LogSource.Worker, "b0000002", Now.AddMinutes(-30), Now.AddSeconds(-30));
+        await LogEntrySeed.InsertStatusAsync(fixture, DatabaseName, oldRow, newRow);
+        await LogEntrySeed.InsertAsync(
+            fixture,
+            DatabaseName,
+            LogEntrySeed.Entry(Now.AddMinutes(-10), "new", instanceId: "b0000002", processStartedUtc: Now.AddMinutes(-30)),
+            LogEntrySeed.Entry(Now.AddMinutes(-5), "old still writing", instanceId: "b0000001", processStartedUtc: Now.AddHours(-6)),
+            LogEntrySeed.Entry(Now.AddSeconds(-2), "old heartbeat era", instanceId: "b0000001", processStartedUtc: Now.AddHours(-6)));
+
+        Assert.Equal(["new"], await ReadMessagesAsync("instance:latest"));
+        await using var db = fixture.CreateDbContext(DatabaseName);
+        var status = await new LogQueryService(db, new LogViewerOptions(), _time).ComputeStatusAsync(default);
+        Assert.Equal("b0000002", Assert.Single(status.Sources, x => x.Source == LogSource.Worker).InstanceId);
+    }
+
+    [Fact]
     public async Task InstanceLatest_WithoutStatusRows_FallsBackToTheEntries()
     {
         await LogEntrySeed.InsertStatusAsync(fixture, DatabaseName, LogEntrySeed.Status(LogSource.Api, "a0000009", Now.AddMinutes(-40)));
