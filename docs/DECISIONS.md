@@ -10,6 +10,18 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-15 — Bounded log entry rendering: property type allowlist, no ToString, Postgres-safe strings (#383)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Logging/LogEntryRendering.cs` · `src/EmotePurge.Infrastructure/Logging/SecretScrubber.cs`
+
+What the log capture stores is produced by pure, bounded functions that never run caller-controlled code. Structured state is read only as `IReadOnlyList<KeyValuePair<string, object?>>`, only indices 0 to 16 and never past `Count`, without `{OriginalFormat}`; keys are stored lower-case (invariant), the first of two keys that collide after lower-casing wins, and the scope values `requestpath`/`traceid` count among the 16 keys. Values come from a type allowlist: `string`, `bool`, `char`, all numeric types, enums, `Guid`, `DateTime`/`DateTimeOffset` (ISO-8601 UTC), `TimeSpan`. Finite collections (arrays, `ICollection`, `IReadOnlyCollection<T>`) contribute at most their first 20 elements joined with `", "`; every other value, including a lazy `IEnumerable`, is stored as `"<FullTypeName>"` without `ToString()` and without enumeration, so neither an endless sequence nor a recursive or logging `ToString()` can stall the logging thread. Limits are 256 characters per value, 16 keys and 4 KiB serialized; whatever exceeds them is dropped and the entry is marked truncated.
+
+Exceptions are never rendered with `Exception.ToString()`. Each link of the chain (at most 8 levels, all inner exceptions of an `AggregateException`) contributes its type, its message (at most 1,024 characters) and its stack trace, and rendering stops at 16,384 characters. `WithheldMessageException` contributes its original type and the chain types and stacks and never a message; the second line of defence (`withholdMessages`) does the same for any exception. `ExceptionType` is cut to its column width of 256.
+
+Postgres cannot store `U+0000` in `text` or `jsonb` and a lone surrogate is not valid UTF-8, so every stored string is normalized before it is queued: `U+0000` becomes `U+2400`, an unpaired surrogate becomes `U+FFFD`. `SecretScrubber` is the last line of defence for foreign exceptions and replaces exactly four shapes with `[redacted]`: `Password=` up to `;` or end of line, `oauth:` plus token characters, `Bearer` plus a token of at least 16 token characters (so "Bearer of bad news" survives) and `access_token=`/`refresh_token=`/`client_secret=` plus value. It keeps the key text and fails closed (the whole text becomes `[redacted]`) if a pattern times out. It does not replace redaction at the source.
+
+---
+
 ### 2026-10-15 — Log expiry runs hourly, isolated, outside RunAsync and the boot gate (#383)
 
 **Betrifft:** `src/EmotePurge.Core/Services/RetentionPolicy.cs` · `src/EmotePurge.Core/Services/IDataRetentionService.cs` · `src/EmotePurge.Infrastructure/Services/DataRetentionService.cs` · `src/EmotePurge.Worker/DataRetentionWorker.cs` · `docs/Operations.md`
