@@ -5,6 +5,7 @@ using EmotePurge.Core.SevenTv;
 using EmotePurge.Core.Twitch;
 using EmotePurge.Infrastructure.ChatLogArchive;
 using EmotePurge.Infrastructure.Contact;
+using EmotePurge.Infrastructure.Logging.Query;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Redis;
 using EmotePurge.Infrastructure.Services;
@@ -111,6 +112,13 @@ public static class ServiceCollectionExtensions
         // Read side only — audit entries are written by the services that perform the actions, into
         // those actions' own transactions (see AuditLogWrites).
         services.AddScoped<IAuditLogQueryService, AuditLogQueryService>();
+        // The log viewer's read side (spec section 8). Its statement time limit is bound and validated eagerly
+        // like the channel cap; the setting exists for tests and local acceptance runs, not for compose.
+        var logViewerOptions = new LogViewerOptions();
+        configuration.GetSection(LogViewerOptions.SectionName).Bind(logViewerOptions);
+        logViewerOptions.Validate();
+        services.AddSingleton(logViewerOptions);
+        services.AddScoped<ILogQueryService, LogQueryService>();
         services.AddScoped<IEmoteService, EmoteService>();
         services.AddScoped<IEmoteSetOwnershipService, EmoteSetOwnershipService>();
         services.AddScoped<ITrackedEmoteSetMembershipService, TrackedEmoteSetMembershipService>();

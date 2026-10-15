@@ -981,7 +981,8 @@ internal sealed class Harness : IAsyncDisposable
         LogCaptureIdentity? identity = null,
         Action<ILoggingBuilder>? configure = null,
         int commandTimeoutSeconds = PostgresLogCaptureStore.DefaultCommandTimeoutSeconds,
-        int connectTimeoutSeconds = LogCaptureDataSource.DefaultConnectTimeoutSeconds)
+        int connectTimeoutSeconds = LogCaptureDataSource.DefaultConnectTimeoutSeconds,
+        IServiceProvider? notifierServices = null)
     {
         Identity = identity ?? new LogCaptureIdentity(LogSource.Worker);
         Budget = new LogCaptureBudget(budget, TimeProvider.System);
@@ -995,7 +996,9 @@ internal sealed class Harness : IAsyncDisposable
         DataSource = new LogCaptureDataSource(connectionString, connectTimeoutSeconds);
         Store = new HookedStore(new PostgresLogCaptureStore(DataSource, Identity) { CommandTimeoutSeconds = commandTimeoutSeconds });
         var writerLoggers = LoggerFactory.Create(builder => builder.AddProvider(WriterConsole));
-        Notifier = new LogsAppendedNotifier(Substitute.For<IServiceProvider>(), TimeProvider.System);
+        // Without notifierServices the hint resolves no publisher and goes nowhere; the viewer's suppression
+        // test passes a provider with a real Redis publisher.
+        Notifier = new LogsAppendedNotifier(notifierServices ?? Substitute.For<IServiceProvider>(), TimeProvider.System);
         Writer = new LogCaptureWriter(
             Buffer,
             Drops,
