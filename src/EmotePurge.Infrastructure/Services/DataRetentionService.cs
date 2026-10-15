@@ -59,6 +59,7 @@ public class DataRetentionService(
     private const int AuditLogBatchSize = 5_000;
     private const int BackfillRunBatchSize = 500;
     private const int SystemLoadBatchSize = 5_000;
+    private const int LogEntryBatchSize = 5_000;
     private const string SystemLoadSampleImmediateSuccessorJoin = """
         LEFT JOIN LATERAL (
             SELECT s2."SampledAtUtc"
@@ -129,6 +130,46 @@ public class DataRetentionService(
             enforce, now, tokensCleared, accounts, voteSessions, auditEntriesDeleted, channels, backfillRunsDeleted,
             systemLoadRawDeleted, systemLoadRawWithoutHourly, systemLoadHourlyDeleted,
             systemLoadRawFailed, systemLoadHourlyFailed);
+    }
+
+    public async Task<LogRetentionSummary> ExpireLogsAsync(bool enforce, CancellationToken cancellationToken = default)
+    {
+        var now = timeProvider.GetUtcNow().UtcDateTime;
+        var cutoffUtc = now - RetentionPolicy.LogEntry;
+
+        var entries = 0;
+        if (enforce)
+        {
+            // Id batches (Postgres has no DELETE ... LIMIT); each batch is one short statement so a
+            // large backlog never holds a long lock against the writer.
+            while (true)
+            {
+                var batch = await db.LogEntries
+                    .Where(e => e.TimestampUtc < cutoffUtc)
+                    .OrderBy(e => e.Id)
+                    .Select(e => e.Id)
+                    .Take(LogEntryBatchSize)
+                    .ToListAsync(cancellationToken);
+                if (batch.Count == 0)
+                {
+                    break;
+                }
+
+                entries += await db.LogEntries
+                    .Where(e => batch.Contains(e.Id))
+                    .ExecuteDeleteAsync(cancellationToken);
+            }
+        }
+        else
+        {
+            entries = await db.LogEntries.CountAsync(e => e.TimestampUtc < cutoffUtc, cancellationToken);
+        }
+
+        var statusRows = enforce
+            ? await db.LogCaptureStatuses.Where(s => s.LastFlushUtc < cutoffUtc).ExecuteDeleteAsync(cancellationToken)
+            : await db.LogCaptureStatuses.CountAsync(s => s.LastFlushUtc < cutoffUtc, cancellationToken);
+
+        return new LogRetentionSummary(enforce, now, entries, statusRows);
     }
 
     /// <summary>

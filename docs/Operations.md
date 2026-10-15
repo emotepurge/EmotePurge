@@ -575,6 +575,9 @@ stand:
 | Chat-log backfill run (the run row; its snapshot goes with it) | deleted 365 days after it finished | `FinishedAtUtc` |
 | Raw system-load sample | deleted after 7 days, only after its own and its immediate successor's hourly rollups exist | sample hour and source match `SystemLoadHourly`; when a later sample exists for the same process identity and source, its hour must also match |
 | Hourly system-load row | deleted after 13 calendar months | `HourUtc` |
+| Log entry (admin log viewer) | deleted after 7 days | `LogEntries.TimestampUtc` |
+| Log capture heartbeat row | deleted after 7 days | `LogCaptureStatus.LastFlushUtc` |
+| Saved log filter | never | configuration, not captured data |
 
 "Last activity" is the later of a login and the daily "last seen" stamp `OnValidatePrincipal`
 writes at most once per 24 hours — without it, a user who never logs out again (the session
@@ -644,6 +647,17 @@ orchestrates your deployment) — no image rebuild is needed, only the environme
 container recreate. To switch back to counting only, set `RETENTION_ENFORCE=false` (or unset it)
 and recreate the worker container again; nothing already deleted comes back, but no further
 deletions happen until it is set to `true` again.
+
+### Log expiry (hourly, isolated)
+
+Log entries do not wait for the daily pass: `DataRetentionWorker` runs a second loop that starts
+one minute after the worker starts (it does **not** wait for boot recovery) and then runs every
+hour. It calls `IDataRetentionService.ExpireLogsAsync`, not `RunAsync`, so a failure in either
+cannot skip the other; each pass has its own `try/catch` and logs only the exception type and
+SQLSTATE. The boundary is exclusive (a row exactly seven days old stays) and rows go in batches of
+5,000. With `Retention:Enforce=false` it only counts and logs at most one Warning per UTC day
+(`Log expiry dry run: ...`); enforced, it logs an Information line only when something was deleted
+(`Log expiry deleted N log entries and M capture status rows.`).
 
 ### The other `Retention:*` keys
 

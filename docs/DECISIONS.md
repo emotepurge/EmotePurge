@@ -10,6 +10,14 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-15 — Log expiry runs hourly, isolated, outside RunAsync and the boot gate (#383)
+
+**Betrifft:** `src/EmotePurge.Core/Services/RetentionPolicy.cs` · `src/EmotePurge.Core/Services/IDataRetentionService.cs` · `src/EmotePurge.Infrastructure/Services/DataRetentionService.cs` · `src/EmotePurge.Worker/DataRetentionWorker.cs` · `docs/Operations.md`
+
+Captured log entries expire after seven days (`RetentionPolicy.LogEntry`, exclusive boundary on `LogEntries.TimestampUtc`; heartbeat rows in `LogCaptureStatus` follow on `LastFlushUtc`; saved filters never). Unlike every other category this is a separate operation, `IDataRetentionService.ExpireLogsAsync`, driven by a second loop in `DataRetentionWorker`: first run one minute after start, then hourly, on `TimeProvider`. It is not part of `RunAsync` and does not wait for `BootRecoveryGate.Completed`, for three reasons: log rows arrive continuously and a stuck boot recovery or a failing token/account category of the daily pass must not let the table grow; an hourly cadence keeps each delete small (batches of 5,000 ids, one short statement each); and each loop catches its own failures, so neither can stop the other. `RetentionRunSummary` and its formatter are unchanged. In a dry run the loop warns at most once per UTC day with the counts; enforced, it logs Information only when it deleted something. The privacy text (A32) names the seven-day period for application logs; the code constant is the single place the number stands.
+
+---
+
 ### 2026-10-15 — In-app log capture in Postgres (#383)
 
 **Betrifft:** `src/EmotePurge.Core/Entities/LogEntry.cs` · `src/EmotePurge.Core/Entities/LogCaptureStatus.cs` · `src/EmotePurge.Core/Entities/LogFilter.cs` · `src/EmotePurge.Core/Entities/LogFilterNames.cs` · `src/EmotePurge.Infrastructure/Persistence/AppDbContext.cs` · `src/EmotePurge.Infrastructure/Migrations/*_AddLogCapture.cs`

@@ -33,7 +33,28 @@ public interface IDataRetentionService
     /// <c>true</c> deletes. Comes from <c>Retention:Enforce</c>, default <c>false</c>.
     /// </param>
     Task<RetentionRunSummary> RunAsync(bool enforce, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Expires captured log entries and stale capture heartbeat rows, deliberately <b>outside</b>
+    /// <see cref="RunAsync"/>: logs are written continuously and expire in hours, not days, so they run
+    /// on their own hourly schedule that neither waits for the boot gate nor shares a failure with the
+    /// daily pass. The boundary is exclusive (<c>TimestampUtc &lt; now - RetentionPolicy.LogEntry</c>,
+    /// <c>LastFlushUtc &lt; now - RetentionPolicy.LogEntry</c>); saved filters are never touched.
+    /// </summary>
+    /// <param name="enforce"><c>false</c> counts what would be deleted and writes nothing.</param>
+    Task<LogRetentionSummary> ExpireLogsAsync(bool enforce, CancellationToken cancellationToken = default);
 }
+
+/// <summary>What one log-expiry pass did, or in a dry run would have done. Counts only.</summary>
+/// <param name="Enforced">Whether the pass wrote.</param>
+/// <param name="ReferenceTimeUtc">The instant the cutoff was computed from.</param>
+/// <param name="LogEntriesDeleted">Log entries older than the period (deleted, or due in a dry run).</param>
+/// <param name="LogCaptureStatusRowsDeleted">Heartbeat rows whose last flush is older than the period.</param>
+public sealed record LogRetentionSummary(
+    bool Enforced,
+    DateTime ReferenceTimeUtc,
+    int LogEntriesDeleted,
+    int LogCaptureStatusRowsDeleted);
 
 /// <summary>
 /// What one retention pass did — or, with <see cref="Enforced"/> <c>false</c>, would have done. Every
