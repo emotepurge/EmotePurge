@@ -1,10 +1,12 @@
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using EmotePurge.Api.Auth;
+using EmotePurge.Core.Entities;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Core.Twitch;
+using EmotePurge.Infrastructure.Logging;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -254,6 +256,10 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("Auth:AdminTwitchLogins", string.Empty);
         builder.UseSetting("Auth:AdminTwitchUserIds", string.Empty);
 
+        // No log rows from tests: the heartbeat-only mode never reaches the (nonexistent) database in a way
+        // that matters, and no provider or writer competes with the console logger configured below.
+        builder.UseSetting("LogCapture:Enabled", "false");
+
         // On, so the filter matrix reaches the backfill handlers; the off variant overrides it.
         builder.UseSetting("ChatLogBackfill:Enabled", "true");
 
@@ -269,6 +275,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 
         builder.ConfigureTestServices(services =>
         {
+            // The heartbeat stays registered (first hosted service) but must not dial Postgres.
+            services.AddSingleton<ILogCaptureStore, NoOpLogCaptureStore>();
             services.AddScoped(_ => ChannelAccess);
             services.AddScoped(_ => VoteEligibility);
             services.AddScoped(_ => Channels);
@@ -360,4 +368,15 @@ public sealed class TestAuthHandler(
         var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, SchemeName));
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, SchemeName)));
     }
+}
+
+/// <summary>Stands in for the Postgres-backed capture store so the heartbeat of the test host never dials a database.</summary>
+internal sealed class NoOpLogCaptureStore : ILogCaptureStore
+{
+    public Task InsertAsync(IReadOnlyList<CapturedLogEntry> batch, CancellationToken ct) => Task.CompletedTask;
+
+    public Task UpsertStatusAsync(LogCaptureStatusWrite status, CancellationToken ct) => Task.CompletedTask;
+
+    public Task<LogCaptureStatusWrite?> ReadLatestOtherInstanceAsync(LogSource source, string ownInstanceId, CancellationToken ct) =>
+        Task.FromResult<LogCaptureStatusWrite?>(null);
 }

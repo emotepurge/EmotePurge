@@ -63,6 +63,8 @@ services:
       - SystemLoad__Enabled=${SYSTEM_LOAD_ENABLED:-true}
       - SystemLoad__IntervalSeconds=${SYSTEM_LOAD_INTERVAL_SECONDS:-30}
       - SystemLoad__RollupGraceMinutes=${SYSTEM_LOAD_ROLLUP_GRACE_MINUTES:-5}
+      # Log capture into Postgres (admin log viewer): false keeps only the heartbeat row.
+      - LogCapture__Enabled=${LOG_CAPTURE_ENABLED:-true}
       - Auth__Twitch__ClientId=${TWITCH_CLIENT_ID}
       - Auth__Twitch__ClientSecret=${TWITCH_CLIENT_SECRET}
       - Auth__Twitch__TokenEncryptionKey=${AUTH_TWITCH_TOKEN_ENCRYPTION_KEY}
@@ -171,6 +173,8 @@ services:
       - SystemLoad__Enabled=${SYSTEM_LOAD_ENABLED:-true}
       - SystemLoad__IntervalSeconds=${SYSTEM_LOAD_INTERVAL_SECONDS:-30}
       - SystemLoad__RollupGraceMinutes=${SYSTEM_LOAD_ROLLUP_GRACE_MINUTES:-5}
+      # Log capture into Postgres (admin log viewer): false keeps only the heartbeat row.
+      - LogCapture__Enabled=${LOG_CAPTURE_ENABLED:-true}
       # Data retention (#243/#244, DataRetentionWorker): false (the default) only counts and warns,
       # true actually deletes.
       - Retention__Enforce=${RETENTION_ENFORCE:-false}

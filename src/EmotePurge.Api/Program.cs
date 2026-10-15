@@ -8,6 +8,7 @@ using EmotePurge.Api.Validation;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure;
+using EmotePurge.Infrastructure.Logging;
 using EmotePurge.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -33,6 +34,8 @@ if (builder.Configuration.GetValue<bool>("EMOTEPURGE_LAN"))
 
 builder.Services.AddOpenApi();
 
+// First, so the capture writer is the first hosted service and therefore stops last (spec 5.1).
+builder.Services.AddLogCapture(builder.Configuration, LogSource.Api);
 builder.Services.AddEmotePurgeInfrastructure(builder.Configuration);
 builder.Services.AddSystemLoadSampler(SystemLoadSource.Api);
 

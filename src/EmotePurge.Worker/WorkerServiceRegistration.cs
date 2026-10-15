@@ -1,6 +1,7 @@
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure;
+using EmotePurge.Infrastructure.Logging;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Worker.ChatLogBackfill;
 using EmotePurge.Worker.Harness;
@@ -17,7 +18,7 @@ namespace EmotePurge.Worker;
 /// <para>
 /// It exists so <c>Program</c> cannot accidentally hand the harness branch a hosted service. That
 /// is not a style preference: <c>docker compose run</c> replaces a service's <c>command</c>, not
-/// its <c>entrypoint</c>, and a harness container that started the thirteen hosted services would sit
+/// its <c>entrypoint</c>, and a harness container that started the fourteen hosted services would sit
 /// in IRC next to the production worker's hosted services and double every usage row through the additive UPSERT
 /// (Codex-adversarial "Fail-open CLI"). With the registration in one place, a test can assert the
 /// absence directly instead of trusting a reading of <c>Program</c>.
@@ -51,7 +52,8 @@ public static class WorkerServiceRegistration
     }
 
     /// <summary>
-    /// The thirteen hosted services of the long-running worker. The host starts them in registration
+    /// The fourteen hosted services of the long-running worker (the log capture writer, or its heartbeat when
+    /// capture is off, goes first and so stops last). The host starts them in registration
     /// order, and Worker deliberately goes first: it runs the boot recovery (rejoin every tracked
     /// channel, initial 7TV sync) that the others assume has happened. The ordering is not
     /// load-bearing on its own, though — BootRecoveryGate is what actually enforces it, because
@@ -59,8 +61,9 @@ public static class WorkerServiceRegistration
     /// makes two AppDbContext instances insert the same (ChannelId, SevenTvEmoteId) rows and one
     /// loses on the unique index. Read that class before reordering anything here.
     /// </summary>
-    public static IServiceCollection AddWorkerHostedServices(this IServiceCollection services)
+    public static IServiceCollection AddWorkerHostedServices(this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddLogCapture(configuration, LogSource.Worker);
         services.AddHostedService<Worker>();
         services.AddHostedService<UsageFlushWorker>();
         services.AddHostedService<SevenTvPeriodicResyncWorker>();

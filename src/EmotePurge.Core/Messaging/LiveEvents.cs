@@ -65,7 +65,7 @@ public static class LiveEvents
 
     /// <summary>Types the admin stream (<c>GET /api/admin/live</c>) forwards.</summary>
     public static readonly IReadOnlySet<string> AdminTypes =
-        new HashSet<string>(StringComparer.Ordinal) { WorkerHealth, WorkerRoster, ChannelSynced, LiveChanged };
+        new HashSet<string>(StringComparer.Ordinal) { WorkerHealth, WorkerRoster, ChannelSynced, LiveChanged, LogsAppended };
 
     /// <summary>Types the channel stream (<c>GET /api/channels/{channelName}/live</c>) forwards.</summary>
     public static readonly IReadOnlySet<string> ChannelTypes =
