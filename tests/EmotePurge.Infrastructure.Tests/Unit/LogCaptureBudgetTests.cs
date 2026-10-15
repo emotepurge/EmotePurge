@@ -9,20 +9,6 @@ public class LogCaptureBudgetTests
 {
     private static readonly DateTimeOffset Noon = new(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
 
-    private static int Admit(LogCaptureBudget budget, LogEntryLevel level, int attempts)
-    {
-        var admitted = 0;
-        for (var i = 0; i < attempts; i++)
-        {
-            if (budget.TryAdmit(level))
-            {
-                admitted++;
-            }
-        }
-
-        return admitted;
-    }
-
     [Fact]
     public void Budget_InfoStopsAt80Percent_WarningsUntil100_ResetAtUtcMidnight()
     {
@@ -81,5 +67,95 @@ public class LogCaptureBudgetTests
 
         Assert.Equal(20_000, info + errors);
         Assert.True(info <= 16_000);
+    }
+
+    [Fact]
+    public void Refund_SameDay_GivesOneAdmissionBack()
+    {
+        var budget = new LogCaptureBudget(1, new FakeTimeProvider(Noon));
+        Assert.True(budget.TryAdmit(LogEntryLevel.Warning, out var day));
+        Assert.False(budget.TryAdmit(LogEntryLevel.Warning));
+
+        budget.Refund(day);
+
+        Assert.True(budget.TryAdmit(LogEntryLevel.Warning));
+        Assert.False(budget.TryAdmit(LogEntryLevel.Warning));
+    }
+
+    [Fact]
+    public void Refund_ForAnotherDay_TouchesNothing()
+    {
+        var time = new FakeTimeProvider(Noon);
+        var budget = new LogCaptureBudget(1, time);
+        Assert.True(budget.TryAdmit(LogEntryLevel.Warning, out var yesterday));
+        time.Advance(TimeSpan.FromDays(1));
+        Assert.True(budget.TryAdmit(LogEntryLevel.Warning, out var today));
+        Assert.Equal(yesterday + 1, today);
+
+        budget.Refund(yesterday);
+
+        Assert.False(budget.TryAdmit(LogEntryLevel.Warning));
+    }
+
+    [Fact]
+    public void Refund_NothingUsed_DoesNotGoBelowZero()
+    {
+        var budget = new LogCaptureBudget(1, new FakeTimeProvider(Noon));
+        Assert.True(budget.TryAdmit(LogEntryLevel.Warning, out var day));
+        budget.Refund(day);
+
+        budget.Refund(day);
+
+        Assert.True(budget.TryAdmit(LogEntryLevel.Warning));
+        Assert.False(budget.TryAdmit(LogEntryLevel.Warning));
+    }
+
+    [Fact]
+    public void StaleClockRead_NeverRollsTheDayBack()
+    {
+        var fake = new FakeTimeProvider(Noon);
+        var clock = new InterleavingTimeProvider(fake);
+        var budget = new LogCaptureBudget(2, clock);
+
+        // The outer call reads day D; before it touches the state, another admission moves it to D+1.
+        clock.BeforeNextRead = () =>
+        {
+            fake.Advance(TimeSpan.FromDays(1));
+            Assert.True(budget.TryAdmit(LogEntryLevel.Warning));
+        };
+        Assert.True(budget.TryAdmit(LogEntryLevel.Warning, out var charged));
+
+        Assert.Equal(fake.GetUtcNow().UtcDateTime.Ticks / TimeSpan.TicksPerDay, charged);
+        // Both admissions count against D+1; writing (D, 1) back would have reopened D+1.
+        Assert.False(budget.TryAdmit(LogEntryLevel.Warning));
+    }
+
+    private static int Admit(LogCaptureBudget budget, LogEntryLevel level, int attempts)
+    {
+        var admitted = 0;
+        for (var i = 0; i < attempts; i++)
+        {
+            if (budget.TryAdmit(level))
+            {
+                admitted++;
+            }
+        }
+
+        return admitted;
+    }
+
+    /// <summary>Runs a hook after reading the clock and before returning, to interleave a second admission.</summary>
+    private sealed class InterleavingTimeProvider(FakeTimeProvider inner) : TimeProvider
+    {
+        public Action? BeforeNextRead { get; set; }
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            var now = inner.GetUtcNow();
+            var hook = BeforeNextRead;
+            BeforeNextRead = null;
+            hook?.Invoke();
+            return now;
+        }
     }
 }

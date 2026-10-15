@@ -13,21 +13,6 @@ public class LogCaptureProviderTests
 {
     private static readonly DateTimeOffset Noon = new(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
 
-    private static Exception Thrown(Func<Exception> create)
-    {
-        try
-        {
-            throw create();
-        }
-        catch (Exception exception)
-        {
-            return exception;
-        }
-    }
-
-    private static IReadOnlyList<KeyValuePair<string, object?>> State(params (string Key, object? Value)[] items) =>
-        items.Select(i => new KeyValuePair<string, object?>(i.Key, i.Value)).ToList();
-
     // --- floor and exclusions (§5.2) ---
 
     [Fact]
@@ -272,15 +257,6 @@ public class LogCaptureProviderTests
         Assert.True(stopwatch.ElapsedMilliseconds < 50, $"Log() took {stopwatch.ElapsedMilliseconds} ms");
         var json = JsonDocument.Parse(capture.Single().PropertiesJson!).RootElement;
         Assert.StartsWith("<", json.GetProperty("lazy").GetString());
-    }
-
-    private static IEnumerable<int> Endless()
-    {
-        var i = 0;
-        while (true)
-        {
-            yield return i++;
-        }
     }
 
     // --- scopes (A4) ---
@@ -599,6 +575,95 @@ public class LogCaptureProviderTests
         Assert.Contains("diagnostic text", capture.Single().Exception);
     }
 
+    // --- budget refund on queue_full (controller ruling, replaces L13) ---
+
+    [Fact]
+    public void QueueFull_RefundsTheBudget()
+    {
+        using var capture = new Capture(maxEntries: 1, budget: 2);
+        var logger = capture.Logger();
+        logger.LogWarning("a");
+        logger.LogWarning("rejected by count");
+        Assert.Single(capture.Drain());
+
+        logger.LogWarning("c");
+        logger.LogWarning("over budget");
+
+        Assert.Equal("c", capture.Single().Message);
+        var drops = capture.Drops.CutPending()!;
+        Assert.Equal(1, drops.QueueFull);
+        Assert.Equal(1, drops.Budget);
+    }
+
+    [Fact]
+    public void ByteLimitRejection_RefundsTheBudget()
+    {
+        using var capture = new Capture(maxBytes: 100, budget: 2);
+        var logger = capture.Logger();
+        logger.LogWarning(new string('m', 100));
+
+        logger.LogWarning("x");
+        logger.LogWarning("y");
+        logger.LogWarning("over budget");
+
+        Assert.Equal(["x", "y"], capture.Drain().Select(e => e.Message));
+        var drops = capture.Drops.CutPending()!;
+        Assert.Equal(1, drops.QueueFull);
+        Assert.Equal(1, drops.Budget);
+    }
+
+    [Fact]
+    public void CaptureFailed_StaysCharged()
+    {
+        using var capture = new Capture(budget: 1);
+        var logger = capture.Logger();
+        logger.Log<string>(LogLevel.Warning, default, "boom", null, (_, _) => throw new InvalidOperationException("formatter"));
+
+        logger.LogWarning("over budget");
+
+        Assert.Empty(capture.Drain());
+        var drops = capture.Drops.CutPending()!;
+        Assert.Equal(1, drops.CaptureFailed);
+        Assert.Equal(1, drops.Budget);
+        Assert.Equal(0, capture.Buffer.ReservedSlots);
+    }
+
+    [Fact]
+    public async Task ConcurrentLogWithDrainingReaderAndClose_ReleasesEverythingAndNeverThrows()
+    {
+        using var capture = new Capture(maxEntries: 64, budget: 10_000_000);
+        var logger = capture.Logger();
+        var read = 0;
+        var reader = Task.Run(async () =>
+        {
+            await foreach (var _ in capture.Buffer.Reader.ReadAllAsync())
+            {
+                read++;
+            }
+        });
+
+        var writers = Enumerable.Range(0, 6).Select(thread => Task.Run(() =>
+        {
+            for (var i = 0; i < 20_000; i++)
+            {
+                logger.LogWarning("thread {Thread} entry {Index}", thread, i);
+                if (thread == 0 && i == 5_000)
+                {
+                    capture.Provider.Close();
+                }
+            }
+        })).ToArray();
+
+        var thrown = await Record.ExceptionAsync(() => Task.WhenAll(writers));
+        await reader.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Null(thrown);
+        Assert.True(read > 0);
+        Assert.False(capture.Buffer.Reader.TryRead(out _));
+        Assert.Equal(0, capture.Buffer.ReservedSlots);
+        Assert.Equal(0, capture.Buffer.BufferedBytes);
+    }
+
     // --- lifecycle ---
 
     [Fact]
@@ -683,6 +748,30 @@ public class LogCaptureProviderTests
         Assert.True(identity.ProcessStartedUtc <= DateTime.UtcNow);
         Assert.True(identity.ProcessStartedUtc > DateTime.UtcNow.AddDays(-30));
         Assert.Equal(0, identity.ProcessStartedUtc.Ticks % 10);
+    }
+
+    private static Exception Thrown(Func<Exception> create)
+    {
+        try
+        {
+            throw create();
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
+    private static IReadOnlyList<KeyValuePair<string, object?>> State(params (string Key, object? Value)[] items) =>
+        items.Select(i => new KeyValuePair<string, object?>(i.Key, i.Value)).ToList();
+
+    private static IEnumerable<int> Endless()
+    {
+        var i = 0;
+        while (true)
+        {
+            yield return i++;
+        }
     }
 
     /// <summary>A LoggerFactory with only our provider, minimum level Trace.</summary>

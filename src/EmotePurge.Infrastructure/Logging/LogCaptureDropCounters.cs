@@ -103,10 +103,13 @@ internal sealed class LogCaptureDropCounters
             long total = 0;
             for (var i = 0; i < ReasonCount; i++)
             {
-                total += Interlocked.Read(ref _recorded[i]) - Interlocked.Read(ref _cut[i]);
+                // Cut before recorded: a cut only ever stores a recorded value read earlier and both only
+                // grow, so no term can go negative under a concurrent cut; the clamp is a belt on top.
+                var cut = Interlocked.Read(ref _cut[i]);
+                total += Interlocked.Read(ref _recorded[i]) - cut;
             }
 
-            return total;
+            return Math.Max(0, total);
         }
     }
 

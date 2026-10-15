@@ -39,17 +39,17 @@ public sealed class LogCaptureProvider : ILoggerProvider, ISupportExternalScope
     // and is still twice the stored length, so scrubbing never sees a secret split by the final cut.
     private const int MessageScrubWindow = 2 * LogEntryRendering.MaxMessageLength;
 
-    // Set while this thread formats or renders an entry inside the sink (admission step 3): a log call
-    // arriving on the same thread meanwhile (a formatter or value that logs itself) is a re-entry.
-    [ThreadStatic]
-    private static bool _capturing;
-
     private readonly LogCaptureBuffer _buffer;
     private readonly LogCaptureBudget _budget;
     private readonly LogCaptureDropCounters _drops;
     private readonly LogCaptureCoverage _coverage;
     private readonly TimeProvider _time;
     private readonly ConcurrentDictionary<string, CaptureLogger> _loggers = new(StringComparer.Ordinal);
+
+    // Set while this thread formats or renders an entry inside the sink (admission step 3): a log call
+    // arriving on the same thread meanwhile (a formatter or value that logs itself) is a re-entry.
+    [ThreadStatic]
+    private static bool _capturing;
 
     private IExternalScopeProvider? _scopeProvider;
     private volatile bool _closed;
@@ -116,14 +116,18 @@ public sealed class LogCaptureProvider : ILoggerProvider, ISupportExternalScope
                 return;
             }
 
-            if (!_budget.TryAdmit(level))
+            if (!_budget.TryAdmit(level, out var chargedDay))
             {
                 Drop(LogDropReason.Budget, level, now);
                 return;
             }
 
+            // A queue-full rejection (by count here, by bytes below) gives the budget back: during an
+            // outage the full queue must not use up the day's budget on entries that are never stored.
+            // A failure while building the entry (capture_failed) stays charged.
             if (!_buffer.TryReserveSlot())
             {
+                _budget.Refund(chargedDay);
                 Drop(LogDropReason.QueueFull, level, now);
                 return;
             }
@@ -138,6 +142,7 @@ public sealed class LogCaptureProvider : ILoggerProvider, ISupportExternalScope
             slotHeld = false;
             if (!_buffer.TryCommit(entry, bytes))
             {
+                _budget.Refund(chargedDay);
                 Drop(LogDropReason.QueueFull, level, now);
             }
         }
