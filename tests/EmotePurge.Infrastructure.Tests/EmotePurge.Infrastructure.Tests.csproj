@@ -31,6 +31,10 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\EmotePurge.Infrastructure\EmotePurge.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\EmotePurge.Core\EmotePurge.Core.csproj" />
+    <!-- The acceptance-criterion-4 chain test runs the Worker's redacting wrapper and splice rule
+         against the real capture writer; only this project has Testcontainers (Worker.Tests stays
+         container-free). Worker -> Infrastructure -> Core, so the reference adds no cycle. -->
+    <ProjectReference Include="..\..\src\EmotePurge.Worker\EmotePurge.Worker.csproj" />
   </ItemGroup>
 
   <!-- Real 7TV EventAPI frames, captured live on 2026-07-30 (channel sensitron) — the parser is
