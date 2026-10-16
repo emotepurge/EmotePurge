@@ -419,8 +419,11 @@ All under the global-admin group (`/api/admin`), none of them rate limited:
 - `GET /api/admin/logs` (filter `q`, `range` = `1h|6h|24h|7d` or `from`+`to` with a span of at most
   8 days, `before` cursor, `limit`; `keysOnly` and `ids` serve the reconcile), `GET /api/admin/logs/summary`
   (histogram, facets, drop counts, process starts), `GET /api/admin/logs/{id}` (detail with exception).
-  A query is cut off after 5 seconds (`503 log_query_timeout`); at most 2 run in parallel per Api
-  instance, a third waits up to 5 seconds and then gets `503` with `Retry-After: 5`.
+  A query is cut off after 5 seconds (`503 log_query_timeout`). The limit is `LogViewer:QueryTimeoutMilliseconds`
+  (default `5000`; the only `LogViewer:*` key, deliberately not in the compose files, meant for forcing
+  timeouts in a test run). These three routes (list, summary, detail) share a concurrency gate: at most 2
+  run in parallel per Api instance, a third waits up to 5 seconds and then gets `503` with
+  `Retry-After: 5` and no body. `logs/status` is not gated; it is cached for 30 seconds with single-flight.
 - `GET /api/admin/logs/status` (above).
 - `GET/POST /api/admin/log-filters`, `PUT/DELETE /api/admin/log-filters/{id}`: global saved filters
   (name up to 60 characters, filter up to 512, at most 30). Saved filters are user data and stay in
