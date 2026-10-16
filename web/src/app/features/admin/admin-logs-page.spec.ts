@@ -343,8 +343,12 @@ describe('AdminLogsPage', () => {
     await settle();
 
     expect(router.url).toContain('from=2026-10-13T12:15:00Z');
+    buttonNamed('Back to 24 h').focus();
     buttonNamed('Back to 24 h').click();
     await settle();
+    // The button is gone with its own click; the focus lands on the range it restored.
+    expect(document.activeElement?.getAttribute('role')).toBe('radio');
+    expect(document.activeElement?.textContent?.trim()).toBe('24 h');
     statusRequest().flush(healthyStatus());
     const back = listRequest((r) => r.params.get('range') === '24h');
     expect(back.request.params.has('from')).toBe(false);
@@ -638,11 +642,17 @@ describe('AdminLogsPage', () => {
     await openAndLoad('/admin/logs', { page: page(0, 0, null) });
 
     expect(root().textContent).toContain('No entries for this filter in the time range');
+    buttonNamed('Widen to 7 days').focus();
     buttonNamed('Widen to 7 days').click();
     await settle();
     statusRequest().flush(healthyStatus());
     listRequest((r) => r.params.get('range') === '7d').flush(page(0, 0, null));
     summaryRequest().flush(summary());
+    await settle();
+
+    expect(buttonNamed('Widen to 7 days')).toBeUndefined();
+    expect(document.activeElement?.getAttribute('role')).toBe('radio');
+    expect(document.activeElement?.textContent?.trim()).toBe('7 days');
   });
 
   it('reserves the "new entries" slot at zero and keeps it out of the accessibility tree', async () => {
@@ -1161,6 +1171,28 @@ describe('AdminLogsPage', () => {
       statusRequest().flush(healthyStatus());
       listRequest().flush(page(4, 4, null));
       summaryRequest().flush(summary());
+    });
+
+    it('takes the focus off "Reload" when the stream reopens and the slot turns inert', async () => {
+      await openAndLoad('/admin/logs');
+      FakeEventSource.instances.forEach((source) => {
+        source.readyState = 2;
+        source.onerror?.();
+      });
+      await settle();
+      slotButton().focus();
+      expect(slotButton().textContent?.trim()).toBe('Reload');
+
+      FakeEventSource.instances.forEach((source) => {
+        source.readyState = 1;
+        source.onopen?.();
+      });
+      await settle();
+      keysRequest().flush(keyPage(loaded()));
+      await settle();
+
+      expect(slotButton().getAttribute('aria-hidden')).toBe('true');
+      expect(document.activeElement).toBe(root().querySelector('[data-log-id] button'));
     });
 
     it('announces every insert, also two in a row with the same count', async () => {

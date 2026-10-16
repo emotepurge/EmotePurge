@@ -261,13 +261,15 @@ function utcMinute(instant: string): string {
               [attr.aria-describedby]="filterError() ? 'admin-log-filter-error' : null"
             />
           </div>
-          <button type="submit" appButton="primary">
+          <!-- 44 px targets below lg (spec §9.3); the desktop keeps the dense toolbar size. -->
+          <button type="submit" appButton="primary" class="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0">
             {{ 'admin.logs.filter.apply' | transloco }}
           </button>
           <div class="relative" data-popover-anchor>
             <button
               type="button"
               appButton="outline"
+              class="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
               [attr.aria-expanded]="helpOpen()"
               [attr.aria-label]="'admin.logs.filter.help' | transloco"
               (click)="helpOpen.set(!helpOpen())"
@@ -309,7 +311,7 @@ function utcMinute(instant: string): string {
             }
           </div>
           @if (!isDesktop()) {
-            <button type="button" appButton="outline" (click)="openFilterDialog()">
+            <button type="button" appButton="outline" buttonSize="lg" (click)="openFilterDialog()">
               {{ 'admin.logs.filter.open' | transloco }}
             </button>
           }
@@ -333,7 +335,13 @@ function utcMinute(instant: string): string {
             <span class="text-xs text-fg-muted tabular-nums">{{ text }}</span>
           }
           @if (backRange(); as range) {
-            <button type="button" appButton="outline" (click)="goBack()">
+            <button
+              type="button"
+              appButton="outline"
+              class="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
+              data-focus-handoff="back"
+              (click)="goBack()"
+            >
               {{ 'admin.logs.range.backTo' | transloco: { range: range } }}
             </button>
           }
@@ -356,6 +364,7 @@ function utcMinute(instant: string): string {
                 [class.invisible]="slotAction() === null"
                 [attr.aria-hidden]="slotAction() === null ? 'true' : null"
                 [tabindex]="slotAction() === null ? -1 : 0"
+                data-focus-handoff="slot"
                 [attr.aria-label]="
                   slotAction() === 'reload'
                     ? null
@@ -443,7 +452,13 @@ function utcMinute(instant: string): string {
               @if (hasStaleData()) {
                 <span> {{ 'admin.logs.states.stale' | transloco }}</span>
               }
-              <button notice-action type="button" appButton="outline" (click)="reload()">
+              <button
+                notice-action
+                type="button"
+                appButton="outline"
+                class="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
+                (click)="reload()"
+              >
                 {{ 'admin.logs.states.retry' | transloco }}
               </button>
             </app-notice-banner>
@@ -451,7 +466,13 @@ function utcMinute(instant: string): string {
           @if (paused()) {
             <app-notice-banner variant="warning">
               <span>{{ 'admin.logs.live.pausedNotice' | transloco }}</span>
-              <button notice-action type="button" appButton="outline" (click)="reload()">
+              <button
+                notice-action
+                type="button"
+                appButton="outline"
+                class="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
+                (click)="reload()"
+              >
                 {{ 'admin.logs.states.retry' | transloco }}
               </button>
             </app-notice-banner>
@@ -459,7 +480,13 @@ function utcMinute(instant: string): string {
           @if (tooManyNew()) {
             <app-notice-banner variant="info">
               <span>{{ 'admin.logs.live.tooMany' | transloco }}</span>
-              <button notice-action type="button" appButton="outline" (click)="reload()">
+              <button
+                notice-action
+                type="button"
+                appButton="outline"
+                class="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
+                (click)="reload()"
+              >
                 {{ 'admin.logs.live.reloadList' | transloco }}
               </button>
             </app-notice-banner>
@@ -471,6 +498,7 @@ function utcMinute(instant: string): string {
                 notice-action
                 type="button"
                 appButton="outline"
+                class="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
                 (click)="applyQuery({ q: 'cat:LogCapture' })"
               >
                 {{ 'admin.logs.states.dropsShow' | transloco }}
@@ -488,7 +516,12 @@ function utcMinute(instant: string): string {
               @if (!listLoading() && !queryErrorKey()) {
                 <app-empty-state [title]="'admin.logs.states.empty' | transloco">
                   @if (canWiden()) {
-                    <button type="button" appButton="outline" (click)="setRange('7d')">
+                    <button
+                      type="button"
+                      appButton="outline"
+                      data-focus-handoff="widen"
+                      (click)="setRange('7d')"
+                    >
                       {{ 'admin.logs.range.extend' | transloco }}
                     </button>
                   }
@@ -506,7 +539,12 @@ function utcMinute(instant: string): string {
                   @if (copyFeedback(); as feedback) {
                     <span class="text-xs text-fg-muted" role="status">{{ feedback }}</span>
                   }
-                  <button type="button" appButton="outline" (click)="copyVisible()">
+                  <button
+                    type="button"
+                    appButton="outline"
+                    class="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
+                    (click)="copyVisible()"
+                  >
                     {{ 'admin.logs.list.copyVisible' | transloco }}
                   </button>
                 </div>
@@ -788,6 +826,15 @@ export class AdminLogsPage {
     return parsed.kind === 'absolute' || (parsed.kind === 'preset' && parsed.range !== '7d');
   });
 
+  /** "Auf 7 Tage erweitern" is on screen: an empty, settled answer on a range shorter than 7 days. */
+  private readonly widenOffered = computed(
+    () =>
+      this.entries()?.length === 0 &&
+      !this.listLoading() &&
+      this.queryErrorKey() === null &&
+      this.canWiden(),
+  );
+
   protected readonly histogramStarts = computed(() =>
     (this.summary()?.processStarts ?? []).map((p) => ({
       source: p.source,
@@ -882,6 +929,29 @@ export class AdminLogsPage {
       if (this.liveUpdate.status() === 'open') {
         untracked(() => this.requestReconcile());
       }
+    });
+
+    // "Zurück zu 24 h", "Auf 7 Tage erweitern" and the slot's "Neu laden" vanish as a result of their
+    // own action (or, for the slot, of the stream reopening). The focus would fall to <body>; hand it
+    // to the range control (the filter field below lg) or, from the slot, to the first row. This runs
+    // before the view drops the control, while it still holds the focus.
+    effect(() => {
+      const gone = {
+        back: this.backRange() === null,
+        widen: !this.widenOffered(),
+        slot: this.slotAction() === null,
+      };
+      untracked(() => {
+        const active = this.document.activeElement;
+        const handoff = this.host.nativeElement.contains(active)
+          ? active?.closest('[data-focus-handoff]')?.getAttribute('data-focus-handoff')
+          : null;
+        if (handoff === 'back' || handoff === 'widen' || handoff === 'slot') {
+          if (gone[handoff]) {
+            this.handFocus(handoff === 'slot' ? 'list' : 'range');
+          }
+        }
+      });
     });
 
     // URL -> field, so a chip, a facet or the browser's back button shows in the input.
@@ -1398,6 +1468,21 @@ export class AdminLogsPage {
   private announce(text: string): void {
     this.announcement.set('');
     afterNextRender(() => this.announcement.set(text), { injector: this.injector });
+  }
+
+  /** Focuses the selected range (or, without the range control, the filter field) or the first row. */
+  private handFocus(target: 'range' | 'list'): void {
+    afterNextRender(
+      () => {
+        const root = this.host.nativeElement;
+        const preferred =
+          target === 'range'
+            ? root.querySelector<HTMLElement>('app-segmented-control [aria-checked="true"]')
+            : root.querySelector<HTMLElement>('[data-log-id] button');
+        (preferred ?? this.filterInput()?.nativeElement)?.focus();
+      },
+      { injector: this.injector },
+    );
   }
 
   private slotHasFocus(): boolean {

@@ -24,6 +24,8 @@ export function currentFilterBlockedKey(q: string): string | null {
   selector: 'app-admin-log-filter-chips',
   imports: [Button, Popover, TranslocoPipe],
   template: `
+    <!-- Every button here is a 44 px target below lg (spec §9.3), where the bar lives in the Filter
+         sheet; the desktop bar keeps the dense size. -->
     <div
       class="flex flex-wrap items-center gap-2"
       role="group"
@@ -34,6 +36,7 @@ export function currentFilterBlockedKey(q: string): string | null {
           <button
             type="button"
             appButton="outline"
+            class="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
             [buttonPressed]="isActive(item)"
             [attr.aria-pressed]="isActive(item)"
             [attr.title]="item.filter"
@@ -44,6 +47,7 @@ export function currentFilterBlockedKey(q: string): string | null {
           <button
             type="button"
             appButton="outline"
+            class="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
             [attr.data-chip-menu]="item.id"
             aria-haspopup="dialog"
             [attr.aria-expanded]="openMenuId() === item.id"
@@ -92,6 +96,7 @@ export function currentFilterBlockedKey(q: string): string | null {
       <button
         type="button"
         appButton="outline"
+        class="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
         [disabled]="blockedKey() !== null"
         [attr.aria-describedby]="blockedKey() !== null ? 'log-save-blocked-hint' : null"
         (click)="saveRequested.emit()"
@@ -104,7 +109,12 @@ export function currentFilterBlockedKey(q: string): string | null {
       @if (loadFailed()) {
         <span class="flex items-center gap-2 text-sm text-danger-fg" role="alert">
           {{ 'admin.logs.savedFilters.loadFailed' | transloco }}
-          <button type="button" appButton="outline" (click)="retryRequested.emit()">
+          <button
+            type="button"
+            appButton="outline"
+            class="min-h-11 min-w-11 lg:min-h-0 lg:min-w-0"
+            (click)="retryRequested.emit()"
+          >
             {{ 'admin.logs.states.retry' | transloco }}
           </button>
         </span>
@@ -128,7 +138,7 @@ export class AdminLogFilterChips {
   readonly retryRequested = output<void>();
 
   protected readonly rowClass =
-    'flex min-h-11 w-full items-center px-3 text-left text-sm transition disabled:text-fg-disabled disabled:hover:bg-transparent sm:min-h-9';
+    'flex min-h-11 w-full items-center px-3 text-left text-sm transition disabled:text-fg-disabled disabled:hover:bg-transparent lg:min-h-9';
   protected readonly openMenuId = signal<number | null>(null);
   protected readonly blockedKey = computed(() => currentFilterBlockedKey(this.currentQ()));
 

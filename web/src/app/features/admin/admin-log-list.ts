@@ -139,7 +139,7 @@ type DetailState =
         >
           <button
             type="button"
-            class="flex min-h-11 w-full items-baseline gap-2 px-3 py-1.5 text-left hover:bg-surface-inset sm:min-h-8"
+            class="flex min-h-11 w-full items-baseline gap-2 px-3 py-1.5 text-left hover:bg-surface-inset lg:min-h-8"
             [attr.aria-expanded]="isOpen(row.entry.id)"
             [attr.aria-controls]="detailsId(row.entry.id)"
             (click)="toggle(row.entry)"
@@ -214,7 +214,7 @@ type DetailState =
                             <dd class="flex gap-1">
                               <button
                                 type="button"
-                                class="inline-flex min-h-11 items-center px-1 text-accent-fg underline-offset-2 hover:underline lg:min-h-6"
+                                class="inline-flex min-h-11 min-w-11 items-center justify-center px-1 text-accent-fg underline-offset-2 hover:underline lg:min-h-6 lg:min-w-0"
                                 [attr.aria-label]="
                                   'admin.logs.row.filterProperty'
                                     | transloco: { key: prop.key, value: prop.text }
@@ -225,7 +225,7 @@ type DetailState =
                               </button>
                               <button
                                 type="button"
-                                class="inline-flex min-h-11 items-center px-1 text-accent-fg underline-offset-2 hover:underline lg:min-h-6"
+                                class="inline-flex min-h-11 min-w-11 items-center justify-center px-1 text-accent-fg underline-offset-2 hover:underline lg:min-h-6 lg:min-w-0"
                                 [attr.aria-label]="
                                   'admin.logs.row.excludeProperty'
                                     | transloco: { key: prop.key, value: prop.text }

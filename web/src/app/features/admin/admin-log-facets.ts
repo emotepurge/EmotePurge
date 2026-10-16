@@ -33,12 +33,13 @@ export function categoryFilterValue(
             <h3 class="text-xs font-medium tracking-wide text-fg-muted uppercase">
               {{ 'admin.logs.facets.' + group.key | transloco }}
             </h3>
+            <!-- 44 px targets in the phone sheet, 36 px in the desktop column (spec §9.3). -->
             <ul class="flex flex-col">
               @for (item of group.values; track item.filterValue) {
                 <li class="flex items-center gap-1">
                   <button
                     type="button"
-                    class="flex min-h-9 min-w-0 flex-1 items-center justify-between gap-2 rounded px-2 text-left text-sm text-fg-body hover:bg-surface-inset"
+                    class="flex min-h-11 min-w-0 flex-1 items-center justify-between gap-2 rounded px-2 text-left text-sm text-fg-body hover:bg-surface-inset lg:min-h-9"
                     [title]="item.title"
                     [attr.aria-label]="
                       'admin.logs.facets.include'
@@ -53,7 +54,7 @@ export function categoryFilterValue(
                   </button>
                   <button
                     type="button"
-                    class="flex min-h-9 min-w-9 items-center justify-center rounded text-sm text-fg-muted hover:bg-surface-inset hover:text-fg-body"
+                    class="flex min-h-11 min-w-11 items-center justify-center rounded text-sm text-fg-muted hover:bg-surface-inset hover:text-fg-body lg:min-h-9 lg:min-w-9"
                     [attr.aria-label]="
                       'admin.logs.facets.exclude' | transloco: { value: item.label }
                     "

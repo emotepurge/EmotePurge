@@ -1,5 +1,14 @@
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
-import { Component, Signal, inject } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  Injector,
+  Signal,
+  afterNextRender,
+  effect,
+  inject,
+  untracked,
+} from '@angular/core';
 import { take } from 'rxjs';
 import { TranslocoPipe } from '@jsverse/transloco';
 
@@ -62,7 +71,13 @@ export interface LogFacetsDialogData {
             [ariaLabel]="'admin.logs.range.label' | transloco"
           />
           @if (data.backRange(); as range) {
-            <button type="button" appButton="outline" (click)="data.goBack()">
+            <button
+              type="button"
+              appButton="outline"
+              buttonSize="lg"
+              data-focus-handoff="back"
+              (click)="data.goBack()"
+            >
               {{ 'admin.logs.range.backTo' | transloco: { range: range } }}
             </button>
           }
@@ -97,6 +112,33 @@ export interface LogFacetsDialogData {
 export class AdminLogFacetsDialog {
   protected readonly data = inject<LogFacetsDialogData>(DIALOG_DATA);
   protected readonly ref = inject<DialogRef<void>>(DialogRef);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
+
+  constructor() {
+    // "Zurück zu 24 h" vanishes with its own click; the focus goes to the range it restored instead
+    // of falling out of the sheet. Runs before the view drops the button, while it still has focus.
+    effect(() => {
+      if (this.data.backRange() !== null) {
+        return;
+      }
+      untracked(() => {
+        const active = this.host.nativeElement.ownerDocument.activeElement;
+        if (
+          active?.closest('[data-focus-handoff="back"]') &&
+          this.host.nativeElement.contains(active)
+        ) {
+          afterNextRender(
+            () =>
+              this.host.nativeElement
+                .querySelector<HTMLElement>('app-segmented-control [aria-checked="true"]')
+                ?.focus(),
+            { injector: this.injector },
+          );
+        }
+      });
+    });
+  }
 
   /** Closes the sheet, then runs `action` once it is gone — the next dialog must not open over it. */
   protected then(action: () => void): void {

@@ -89,3 +89,59 @@ describe('AdminLogFacetsDialog saved filters', () => {
     expect(log).toEqual(['closing', action]);
   });
 });
+
+describe('AdminLogFacetsDialog way back', () => {
+  it('hands the focus to the restored range once "Back to 24 h" is gone', async () => {
+    const rangeValue = signal('');
+    const backRange = signal<string | null>('24 h');
+    const data = {
+      rangeOptions: [
+        { value: '1h', labelKey: 'admin.logs.range.1h' },
+        { value: '24h', labelKey: 'admin.logs.range.24h' },
+      ],
+      rangeValue,
+      backRange,
+      summary: signal(null),
+      setRange: () => undefined,
+      goBack: () => {
+        rangeValue.set('24h');
+        backRange.set(null);
+      },
+      addTerm: () => undefined,
+      savedFilters: signal([]),
+      currentQ: signal(''),
+      savedFiltersFailed: signal(false),
+      selectFilter: () => undefined,
+      saveCurrent: () => undefined,
+      editFilter: () => undefined,
+      overwriteFilter: () => undefined,
+      deleteFilter: () => undefined,
+      retryFilters: () => undefined,
+    } satisfies LogFacetsDialogData;
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { en },
+          translocoConfig: { availableLangs: ['en'], defaultLang: 'en' },
+        }),
+      ],
+      providers: [
+        { provide: DIALOG_DATA, useValue: data },
+        { provide: DialogRef, useValue: { closed: new Subject<void>(), close: () => undefined } },
+      ],
+    });
+    const fixture = TestBed.createComponent(AdminLogFacetsDialog);
+    await fixture.whenStable();
+    const root = fixture.nativeElement as HTMLElement;
+    const back = Array.from(root.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Back to 24 h',
+    )!;
+
+    back.focus();
+    back.click();
+    await fixture.whenStable();
+
+    expect(document.activeElement?.getAttribute('role')).toBe('radio');
+    expect(document.activeElement?.getAttribute('aria-checked')).toBe('true');
+  });
+});
