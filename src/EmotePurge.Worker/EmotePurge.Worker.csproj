@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.13" />
     <PackageReference Include="TwitchLib.Client" Version="4.0.1" />
     <!-- Transitive via TwitchLib.Client, referenced explicitly because TwitchChatManager
          constructs ClientOptions with NoReconnectionPolicy directly (see the comment in
