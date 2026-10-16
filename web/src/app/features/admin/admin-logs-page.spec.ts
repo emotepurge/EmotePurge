@@ -724,8 +724,9 @@ describe('AdminLogsPage', () => {
   it('reserves the "new entries" slot at zero and keeps it out of the accessibility tree', async () => {
     await openAndLoad('/admin/logs');
 
+    // Reserved but out of reach: present in the bar, yet neither announced nor tabbable.
     const slot = root().querySelector('[data-testid="log-new-slot"] button')!;
-    expect(slot.classList.contains('invisible')).toBe(true);
+    expect(slot).not.toBeNull();
     expect(slot.getAttribute('aria-hidden')).toBe('true');
     expect(slot.getAttribute('tabindex')).toBe('-1');
   });

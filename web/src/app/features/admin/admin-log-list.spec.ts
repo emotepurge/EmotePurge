@@ -187,7 +187,8 @@ describe('AdminLogList', () => {
     rowButton(root).click();
     fixture.detectChanges();
 
-    expect(root.querySelector('.app-skeleton')).not.toBeNull();
+    const loading = () => root.querySelector('[role="status"][aria-label="Loading the exception"]');
+    expect(loading()).not.toBeNull();
     expect(root.querySelector('pre')).toBeNull();
 
     httpMock.expectOne('/api/admin/logs/8').flush({
@@ -198,7 +199,7 @@ describe('AdminLogList', () => {
     } satisfies LogEntryDetail);
     fixture.detectChanges();
 
-    expect(root.querySelector('.app-skeleton')).toBeNull();
+    expect(loading()).toBeNull();
     expect(root.querySelector('pre')?.textContent).toContain('System.InvalidOperationException');
     expect(root.textContent).toContain('1 h 0 min after start');
   });

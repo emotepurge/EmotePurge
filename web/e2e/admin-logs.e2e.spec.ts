@@ -184,8 +184,14 @@ test.describe('admin log viewer on /admin/logs', () => {
     const paged = calls.list.at(-1)!;
     expect(paged.searchParams.get('from')).toBe('2026-10-13T12:00:00Z');
     expect(paged.searchParams.has('range')).toBe(false);
+    // Nothing is left to load from: the sentinel is gone. Provoke it anyway, let the observers run
+    // (two frames), then sync with the mock: a page request sent before that would have arrived.
     const requests = calls.list.length;
-    await page.waitForTimeout(500);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
+    await syncWithMock(page);
     expect(calls.list.length).toBe(requests);
   });
 
