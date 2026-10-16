@@ -94,6 +94,12 @@ test.describe('recorded errors row', () => {
     await expect(row).toContainText('Log-Erfassung worker keine Statusmeldung');
     await expect(row).not.toContainText('keine Statusmeldung keine');
     await expect(row.getByText('keine', { exact: true })).toHaveCount(0);
+
+    // The reason stands in the same line as the count (spec §11), so the row does not grow by it.
+    const middle = (box: { y: number; height: number } | null) => box!.y + box!.height / 2;
+    const label = await row.getByRole('heading', { name: 'Fehler der letzten 24 h' }).boundingBox();
+    const reason = await row.getByTestId('admin-log-errors-reason').boundingBox();
+    expect(Math.abs(middle(label) - middle(reason))).toBeLessThanOrEqual(4);
   });
 
   test('a complete capture with errors shows the count, and a failed request only this row', async ({

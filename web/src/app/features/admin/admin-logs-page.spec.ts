@@ -500,6 +500,54 @@ describe('AdminLogsPage', () => {
     expect(root().querySelectorAll('[data-log-id]').length).toBe(0);
   });
 
+  it('holds the first page until the summary and the status have answered, so nothing lands above it later', async () => {
+    await open('/admin/logs');
+    const rows = () => root().querySelectorAll('[data-log-id]').length;
+
+    listRequest().flush(page(4, 4, null));
+    await settle();
+    expect(rows()).toBe(0);
+
+    summaryRequest().flush(
+      summary({
+        dropped: {
+          total: 1,
+          queueFull: 1,
+          budget: 0,
+          writeUnconfirmed: 0,
+          captureFailed: 0,
+          reentrant: 0,
+          rejected: 0,
+        },
+      }),
+    );
+    await settle();
+    expect(rows()).toBe(0);
+
+    statusRequest().flush(
+      healthyStatus({ retention: { oldestEntryUtc: '2026-10-05T01:00:00Z', overdue: true } }),
+    );
+    await settle();
+    expect(rows()).toBe(4);
+    const text = root().textContent ?? '';
+    expect(text).toContain('Buffer full: 1');
+    expect(text).toContain('older than 7 days are still present');
+  });
+
+  it('shows the rows when the summary fails, together with the error', async () => {
+    await open('/admin/logs');
+    statusRequest().flush(healthyStatus());
+    listRequest().flush(page(4, 4, null));
+    await settle();
+    expect(root().querySelectorAll('[data-log-id]').length).toBe(0);
+
+    summaryRequest().flush({}, { status: 503, statusText: 'Busy' });
+    await settle();
+
+    expect(root().querySelectorAll('[data-log-id]').length).toBe(4);
+    expect(root().querySelector('[role="alert"]')?.textContent).toContain('busy');
+  });
+
   it('keeps the last answer on screen under a timeout banner that says it is stale', async () => {
     await openAndLoad('/admin/logs');
 

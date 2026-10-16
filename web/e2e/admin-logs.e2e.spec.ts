@@ -26,6 +26,62 @@ async function adminLogsPage(page: Page, options: MockAdminLogsOptions = {}) {
 const filterField = (page: Page) => page.getByLabel('Filter', { exact: true });
 const rows = (page: Page) => page.locator('[data-log-id]');
 
+/** A request sent now has reached the mock once this resolves, so one the page sent earlier has too. */
+async function syncWithMock(page: Page): Promise<void> {
+  await page.evaluate(() => fetch('/api/admin/logs/status?sync').then((r) => r.status));
+}
+
+/**
+ * First load with the summary held back: the histogram skeleton must be as tall as the histogram it
+ * stands in for, and the list must start where it started while loading — nothing that lands later
+ * (histogram, drop banner, capture banners) pushes rendered content down (spec §9.7).
+ */
+async function expectFirstLoadInPlace(page: Page): Promise<void> {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await page.route(
+    (url) => url.pathname === '/api/admin/logs/summary',
+    async (route) => {
+      await gate;
+      await route.fallback();
+    },
+  );
+  await page.goto('/admin/logs');
+  const skeleton = page.getByTestId('log-histogram-skeleton');
+  await expect(skeleton).toBeVisible();
+  const list = page.locator('section[aria-busy]');
+  const skeletonHeight = (await skeleton.boundingBox())!.height;
+  const listTop = (await list.boundingBox())!.y;
+  await expect(rows(page)).toHaveCount(0);
+
+  release();
+  await expect(rows(page)).toHaveCount(8);
+  await expect(page.getByText(/Die Log-Erfassung von api hat seit/)).toBeVisible();
+
+  const chartHeight = (await page.locator('app-time-histogram').boundingBox())!.height;
+  expect(Math.abs(chartHeight - skeletonHeight)).toBeLessThanOrEqual(1);
+  expect(Math.abs((await list.boundingBox())!.y - listTop)).toBeLessThanOrEqual(1);
+}
+
+const STALE_API_STATUS = {
+  sources: [
+    {
+      source: 'api',
+      state: 'stale',
+      instanceId: 'x',
+      startedUtc: '2026-10-13T20:00:00Z',
+      lastFlushUtc: '2026-10-14T11:20:41Z',
+    },
+    {
+      source: 'worker',
+      state: 'healthy',
+      instanceId: 'y',
+      startedUtc: '2026-10-13T20:00:00Z',
+      lastFlushUtc: '2026-10-14T11:59:41Z',
+    },
+  ],
+};
+
 test.describe('admin log viewer on /admin/logs', () => {
   test('a deep link opens prefiltered and the tab sits between Monitoring and Channels', async ({
     page,
@@ -131,6 +187,17 @@ test.describe('admin log viewer on /admin/logs', () => {
     const requests = calls.list.length;
     await page.waitForTimeout(500);
     expect(calls.list.length).toBe(requests);
+  });
+
+  test('first load: the skeletons hold the place, nothing pushes the list down later', async ({
+    page,
+  }) => {
+    await adminLogsPage(page, {
+      status: STALE_API_STATUS,
+      summary: { dropped: { total: 2, queueFull: 2 } },
+    });
+    await expectFirstLoadInPlace(page);
+    await expect(page.getByText(/Puffer voll: 2/)).toBeVisible();
   });
 
   test('shows the drop banner with every reason, a stale source and a query timeout', async ({
@@ -332,6 +399,13 @@ test.describe('admin log viewer on /admin/logs', () => {
 
 test.describe('admin log viewer on a phone', () => {
   test.use({ viewport: { width: 390, height: 844 } });
+
+  test('first load: the strip skeleton holds its place, nothing pushes the list down later', async ({
+    page,
+  }) => {
+    await adminLogsPage(page, { status: STALE_API_STATUS });
+    await expectFirstLoadInPlace(page);
+  });
 
   test('facets sit behind Filter, a row unfolds on a tap and the page does not scroll sideways', async ({
     page,
@@ -557,10 +631,8 @@ test.describe('admin log viewer live mode', () => {
     await emitLive(page, hint);
     await emitLive(page, hint);
     await page.clock.runFor(65_000);
-    // Sync point: a request sent now has reached the mock, so one sent before it would have too.
-    const statusCalls = calls.status.length;
-    await page.evaluate(() => fetch('/api/admin/logs/status').then((r) => r.status));
-    expect(calls.status.length).toBe(statusCalls + 1);
+    // The ticks still refresh the capture status; everything else stays quiet.
+    await syncWithMock(page);
     expect(sent()).toBe(before);
     await expect(rows(page)).toHaveCount(5);
 

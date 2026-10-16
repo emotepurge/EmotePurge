@@ -411,9 +411,16 @@ function utcMinute(instant: string): string {
           (bucketSelected)="selectBucket($event.fromUtc, $event.toUtc)"
         />
       } @else if (summaryLoading()) {
+        <!-- As tall as the histogram it stands in for (spec §9.7): on the desktop caption, 128 px plot,
+             reading line and legend, compact the 32 px strip and the reading line, each with the 8 px
+             gaps of its space-y-2 stack — the sr-only text alternative closes that stack, so the last
+             visible block keeps a gap too (208 px, 64 px). The E2E "first load" cases measure both. -->
         <div
-          class="app-skeleton h-32 w-full"
+          class="app-skeleton w-full"
+          [class.h-52]="isDesktop()"
+          [class.h-16]="!isDesktop()"
           role="status"
+          data-testid="log-histogram-skeleton"
           [attr.aria-label]="'common.loading' | transloco"
         ></div>
       }
@@ -724,6 +731,14 @@ export class AdminLogsPage {
   private readonly reloadTick = signal(0);
   private pageSub?: Subscription;
   private summarySub?: Subscription;
+  /**
+   * The current load's first page, held back until its summary and the capture status have answered
+   * too (either way): the histogram, the drop banner and the capture banners then arrive together with
+   * the rows instead of pushing rendered rows down (spec §9.7, B8 "no jumps").
+   */
+  private pendingPage: { page: LogPage; range: LogRangeQuery } | null = null;
+  private summarySettled = true;
+  private statusSettled = true;
   private moreSub?: Subscription;
   private statusSub?: Subscription;
   private overwriting = false;
@@ -1169,6 +1184,7 @@ export class AdminLogsPage {
     this.tooManyNew.set(false);
     this.queryError.set(null);
     this.serverFilterError.set(null);
+    this.statusSettled = false;
     this.loadStatus();
     this.moreError.set(false);
     if (!request) {
@@ -1183,9 +1199,13 @@ export class AdminLogsPage {
     }
     this.listLoading.set(true);
     this.summaryLoading.set(true);
+    this.summarySettled = false;
 
     this.pageSub = this.service.getPage(request.q, request.range).subscribe({
-      next: (page) => this.onFirstPage(page, request.range),
+      next: (page) => {
+        this.pendingPage = { page, range: request.range };
+        this.applyPendingPage();
+      },
       error: (error: unknown) => this.onLoadError(error, 'list'),
     });
     this.summarySub = this.service.getSummary(request.q, request.range).subscribe({
@@ -1194,9 +1214,24 @@ export class AdminLogsPage {
         this.summary.set(summary);
         this.lastSummaryAtMs = Date.now();
         this.summaryBehind = false;
+        this.summarySettled = true;
+        this.applyPendingPage();
       },
-      error: (error: unknown) => this.onLoadError(error, 'summary'),
+      error: (error: unknown) => {
+        this.summarySettled = true;
+        this.onLoadError(error, 'summary');
+        this.applyPendingPage();
+      },
     });
+  }
+
+  private applyPendingPage(): void {
+    const pending = this.pendingPage;
+    if (!pending || !this.summarySettled || !this.statusSettled) {
+      return;
+    }
+    this.pendingPage = null;
+    this.onFirstPage(pending.page, pending.range);
   }
 
   private onFirstPage(page: LogPage, range: LogRangeQuery): void {
@@ -1414,15 +1449,25 @@ export class AdminLogsPage {
       .getStatus()
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (status) => this.status.set(status),
+        next: (status) => {
+          this.status.set(status);
+          this.onStatusSettled();
+        },
         // The banners are advisory; a failed status call must not look like a failed page.
-        error: () => undefined,
+        error: () => this.onStatusSettled(),
       });
+  }
+
+  /** Any status answer releases a held first page — also the tick's, which replaced the load's call. */
+  private onStatusSettled(): void {
+    this.statusSettled = true;
+    this.applyPendingPage();
   }
 
   private cancelLoads(): void {
     this.pageSub?.unsubscribe();
     this.summarySub?.unsubscribe();
+    this.pendingPage = null;
     this.moreSub?.unsubscribe();
     this.moreLoading.set(false);
   }

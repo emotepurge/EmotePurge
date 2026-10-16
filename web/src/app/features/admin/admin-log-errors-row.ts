@@ -30,52 +30,55 @@ export interface LogErrorsReason {
       data-testid="admin-log-errors"
       [attr.aria-busy]="loading()"
     >
-      <div class="flex min-w-0 flex-col gap-1">
-        <div class="flex flex-wrap items-center gap-2 text-sm">
-          <h3 class="font-medium text-fg-body">
-            {{ 'admin.monitoring.logErrors.label' | transloco }}
-          </h3>
-          @if (loading()) {
-            <span role="status" [attr.aria-label]="'common.loading' | transloco">
-              <span class="app-skeleton block h-5 w-24" aria-hidden="true"></span>
-            </span>
-          } @else if (status(); as s) {
-            @if (complete()) {
-              @if (s.coverage24h.recordedErrors === 0) {
-                <span class="text-fg-muted" data-testid="admin-log-errors-value">
-                  {{ 'admin.monitoring.logErrors.none' | transloco }}
-                </span>
-              } @else {
-                <app-status-badge tone="danger">
-                  <span data-testid="admin-log-errors-value">
-                    {{ formatNumber(s.coverage24h.recordedErrors) }}
-                  </span>
-                </app-status-badge>
-              }
+      <!-- One line: label, value and the reasons it may be too low (spec §11 "in derselben Zeile").
+           It wraps on a narrow screen, but on the desktop the loaded row is as tall as its skeleton. -->
+      <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+        <h3 class="font-medium text-fg-body">
+          {{ 'admin.monitoring.logErrors.label' | transloco }}
+        </h3>
+        @if (loading()) {
+          <span role="status" [attr.aria-label]="'common.loading' | transloco">
+            <span class="app-skeleton block h-5 w-24" aria-hidden="true"></span>
+          </span>
+        } @else if (status(); as s) {
+          @if (complete()) {
+            @if (s.coverage24h.recordedErrors === 0) {
+              <span class="text-fg-muted" data-testid="admin-log-errors-value">
+                {{ 'admin.monitoring.logErrors.none' | transloco }}
+              </span>
             } @else {
-              <app-status-badge tone="warning">
+              <app-status-badge tone="danger">
                 <span data-testid="admin-log-errors-value">
-                  @if (s.coverage24h.recordedErrors === 0) {
-                    {{ 'admin.monitoring.logErrors.zeroIncomplete' | transloco }}
-                  } @else {
-                    {{
-                      'admin.monitoring.logErrors.atLeast'
-                        | transloco: { count: formatNumber(s.coverage24h.recordedErrors) }
-                    }}
-                  }
+                  {{ formatNumber(s.coverage24h.recordedErrors) }}
                 </span>
               </app-status-badge>
             }
           } @else {
-            <span class="text-fg-muted" data-testid="admin-log-errors-unavailable">
-              {{ 'admin.monitoring.logErrors.unavailable' | transloco }}
+            <app-status-badge tone="warning">
+              <span data-testid="admin-log-errors-value">
+                @if (s.coverage24h.recordedErrors === 0) {
+                  {{ 'admin.monitoring.logErrors.zeroIncomplete' | transloco }}
+                } @else {
+                  {{
+                    'admin.monitoring.logErrors.atLeast'
+                      | transloco: { count: formatNumber(s.coverage24h.recordedErrors) }
+                  }}
+                }
+              </span>
+            </app-status-badge>
+          }
+          @for (reason of reasons(); track reason.key + (reason.params.source ?? '')) {
+            <span class="text-xs text-warning-fg">
+              <span aria-hidden="true">· </span
+              ><span data-testid="admin-log-errors-reason">{{
+                'admin.monitoring.logErrors.reasons.' + reason.key | transloco: reason.params
+              }}</span>
             </span>
           }
-        </div>
-        @for (reason of reasons(); track reason.key + (reason.params.source ?? '')) {
-          <p class="text-xs text-warning-fg" data-testid="admin-log-errors-reason">
-            {{ 'admin.monitoring.logErrors.reasons.' + reason.key | transloco: reason.params }}
-          </p>
+        } @else {
+          <span class="text-fg-muted" data-testid="admin-log-errors-unavailable">
+            {{ 'admin.monitoring.logErrors.unavailable' | transloco }}
+          </span>
         }
       </div>
       <a
