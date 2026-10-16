@@ -361,7 +361,7 @@
         "atLeast": "mindestens {{count}}",
         "zeroIncomplete": "0 erfasst, unvollständig",
         "unavailable": "nicht verfügbar",
-        "view": "Ansehen →",
+        "view": "Ansehen",
         "reasons": {
           "stale": "Log-Erfassung {{source}} steht seit {{time}}",
           "disabled": "Log-Erfassung {{source}} abgeschaltet",

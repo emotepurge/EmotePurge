@@ -83,7 +83,8 @@ export interface LogErrorsReason {
         routerLink="/admin/logs"
         [queryParams]="{ q: 'level>=error', range: '24h' }"
       >
-        {{ 'admin.monitoring.logErrors.view' | transloco }}
+        {{ 'admin.monitoring.logErrors.view' | transloco }}<span aria-hidden="true"> →</span
+        ><span class="sr-only"> {{ 'admin.monitoring.logErrors.label' | transloco }}</span>
       </a>
     </section>
   `,
@@ -122,11 +123,14 @@ export class AdminLogErrorsRow {
   private reasonsFor(status: LogStatus): LogErrorsReason[] {
     const reasons: LogErrorsReason[] = [];
     for (const source of status.sources) {
-      if (source.state === 'stale') {
+      if (source.state === 'stale' && source.lastFlushUtc) {
         reasons.push({
           key: 'stale',
           params: { source: source.source, time: this.utcTime(source.lastFlushUtc) },
         });
+      } else if (source.state === 'stale') {
+        // No last flush to name: say the plain "no status report" rather than "since —".
+        reasons.push({ key: 'missing', params: { source: source.source } });
       } else if (source.state === 'disabled' || source.state === 'missing') {
         reasons.push({ key: source.state, params: { source: source.source } });
       }

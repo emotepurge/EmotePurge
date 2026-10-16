@@ -361,7 +361,7 @@
         "atLeast": "at least {{count}}",
         "zeroIncomplete": "0 recorded, incomplete",
         "unavailable": "not available",
-        "view": "View →",
+        "view": "View",
         "reasons": {
           "stale": "Log capture {{source}} stalled since {{time}}",
           "disabled": "Log capture {{source}} switched off",

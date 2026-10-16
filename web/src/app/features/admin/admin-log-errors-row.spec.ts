@@ -35,7 +35,9 @@ function status(overrides: {
       source(
         'worker',
         overrides.worker ?? 'healthy',
-        overrides.workerLastFlushUtc ?? '2026-10-14T11:59:30Z',
+        overrides.workerLastFlushUtc === undefined
+          ? '2026-10-14T11:59:30Z'
+          : overrides.workerLastFlushUtc,
       ),
     ],
     coverage24h: {
@@ -178,6 +180,22 @@ describe('AdminLogErrorsRow', () => {
 
     const link = root.querySelector('a') as HTMLAnchorElement;
     expect(link.getAttribute('href')).toBe('/admin/logs?q=level%3E%3Derror&range=24h');
+  });
+
+  it('names the link with its context, without the arrow', () => {
+    const root = render(of(status({})));
+
+    const link = root.querySelector('a') as HTMLAnchorElement;
+    expect(link.textContent?.replace(/\s+/g, ' ').trim()).toContain('View');
+    const clone = link.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll('[aria-hidden="true"]').forEach((e) => e.remove());
+    expect(clone.textContent?.replace(/\s+/g, ' ').trim()).toBe(`View ${T.label}`);
+  });
+
+  it('does not print "since —" for a stale source without a last flush', () => {
+    const root = render(of(status({ worker: 'stale', workerLastFlushUtc: null })));
+
+    expect(reasons(root)).toEqual(['Log capture worker no status report']);
   });
 
   it('shows a loading status instead of a value until the request answers', async () => {
