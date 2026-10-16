@@ -227,15 +227,17 @@ internal sealed class LogQueryService(AppDbContext db, LogViewerOptions options,
 
     /// <summary>
     /// Runs <paramref name="query"/> in a read-only transaction under the statement time limit. The limit is a
-    /// validated integer from configuration, never request input; <c>SET</c> takes no parameters.
+    /// validated integer from configuration, never request input; it is passed as a bound parameter to
+    /// <c>set_config</c> (transaction-local), because <c>SET</c> itself takes no parameters.
     /// </summary>
     private async Task<T> RunAsync<T>(IsolationLevel isolation, Func<Task<T>> query, CancellationToken ct)
     {
-        var setup = "SET TRANSACTION READ ONLY; SET LOCAL statement_timeout = " + options.QueryTimeoutMilliseconds.ToString(CultureInfo.InvariantCulture);
+        var timeoutText = options.QueryTimeoutMilliseconds.ToString(CultureInfo.InvariantCulture);
         try
         {
             await using var transaction = await db.Database.BeginTransactionAsync(isolation, ct);
-            await db.Database.ExecuteSqlRawAsync(setup, ct);
+            await db.Database.ExecuteSqlRawAsync("SET TRANSACTION READ ONLY", ct);
+            await db.Database.ExecuteSqlAsync($"SELECT set_config('statement_timeout', {timeoutText}, true)", ct);
             var result = await query();
             await transaction.CommitAsync(ct);
             return result;

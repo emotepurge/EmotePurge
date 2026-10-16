@@ -658,7 +658,9 @@ public class LogQueryServiceTests(PostgresFixture fixture) : IAsyncLifetime
         await service.GetPageAsync(null, LastHour, null, 100, default);
         await service.GetSummaryAsync(null, LastHour, default);
 
-        Assert.Equal(2, hook.Count(c => c.Contains("SET LOCAL statement_timeout = 1234", StringComparison.Ordinal)));
+        // The limit travels as a bound parameter, so only the statement text is observable here; the value itself
+        // is proven by the timeout tests, where a 1 ms limit has to fire.
+        Assert.Equal(2, hook.Count(c => c.Contains("set_config('statement_timeout'", StringComparison.Ordinal)));
         Assert.Equal(2, hook.Count(c => c.Contains("SET TRANSACTION READ ONLY", StringComparison.Ordinal)));
     }
 
