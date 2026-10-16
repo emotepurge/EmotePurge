@@ -18,21 +18,26 @@ export const UNKNOWN_ADDED_DAY = 'unknown';
 
 /** The shape of a row this module can date: the two fields that can carry an add date. */
 export interface AddDated {
-  /** The slot's (or, in emote mode, the emote's) last entry date; `null` = unknown. */
+  /**
+   * The date the Api holds for the row: a slot row's own add date; an emote-mode row's oldest own
+   * slot (or first-seen) date. `null` = unknown.
+   */
   firstSeenAt: string | null;
+  /** The viewed set's own 7TV add date of a live card in a non-active view; wins over the rest. */
+  setAddedAt?: string;
   /** The 7TV add date of a per-entry live row that has no counted row (so no `firstSeenAt`). */
   liveAddedAt?: string;
 }
 
 /**
- * When the row last entered the set, in epoch milliseconds, or `null` when no date is known.
+ * When the row entered the shown set, in epoch milliseconds, or `null` when no date is known.
  *
- * `firstSeenAt` is the date the Api keeps moving forward on a re-add, so it is the "last entered"
- * date already; a provisional (not REST-confirmed) value is still a usable observation time. A
- * per-entry live row has no `firstSeenAt` by design and carries 7TV's own date as `liveAddedAt`.
+ * Preference: the viewed set's own 7TV date (`setAddedAt`, non-active views), then `firstSeenAt`
+ * (the Api moves a slot row's date forward on a re-add; a provisional value is still a usable
+ * observation time), then `liveAddedAt` of a per-entry live row, which has no `firstSeenAt`.
  */
 export function addedAtOf(row: AddDated): number | null {
-  for (const candidate of [row.firstSeenAt, row.liveAddedAt]) {
+  for (const candidate of [row.setAddedAt, row.firstSeenAt, row.liveAddedAt]) {
     if (candidate) {
       const parsed = Date.parse(candidate);
       if (!Number.isNaN(parsed)) {
@@ -99,4 +104,18 @@ export function groupByAddedDay<T extends AddDated>(
     groups.push({ key: UNKNOWN_ADDED_DAY, items: unknown.sort(byName) });
   }
   return groups;
+}
+
+export type AddedDayKind = 'today' | 'yesterday' | 'day';
+
+/**
+ * Whether a local-day key is `now`'s day, the day before it, or neither. Compared as calendar days
+ * built from `now`'s local components, so month and year boundaries need no special case.
+ */
+export function addedDayKind(dayKey: string, now: Date): AddedDayKind {
+  if (dayKey === localDayKey(now.getTime())) {
+    return 'today';
+  }
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+  return dayKey === localDayKey(yesterday.getTime()) ? 'yesterday' : 'day';
 }

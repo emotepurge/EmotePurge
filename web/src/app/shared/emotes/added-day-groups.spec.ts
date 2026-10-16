@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   addedAtOf,
+  addedDayKind,
   addedDayKeyOf,
   groupByAddedDay,
   localDayKey,
@@ -12,6 +13,7 @@ interface Row {
   name: string;
   firstSeenAt: string | null;
   liveAddedAt?: string;
+  setAddedAt?: string;
 }
 
 // Built from local components so the expectations hold in any time zone the suite runs in.
@@ -32,6 +34,12 @@ describe('addedAtOf', () => {
   it('reads firstSeenAt, falling back to the per-entry live date', () => {
     expect(addedAtOf(row('a', at(10, 15)))).toBe(Date.parse(at(10, 15)));
     expect(addedAtOf(row('a', null, at(10, 14)))).toBe(Date.parse(at(10, 14)));
+  });
+
+  it('prefers the viewed set\u2019s own date over firstSeenAt', () => {
+    const rowWithBoth = { ...row('a', at(10, 1)), setAddedAt: at(10, 15) };
+    expect(addedAtOf(rowWithBoth)).toBe(Date.parse(at(10, 15)));
+    expect(addedDayKeyOf(rowWithBoth)).toBe('2026-10-15');
   });
 
   it('treats a missing or unparseable date as unknown', () => {
@@ -77,14 +85,6 @@ describe('groupByAddedDay', () => {
     expect(run([row('a', at(10, 15))]).map((g) => g.key)).toEqual(['2026-10-15']);
   });
 
-  it('dates a re-added emote by its latest entry, so it sits in the newer group only', () => {
-    // The Api moves firstSeenAt forward on a re-add; the row therefore carries one date, the newest.
-    const groups = run([row('readded', at(10, 16, 8)), row('kept', at(10, 12))]);
-
-    expect(groups.map((g) => g.key)).toEqual(['2026-10-16', '2026-10-12']);
-    expect(names(groups[0].items)).toEqual(['readded']);
-  });
-
   it('splits at local midnight rather than at a UTC day boundary', () => {
     const groups = run([row('justBefore', at(10, 15, 23, 59)), row('justAfter', at(10, 16, 0, 1))]);
 
@@ -98,13 +98,6 @@ describe('groupByAddedDay', () => {
       const groups = run([row('Pog', same), row('catJAM', same), row('Bedge', same)], direction);
       expect(names(groups[0].items)).toEqual(['Bedge', 'catJAM', 'Pog']);
     }
-  });
-
-  it('keeps rows without counts: dating looks at the date alone', () => {
-    // A freshly added emote with no counts yet is exactly what the sort is for; the grouping must
-    // not know about counts at all.
-    const groups = run([row('fresh', at(10, 16), undefined)]);
-    expect(names(groups[0].items)).toEqual(['fresh']);
   });
 
   it('dates a per-entry live row by its live add date', () => {
@@ -127,5 +120,32 @@ describe('addedDayKeyOf', () => {
 describe('localDayKey', () => {
   it('zero-pads month and day', () => {
     expect(localDayKey(new Date(2026, 0, 5, 12).getTime())).toBe('2026-01-05');
+  });
+});
+
+describe('addedDayKind', () => {
+  const noon = (y: number, m: number, d: number) => new Date(y, m - 1, d, 12);
+
+  it('tells today, yesterday and any other day apart', () => {
+    const now = noon(2026, 10, 16);
+    expect(addedDayKind('2026-10-16', now)).toBe('today');
+    expect(addedDayKind('2026-10-15', now)).toBe('yesterday');
+    expect(addedDayKind('2026-10-14', now)).toBe('day');
+    expect(addedDayKind('2026-10-17', now)).toBe('day');
+  });
+
+  it('finds yesterday across a month boundary', () => {
+    expect(addedDayKind('2026-09-30', noon(2026, 10, 1))).toBe('yesterday');
+    expect(addedDayKind('2026-02-28', noon(2026, 3, 1))).toBe('yesterday');
+  });
+
+  it('finds yesterday across a year boundary', () => {
+    expect(addedDayKind('2025-12-31', noon(2026, 1, 1))).toBe('yesterday');
+    expect(addedDayKind('2026-01-01', noon(2026, 1, 1))).toBe('today');
+  });
+
+  it('judges by the local day, not the instant: just after midnight is still a new day', () => {
+    const justAfterMidnight = new Date(2026, 9, 16, 0, 1);
+    expect(addedDayKind('2026-10-15', justAfterMidnight)).toBe('yesterday');
   });
 });

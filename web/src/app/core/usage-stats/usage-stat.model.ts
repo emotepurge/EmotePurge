@@ -135,6 +135,15 @@ export interface EmoteUsageTotal {
   liveAddedAt?: string;
 
   /**
+   * The viewed set's own add date of a live card in a non-active view: the newest 7TV `addedAt`
+   * among the live entries the card stands for, exactly as 7TV sent it. `firstSeenAt` is the active
+   * set's (or the oldest slot's) date and says nothing about when the card entered *this* set, so the
+   * "Recently added" sort prefers this field. Absent in the active set's view, on `'left'` rows and
+   * when 7TV named no date.
+   */
+  setAddedAt?: string;
+
+  /**
    * `'left'` = a counted row that is no longer in the set's live membership (E23) — in the active
    * set's view this is always `'live'`, because that view never fetches a live list at all (E16).
    */
