@@ -8,6 +8,7 @@ import { VoteSessionResult } from '../../src/app/core/voting/vote-session.model'
 import {
   AUTH_USER,
   MockChannel,
+  buildLogEntry,
   installLiveStub,
   mockActiveEmoteSet,
   mockAdminChannelDetail,
@@ -15,6 +16,8 @@ import {
   mockAdminDashboardActivity,
   mockAdminDashboardLoad,
   mockAdminHealth,
+  mockAdminLogStatus,
+  mockAdminLogs,
   mockAdminRateLimits,
   mockAdminRateLimitsTrend,
   mockAdminRoster,
@@ -285,12 +288,46 @@ async function adminDashboard(
     rateLimits?: Parameters<typeof mockAdminRateLimits>[1];
     trend?: Parameters<typeof mockAdminRateLimitsTrend>[1];
     load?: Parameters<typeof mockAdminDashboardLoad>[1];
+    logStatus?: Parameters<typeof mockAdminLogStatus>[1];
   } = {},
 ): Promise<void> {
   await mockAdminDashboardLoad(page, options.load);
   await mockAdminDashboardActivity(page, options.activity);
   await mockAdminRateLimits(page, options.rateLimits);
   await mockAdminRateLimitsTrend(page, options.trend);
+  await mockAdminLogStatus(page, options.logStatus);
+}
+
+/** /admin/logs with every level, a long message, an exception and properties in the first rows. */
+async function adminLogs(page: Page): Promise<void> {
+  await adminShell(page);
+  await mockAdminLogs(page, {
+    entries: [
+      buildLogEntry(10, {
+        level: 'warn',
+        category: 'EmotePurge.Worker.TwitchConnectionWatchdog',
+        message: 'Twitch-Verbindung seit 912 s ohne Frame, Neuaufbau angestoßen (Quelle: watchdog)',
+      }),
+      buildLogEntry(9, {
+        level: 'error',
+        source: 'api',
+        category: 'EmotePurge.Api.Endpoints.ChannelEndpoints',
+        eventId: 1203,
+        eventName: 'SevenTvSyncFailed',
+        message: 'Sync of emote set 01HXYZABCDEF0123456789 for channel handofblood failed',
+        hasException: true,
+        exceptionType: 'System.Net.Http.HttpRequestException',
+        properties: { channel: 'handofblood', attempt: 3, emoteSetId: '01HXYZABCDEF0123456789' },
+      }),
+      buildLogEntry(8, { level: 'crit', message: 'Flush failed five times in a row' }),
+      ...Array.from({ length: 7 }, (_, i) => buildLogEntry(7 - i)),
+    ],
+    summary: { dropped: { total: 3, queueFull: 2, rejected: 1 } },
+    exception:
+      'System.Net.Http.HttpRequestException: Response status code does not indicate success: 429\n' +
+      '   at EmotePurge.Infrastructure.SevenTv.SevenTvClient.GetEmoteSetAsync(String id, CancellationToken ct)\n' +
+      '   at EmotePurge.Infrastructure.Services.EmoteSyncService.SyncAsync(Channel channel)',
+  });
 }
 
 async function channelWorkspace(
@@ -403,6 +440,14 @@ interface Scenario {
   requiresFinePointer?: boolean;
   /** Also runs at the `mobile-mouse` viewport (360 px, fine pointer). */
   includeMouseAt360?: boolean;
+  /**
+   * Fails the case on any axe finding tagged WCAG 2.0/2.1 A or AA or WCAG 2.2 AA (`target-size`, 24 px) — the full rule set, not only
+   * `color-contrast`. For pages whose spec demands an AA-clean audit (the admin log viewer, §9.8).
+   */
+  wcagAA?: boolean;
+  /** Runs the light theme at every viewport, not only at `desktop` (spec §9.8 asks for both themes
+   *  on the small and the large viewport). */
+  lightEverywhere?: boolean;
   /**
    * Fails the case on any horizontal overflow or any interactive element past the right edge.
    * `horizontalOverflowPx` alone is blind to `position: fixed` surfaces (the action dock), whose
@@ -738,6 +783,8 @@ const SCENARIOS: Scenario[] = [
   {
     slug: 'admin-monitoring',
     path: '/admin/monitoring',
+    wcagAA: true,
+    lightEverywhere: true,
     setup: async (page) => {
       await adminShell(page);
       await mockAdminHealth(page);
@@ -889,6 +936,40 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
+    // The errors row at its widest: a warning count with two reasons, one of them a stalled source.
+    slug: 'admin-monitoring-log-errors-incomplete',
+    path: '/admin/monitoring',
+    wcagAA: true,
+    lightEverywhere: true,
+    setup: async (page) => {
+      await adminShell(page);
+      await mockAdminHealth(page);
+      await mockAdminRoster(page);
+      await adminDashboard(page, {
+        logStatus: {
+          sources: [
+            {
+              source: 'api',
+              state: 'healthy',
+              instanceId: 'a1b2c3d4',
+              startedUtc: '2026-10-13T20:00:00Z',
+              lastFlushUtc: '2026-10-14T11:59:30Z',
+            },
+            {
+              source: 'worker',
+              state: 'stale',
+              instanceId: 'e5f6a7b8',
+              startedUtc: '2026-10-13T20:00:00Z',
+              lastFlushUtc: '2026-10-14T11:41:00Z',
+            },
+          ],
+          coverage24h: { complete: false, recordedErrors: 3, incompleteSince: [] },
+          retention: { oldestEntryUtc: '2026-10-05T12:00:00Z', overdue: true },
+        },
+      });
+    },
+  },
+  {
     slug: 'admin-monitoring-telemetry-down',
     path: '/admin/monitoring',
     setup: async (page) => {
@@ -995,6 +1076,41 @@ const SCENARIOS: Scenario[] = [
         },
         63,
       );
+    },
+  },
+  // The admin log viewer (spec §9.8): the page as it loads, the facet sheet open (below lg the facets
+  // sit behind "Filter"; from lg on they are the left column, so the state is the page itself) and
+  // one row unfolded with its exception and properties.
+  {
+    slug: 'admin-logs',
+    path: '/admin/logs',
+    setup: adminLogs,
+    wcagAA: true,
+    lightEverywhere: true,
+  },
+  {
+    slug: 'admin-logs-facets-open',
+    path: '/admin/logs',
+    setup: adminLogs,
+    wcagAA: true,
+    lightEverywhere: true,
+    afterLoad: async (page) => {
+      const open = page.getByRole('button', { name: /^(Filter|Filters)$/ });
+      if (await open.isVisible()) {
+        await open.click();
+        await page.getByRole('dialog').waitFor();
+      }
+    },
+  },
+  {
+    slug: 'admin-logs-row-expanded',
+    path: '/admin/logs',
+    setup: adminLogs,
+    wcagAA: true,
+    lightEverywhere: true,
+    afterLoad: async (page) => {
+      await page.locator('[data-log-id="9"] button').first().click();
+      await page.locator('[data-log-id="9"] pre').waitFor();
     },
   },
   {
@@ -2067,7 +2183,10 @@ for (const theme of THEMES) {
           vp.name === 'mobile-mouse' && !sc.includeMouseAt360,
           'the 360 px mouse viewport only runs the scenarios that opt in',
         );
-        test.skip(theme === 'light' && vp.name !== 'desktop', 'light only at the widest viewport');
+        test.skip(
+          theme === 'light' && vp.name !== 'desktop' && !sc.lightEverywhere,
+          'light only at the widest viewport',
+        );
         test.skip(
           Boolean(sc.requiresFinePointer) && vp.pointerCoarse,
           'shows a control off the coarse-pointer write path (isCoarse) — this state has no ' +
@@ -2165,6 +2284,20 @@ for (const theme of THEMES) {
         );
         const metrics = await collectMetrics(page);
         const contrastViolations = await collectContrastViolations(page);
+        if (sc.wcagAA) {
+          // axe ships `target-size` (WCAG 2.2 AA, 2.5.8) disabled; the tag alone does not run it.
+          const axe = await new AxeBuilder({ page })
+            .options({ rules: { 'target-size': { enabled: true } } })
+            .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
+            .analyze();
+          expect(
+            axe.violations.map(
+              (v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`,
+            ),
+            'axe WCAG 2.0/2.1 A/AA + 2.2 AA',
+          ).toEqual([]);
+          expect(contrastViolations, 'contrast').toEqual([]);
+        }
         if (sc.strictRightEdge) {
           expect(metrics.horizontalOverflowPx, 'horizontal overflow').toBe(0);
           expect(

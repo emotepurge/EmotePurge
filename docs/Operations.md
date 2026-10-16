@@ -106,6 +106,15 @@ anonymous and IP-partitioned like `GET /api/health`, but behind their own `Publi
 have unrelated legitimate callers (browser visitors vs. two machines on fixed cadences) and must
 not be able to exhaust each other's budget.
 
+**The privacy policy must name the log capture** before `LOG_CAPTURE_ENABLED=true` is set in
+production (see "Log viewer"). The operator's text is not in this repository, so this is guidance
+only: state what is stored (technical log entries of the Api and the Worker, which may contain
+Twitch channel and login names, numeric Twitch user IDs and requested application paths, but no chat
+messages), that only the operators can read them, the retention of seven days (deletion runs hourly,
+so an entry can exist about one hour longer), that they are not part of the backups, the purpose
+(detecting and fixing faults) and the legal basis (legitimate interest). If the deletion pass is
+ever changed back to daily, the "about one hour longer" has to say "about one day longer".
+
 `.env.example`-style template: none is checked in, because every line would either be empty or a
 placeholder path with nothing to demonstrate — `Legal:ContentPath` is documented here instead,
 the way `BACKUP_DIR`/`RETENTION_DAYS` above are.
@@ -318,6 +327,161 @@ further apart than 2.5 times the **currently configured** `SystemLoad:IntervalSe
 - The two paths read different containers' settings: the raw ranges apply the **Api's** configured
   `SystemLoad:IntervalSeconds`, the hourly rollup the **Worker's**. After changing it, recreate both
   containers; otherwise the raw and the hourly ranges apply different gap rules and diverge.
+
+## Log viewer
+
+`/admin/logs` (global admins only) reads log lines that the Api and the Worker write into Postgres
+themselves. It supplements `docker logs`, it does not replace it. Capture is a logger provider
+(`LogCaptureProvider`, registered by `AddLogCapture` in the Api and in the long-running Worker only,
+never in the one-shot `harness` container) plus a batch writer (`LogCaptureWriter`) that is the first
+hosted service of its process, so it stops last and drains the buffer.
+
+### What is captured, and what is not
+
+- **Captured:** every `ILogger` entry of level Information and above, from every category, with
+  category, event id/name, the scrubbed message, a bounded rendering of structured properties and of
+  the exception, the request path and trace id from the logging scopes, and the process instance.
+  The floor is fixed in code: Debug and Trace are never stored, and `Logging:LogCapture:LogLevel:*`
+  can raise a category but never lower it below these rules.
+- **Not captured:** `Microsoft.EntityFrameworkCore.Database.Command` and `Npgsql` / `Npgsql.*` below
+  Warning; the capture's own categories (`EmotePurge.Infrastructure.Logging.*`) at any level; the
+  viewer's own query path (it runs in a suppression scope, so reading the logs cannot write new
+  ones); the `harness` container; and anything that never goes through `ILogger`.
+- **No `Npgsql.*` lines from the EF Core path.** `AppDbContext` is registered with
+  `UseNpgsql(<connection string>)` and no logger factory is handed to Npgsql's data source, so
+  Npgsql's own diagnostics for EF traffic reach neither the console nor the capture. EF Core's own
+  categories (`Microsoft.EntityFrameworkCore.*`) are unaffected.
+- **No chat messages by design.** The application does not log chat text, and for the TwitchLib events
+  `LogParsingError`, `LogUnaccountedFor` and `LogLeavingChannel` the stored exception keeps only types and
+  stack traces, not the raw message.
+- Secret-looking tokens are scrubbed from messages, properties and exceptions before they are stored.
+
+### Retention
+
+Entries live for seven days (`RetentionPolicy.LogEntry`). The hourly `DataRetentionWorker` pass
+described under "Log expiry (hourly, isolated)" in "Data retention" removes them, so an entry exists
+for up to about one hour longer, and only with `RETENTION_ENFORCE=true` (the default `false` only
+counts). The effective lifetime is therefore 7 days plus roughly 1 hour. If the oldest entry is older
+than 7 days plus 2 hours, `GET /api/admin/logs/status` reports `retention.overdue = true`, and
+`/admin/logs` and the monitoring page show a warning (failed pass, dry run, or a stopped worker).
+
+### Configuration
+
+| Key | Environment | Default | Meaning |
+|---|---|---|---|
+| `LogCapture:Enabled` | `LOG_CAPTURE_ENABLED` (compose maps it to `LogCapture__Enabled`) | `true` in code, in `docker-compose*.yml` and in `.env.example` | `false` registers only the status heartbeat: no provider, no buffer, nothing is captured |
+| `LogCapture:DailyEntryBudget` | none (set `LogCapture__DailyEntryBudget` directly) | `20000` | Entries admitted per process and UTC day |
+
+The budget is per process and starts over at UTC midnight and after a restart. Information entries are
+admitted until 80 % of the budget (16,000 by default) is used; Warning and above until 100 %. Once
+the day's budget is spent, further entries are dropped and counted.
+
+The in-memory queue holds at most 5,000 entries and about 8 MiB (estimated as characters times two).
+The writer sends batches of up to 500 entries or one second in a single statement over its own
+connection pool (at most 2 connections, `Application Name=emotepurge-logcapture`), retries once
+after 2 seconds, and backs off from 1 s up to 30 s while Postgres is unreachable. It writes a heartbeat
+at least every 60 seconds and drains for at most 3 seconds on shutdown.
+
+### Drops
+
+Nothing blocks the application: a log call never waits for the database. What cannot be stored is
+counted by reason (`queue_full`, `budget`, `capture_failed`, `reentrant`, `rejected`,
+`write_unconfirmed`) and written as a synthetic drop entry at most once per 60 seconds; the viewer shows
+the counts independently of the filter. A dropped entry of level Error or above also marks the last 24
+hours as incomplete (`coverage24h.complete = false`), and the monitoring page then says "at least n"
+instead of "none".
+
+### Capture states
+
+`GET /api/admin/logs/status` (cached for 30 seconds) always reports exactly the sources `api` and
+`worker`, each with one of four states:
+
+| State | Meaning |
+|---|---|
+| `healthy` | The newest instance of the source has `LastFlushUtc` within the last 5 minutes and capture is on |
+| `stale` | The newest instance's `LastFlushUtc` is older than 5 minutes (checked first, so it wins over `disabled`): newer entries are missing from the viewer, **`docker logs` remains the source** until the writer is back |
+| `disabled` | The newest instance heartbeats fresh and reports `LogCapture:Enabled=false` |
+| `missing` | No status row exists for the source: cold start before the first heartbeat, a restore (status data is not backed up), or the last row expired after seven days |
+
+Neither `stale`, `disabled` nor `missing` is ever shown as "no errors". `/admin/logs` raises a banner per
+affected source and the monitoring row reports an incomplete count.
+
+### Deploys and the clean handover
+
+A container stop ends with the log capture writer's drain: it stores what is still buffered for at
+most 3.2 seconds, then writes a last heartbeat with `CleanShutdownAtUtc`. The next instance of the
+same source takes over the coverage of a clean predecessor that stopped at most 5 minutes before it
+started; without that heartbeat it starts its own coverage at its process start, and the monitoring
+row reads "at least n" or "incomplete" for the next 24 hours.
+
+Two things make sure an ordinary deploy gets there:
+
+- Open SSE streams (channel pages, the overview, the admin area) end as soon as the Api begins to stop,
+  instead of holding the server until the host's 30-second shutdown budget runs out. Browsers reconnect
+  as after any other close.
+- `api` has `stop_grace_period: 45s` and `worker` keeps `60s` in both compose files, so Docker waits
+  for the host's 30 seconds plus the writer's drain before it sends SIGKILL. **The stack definition in
+  Portainer must carry this line**; with Docker's default of 10 seconds a slow request can still cost
+  the clean heartbeat.
+
+### Live updates
+
+New entries are announced by the admin SSE stream (`GET /api/admin/live`) as `logs.appended`: a hint
+without payload, at most one per 2 seconds and process. The page reconciles the loaded interval over
+REST every 30 seconds (at least 5 seconds apart), so a lost hint costs latency, not correctness.
+
+### Endpoints
+
+All under the global-admin group (`/api/admin`), none of them rate limited:
+
+- `GET /api/admin/logs` (filter `q`, `range` = `1h|6h|24h|7d` or `from`+`to` with a span of at most
+  8 days, `before` cursor, `limit`; `keysOnly` and `ids` serve the reconcile), `GET /api/admin/logs/summary`
+  (histogram, facets, drop counts, process starts), `GET /api/admin/logs/{id}` (detail with exception).
+  A query is cut off after 5 seconds (`503 log_query_timeout`). The limit is `LogViewer:QueryTimeoutMilliseconds`
+  (default `5000`; the only `LogViewer:*` key, deliberately not in the compose files, meant for forcing
+  timeouts in a test run). These three routes (list, summary, detail) share a concurrency gate: at most 2
+  run in parallel per Api instance, a third waits up to 5 seconds and then gets `503` with
+  `Retry-After: 5` and no body. `logs/status` is not gated; it is cached for 30 seconds with single-flight.
+- `GET /api/admin/logs/status` (above).
+- `GET/POST /api/admin/log-filters`, `PUT/DELETE /api/admin/log-filters/{id}`: global saved filters
+  (name up to 60 characters, filter up to 512, at most 30). Saved filters are user data and stay in
+  backups.
+
+### Rollout
+
+Each stage is a precondition of the next:
+
+1. Apply the migration `AddLogCapture` by hand **before** the images (see "Prod-Migration" in
+   `CLAUDE.md`). It is additive; old images ignore the tables.
+2. **Set `LOG_CAPTURE_ENABLED=false` in the production `.env` before the image deploy.** The compose
+   default is `true`, so without this line the new images start capturing immediately. With `false`
+   both processes only write a `disabled` heartbeat and capture nothing.
+3. Install and verify the current `scripts/backup-postgres.sh` on the host (see "Database backup and
+   restore").
+4. Make the privacy policy name the log capture (see "Legal pages").
+5. Only then set `LOG_CAPTURE_ENABLED=true` and recreate the `api` and `worker` containers. Update
+   the stack from the current `docker-compose.prod.yml` first, so `api` carries its
+   `stop_grace_period` (see "Deploys and the clean handover").
+
+If stage 3 or 4 is missing, capture stays off.
+
+### Rolling back
+
+1. **Switch capture off first:** set `LOG_CAPTURE_ENABLED=false` and recreate `api` and `worker`.
+   `/admin/logs` then shows the sources as `disabled` and keeps the existing entries until they expire.
+   This alone is a complete rollback of the feature while the new images stay.
+2. **To go back to old images, empty the tables before deploying them.** Old images have no log expiry;
+   next to filled tables, personal data in log lines would stay forever. Over the SSH tunnel from
+   "Prod-Migration" in `CLAUDE.md` (the session prepares the command, the operator runs it), connect
+   with the production database user and password `<PROD-PW>` and run:
+
+   ```sql
+   TRUNCATE "LogEntries", "LogCaptureStatus";
+   ```
+
+   `LogFilters` may stay. If the tables should disappear entirely, run `dotnet ef database update
+   <migration before AddLogCapture>` instead.
+3. Only then deploy the old images. A rollback without step 2 is not permitted.
 
 ## Excluding a chatter (GDPR objection)
 
@@ -575,6 +739,9 @@ stand:
 | Chat-log backfill run (the run row; its snapshot goes with it) | deleted 365 days after it finished | `FinishedAtUtc` |
 | Raw system-load sample | deleted after 7 days, only after its own and its immediate successor's hourly rollups exist | sample hour and source match `SystemLoadHourly`; when a later sample exists for the same process identity and source, its hour must also match |
 | Hourly system-load row | deleted after 13 calendar months | `HourUtc` |
+| Log entry (admin log viewer) | deleted after 7 days | `LogEntries.TimestampUtc` |
+| Log capture heartbeat row | deleted after 7 days | `LogCaptureStatus.LastFlushUtc` |
+| Saved log filter | never | configuration, not captured data |
 
 "Last activity" is the later of a login and the daily "last seen" stamp `OnValidatePrincipal`
 writes at most once per 24 hours — without it, a user who never logs out again (the session
@@ -644,6 +811,17 @@ orchestrates your deployment) — no image rebuild is needed, only the environme
 container recreate. To switch back to counting only, set `RETENTION_ENFORCE=false` (or unset it)
 and recreate the worker container again; nothing already deleted comes back, but no further
 deletions happen until it is set to `true` again.
+
+### Log expiry (hourly, isolated)
+
+Log entries do not wait for the daily pass: `DataRetentionWorker` runs a second loop that starts
+one minute after the worker starts (it does **not** wait for boot recovery) and then runs every
+hour. It calls `IDataRetentionService.ExpireLogsAsync`, not `RunAsync`, so a failure in either
+cannot skip the other; each pass has its own `try/catch` and logs only the exception type and
+SQLSTATE. The boundary is exclusive (a row exactly seven days old stays) and rows go in batches of
+5,000. With `Retention:Enforce=false` it only counts and logs at most one Warning per UTC day
+(`Log expiry dry run: ...`); enforced, it logs an Information line only when something was deleted
+(`Log expiry deleted N log entries and M capture status rows.`).
 
 ### The other `Retention:*` keys
 
@@ -1709,6 +1887,22 @@ name pattern.
 | `OFFSITE_ENABLED` | `0` | optional `rclone` copy, off by default |
 | `OFFSITE_RCLONE_REMOTE` | *(empty)* | e.g. `b2:my-bucket/emotepurge` |
 
+The dump **excludes the data** of `LogEntries` and `LogCaptureStatus` (`--exclude-table-data`);
+their `CREATE TABLE` statements stay, so a restore recreates the empty tables. Captured logs are
+diagnostics with a seven-day retention and must not live on in the backup chain for up to
+`RETENTION_DAYS` plus the off-site generations. After any restore the log viewer is therefore
+empty until new lines arrive. Saved log filters (`LogFilters`) are user data and stay in the dump.
+
+**Operator step before `LOG_CAPTURE_ENABLED=true`.** The script runs on the host from cron, so
+deploying an image does not update it. Install the current `scripts/backup-postgres.sh` on the
+host, compare `sha256sum` against the repository copy, run it once, and check the dump:
+`zcat <dump>.sql.gz | grep -c '^COPY public."LogEntries"'` and the same for
+`"LogCaptureStatus"` must both print `0`, while
+`zcat <dump>.sql.gz | grep -c 'CREATE TABLE public."LogEntries"'` prints `1`. Only then set
+`LOG_CAPTURE_ENABLED=true`; otherwise log lines would sit in backups far longer than the
+retention stated in the privacy text. Every later change to the script needs the same install
+and check.
+
 A dump contains user records including stored Twitch tokens; restrict the target directory
 (`chmod 700`). The optional off-site step copies the finished dump with
 [`rclone`](https://rclone.org/) and only logs a warning if `rclone` is missing or the remote
@@ -1742,7 +1936,8 @@ docker exec emotepurge-postgres psql -U emotepurge -d postgres \
 **Without `ON_ERROR_STOP=1` the drill is worthless:** `psql` otherwise skips past errors and
 still exits 0, so a restore missing tables would look successful. Expect exit code 0 and no
 output. Comparing row counts against the live database is a useful second step, but differences
-are normal: `UsageStats` and `Votes` keep growing (the flush runs every 30 seconds), and
+are normal: `LogEntries` and `LogCaptureStatus` are empty after a restore by design,
+`UsageStats` and `Votes` keep growing (the flush runs every 30 seconds), and
 `__EFMigrationsHistory` is behind if a migration was added after the dump was taken.
 
 ### Restoring for real

@@ -37,7 +37,7 @@ async Task RunWorkerAsync()
 {
     var builder = Host.CreateApplicationBuilder(args);
     builder.Services.AddWorkerCore(builder.Configuration);
-    builder.Services.AddWorkerHostedServices();
+    builder.Services.AddWorkerHostedServices(builder.Configuration);
 
     var host = builder.Build();
     await EnsureSchemaIsCurrentAsync(host);

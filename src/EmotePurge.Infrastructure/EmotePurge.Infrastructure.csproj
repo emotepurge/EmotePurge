@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="EmotePurge.Infrastructure.Tests" />
+    <InternalsVisibleTo Include="EmotePurge.Api.Tests" />
   </ItemGroup>
 
   <ItemGroup>

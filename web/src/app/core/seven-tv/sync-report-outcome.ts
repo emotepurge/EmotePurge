@@ -1,5 +1,6 @@
 import { HttpErrorResponse } from '@angular/common/http';
 
+import { apiErrorCode } from '../i18n/api-error';
 import {
   SyncDeletedInSetChannelResult,
   SyncDeletedInSetResponse,
@@ -157,7 +158,7 @@ export function classifyTagReportFailure(error: HttpErrorResponse): SyncReportOu
   if (error.status !== 404) {
     return classifySyncInSetFailure(error.status);
   }
-  const code = (error.error as { errorCode?: string } | null)?.errorCode;
+  const code = apiErrorCode(error);
   if (code === 'emote_set_not_found') {
     return { state: 'failed', reason: 'setNotFound' };
   }

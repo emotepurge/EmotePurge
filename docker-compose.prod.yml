@@ -48,6 +48,14 @@ services:
     image: ghcr.io/emotepurge/emotepurge-api:latest
     container_name: emotepurge-api
     restart: unless-stopped
+    # Docker's default of 10 s until SIGKILL is shorter than the host's own shutdown budget
+    # (`ShutdownTimeout`, left at the .NET default of 30 s). Open SSE streams end on
+    # ApplicationStopping, so a normal stop takes well under a second; the budget only matters when
+    # a slow request holds the server. After the server and the other hosted services, the log
+    # capture writer drains for at most 3.2 s on its own budget and writes the clean-shutdown
+    # heartbeat the next instance needs to keep its coverage. 30 s + 3.2 s + disposal and exit
+    # rounds up to 45 s.
+    stop_grace_period: 45s
     # S2-21: the VPS hosts a second, unrelated app — without limits a runaway container
     # can take the whole host down. Starting values per review; calibrate after the
     # first load test (Modul E precedes the stress test on purpose).
@@ -64,6 +72,8 @@ services:
       - SystemLoad__Enabled=${SYSTEM_LOAD_ENABLED:-true}
       - SystemLoad__IntervalSeconds=${SYSTEM_LOAD_INTERVAL_SECONDS:-30}
       - SystemLoad__RollupGraceMinutes=${SYSTEM_LOAD_ROLLUP_GRACE_MINUTES:-5}
+      # Log capture into Postgres (admin log viewer): false keeps only the heartbeat row.
+      - LogCapture__Enabled=${LOG_CAPTURE_ENABLED:-true}
       - Auth__Twitch__ClientId=${TWITCH_CLIENT_ID}
       - Auth__Twitch__ClientSecret=${TWITCH_CLIENT_SECRET}
       - Auth__Twitch__TokenEncryptionKey=${AUTH_TWITCH_TOKEN_ENCRYPTION_KEY}
@@ -135,7 +145,9 @@ services:
     # as Docker holds the larger one) — but hosted services stop sequentially in reverse
     # registration order (WorkerServiceRegistration.cs), and eight other services stop before the
     # UsageFlushWorker, which is registered second. 60 s covers the 30 s with margin, so the final
-    # flush arrives predictably instead of being cut off by SIGKILL (Concept 4.6, G3).
+    # flush arrives predictably instead of being cut off by SIGKILL (Concept 4.6, G3). The log
+    # capture writer, registered first, stops last and drains for at most 3.2 s on its own budget
+    # after the host's 30 s, which still fits.
     stop_grace_period: 60s
     # Exactly one worker replica is the supported deployment (D46 in the chat-log backfill spec;
     # docs/Operations.md "Chat-log backfill"). The backfill loop holds a Postgres advisory lock, so
@@ -175,6 +187,8 @@ services:
       - SystemLoad__Enabled=${SYSTEM_LOAD_ENABLED:-true}
       - SystemLoad__IntervalSeconds=${SYSTEM_LOAD_INTERVAL_SECONDS:-30}
       - SystemLoad__RollupGraceMinutes=${SYSTEM_LOAD_ROLLUP_GRACE_MINUTES:-5}
+      # Log capture into Postgres (admin log viewer): false keeps only the heartbeat row.
+      - LogCapture__Enabled=${LOG_CAPTURE_ENABLED:-true}
       # Data retention (#243/#244, DataRetentionWorker): false (the default) only counts and warns,
       # true actually deletes. Flip this after watching a dry run's log line, not before — a Stack
       # Update is all it takes, no image rebuild.

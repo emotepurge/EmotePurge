@@ -664,6 +664,150 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.ToTable("EmoteTagPlacements");
                 });
 
+            modelBuilder.Entity("EmotePurge.Core.Entities.LogCaptureStatus", b =>
+                {
+                    b.Property<short>("Source")
+                        .HasColumnType("smallint");
+
+                    b.Property<string>("InstanceId")
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<bool>("CaptureEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("CleanShutdownAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("LastFlushUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("LastIncompleteAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("ProcessStartedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Source", "InstanceId");
+
+                    b.ToTable("LogCaptureStatus", (string)null);
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.LogEntry", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid>("CaptureId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<int?>("EventId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("EventName")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("Exception")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ExceptionType")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("InstanceId")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)");
+
+                    b.Property<short>("Level")
+                        .HasColumnType("smallint");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("ProcessStartedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Properties")
+                        .HasColumnType("jsonb");
+
+                    b.Property<short>("Source")
+                        .HasColumnType("smallint");
+
+                    b.Property<DateTime>("TimestampUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("Truncated")
+                        .HasColumnType("boolean");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CaptureId")
+                        .IsUnique();
+
+                    b.HasIndex("TimestampUtc")
+                        .HasDatabaseName("IX_LogEntries_TimestampUtc_Errors")
+                        .HasFilter("\"Level\" >= 4");
+
+                    b.HasIndex("Source", "ProcessStartedUtc")
+                        .IsDescending(false, true);
+
+                    b.HasIndex("TimestampUtc", "Id")
+                        .IsDescending();
+
+                    b.ToTable("LogEntries", (string)null);
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.LogFilter", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Filter")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.Property<string>("NameKey")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("character varying(60)");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NameKey")
+                        .IsUnique();
+
+                    b.ToTable("LogFilters", (string)null);
+                });
+
             modelBuilder.Entity("EmotePurge.Core.Entities.SystemLoadHourly", b =>
                 {
                     b.Property<string>("Source")

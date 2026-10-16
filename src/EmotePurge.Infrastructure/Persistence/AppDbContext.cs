@@ -29,6 +29,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ChatLogBackfillProviderState> ChatLogBackfillProviderState => Set<ChatLogBackfillProviderState>();
     public DbSet<SystemLoadSample> SystemLoadSamples => Set<SystemLoadSample>();
     public DbSet<SystemLoadHourly> SystemLoadHourlies => Set<SystemLoadHourly>();
+    public DbSet<LogEntry> LogEntries => Set<LogEntry>();
+    public DbSet<LogCaptureStatus> LogCaptureStatuses => Set<LogCaptureStatus>();
+    public DbSet<LogFilter> LogFilters => Set<LogFilter>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -438,6 +441,39 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.ToTable("SystemLoadHourly");
             entity.HasKey(hourly => new { hourly.Source, hourly.HourUtc });
             entity.Property(hourly => hourly.Source).HasConversion<string>().HasMaxLength(16);
+        });
+
+        modelBuilder.Entity<LogEntry>(entity =>
+        {
+            entity.ToTable("LogEntries");
+            entity.Property(e => e.Source).HasConversion<short>();
+            entity.Property(e => e.Level).HasConversion<short>();
+            entity.Property(e => e.InstanceId).HasMaxLength(8);
+            entity.Property(e => e.Category).HasMaxLength(256);
+            entity.Property(e => e.EventName).HasMaxLength(128);
+            entity.Property(e => e.ExceptionType).HasMaxLength(256);
+            entity.Property(e => e.Properties).HasColumnType("jsonb");
+            entity.HasIndex(e => new { e.TimestampUtc, e.Id }).IsDescending(true, true);
+            entity.HasIndex(e => e.CaptureId).IsUnique();
+            entity.HasIndex(e => e.TimestampUtc).HasFilter("\"Level\" >= 4").HasDatabaseName("IX_LogEntries_TimestampUtc_Errors");
+            entity.HasIndex(e => new { e.Source, e.ProcessStartedUtc }).IsDescending(false, true);
+        });
+
+        modelBuilder.Entity<LogCaptureStatus>(entity =>
+        {
+            entity.ToTable("LogCaptureStatus");
+            entity.HasKey(s => new { s.Source, s.InstanceId });
+            entity.Property(s => s.Source).HasConversion<short>();
+            entity.Property(s => s.InstanceId).HasMaxLength(8);
+        });
+
+        modelBuilder.Entity<LogFilter>(entity =>
+        {
+            entity.ToTable("LogFilters");
+            entity.Property(f => f.Name).HasMaxLength(60);
+            entity.Property(f => f.NameKey).HasMaxLength(60);
+            entity.Property(f => f.Filter).HasMaxLength(512);
+            entity.HasIndex(f => f.NameKey).IsUnique();
         });
     }
 }

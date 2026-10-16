@@ -8,6 +8,7 @@ using EmotePurge.Api.Validation;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure;
+using EmotePurge.Infrastructure.Logging;
 using EmotePurge.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -33,6 +34,8 @@ if (builder.Configuration.GetValue<bool>("EMOTEPURGE_LAN"))
 
 builder.Services.AddOpenApi();
 
+// First, so the capture writer is the first hosted service and therefore stops last (spec 5.1).
+builder.Services.AddLogCapture(builder.Configuration, LogSource.Api);
 builder.Services.AddEmotePurgeInfrastructure(builder.Configuration);
 builder.Services.AddSystemLoadSampler(SystemLoadSource.Api);
 
@@ -162,6 +165,9 @@ builder.Services.AddSingleton<LiveStreamKeepaliveOptions>();
 // The DELETE /api/live/connections/{connectionId} endpoint's backing store (issue #128) — one
 // instance shared by every request, like the options above. See LiveStreamConnectionRegistry.
 builder.Services.AddSingleton<LiveStreamConnectionRegistry>();
+
+// At most two log viewer queries run at once on this instance (spec section 8.4); a singleton so the slots are shared.
+builder.Services.AddSingleton(_ => new EmotePurge.Api.LogViewer.LogQueryConcurrencyGate());
 
 builder.Services.AddRateLimiter(options =>
 {
