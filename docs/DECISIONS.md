@@ -10,6 +10,16 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-16 — Usage page: a "Recently added" sort that replaces the usage bands
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/shared/emotes/added-day-groups.ts` · `docs/UI-Designsprache.md`
+
+Moderators add throwaway emotes during a stream and want to remove them afterwards; the usage sheet could only order by usage or last use, always inside the usage bands. A third sort key groups by the viewer's local calendar day an emote last entered the set instead, so the evening's additions form one group with its own "mark all". The date is `firstSeenAt` (the Api moves it forward on a re-add; a provisional value still counts) or, for a per-entry live row without a counted row, 7TV's `liveAddedAt`; rows with neither go into a trailing "date unknown" group. No backend change.
+
+Consequences: in this mode the bands, the distribution strip and the fill bars are not shown (the contract "the sheet is always banded by usage" no longer holds); rows without counts stay in the list, since a fresh emote may have none yet; selection, shift ranges and the delete panel read the same display order as before; switching the sort key keeps the selection.
+
+---
+
 ### 2026-10-15 — Sonar's agentic-workflow rules are ignored in developer scripts
 
 **Betrifft:** `.github/workflows/sonarcloud.yml`
