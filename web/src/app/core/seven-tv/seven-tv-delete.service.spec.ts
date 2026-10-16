@@ -2220,7 +2220,7 @@ describe('SevenTvDeleteService', () => {
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
-    // Flag off = today: an id row sends the bytes it always sent, without a read in front.
+    // Emote mode = today: an id row sends the bytes it always sent, without a read in front.
     it('keeps an id row on the original mutation, keyed by the id, with no alias variable and no read', () => {
       service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
 
@@ -2765,7 +2765,7 @@ describe('SevenTvDeleteService', () => {
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
-    // Flag off = today: an id row's unanswered removal is re-read without dates, and the record
+    // Emote mode = today: an id row's unanswered removal is re-read without dates, and the record
     // gains no slot fields.
     it('re-reads a run of id rows without add dates and adds no slot fields to its record', () => {
       service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);

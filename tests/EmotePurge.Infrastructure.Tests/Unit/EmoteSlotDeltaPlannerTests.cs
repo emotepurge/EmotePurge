@@ -8,7 +8,7 @@ using Xunit;
 namespace EmotePurge.Infrastructure.Tests.Unit;
 
 /// <summary>
-/// The pure EventAPI delta decisions with the slot flag on (plan #374 section 4, test list 7.2): every row
+/// The pure EventAPI delta decisions (plan #374 section 4, test list 7.2): every row
 /// of the rule table, the reason codes of 4.3, E3–E8, E10, E12, the Sol counterexamples, the R5 leave
 /// exception and order independence (permutations). Each case builds the snapshot the service would read
 /// behind its locks.
@@ -207,7 +207,7 @@ public class EmoteSlotDeltaPlannerTests
     [Fact]
     public void Push_OntoAnArchivedEmoteWithActiveSlots_IsAmbiguous()
     {
-        // E4: stale state from a flag-off phase.
+        // E4: stale state, left from before the slot work.
         var snapshot = Emote(X, "A", [Active("s1", "A", Day(1))], archived: true);
 
         var plan = Plan(Delta(pushed: [Push(X, "B")]), [snapshot]);
@@ -220,7 +220,7 @@ public class EmoteSlotDeltaPlannerTests
     [InlineData("B")]
     public void Push_InTheVirtualState_IsAlwaysAmbiguous(string name)
     {
-        // E5: also under Emote.Name (a no-op would leave the emote uncounted by the flag-on map).
+        // E5: also under Emote.Name (a no-op would leave the emote uncounted by the match map).
         var snapshot = Emote(X, "A", []);
 
         var plan = Plan(Delta(pushed: [Push(X, name)]), [snapshot]);

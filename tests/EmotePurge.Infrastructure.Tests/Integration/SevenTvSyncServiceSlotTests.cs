@@ -9,10 +9,10 @@ using static EmotePurge.Infrastructure.Tests.Integration.SlotSyncKit;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
-// The slot-aware REST reconcile through the real SyncChannelAsync with the flag on (plan #372, 6.3),
-// plus the flag-off proof on slot data (6.4). The decision rules themselves are unit-tested in
-// EmoteSlotReconcilePlannerTests; these cases prove the service applies a plan to real rows: slots,
-// usage rebinds of the settle, D13 on the emote row, HasChanges and the per-channel log lines.
+// The slot-aware REST reconcile through the real SyncChannelAsync (plan #372, 6.3). The decision rules
+// themselves are unit-tested in EmoteSlotReconcilePlannerTests; these cases prove the service applies a
+// plan to real rows: slots, usage rebinds of the settle, D13 on the emote row, HasChanges and the
+// per-channel log lines.
 [Collection("Postgres")]
 public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
 {
@@ -35,8 +35,8 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         var logger = new RecordingLogger<SevenTvSyncService>();
         var live = new[] { Live("x", "ome44", T1), Live("x", "hob44", T2) };
 
-        var first = await SyncAsync(db, channel, true, SetA, logger, live);
-        var second = await SyncAsync(db, channel, true, SetA, logger, live);
+        var first = await SyncAsync(db, channel, SetA, logger, live);
+        var second = await SyncAsync(db, channel, SetA, logger, live);
 
         var slots = await SlotsAsync(db, x.Id);
         var ome = Assert.Single(slots, s => s.Name == "ome44" && !s.SeedUnsettled && !s.IsArchived);
@@ -76,13 +76,13 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         var seedBefore = Columns(await SlotAsync(db, seed.Id));
         var logger = new RecordingLogger<SevenTvSyncService>();
 
-        await SyncAsync(db, channel, true, SetA, logger, Live("x", "hob44", oneEntryDated ? T2 : null), Live("x", "ome44", null));
+        await SyncAsync(db, channel, SetA, logger, Live("x", "hob44", oneEntryDated ? T2 : null), Live("x", "ome44", null));
 
         Assert.Equal(seedBefore, Columns(Assert.Single(await SlotsAsync(db, x.Id))));
         Assert.Equal($"{channel.ChannelName}: settle deferred: v4 dates missing for 1 emotes", Assert.Single(Lines(logger, SettleLine)));
         Assert.Empty(Lines(logger, SummaryLine));
 
-        await SyncAsync(db, channel, true, SetA, logger, Live("x", "hob44", T2), Live("x", "ome44", T1));
+        await SyncAsync(db, channel, SetA, logger, Live("x", "hob44", T2), Live("x", "ome44", T1));
 
         var slots = await SlotsAsync(db, x.Id);
         Assert.Equal(2, slots.Count);
@@ -158,7 +158,7 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         var rowIdsBefore = await UsageRowIdsAsync(db, seed.Id);
         var logger = new RecordingLogger<SevenTvSyncService>();
 
-        var result = await SyncAsync(db, channel, true, SetA, logger, Live("x", "A", T1));
+        var result = await SyncAsync(db, channel, SetA, logger, Live("x", "A", T1));
 
         var settled = await SlotAsync(db, seed.Id);
         Assert.False(settled.SeedUnsettled);
@@ -208,7 +208,7 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         var totalsBefore = await UsageTotalsAsync(db, x.Id, SetA);
         var logger = new RecordingLogger<SevenTvSyncService>();
 
-        var result = await SyncAsync(db, channel, true, SetA, logger, Live("x", "A", T1));
+        var result = await SyncAsync(db, channel, SetA, logger, Live("x", "A", T1));
 
         Assert.NotNull(result);
         var settled = await SlotAsync(db, seed.Id);
@@ -238,7 +238,7 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
 
         // The next tick finds nothing left to settle or merge.
         var second = new RecordingLogger<SevenTvSyncService>();
-        await SyncAsync(db, channel, true, SetA, second, Live("x", "A", T1));
+        await SyncAsync(db, channel, SetA, second, Live("x", "A", T1));
         Assert.Empty(Lines(second, MergeLine));
         Assert.Equal(5, await db.UsageStats.CountAsync(u => u.SlotId == rest.Id));
     }
@@ -263,7 +263,7 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         Assert.Equal(seedBBefore, Columns(await SlotAsync(db, seedB.Id)));
         Assert.False((await SlotAsync(db, seedA.Id)).SeedUnsettled);
 
-        await SyncAsync(db, channel, true, SetB, null, Live("x", "X", T5));
+        await SyncAsync(db, channel, SetB, null, Live("x", "X", T5));
 
         var b = await SlotAsync(db, seedB.Id);
         Assert.Equal(("X", T5, true, false, false), (b.Name, b.AddedAt, b.AddedAtFromRest, b.IsArchived, b.SeedUnsettled));
@@ -363,7 +363,7 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         Assert.Equal(("Alpha", (DateTime?)null), (nul.Name, nul.FirstSeenAt));
     }
 
-    // 11 — AK 12 (replaces SevenTvSyncServiceDuplicateEmoteIdTests with the flag on).
+    // 11 — AK 12: one 7TV id under two names is two slots, and the second run is no change (issue #74).
     [Fact]
     public async Task SameIdUnderTwoNames_TwoSlots_SecondRunReportsNoChange()
     {
@@ -498,7 +498,7 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         var x = await SeedEmoteAsync(db, channel, "x", "Foo", firstSeenAt: T1);
         var logger = new RecordingLogger<SevenTvSyncService>();
 
-        var result = await SyncAsync(db, channel, true, SetA, logger, Live("x", "Foo", T1));
+        var result = await SyncAsync(db, channel, SetA, logger, Live("x", "Foo", T1));
 
         var slot = Assert.Single(await SlotsAsync(db, x.Id));
         Assert.Equal(("Foo", T1, true, false), (slot.Name, slot.AddedAt, slot.AddedAtFromRest, slot.IsArchived));
@@ -517,7 +517,7 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         var before = Columns(slot);
         var logger = new RecordingLogger<SevenTvSyncService>();
 
-        var result = await SyncAsync(db, channel, true, SetA, logger, Live("x", "A", null));
+        var result = await SyncAsync(db, channel, SetA, logger, Live("x", "A", null));
 
         Assert.Equal(before, Columns(await SlotAsync(db, slot.Id)));
         Assert.Equal(T1, (await EmoteAsync(db, channel, "x")).FirstSeenAt);
@@ -555,69 +555,22 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
         var before = Columns(await SlotAsync(db, seed.Id));
         var logger = new RecordingLogger<SevenTvSyncService>();
 
-        await SyncAsync(db, channel, true, SetA, logger, Live("other", "Other", T1));
+        await SyncAsync(db, channel, SetA, logger, Live("other", "Other", T1));
 
         Assert.Equal(before, Columns(await SlotAsync(db, seed.Id)));
         Assert.Equal((2, 6), (await UsageBySlotAsync(db, gone.Id, SetA))[seed.Id]);
         Assert.Empty(Lines(logger, SettleLine));
     }
 
-    // 22 — on → off (rename in 7TV) → on: the date binds the same slot back and renames it.
+    // 6.7 tracker: a collision through a second alias is reported although Emote.Name differs.
     [Fact]
-    public async Task OnOffOn_RenameWhileOff_SameSlotIsRenamed()
-    {
-        await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "slot_on_off_on");
-
-        await SyncOnAsync(db, channel, Live("x", "A", T1));
-        var x = await EmoteAsync(db, channel, "x");
-        var slot = Assert.Single(await SlotsAsync(db, x.Id));
-        await SyncAsync(db, channel, false, SetA, null, Live("x", "C", T1));
-        Assert.Equal("A", (await SlotAsync(db, slot.Id)).Name);
-        Assert.Equal("C", (await EmoteAsync(db, channel, "x")).Name);
-
-        await SyncOnAsync(db, channel, Live("x", "C", T1));
-
-        var after = Assert.Single(await SlotsAsync(db, x.Id));
-        Assert.Equal((slot.Id, "C", T1), (after.Id, after.Name, after.AddedAt));
-    }
-
-    // 6.4 (1) — flag off over seeds and a multi-alias emote: no slot write at all, K1 as before.
-    [Fact]
-    public async Task FlagOff_SeedsAndMultiAliasEmote_SlotsAndSlotIdsStayByteIdentical()
-    {
-        await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "slot_flag_off");
-        var x = await SeedEmoteAsync(db, channel, "x", "ome44");
-        var seedA = await SeedSeedAsync(db, x);
-        var seedB = await SeedSeedAsync(db, x);
-        await SeedUsageAsync(db, x, seedA, SetA, 5);
-        await SeedUsageAsync(db, x, seedB, SetB, 6);
-        var y = await SeedEmoteAsync(db, channel, "y", "Y", firstSeenAt: T1);
-        await SeedSlotAsync(db, y, "Y", T1);
-        var slotsBefore = await AllSlotColumnsAsync(db, channel);
-        var slotIdsBefore = await UsageSlotIdsAsync(db, channel);
-
-        var result = await SyncAsync(db, channel, false, SetA, null, Live("x", "ome44", T1), Live("x", "hob44", T2), Live("y", "Z", T1));
-
-        Assert.Equal(slotsBefore, await AllSlotColumnsAsync(db, channel));
-        Assert.Equal(slotIdsBefore, await UsageSlotIdsAsync(db, channel));
-        // K1: the last alias of the duplicated id wins, and the emote takes the last entry's date.
-        var emote = await EmoteAsync(db, channel, "x");
-        Assert.Equal(("hob44", (DateTime?)T2), (emote.Name, emote.FirstSeenAt));
-        Assert.Equal("Z", (await EmoteAsync(db, channel, "y")).Name);
-        Assert.True(result!.HasChanges);
-    }
-
-    // 6.7 tracker — flag on: a collision through a second alias is reported although Emote.Name differs.
-    [Fact]
-    public async Task Tracker_On_CollisionThroughASecondAlias_LogsTheWarning()
+    public async Task Tracker_CollisionThroughASecondAlias_LogsTheWarning()
     {
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "slot_tracker_on");
         var logger = new RecordingLogger<SevenTvSyncService>();
 
-        await SyncAsync(db, channel, true, SetA, logger, Live("a", "One", T1), Live("a", "Shared", T2), Live("b", "Shared", T3));
+        await SyncAsync(db, channel, SetA, logger, Live("a", "One", T1), Live("a", "Shared", T2), Live("b", "Shared", T3));
 
         var line = Assert.Single(Lines(logger, "shared by more than one emote"));
         Assert.Contains("Shared", line);
@@ -625,48 +578,20 @@ public class SevenTvSyncServiceSlotTests(PostgresFixture fixture)
 
     // Two aliases of one emote are no collision.
     [Fact]
-    public async Task Tracker_On_TwoAliasesOfOneEmote_LogsNothing()
+    public async Task Tracker_TwoAliasesOfOneEmote_LogsNothing()
     {
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "slot_tracker_alias");
         var logger = new RecordingLogger<SevenTvSyncService>();
 
-        await SyncAsync(db, channel, true, SetA, logger, Live("a", "One", T1), Live("a", "Two", T2));
+        await SyncAsync(db, channel, SetA, logger, Live("a", "One", T1), Live("a", "Two", T2));
 
         Assert.Empty(Lines(logger, "shared by more than one emote"));
-    }
-
-    // Flag off: the tracker reads Emote.Name as before.
-    [Fact]
-    public async Task Tracker_Off_TwoEmotesWithTheSameName_LogsTheWarning()
-    {
-        await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "slot_tracker_off");
-        var logger = new RecordingLogger<SevenTvSyncService>();
-
-        await SyncAsync(db, channel, false, SetA, logger, Live("a", "Same", T1), Live("b", "Same", T2));
-
-        Assert.Single(Lines(logger, "shared by more than one emote"));
     }
 
     private static async Task<bool> LeaveRecordedAsync(AppDbContext db, Channel channel, string sevenTvId) =>
         await db.EmoteSetLeaveObservations.AsNoTracking()
             .AnyAsync(o => o.ChannelId == channel.Id && o.SevenTvEmoteId == sevenTvId && o.SevenTvEmoteSetId == SetA);
-
-    private static async Task<List<string>> AllSlotColumnsAsync(AppDbContext db, Channel channel)
-    {
-        var slots = await db.EmoteSlots.AsNoTracking().Where(s => s.Emote.ChannelId == channel.Id).ToListAsync();
-        return [.. slots.Select(Columns).Order(StringComparer.Ordinal)];
-    }
-
-    private static async Task<List<string>> UsageSlotIdsAsync(AppDbContext db, Channel channel)
-    {
-        var rows = await db.UsageStats.AsNoTracking()
-            .Where(u => u.Emote.ChannelId == channel.Id)
-            .Select(u => u.Id + ":" + u.SlotId)
-            .ToListAsync();
-        return [.. rows.Order(StringComparer.Ordinal)];
-    }
 
     private static UsageStat AddRow(
         AppDbContext db, Emote emote, EmoteSlot slot, string setId, DateOnly date, (int Uses, int Bot, int Shared) counts, UsageStatSource source)

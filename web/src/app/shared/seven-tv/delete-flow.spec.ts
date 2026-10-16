@@ -334,7 +334,7 @@ describe('toDeleteQueueEmotes', () => {
       expect(rows[1].entry).toBeUndefined();
     });
 
-    // Flag off = today: the id row has no `entry` property at all, not even an undefined one.
+    // Emote mode = today: the id row has no `entry` property at all, not even an undefined one.
     it('adds no entry property to an id row', () => {
       expect(toDeleteQueueEmotes([emote()], undefined)).toStrictEqual([
         { emoteId: 'local-1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['Hosted'] },

@@ -42,7 +42,7 @@ import { readEnvelope } from './read-envelope';
  *
  * `3 → 4` (slot delete, #365 child 8, Plan-378 4.8, S6) — **only for a file that carries an entry
  * target**, see {@link PURGE_RUN_ENTRY_FORMAT_VERSION}. A run without one still writes this version,
- * byte for byte as before, so this constant stays the version of every file the flag-off app writes.
+ * byte for byte as before, so this constant stays the version of every file an emote-mode run writes.
  */
 export const PURGE_RUN_FORMAT_VERSION = 3;
 

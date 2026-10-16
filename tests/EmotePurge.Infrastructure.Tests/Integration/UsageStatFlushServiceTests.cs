@@ -16,8 +16,7 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 // container is the only thing that can verify it at all: the arbiter inference against the unique
 // slot index — which carries an INCLUDE column — has no equivalent in any in-memory provider.
 //
-// Since M2 (plan #373, E9) a key names a slot, or — with the flag off, for a pair without a slot — is a
-// pending key. Phase 1 writes the slot keys, phase 2 resolves the pending keys in its own transaction.
+// Since M2 (plan #373, E9) a key names a slot; a key of a slot that is gone is dropped.
 [Collection("Postgres")]
 public class UsageStatFlushServiceTests(PostgresFixture fixture)
 {
@@ -175,7 +174,7 @@ public class UsageStatFlushServiceTests(PostgresFixture fixture)
 
         var stat = Assert.Single(await ReadStatsAsync(fixture, emote.Id));
         Assert.Equal(2, stat.UseCount);
-        Assert.Empty(result.Requeued);
+        Assert.Equal("flushtest3", Assert.Single(result.WrittenChannels));
     }
 
     [Fact]
@@ -248,7 +247,6 @@ public class UsageStatFlushServiceTests(PostgresFixture fixture)
         var result = await CreateService(db).FlushAsync(new Dictionary<UsageCounterKey, EmoteUsageCounts>());
 
         Assert.Empty(result.WrittenChannels);
-        Assert.Empty(result.Requeued);
     }
 
     [Fact]
@@ -257,13 +255,14 @@ public class UsageStatFlushServiceTests(PostgresFixture fixture)
         await using var db = fixture.CreateDbContext();
         var (first, second) = await SeedTwoEmotesInOneChannelAsync(db, "flushchannels1");
         var firstSlot = await db.SeedUsageSlotAsync(first.Id, UsageSlotKind.Settled);
+        var secondSlot = await db.SeedUsageSlotAsync(second.Id, UsageSlotKind.Settled);
         var (elsewhere, elsewhereSlot) = await SeedEmoteWithSlotAsync(db, "flushchannels2");
 
         // The caller announces one live event per channel — two emotes of the same channel must not
-        // produce two announcements, whichever phase wrote them.
+        // produce two announcements.
         var result = await CreateService(db).FlushAsync(Batch(
             (Key(firstSlot), new(1, 0, 0)),
-            (new UsageCounterKey(PendingSlotKey.For(second.Id), SetId), new(2, 0, 0)),
+            (Key(secondSlot), new(2, 0, 0)),
             (Key(elsewhereSlot), new(3, 0, 0))));
 
         Assert.Equal(["flushchannels1", "flushchannels2"], result.WrittenChannels.Order(StringComparer.Ordinal));
@@ -284,6 +283,8 @@ public class UsageStatFlushServiceTests(PostgresFixture fixture)
         Assert.Equal("flushchannels3", Assert.Single(result.WrittenChannels));
     }
 
+    // A key in the format of the retired pending key (plan 379, Teil B) names no slot either: the slot
+    // validity filter drops it like the key of a deleted slot.
     [Fact]
     public async Task FlushAsync_ReturnsEmpty_WhenEverySlotIsGone()
     {
@@ -291,10 +292,9 @@ public class UsageStatFlushServiceTests(PostgresFixture fixture)
 
         var result = await CreateService(db).FlushAsync(Batch(
             (new UsageCounterKey(Guid.NewGuid().ToString(), SetId), new(4, 0, 0)),
-            (new UsageCounterKey(PendingSlotKey.For(Guid.NewGuid().ToString()), SetId), new(1, 0, 0))));
+            (new UsageCounterKey("pending-slot:" + Guid.NewGuid(), SetId), new(1, 0, 0))));
 
         Assert.Empty(result.WrittenChannels);
-        Assert.Empty(result.Requeued);
     }
 
     // ------------------------------------------------------------------ spec AK 14, 16, 17
@@ -337,7 +337,6 @@ public class UsageStatFlushServiceTests(PostgresFixture fixture)
         Assert.Equal(3, Assert.Single(await ReadStatsAsync(fixture, kept.Id)).UseCount);
         Assert.Empty(await ReadStatsAsync(fixture, gone.Id));
         Assert.Equal("flush-ak16-kept", Assert.Single(result.WrittenChannels));
-        Assert.Empty(result.Requeued);
         var warning = Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
         Assert.Contains("1 buffered usage counts dropped", warning.Message, StringComparison.Ordinal);
     }
@@ -372,187 +371,7 @@ public class UsageStatFlushServiceTests(PostgresFixture fixture)
         Assert.Equal(2, await db.EmoteSlots.CountAsync(s => s.EmoteId == emote.Id));
     }
 
-    // ------------------------------------------------------------------ pending keys (flag off, E4/E5)
-
-    [Fact]
-    public async Task FlushAsync_PendingKeyWithoutAPairSlot_CreatesExactlyOneSeedCarryingExactlyThatRow()
-    {
-        await using var db = fixture.CreateDbContext();
-        var emote = await SeedEmoteAsync(db, "flush-pending-new", archivedAt: new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc));
-        var before = DateTime.UtcNow.AddSeconds(-5);
-
-        var result = await CreateService(db).FlushAsync(Batch((Pending(emote), new(3, 1, 2))));
-
-        var seed = Assert.Single(await db.EmoteSlots.AsNoTracking().Where(s => s.EmoteId == emote.Id).ToListAsync());
-        // M1 field rules: name and archive state from the emote, no date, unsettled.
-        Assert.Equal(
-            (emote.Name, true, emote.ArchivedAt, (DateTime?)null, false, true),
-            (seed.Name, seed.IsArchived, seed.ArchivedAt, seed.AddedAt, seed.AddedAtFromRest, seed.SeedUnsettled));
-        Assert.True(seed.LastSyncedAt >= before);
-        var stat = Assert.Single(await ReadStatsAsync(fixture, emote.Id));
-        Assert.Equal((seed.Id, SetId, Today, 3, 1, 2), (stat.SlotId, stat.EmoteSetId, stat.Date, stat.UseCount, stat.BotUseCount, stat.SharedChatUseCount));
-        Assert.Equal("flush-pending-new", Assert.Single(result.WrittenChannels));
-        Assert.Empty(result.Requeued);
-    }
-
-    [Fact]
-    public async Task FlushAsync_PendingKeyWhosePairGotASlotMeanwhile_WritesThereWithoutANewSeed()
-    {
-        await using var db = fixture.CreateDbContext();
-        var emote = await SeedEmoteAsync(db, "flush-pending-existing");
-        db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, EmoteSetId = SetId, Date = new DateOnly(2026, 8, 1), UseCount = 5 });
-        await db.AssignUsageSlotsAsync();
-        await db.SaveChangesAsync();
-        var slot = Assert.Single(await ReadStatsAsync(fixture, emote.Id)).SlotId;
-
-        await CreateService(db).FlushAsync(Batch((Pending(emote), new(2, 0, 0))));
-
-        Assert.Equal(1, await db.EmoteSlots.CountAsync(s => s.EmoteId == emote.Id));
-        Assert.Equal([slot, slot], (await ReadStatsAsync(fixture, emote.Id)).Select(s => s.SlotId));
-    }
-
-    // E9 / E6a: the old slot key of a pair and its pending key in one batch (a refresh between two
-    // messages turned the pair into a pending key; the old slot had no row yet). Phase 1 writes the old
-    // key first, and phase 2's rule (a) finds it: one slot, one row, the sum.
-    [Fact]
-    public async Task FlushAsync_PendingKeyFindsTheRowPhaseOneJustWrote_OneSlotOneRowTheSum()
-    {
-        await using var db = fixture.CreateDbContext();
-        var (emote, oldSlot) = await SeedEmoteWithSlotAsync(db, "flush-phase-order", UsageSlotKind.UnsettledSeed);
-
-        await CreateService(db).FlushAsync(Batch((Key(oldSlot), new(2, 1, 0)), (Pending(emote), new(3, 0, 1))));
-
-        Assert.Equal(1, await db.EmoteSlots.CountAsync(s => s.EmoteId == emote.Id));
-        var stat = Assert.Single(await ReadStatsAsync(fixture, emote.Id));
-        Assert.Equal((oldSlot, 5, 1, 1), (stat.SlotId, stat.UseCount, stat.BotUseCount, stat.SharedChatUseCount));
-    }
-
-    [Fact]
-    public async Task FlushAsync_PendingKeysOfTwoSetsOfOneEmote_CreateTwoSeeds_EachWithOnlyItsRow()
-    {
-        await using var db = fixture.CreateDbContext();
-        var emote = await SeedEmoteAsync(db, "flush-pending-twosets");
-
-        await CreateService(db).FlushAsync(Batch(
-            (Pending(emote), new(3, 0, 0)),
-            (Pending(emote, OtherSetId), new(7, 0, 0))));
-
-        var stats = await ReadStatsAsync(fixture, emote.Id);
-        Assert.Equal(2, stats.Count);
-        Assert.NotEqual(stats[0].SlotId, stats[1].SlotId);
-        Assert.Equal(2, await db.EmoteSlots.CountAsync(s => s.EmoteId == emote.Id && s.SeedUnsettled));
-    }
-
-    // Rule (b): a row-less seed an enqueue of the same set bound is reused; a pending key of another set
-    // gets a seed of its own.
-    [Fact]
-    public async Task FlushAsync_PendingKey_ReusesTheRowlessEnqueueSeedOfTheSameSet_NotOfAnotherSet()
-    {
-        await using var db = fixture.CreateDbContext();
-        var emote = await SeedEmoteAsync(db, "flush-pending-enqseed");
-        var enqueueSeed = await db.SeedUsageSlotAsync(emote.Id);
-        var run = await BackfillRunSeed.AddRunAsync(db, emote.ChannelId, ChatLogBackfillRunStatus.Completed);
-        db.ChatLogBackfillRunEmotes.Add(new ChatLogBackfillRunEmote
-        {
-            RunId = run.Id,
-            EmoteId = emote.Id,
-            SevenTvEmoteId = emote.SevenTvEmoteId,
-            Name = emote.Name,
-            SlotId = enqueueSeed,
-            CreatedSlot = true
-        });
-        await db.SaveChangesAsync();
-
-        await CreateService(db).FlushAsync(Batch(
-            (Pending(emote, run.EmoteSetId), new(3, 0, 0)),
-            (Pending(emote, OtherSetId), new(4, 0, 0))));
-
-        var stats = await ReadStatsAsync(fixture, emote.Id);
-        Assert.Equal(enqueueSeed, stats.Single(s => s.EmoteSetId == run.EmoteSetId).SlotId);
-        Assert.NotEqual(enqueueSeed, stats.Single(s => s.EmoteSetId == OtherSetId).SlotId);
-        Assert.Equal(2, await db.EmoteSlots.CountAsync(s => s.EmoteId == emote.Id));
-    }
-
-    [Fact]
-    public async Task FlushAsync_PendingKeyOfADeletedEmote_IsDropped_NotRequeued()
-    {
-        await using var db = fixture.CreateDbContext();
-        var (kept, keptSlot) = await SeedEmoteWithSlotAsync(db, "flush-pending-gone");
-        var logger = new RecordingLogger<UsageStatFlushService>();
-
-        var result = await new UsageStatFlushService(db, logger).FlushAsync(Batch(
-            (Key(keptSlot), new(1, 0, 0)),
-            (new UsageCounterKey(PendingSlotKey.For(Guid.NewGuid().ToString()), SetId), new(6, 0, 0))));
-
-        Assert.Single(await ReadStatsAsync(fixture, kept.Id));
-        Assert.Empty(result.Requeued);
-        Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
-    }
-
-    // ------------------------------------------------------------------ phase 2 fails (E9 return contract)
-
-    // Another session holds the pending key's emote row past phase 2's lock_timeout: phase 1 is
-    // committed, the result hands back exactly the pending key with its counts, and no seed exists.
-    [Fact]
-    public async Task FlushAsync_WhenPhaseTwoHitsTheLockTimeout_PhaseOneIsCommitted_AndOnlyThePendingKeysComeBack()
-    {
-        await using var db = fixture.CreateDbContext();
-        var (other, otherSlot) = await SeedEmoteWithSlotAsync(db, "flush-timeout-other");
-        var emote = await SeedEmoteAsync(db, "flush-timeout");
-        var pending = Pending(emote);
-
-        UsageFlushResult result;
-        await using (var holder = new NpgsqlConnection(db.Database.GetConnectionString()))
-        {
-            await holder.OpenAsync();
-            await using var transaction = await holder.BeginTransactionAsync();
-            await using (var lockCommand = new NpgsqlCommand("""SELECT 1 FROM "Emotes" WHERE "Id" = @id FOR UPDATE""", holder, transaction))
-            {
-                lockCommand.Parameters.AddWithValue("id", emote.Id);
-                await lockCommand.ExecuteNonQueryAsync();
-            }
-
-            result = await CreateService(db).FlushAsync(Batch((Key(otherSlot), new(2, 0, 0)), (pending, new(3, 1, 4))));
-            await transaction.RollbackAsync();
-        }
-
-        Assert.Equal(2, Assert.Single(await ReadStatsAsync(fixture, other.Id)).UseCount);
-        Assert.Equal("flush-timeout-other", Assert.Single(result.WrittenChannels));
-        var requeued = Assert.Single(result.Requeued);
-        Assert.Equal((pending, new EmoteUsageCounts(3, 1, 4)), (requeued.Key, requeued.Value));
-        Assert.Empty(await ReadStatsAsync(fixture, emote.Id));
-        Assert.Equal(0, await db.EmoteSlots.CountAsync(s => s.EmoteId == emote.Id));
-    }
-
-    // Second variant: a deadlock (40P01) after phase 2 created its seed rolls the seed back with it.
-    [Fact]
-    public async Task FlushAsync_WhenPhaseTwoIsADeadlockVictim_RollsBackItsSeed_AndHandsThePendingKeyBack()
-    {
-        Emote emote;
-        await using (var setup = fixture.CreateDbContext())
-        {
-            emote = await SeedEmoteAsync(setup, "flush-deadlock");
-        }
-
-        var hook = new CommandHook(
-            sql => sql.Contains("INSERT INTO \"EmoteSlots\"", StringComparison.Ordinal),
-            _ => throw new PostgresException("deadlock detected", "ERROR", "ERROR", PostgresErrorCodes.DeadlockDetected));
-        await using var db = fixture.CreateTaggedDbContext("flush-deadlock", [hook]);
-        var pending = Pending(emote);
-
-        var result = await CreateService(db).FlushAsync(Batch((pending, new(5, 0, 0))));
-
-        Assert.Empty(result.WrittenChannels);
-        var requeued = Assert.Single(result.Requeued);
-        Assert.Equal((pending, new EmoteUsageCounts(5, 0, 0)), (requeued.Key, requeued.Value));
-        await using var verify = fixture.CreateDbContext();
-        Assert.Equal(0, await verify.EmoteSlots.CountAsync(s => s.EmoteId == emote.Id));
-        Assert.Empty(await ReadStatsAsync(fixture, emote.Id));
-    }
-
     private static UsageCounterKey Key(string slotId) => new(slotId, SetId);
-
-    private static UsageCounterKey Pending(Emote emote, string setId = SetId) => new(PendingSlotKey.For(emote.Id), setId);
 
     private static Dictionary<UsageCounterKey, EmoteUsageCounts> Batch(params (UsageCounterKey Key, EmoteUsageCounts Counts)[] entries) =>
         entries.ToDictionary(e => e.Key, e => e.Counts);

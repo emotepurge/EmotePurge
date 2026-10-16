@@ -22,10 +22,10 @@ internal static class SeedSettleWrites
     /// <c>EmoteSlotRollbackSql.CollapseUsageStatsSql</c>) — and deleted; every other row just changes its
     /// <c>SlotId</c> and keeps its id. A plain re-key would hit the unique slot index
     /// <c>(SlotId, EmoteSetId, Date)</c> on such a cell, fail the save and with it every following tick
-    /// of the channel. No live path is known to produce the collision (the flag-on map counts no emote
+    /// of the channel. No live path is known to produce the collision (the match map counts no emote
     /// with an open seed, E7); the merge is the belt, and the snapshot rebind (E11a) relies on it for
     /// imported rows. Runs behind the settle's locks (channel, then the emote rows), so the backfill
-    /// block and flush phase 2 cannot write these slots meanwhile. Returns the rows re-keyed and the
+    /// block cannot write these slots meanwhile. Returns the rows re-keyed and the
     /// rows merged away.
     /// </summary>
     public static async Task<(int Moved, int Merged)> MoveSeedUsageAsync(
@@ -67,8 +67,9 @@ internal static class SeedSettleWrites
     /// snapshot key is <c>(RunId, SlotId)</c> (M3), so the move is key-safe: a run that already has a
     /// row for the target keeps that row exactly as it is (its <c>CreatedSlot</c>, <c>EmoteId</c> and
     /// <c>Name</c>) and the seed's row of that run is deleted instead of moved. The surviving rows keep
-    /// their <c>(EmoteId, Name)</c>, the key the backfill worker follows when it re-reads a changed
-    /// snapshot. The backfill block takes the emote rows <c>FOR SHARE</c> before it reads a snapshot
+    /// their <c>(EmoteId, Name)</c>. Only a run enqueued with the slot flag off (an image before part B) can hold a seed (today's
+    /// enqueue binds no seed); its worker still counts on the seed, so its next block fails the run at the pair check
+    /// (plan 379 §2.1, fail-closed). The backfill block takes the emote rows <c>FOR SHARE</c> before it reads a snapshot
     /// slot, so it either reads the target after this commit or has committed its rows on the seed
     /// before, and <see cref="MoveSeedUsageAsync"/> has just moved them. Returns the rows moved and the
     /// rows deleted.

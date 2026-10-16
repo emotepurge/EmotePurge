@@ -31,8 +31,8 @@ public class ChannelUsageSeriesWireFormatTests
         // named by its 7TV id — the only key our own rows and 7TV's live membership list share —
         // and carries the Emote.Id guid alongside it for the length of one transition (spec 6.5,
         // step 1). Dropping either one early breaks a client that is still reading it, so this
-        // case fails if either goes missing. The entry is an emote-mode one — what every entry is
-        // with the slot flag off: slotId present and null, never omitted (plan #376 2.4).
+        // case fails if either goes missing. The entry is an emote-mode one: slotId present and
+        // null, never omitted (plan #376 2.4).
         var dto = new ChannelUsageSeriesDto(
             new DateOnly(2026, 7, 1),
             new DateOnly(2026, 7, 7),

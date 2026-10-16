@@ -15,8 +15,7 @@ public class SevenTvApiClient(
     IRateLimitTelemetry telemetry,
     IForeignUpstreamRequestBudget foreignRequestBudget,
     ISevenTvSearchBudget searchBudget,
-    ILogger<SevenTvApiClient> logger,
-    SlotReconcileOptions? slotReconcile = null) : ISevenTvApiClient
+    ILogger<SevenTvApiClient> logger) : ISevenTvApiClient
 {
     // 7TV's own spelling of the Twitch platform on a Connection object — matched against exactly,
     // never derived, so the five call sites that filter on it cannot drift apart.
@@ -128,10 +127,6 @@ public class SevenTvApiClient(
     private const string SearchRateLimitHeader = "x-ratelimit-search-limit";
     private const string SearchRateLimitRemainingHeader = "x-ratelimit-search-remaining";
     private const string SearchRateLimitResetHeader = "x-ratelimit-search-reset";
-
-    // Plan #372 E26: read once from the singleton options, like the services behind it; absent (tests)
-    // means off.
-    private readonly bool slotReconcileEnabled = slotReconcile?.Enabled ?? false;
 
     // Latches the fallback-set-load path (issue #43) from Information down to Debug after its first
     // occurrence in this process. Once 7TV finishes rolling out the null embedded emote_set, this
@@ -1138,18 +1133,10 @@ public class SevenTvApiClient(
         var setEntries = await GetSetEntriesAsync(emoteSetDto.Id, cancellationToken);
         if (setEntries?.AddedAtBySlotKey is { } addedAtBySlotKey)
         {
-            // Slot reconcile on (E2): the date belongs to the (emote id, name) pair the v3 entry carries, so
-            // two aliases of one emote keep their own dates. No hit leaves the entry undated.
+            // E2: the date belongs to the (emote id, name) pair the v3 entry carries, so two aliases of
+            // one emote keep their own dates. No hit leaves the entry undated.
             emotes = emotes
                 .Select(e => addedAtBySlotKey.TryGetValue((e.Id, e.Name), out var addedAt)
-                    ? e with { AddedToSetAt = addedAt }
-                    : e)
-                .ToList();
-        }
-        else if (setEntries?.AddedAtByEmoteId is { } addedAtByEmoteId)
-        {
-            emotes = emotes
-                .Select(e => addedAtByEmoteId.TryGetValue(e.Id, out var addedAt)
                     ? e with { AddedToSetAt = addedAt }
                     : e)
                 .ToList();
@@ -1214,8 +1201,6 @@ public class SevenTvApiClient(
         var entryCount = 0;
         try
         {
-            var slotAware = slotReconcileEnabled;
-            var result = new Dictionary<string, DateTime>();
             var resultBySlotKey = new Dictionary<(string EmoteId, string Name), DateTime>();
             for (var page = 1; page <= MaxSetEntryPages; page++)
             {
@@ -1250,13 +1235,6 @@ public class SevenTvApiClient(
                         continue;
                     }
 
-                    if (!slotAware)
-                    {
-                        // Flag off: last hit per emote id wins, exactly as before the slot work.
-                        result[entry.Emote!.Id] = addedAt.UtcDateTime;
-                        continue;
-                    }
-
                     // An alias-less entry is listed under the emote's default name in v3 (E2). Ordinal and
                     // case-sensitive (the dictionary's default tuple comparer); the first entry of a key wins.
                     var name = entry.Alias ?? entry.Emote!.DefaultName;
@@ -1272,9 +1250,7 @@ public class SevenTvApiClient(
                 }
             }
 
-            return slotAware
-                ? new SetEntriesOverlay(null, entryCount, resultBySlotKey)
-                : new SetEntriesOverlay(result, entryCount);
+            return new SetEntriesOverlay(resultBySlotKey, entryCount);
         }
         // JsonException belongs here rather than in the caller's catch: a malformed v4 answer must
         // stay a missing date, not turn the whole channel Unavailable. The caller now treats
@@ -1504,11 +1480,10 @@ public class SevenTvApiClient(
         public static BudgetedGqlAnswer<TDto> Failed(SevenTvEditorGrantsLookup failure) => new(default, failure);
     }
 
-    // What one v4 read of a set's entries yields (GetSetEntriesAsync): the dates for the AddedToSetAt
-    // overlay (null when paging failed part-way), and the number of entries with a resolved emote,
-    // which becomes RemoteEntryCount (a lower bound in that case).
+    // What one v4 read of a set's entries yields (GetSetEntriesAsync): the dates per (emote id, name)
+    // for the AddedToSetAt overlay (null when paging failed part-way), and the number of entries with
+    // a resolved emote, which becomes RemoteEntryCount (a lower bound in that case).
     private sealed record SetEntriesOverlay(
-        Dictionary<string, DateTime>? AddedAtByEmoteId,
-        int EntryCount,
-        Dictionary<(string EmoteId, string Name), DateTime>? AddedAtBySlotKey = null);
+        Dictionary<(string EmoteId, string Name), DateTime>? AddedAtBySlotKey,
+        int EntryCount);
 }

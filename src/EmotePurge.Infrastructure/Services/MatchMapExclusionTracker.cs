@@ -4,8 +4,8 @@ using EmotePurge.Core.Entities;
 namespace EmotePurge.Infrastructure.Services;
 
 /// <summary>
-/// Remembers, per channel and for the life of the process, how many active emotes the flag-on match
-/// map last left out because they still have an unsettled seed of the active set (plan #373, E7; spec
+/// Remembers, per channel and for the life of the process, how many active emotes the match map last
+/// left out because they still have an unsettled seed of the active set (plan #373, E7; spec
 /// 6.1 point 1). The map is rebuilt on every resync tick, so its information line is written only when
 /// that number changes — the same pattern and the same lifetime as <see cref="DuplicateEmoteNameTracker"/>.
 /// </summary>

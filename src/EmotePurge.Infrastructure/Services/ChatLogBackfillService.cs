@@ -35,8 +35,7 @@ public sealed class ChatLogBackfillService(
     ChatLogBackfillOptions backfillOptions,
     ChatLogArchiveOptions archiveOptions,
     TimeProvider timeProvider,
-    ILogger<ChatLogBackfillService> logger,
-    SlotReconcileOptions? slotReconcile = null) : IChatLogBackfillService, IAsyncDisposable, IDisposable
+    ILogger<ChatLogBackfillService> logger) : IChatLogBackfillService, IAsyncDisposable, IDisposable
 {
     /// <summary>The partial unique index that allows one active run per channel (B10).</summary>
     public const string ActiveRunIndexName = "IX_ChatLogBackfillRuns_ChannelId_Active";
@@ -73,11 +72,6 @@ public sealed class ChatLogBackfillService(
 
     private static readonly ChatLogBackfillRunStatus[] TerminalStatuses =
         [ChatLogBackfillRunStatus.Completed, ChatLogBackfillRunStatus.Failed, ChatLogBackfillRunStatus.Cancelled];
-
-    // Slot plan #375 E1: off = child 3's enqueue (one snapshot row per emote, base slot binding), on = one
-    // row per preview entry (D28). Read once at construction, like every other reader of the flag. The
-    // worker side does not read it: it follows the snapshot's shape.
-    private readonly bool slotReconcileEnabled = slotReconcile?.Enabled ?? false;
 
     // The dedicated connection that holds the loop's advisory lock; the lock dies with it.
     private NpgsqlConnection? loopLockConnection;
@@ -211,17 +205,9 @@ public sealed class ChatLogBackfillService(
             return ChatLogBackfillEnqueueResult.Failed(ChatLogBackfillEnqueueStatus.SetTruncated);
         }
 
-        // Flag off, D36: one entry per 7TV id, the last one winning — the reconcile's own rule (#341), so
-        // the snapshot's alias is the name the sync would store, and the snapshot key cannot collide.
-        // Flag on (slot plan #375 2.1, D28): every entry is its own slot, no D36 dedup; only a repeated
-        // (id, alias) pair is one entry, the first counting — the planner's own rule.
-        var members = slotReconcileEnabled
-            ? preview.Emotes.DistinctBy(e => (e.SevenTvEmoteId, e.Name)).ToList()
-            : preview.Emotes
-                .Reverse()
-                .DistinctBy(e => e.SevenTvEmoteId, StringComparer.Ordinal)
-                .Reverse()
-                .ToList();
+        // Slot plan #375 2.1, D28: every entry is its own slot, no D36 dedup; only a repeated (id, alias)
+        // pair is one entry, the first counting — the planner's own rule.
+        var members = preview.Emotes.DistinctBy(e => (e.SevenTvEmoteId, e.Name)).ToList();
         if (members.Count == 0)
         {
             return ChatLogBackfillEnqueueResult.Failed(ChatLogBackfillEnqueueStatus.SetEmpty);
@@ -232,9 +218,9 @@ public sealed class ChatLogBackfillService(
         // emotes through EF takes them in Emote.Id (Guid) order, so with two or more shared keys each
         // can wait for the other (40P01), and the enqueue usually is the victim. A failed attempt has
         // rolled back on dispose; the next one starts from an empty change tracker and repeats every
-        // check under the locks with the 7TV snapshot already read. The last deadlock propagates. With
-        // the slot flag on, a conflict on the authoritative slot key counts against the same attempts
-        // (slot plan #375 2.1): only a slot writer that does not take the emote row lock can cause it.
+        // check under the locks with the 7TV snapshot already read. The last deadlock propagates. A
+        // conflict on the authoritative slot key counts against the same attempts (slot plan #375 2.1):
+        // only a slot writer that does not take the emote row lock can cause it.
         (ChatLogBackfillEnqueueStatus Status, ChatLogBackfillRun? Run, string? ChannelName, bool RenamedVisibleSlot) outcome;
         for (var attempt = 1; ; attempt++)
         {
@@ -253,7 +239,7 @@ public sealed class ChatLogBackfillService(
                     attempt, EnqueueMaxAttempts);
                 await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(20, 150)), cancellationToken);
             }
-            catch (DbUpdateException ex) when (slotReconcileEnabled && EmoteSlotKeys.IsSlotKeyConflict(ex) && attempt < EnqueueMaxAttempts)
+            catch (DbUpdateException ex) when (EmoteSlotKeys.IsSlotKeyConflict(ex) && attempt < EnqueueMaxAttempts)
             {
                 db.ChangeTracker.Clear();
                 logger.LogWarning(
@@ -497,14 +483,6 @@ public sealed class ChatLogBackfillService(
         // the click — the snapshot has no FK), or whose slot no longer exists, is dropped with a
         // warning, never a failure.
         var existing = await LockAndCheckSnapshotRowsAsync(runId, run.ChannelId, rows, cancellationToken);
-        if (existing is null)
-        {
-            logger.LogWarning(
-                "Chat-log backfill run {RunId}: the snapshot no longer holds a slot of block {From:yyyy-MM-dd}..{To:yyyy-MM-dd} — nothing written.",
-                runId, blockFrom, blockToExclusive);
-            return new ChatLogBackfillBlockResult.SnapshotChanged();
-        }
-
         if (existing.Count < rows.Count)
         {
             logger.LogWarning(
@@ -828,25 +806,16 @@ public sealed class ChatLogBackfillService(
 
         var now = UtcNow();
 
-        // Slot plan #375 E1: the flag decides the snapshot's shape. Off is child 3's path unchanged.
-        List<ChatLogBackfillRunEmote> snapshot;
-        var renamedVisibleSlot = false;
-        if (slotReconcileEnabled)
+        // Slot plan #375 §2, D28: one snapshot row per preview entry, each bound to its own slot.
+        var bound = await BindPreviewEntriesAsync(channel, emoteSetId, members, now, cancellationToken);
+        if (bound is null)
         {
-            var bound = await BindPreviewEntriesAsync(channel, emoteSetId, members, now, cancellationToken);
-            if (bound is null)
-            {
-                // Rejected before any write of its own; the placeholder upsert rolls back with the
-                // transaction on dispose.
-                return (ChatLogBackfillEnqueueStatus.SlotsUnsettled, null, null, false);
-            }
+            // Rejected before any write of its own; the placeholder upsert rolls back with the
+            // transaction on dispose.
+            return (ChatLogBackfillEnqueueStatus.SlotsUnsettled, null, null, false);
+        }
 
-            (snapshot, renamedVisibleSlot) = bound.Value;
-        }
-        else
-        {
-            snapshot = await BindOneSlotPerEmoteAsync(channel.Id, emoteSetId, members, now, cancellationToken);
-        }
+        var (snapshot, renamedVisibleSlot) = bound.Value;
 
         var run = new ChatLogBackfillRun
         {
@@ -897,62 +866,7 @@ public sealed class ChatLogBackfillService(
     }
 
     /// <summary>
-    /// Child 3's snapshot with the slot flag off (slot plan #373 E11, #375 E1, unchanged): the placeholder
-    /// upsert, then one snapshot row per member — the D36 entry of its emote — bound by
-    /// <see cref="BindSnapshotSlotsAsync"/>, in <c>EmoteId</c> order.
-    /// </summary>
-    private async Task<List<ChatLogBackfillRunEmote>> BindOneSlotPerEmoteAsync(
-        string channelId,
-        string emoteSetId,
-        IReadOnlyList<ForeignEmoteRow> members,
-        DateTime now,
-        CancellationToken cancellationToken)
-    {
-        // §3.1 / D27: members without a row get an archived placeholder (IsPlaceholder, no archive
-        // date, FirstSeenAt = the set entry). Existing rows, active or archived, stay exactly as they
-        // are. The helper reports exactly the rows it created — CreatedRow (D41) must not claim a row a
-        // concurrent writer inserted between any read and this statement.
-        var created = await ArchivedEmoteRowUpsert.EnsureRowsReportingCreatedAsync(
-            db,
-            channelId,
-            members.Select(m => new ArchivedEmoteRow(m.SevenTvEmoteId, m.Name, m.ImageUrl, m.AddedAt)).ToList(),
-            now,
-            cancellationToken);
-
-        var sevenTvIds = members.Select(m => m.SevenTvEmoteId).ToList();
-        var emoteIds = await db.Emotes.AsNoTracking()
-            .Where(e => e.ChannelId == channelId && sevenTvIds.Contains(e.SevenTvEmoteId))
-            .Select(e => new { e.Id, e.SevenTvEmoteId })
-            .ToDictionaryAsync(e => e.SevenTvEmoteId, e => e.Id, StringComparer.Ordinal, cancellationToken);
-
-        // Slot plan #373 E11: every member is bound to one slot before the snapshot is written, behind
-        // the emote row locks, in this transaction — a seed created here is bound by its snapshot row.
-        var slots = await BindSnapshotSlotsAsync(members, emoteIds, emoteSetId, now, cancellationToken);
-
-        // D10/D11/D25: the snapshot carries the alias in the chosen set (never Emote.Name) and the
-        // set-entry day; written in EmoteId order.
-        var snapshot = new List<ChatLogBackfillRunEmote>(members.Count);
-        foreach (var member in members.OrderBy(m => emoteIds[m.SevenTvEmoteId], StringComparer.Ordinal))
-        {
-            var emoteId = emoteIds[member.SevenTvEmoteId];
-            var slot = slots[emoteId];
-            snapshot.Add(new ChatLogBackfillRunEmote
-            {
-                EmoteId = emoteId,
-                SevenTvEmoteId = member.SevenTvEmoteId,
-                Name = member.Name,
-                AddedToSetDay = member.AddedAt is { } addedAt ? DateOnly.FromDateTime(ToUtc(addedAt)) : null,
-                CreatedRow = created.Contains(member.SevenTvEmoteId),
-                SlotId = slot.SlotId,
-                CreatedSlot = slot.Created,
-            });
-        }
-
-        return snapshot;
-    }
-
-    /// <summary>
-    /// The snapshot with the slot flag on (slot plan #375 §2, D28): one row per preview entry, each bound to
+    /// The run's snapshot (slot plan #375 §2, D28): one row per preview entry, each bound to
     /// its own slot by the pure <see cref="EmoteSlotReconcilePlanner"/> — or <c>null</c> when a group cannot
     /// be bound yet (2.4, answered with 409 <c>backfill_slots_unsettled</c>), before this method has written
     /// anything. The caller holds the channel row (<c>FOR NO KEY UPDATE</c>) and the requester's user row;
@@ -979,7 +893,8 @@ public sealed class ChatLogBackfillService(
         // GroupBy keeps the groups in order of first appearance and each group's entries in v3 order.
         var groups = entries.GroupBy(e => e.SevenTvEmoteId, StringComparer.Ordinal).ToList();
 
-        // §3.1 / D27 as with the flag off, one row per emote: its first entry gives the placeholder's
+        // §3.1 / D27: members without a row get an archived placeholder (IsPlaceholder, no archive date,
+        // FirstSeenAt = the set entry), one row per emote: its first entry gives the placeholder's
         // name and date (the REST reconcile's step 1 takes the group's first entry as well).
         var created = await ArchivedEmoteRowUpsert.EnsureRowsReportingCreatedAsync(
             db,
@@ -1127,76 +1042,6 @@ public sealed class ChatLogBackfillService(
             renamedVisibleSlot);
     }
 
-    /// <summary>
-    /// The snapshot slot of every member, keyed by <c>Emote.Id</c> (slot plan #373, E11; spec §8 and
-    /// D28 in the child-3 minimum cut, one preview entry per emote). Locks the members' emote rows
-    /// <c>FOR NO KEY UPDATE</c> through <see cref="RowLocks"/> — after the channel row and the
-    /// requester's user row the caller holds, so the order is channel → user → emotes (E6, Z11) — and
-    /// reads behind that lock: (1) a dated entry binds to the authoritative slot of the emote with
-    /// exactly that <c>AddedAt</c>, whatever its set, the one with the entry's name if several share the
-    /// date, else the first in D2 order; (2) every other entry gets the base slot of
-    /// <c>(emote, run set)</c> from <see cref="BaseSlotRule.GetOrCreateAsync"/>, which may create an
-    /// unsettled seed. <c>Created</c> is true exactly for a seed this attempt created; the caller binds
-    /// it through the snapshot row in the same transaction (the precondition of the base slot rule).
-    /// </summary>
-    private async Task<Dictionary<string, (string SlotId, bool Created)>> BindSnapshotSlotsAsync(
-        IReadOnlyList<ForeignEmoteRow> members,
-        IReadOnlyDictionary<string, string> emoteIdBySevenTvId,
-        string emoteSetId,
-        DateTime now,
-        CancellationToken cancellationToken)
-    {
-        var emoteIds = members.Select(m => emoteIdBySevenTvId[m.SevenTvEmoteId]).Distinct(StringComparer.Ordinal).ToArray();
-        var locked = await db.LockEmotesByIdsAsync(emoteIds, cancellationToken);
-        if (locked.Count != emoteIds.Length)
-        {
-            // Every member has a row after the placeholder upsert, and only a purge deletes emote rows,
-            // which needs the channel row this transaction holds.
-            throw new InvalidOperationException("An emote row of the backfill snapshot vanished under the channel lock.");
-        }
-
-        var slots = new Dictionary<string, (string SlotId, bool Created)>(StringComparer.Ordinal);
-
-        // (1) Exact date binding. Postgres keeps microseconds, so both sides are compared at that precision.
-        var datedEmoteIds = members.Where(m => m.AddedAt is not null).Select(m => emoteIdBySevenTvId[m.SevenTvEmoteId]).ToArray();
-        if (datedEmoteIds.Length > 0)
-        {
-            var authoritative = (await db.EmoteSlots.AsNoTracking()
-                    .Where(s => s.AddedAtFromRest && s.AddedAt != null && datedEmoteIds.Contains(s.EmoteId))
-                    .Select(s => new { s.Id, s.EmoteId, s.Name, s.AddedAt })
-                    .ToListAsync(cancellationToken))
-                .ToLookup(s => (s.EmoteId, Microseconds(s.AddedAt!.Value)));
-            foreach (var member in members.Where(m => m.AddedAt is not null))
-            {
-                var emoteId = emoteIdBySevenTvId[member.SevenTvEmoteId];
-                var sameDate = authoritative[(emoteId, Microseconds(member.AddedAt!.Value))]
-                    .Select(s => new BaseSlotCandidate(s.Id, s.Name, s.AddedAt))
-                    .ToList();
-                if (sameDate.Count > 0)
-                {
-                    var pick = sameDate.FirstOrDefault(s => string.Equals(s.Name, member.Name, StringComparison.Ordinal))
-                        ?? sameDate.Min(BaseSlotRule.D2Order)!;
-                    slots[emoteId] = (pick.SlotId, false);
-                }
-            }
-        }
-
-        // (2) The base slot of the pair for everything else.
-        var open = emoteIds.Where(id => !slots.ContainsKey(id)).Select(id => new BaseSlotPair(id, emoteSetId)).ToArray();
-        var resolved = await BaseSlotRule.GetOrCreateAsync(db, open, now, cancellationToken);
-        foreach (var pair in open)
-        {
-            if (!resolved.SlotIds.TryGetValue(pair, out var slotId))
-            {
-                throw new InvalidOperationException("No slot could be bound for an emote of the backfill snapshot.");
-            }
-
-            slots[pair.EmoteId] = (slotId, resolved.Created.Contains(pair));
-        }
-
-        return slots;
-    }
-
     private Task<bool> HasActiveRunAsync(string channelId, CancellationToken cancellationToken) =>
         db.ChatLogBackfillRuns.AnyAsync(r => r.ChannelId == channelId && ActiveStatuses.Contains(r.Status), cancellationToken);
 
@@ -1264,19 +1109,22 @@ public sealed class ChatLogBackfillService(
     /// The two checks of a block's aggregates against the run's snapshot (slot plan #375, E9). Locks the
     /// channel's emote rows among the aggregates' emotes <c>FOR SHARE</c> through <see cref="RowLocks"/>
     /// — after the channel <c>KEY SHARE</c> the caller holds — and only then reads the run's snapshot
-    /// rows for the aggregates' slots and emotes, so a settle that rebinds snapshot rows from a seed to
+    /// rows for the aggregates' slots, so a settle that rebinds snapshot rows from a seed to
     /// its target (holding those emote rows <c>FOR NO KEY UPDATE</c>) is either committed before the
     /// read or waits for this block's commit (plan #373 E11a).
     /// <para>
-    /// <b>Pairs, for the whole block:</b> a slot the snapshot holds under another emote, or an emote
-    /// without any snapshot row (another channel's, say), throws <see cref="ArgumentException"/>; a slot
-    /// the snapshot does not hold for an emote it does hold is a rebound row and answers <c>null</c>.
-    /// The server does not guess where such an aggregate belongs — "the emote has one snapshot row"
-    /// proves no seed-to-target origin. <b>Existence (D25):</b> of the rest, an aggregate is returned
+    /// <b>Pairs, for the whole block:</b> every aggregate's (slot, emote) must be one snapshot row of the
+    /// run, or the call throws <see cref="ArgumentException"/> — a slot the snapshot holds under another
+    /// emote, an emote without any snapshot row (another channel's, say), and a slot of an emote the
+    /// snapshot holds that is not itself in the snapshot alike. The server does not guess where such an
+    /// aggregate belongs — "the emote has one snapshot row" proves no seed-to-target origin. The last
+    /// case was answered with a re-read of the snapshot while runs bound to seeds could still exist; a
+    /// snapshot of a run that a part-B image enqueues is fixed from then on; a flag-off run whose seed a
+    /// settle moves fails closed, so such a block fails the run (plan 379 §2.1). <b>Existence (D25):</b> of the rest, an aggregate is returned
     /// only when its emote is still the channel's and its slot still exists under that emote.
     /// </para>
     /// </summary>
-    private async Task<List<ChatLogBackfillAggregate>?> LockAndCheckSnapshotRowsAsync(
+    private async Task<List<ChatLogBackfillAggregate>> LockAndCheckSnapshotRowsAsync(
         long runId, string channelId, IReadOnlyList<ChatLogBackfillAggregate> rows, CancellationToken cancellationToken)
     {
         if (rows.Count == 0)
@@ -1292,26 +1140,16 @@ public sealed class ChatLogBackfillService(
             .ToListAsync(cancellationToken);
         var locked = (await db.LockEmotesForShareByIdsAsync(ofChannel, cancellationToken)).ToHashSet(StringComparer.Ordinal);
 
-        var snapshot = await db.ChatLogBackfillRunEmotes.AsNoTracking()
-            .Where(e => e.RunId == runId && (slotIds.Contains(e.SlotId) || emoteIds.Contains(e.EmoteId)))
-            .Select(e => new { e.SlotId, e.EmoteId })
-            .ToListAsync(cancellationToken);
-
         // (RunId, SlotId) is the key since M3: one emote per slot of a run.
-        var emoteOfSnapshotSlot = snapshot.ToDictionary(e => e.SlotId, e => e.EmoteId, StringComparer.Ordinal);
-        var snapshotEmotes = snapshot.Select(e => e.EmoteId).ToHashSet(StringComparer.Ordinal);
-        var foreignPairs = rows.Count(r => emoteOfSnapshotSlot.TryGetValue(r.SlotId, out var emoteId)
-            ? !string.Equals(emoteId, r.EmoteId, StringComparison.Ordinal)
-            : !snapshotEmotes.Contains(r.EmoteId));
+        var emoteOfSnapshotSlot = await db.ChatLogBackfillRunEmotes.AsNoTracking()
+            .Where(e => e.RunId == runId && slotIds.Contains(e.SlotId))
+            .ToDictionaryAsync(e => e.SlotId, e => e.EmoteId, StringComparer.Ordinal, cancellationToken);
+        var foreignPairs = rows.Count(r => !emoteOfSnapshotSlot.TryGetValue(r.SlotId, out var emoteId)
+            || !string.Equals(emoteId, r.EmoteId, StringComparison.Ordinal));
         if (foreignPairs > 0)
         {
             throw new ArgumentException(
                 $"{foreignPairs} aggregates name a slot and an emote that are not one snapshot row of run {runId}.", nameof(rows));
-        }
-
-        if (rows.Any(r => !emoteOfSnapshotSlot.ContainsKey(r.SlotId)))
-        {
-            return null;
         }
 
         var ownerOfSlot = await db.EmoteSlots.AsNoTracking()
@@ -1563,9 +1401,6 @@ public sealed class ChatLogBackfillService(
         DateTimeKind.Local => value.ToUniversalTime(),
         _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
     };
-
-    // A UTC instant at the precision Postgres stores a timestamptz with, for exact comparisons.
-    private static long Microseconds(DateTime value) => ToUtc(value).Ticks / TimeSpan.TicksPerMicrosecond;
 
     private sealed record CoverageDay(DateOnly Day, string EmoteSetId, string ArchiveHost, long? RunId);
 

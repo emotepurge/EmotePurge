@@ -53,7 +53,7 @@ internal static class RowLocks
     /// locked, in lock order (plan #373 E11a). The reader's entry: the backfill block replace takes it
     /// after its channel <c>KEY SHARE</c> and before it reads the snapshot's slot ids, so it serializes
     /// with every writer that moves rows or snapshot entries of those emotes under
-    /// <c>FOR NO KEY UPDATE</c> (the settle, the enqueue, flush phase 2): whichever comes first, the
+    /// <c>FOR NO KEY UPDATE</c> (the settle, the enqueue): whichever comes first, the
     /// other waits. Two share lockers do not wait for each other, and the <c>FOR KEY SHARE</c> of a
     /// foreign-key insert is not blocked. Same order rules as the exclusive entries (sorted with
     /// <c>COLLATE "C"</c>, one statement, open transaction required).

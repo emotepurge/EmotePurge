@@ -2907,8 +2907,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
     {
         await using var db = fixture.CreateDbContext();
         var service = new EmoteService(
-            db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db),
-            new SlotReconcileOptions { Enabled = true });
+            db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db));
         var result = await service.MarkDeletedInSetAsync(set, "owner-7tv", "owner", "owner-tw-none", [entry.SevenTvEmoteId], null, Actor, [entry]);
         Assert.Null(result.Rejection);
     }
@@ -2916,7 +2915,7 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
     private async Task SyncSlotsOnAsync(Channel channel, string set, params SevenTvEmote[] live)
     {
         await using var db = fixture.CreateDbContext();
-        Assert.NotNull(await SlotSyncKit.SyncAsync(db, channel, slotsEnabled: true, set, logger: null, live));
+        Assert.NotNull(await SlotSyncKit.SyncAsync(db, channel, set, logger: null, live));
     }
 
     private async Task<bool> PlacedByThisTagAsync(Channel channel, long tagId)

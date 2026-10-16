@@ -623,8 +623,8 @@ public static class SevenTvEndpoints
             return SyncInSetLadder.Reject(Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidChannelName }));
         }
 
-        // The shape of the slot entries is checked in both flag states and before the owner check,
-        // like emote_ids_empty: a malformed entry says nothing about rights and costs no 7TV call.
+        // The shape of the slot entries is checked before the owner check, like emote_ids_empty: a
+        // malformed entry says nothing about rights and costs no 7TV call.
         if (!TryMapSyncInSetEntries(request, out var entries))
         {
             return SyncInSetLadder.Reject(Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidRequestBody }));

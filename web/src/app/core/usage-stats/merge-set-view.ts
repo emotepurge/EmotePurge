@@ -11,10 +11,11 @@ import { EmoteUsageTotal, EmoteUsageTotalDto } from './usage-stat.model';
  * every 30 s) must never trigger a 7TV request (E16, E19) — building the union server-side would tie
  * every `/totals` call to a live lookup regardless of which reload triggered it.
  *
- * **Mode of the response.** The page does not know the slot reconcile flag, but the response tells:
- * with the flag off no `/totals` row carries a `slotId`. A response with at least one slot-mode row
- * is a *slot response*; anything else is an *emote response* and is merged exactly as before slots
- * (plan 377, F2). The view (`isActiveSet`) and the response mode are independent.
+ * **Mode of the response.** The response tells which mode it is in: an emote-mode answer (a set
+ * seeded with rows, or one the slot sync has not bound yet) carries no `slotId` on any `/totals`
+ * row. A response with at least one slot-mode row is a *slot response*; anything else is an *emote
+ * response* and is merged exactly as before slots (plan 377, F2). The view (`isActiveSet`) and the
+ * response mode are independent.
  *
  * **Active set** (`isActiveSet: true`, or `live === null`): `live` is ignored. Every `totals` row
  * becomes a `'live'` row with `slotCount: 1`, `aliases: [emoteName]` and the DTO's `siblingNames` —
@@ -233,20 +234,13 @@ function compareByName(a: WireRow, b: WireRow): number {
 }
 
 function readWire(dto: EmoteUsageTotalDto): WireRow {
-  const older: Partial<
-    Pick<
-      EmoteUsageTotalDto,
-      'slotId' | 'firstSeenAtFromRest' | 'siblingNames' | 'firstSeenAtShared'
-    >
-  > = dto;
-  const slotId = older.slotId ?? null;
-  const firstSeenAtFromRest = older.firstSeenAtFromRest ?? false;
+  const { slotId, firstSeenAtFromRest } = dto;
   return {
     dto,
     slotId,
     firstSeenAtFromRest,
-    siblingNames: older.siblingNames ?? [],
-    shared: older.firstSeenAtShared ?? true,
+    siblingNames: dto.siblingNames,
+    shared: dto.firstSeenAtShared,
     instant: slotId !== null && firstSeenAtFromRest ? instantOf(dto.firstSeenAt) : null,
   };
 }

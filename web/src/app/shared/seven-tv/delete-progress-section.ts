@@ -452,7 +452,7 @@ export class DeleteProgressSection {
    *  skipped row is `cancelled` for the engine, yet it is finished (nothing left to send) and named
    *  under its reason in its own line — counted by engine status it would hold the bar short and
    *  read as a cancellation by the user. `null` without a skipped row, so every other run (id rows
-   *  only, flag off, a user's cancel) is counted by the panel exactly as before. */
+   *  only, emote mode, a user's cancel) is counted by the panel exactly as before. */
   protected readonly tally = computed<RunProgressTally | null>(() => {
     const items = this.deleteService.queue();
     const skipped = items.filter(isSkippedRow).length;
@@ -512,7 +512,7 @@ export class DeleteProgressSection {
    *  the history on the old one. `true` while the run has a `done` entry row and its `sync-deleted`
    *  has not reached the server — pending, or failed (the dock then offers the report's retry, and a
    *  successful retry lifts this). `partial` counts as reached: the report was applied, only short
-   *  or for another channel. A run of id rows only (flag off, the vote page, a tag removal) is never
+   *  or for another channel. A run of id rows only (emote mode, the vote page, a tag removal) is never
    *  held, exactly as before. */
   protected readonly restoreAwaitsReport = computed(() => {
     const run = this.deleteService.lastRun();

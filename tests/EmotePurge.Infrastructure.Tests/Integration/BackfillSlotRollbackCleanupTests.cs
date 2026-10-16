@@ -59,8 +59,11 @@ public class BackfillSlotRollbackCleanupTests(PostgresFixture fixture)
         Assert.Equal(4, await db.EmoteSlots.Where(s => s.Id.EndsWith(k)).CountAsync());
     }
 
-    [Fact]
-    public void OperationsDocQuotesTheStatementIdentically()
+    [Theory]
+    [InlineData(nameof(EmoteSlotRollbackSql.DeleteBackfillCreatedSlotsSql))]
+    [InlineData(nameof(EmoteSlotRollbackSql.CountRowlessUnsettledSeedsSql))]
+    [InlineData(nameof(EmoteSlotRollbackSql.SweepRowlessUnsettledSeedsSql))]
+    public void OperationsDocQuotesTheStatementIdentically(string constantName)
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "docs", "Operations.md")))
@@ -70,11 +73,11 @@ public class BackfillSlotRollbackCleanupTests(PostgresFixture fixture)
 
         Assert.NotNull(dir);
         var doc = File.ReadAllLines(Path.Combine(dir.FullName, "docs", "Operations.md")).Select(l => l.Trim()).ToList();
-        var statement = EmoteSlotRollbackSql.DeleteBackfillCreatedSlotsSql.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+        var text = (string)typeof(EmoteSlotRollbackSql).GetField(constantName)!.GetRawConstantValue()!;
+        var statement = text.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
 
-        var start = doc.FindIndex(l => l == statement[0]);
-        Assert.True(start >= 0, "step 3b statement not found in docs/Operations.md");
-        Assert.Equal(statement, doc.Skip(start).Take(statement.Count).ToList());
+        var found = Enumerable.Range(0, doc.Count).Any(i => doc.Skip(i).Take(statement.Count).SequenceEqual(statement));
+        Assert.True(found, $"{constantName} not found verbatim in docs/Operations.md");
     }
 
     private static async Task SeedAsync(AppDbContext db, string k)

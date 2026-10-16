@@ -5,13 +5,9 @@ using Microsoft.EntityFrameworkCore;
 
 namespace EmotePurge.Infrastructure.Services;
 
-public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotReconcile = null) : IUsageStatQueryService
+public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
 {
     private const string FromMustPrecedeToMessage = "'from' must be less than or equal to 'to'.";
-
-    // Null (the unit-test constructor) is off, like the flag's default. It decides nothing but the mode of
-    // each usage-grid row (plan #376 R1): off, every row is in emote mode — the reading from before slots.
-    private readonly bool slotReconcileEnabled = slotReconcile?.Enabled ?? false;
 
     public async Task<IReadOnlyList<EmoteUsageDto>> GetUsageStatsAsync(string channelName, CancellationToken cancellationToken = default)
     {
@@ -109,9 +105,9 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
         var emotesById = allChannelEmotes.ToDictionary(e => e.Id, StringComparer.Ordinal);
 
         // The base order is the emote list as the database returned it, the rows of one emote in the order of
-        // their slots; the sort by total breaks its ties by that base order, in one sort. With the flag off
-        // that is one row per emote in exactly the order the pre-slot code sorted — ties included, which no
-        // contract promises but a prod reading should not shuffle for nothing (R1).
+        // their slots; the sort by total breaks its ties by that base order, in one sort. For emote-mode rows
+        // that is exactly the order the pre-slot code sorted — ties included, which no contract promises but a
+        // prod reading should not shuffle for nothing (R1).
         var emotePosition = allChannelEmotes
             .Select((e, index) => (e.Id, index))
             .ToDictionary(p => p.Id, p => p.index, StringComparer.Ordinal);
@@ -665,8 +661,7 @@ public class UsageStatQueryService(AppDbContext db, SlotReconcileOptions? slotRe
             snapshot.Slots,
             snapshot.SeedIdsOfSet,
             snapshot.SlotIdsWithRowsInSet,
-            isActiveSet,
-            slotReconcileEnabled);
+            isActiveSet);
         return new UsageView(rows, snapshot.Slots);
     }
 

@@ -15,8 +15,7 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 
 // Emote slots plan 376, child 6 (section 4, 5.5): the set-centric reports with entries, the B1 slot
 // archive of a report without entries, the B2 once-leave and the arbitration on B3 (the origin of an
-// entry is the channel its slot id belongs to). The flag is on unless a case says otherwise; every
-// case runs its report, sync and reads on fresh contexts, like the api and the worker do. Set and
+// entry is the channel its slot id belongs to). Every case runs its report, sync and reads on fresh contexts, like the api and the worker do. Set and
 // emote ids are alphanumeric and unique per case: the observation upsert drops anything else, and a
 // report hits every channel of the shared database that has its set active.
 public partial class EmoteServiceTests
@@ -304,16 +303,13 @@ public partial class EmoteServiceTests
 
     // B1: a report without entries archives the active own slots with the emote, so a quick legacy
     // undo followed by REST [A(t9)] — with no REST run in between that missed the emote — resumes the
-    // same slot per D7 instead of creating S2 and hiding S1's history. With the flag off the report
-    // writes no slot (plan 372 2.0).
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task WithoutEntries_B1_DeleteArchivesTheActiveSlots_SoAnUndoAndRestResumeTheSameSlot(bool on)
+    // same slot per D7 instead of creating S2 and hiding S1's history.
+    [Fact]
+    public async Task WithoutEntries_B1_DeleteArchivesTheActiveSlots_SoAnUndoAndRestResumeTheSameSlot()
     {
         var set = NewSet();
         var x = NewSevenTvId();
-        var channel = await SeedOnAsync($"slotrpt_b1{(on ? "on" : "off")}", set);
+        var channel = await SeedOnAsync("slotrpt_b1", set);
         var s1 = await SeedSingleSlotEmoteAsync(channel, x, "aaa", T1, usage: [3, 4]);
         var seed = await SeedSeedOfAsync(channel, x);
         string seedBefore;
@@ -322,23 +318,18 @@ public partial class EmoteServiceTests
             seedBefore = Columns(await SlotAsync(check, seed.Id));
         }
 
-        var deleted = await DeleteAsync(set, [x], entries: null, on: on);
+        var deleted = await DeleteAsync(set, [x], entries: null);
 
         Assert.Equal((1, 1), (Assert.Single(deleted.Channels).Count, Assert.Single(deleted.Channels).NewlyChangedCount));
         await using (var check = fixture.CreateDbContext())
         {
             Assert.True((await EmoteAsync(check, channel, x)).IsArchived);
             var slot = await SlotAsync(check, s1.Id);
-            Assert.Equal(on, slot.IsArchived);
-            Assert.Equal(on, slot.ArchivedAt is not null);
+            Assert.True(slot.IsArchived);
+            Assert.NotNull(slot.ArchivedAt);
             // E7: an unsettled seed stays as it is.
             Assert.Equal(seedBefore, Columns(await SlotAsync(check, seed.Id)));
             Assert.Equal(1, await LeaveRowsAsync(check, channel, set));
-        }
-
-        if (!on)
-        {
-            return;
         }
 
         await RestoreAsync(set, [x], entries: null);
@@ -372,26 +363,6 @@ public partial class EmoteServiceTests
         Assert.True((await EmoteAsync(verify, channel, y)).IsArchived);
         Assert.True((await SlotAsync(verify, ySlot.Id)).IsArchived);
         Assert.Equal([y], (await LeaveRowListAsync(verify, channel, set)).Select(o => o.SevenTvEmoteId));
-    }
-
-    // R3 a: with the flag off, entries are ignored — the report runs at the emote level and writes no
-    // slot, and its audit entry is the one from before (no entryCount).
-    [Fact]
-    public async Task Entries_FlagOff_AreIgnored_TheReportRunsAsWithoutThem()
-    {
-        var set = NewSet();
-        var x = NewSevenTvId();
-        var (channel, xRow, _, hob44) = await SeedTwoSlotEmoteAsync("slotrpt_flagoff", set, x);
-
-        var result = await DeleteAsync(set, [x], [Entry(x, "hob44", hob44.Id, T2)], on: false);
-
-        Assert.Equal((1, 1), (Assert.Single(result.Channels).Count, Assert.Single(result.Channels).NewlyChangedCount));
-        await using var verify = fixture.CreateDbContext();
-        Assert.True((await EmoteAsync(verify, channel, x)).IsArchived);
-        Assert.All(await SlotsAsync(verify, xRow.Id), s => Assert.False(s.IsArchived));
-        Assert.Equal(1, await LeaveRowsAsync(verify, channel, set));
-        var entry = Assert.Single(await AuditDetailsAsync(verify, set));
-        Assert.False(entry.TryGetProperty("entryCount", out _));
     }
 
     // ---------------------------------------------------------------- AK 54 and the arbitration on B3
@@ -605,32 +576,32 @@ public partial class EmoteServiceTests
     private static SyncInSetEntryDto Entry(string sevenTvEmoteId, string? alias, string? slotId, DateTime? addedAt) =>
         new(sevenTvEmoteId, alias, slotId, addedAt);
 
-    private static EmoteService SlotService(AppDbContext db, bool on, IExcludedChannelFilter? filter = null) =>
+    private static EmoteService SlotService(AppDbContext db, IExcludedChannelFilter? filter = null) =>
         new(
             db, NullLogger<EmoteService>.Instance, filter ?? Substitute.For<IExcludedChannelFilter>(),
-            new BroadcasterChannelLockService(db), new SlotReconcileOptions { Enabled = on });
+            new BroadcasterChannelLockService(db));
 
     private async Task<SyncDeletedInSetResultDto> DeleteAsync(
         string set, IReadOnlyList<string> ids, IReadOnlyList<SyncInSetEntryDto>? entries,
-        bool on = true, string? expected = null, IExcludedChannelFilter? filter = null)
+        string? expected = null, IExcludedChannelFilter? filter = null)
     {
         await using var db = fixture.CreateDbContext();
-        return await SlotService(db, on, filter).MarkDeletedInSetAsync(
+        return await SlotService(db, filter).MarkDeletedInSetAsync(
             set, OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ids, expected, Actor, entries);
     }
 
     private async Task<SyncRestoredInSetResultDto> RestoreAsync(
-        string set, IReadOnlyList<string> ids, IReadOnlyList<SyncInSetEntryDto>? entries, bool on = true, string? expected = null)
+        string set, IReadOnlyList<string> ids, IReadOnlyList<SyncInSetEntryDto>? entries, string? expected = null)
     {
         await using var db = fixture.CreateDbContext();
-        return await SlotService(db, on).MarkRestoredInSetAsync(
+        return await SlotService(db).MarkRestoredInSetAsync(
             set, OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, ids, expected, Actor, entries);
     }
 
     private async Task SyncOnSetAsync(Channel channel, string set, params SevenTvEmote[] live)
     {
         await using var db = fixture.CreateDbContext();
-        Assert.NotNull(await SyncAsync(db, channel, slotsEnabled: true, set, logger: null, live));
+        Assert.NotNull(await SyncAsync(db, channel, set, logger: null, live));
     }
 
     private async Task<Channel> SeedOnAsync(string name, string set)
@@ -700,15 +671,15 @@ public partial class EmoteServiceTests
         await db.SaveChangesAsync();
     }
 
-    // The slot is authoritative on t9 again, no second slot was created, and /totals (flag on) shows one
-    // card for it that carries all of its usage.
+    // The slot is authoritative on t9 again, no second slot was created, and /totals shows one card for it
+    // that carries all of its usage.
     private async Task AssertResumedOnTheSameSlotAsync(Channel channel, string set, string x, string slotId, int expectedUses)
     {
         await using var db = fixture.CreateDbContext();
         var emote = await EmoteAsync(db, channel, x);
         var slot = Assert.Single(await SlotsAsync(db, emote.Id), s => !s.SeedUnsettled);
         Assert.Equal((slotId, false, (DateTime?)T9, true), (slot.Id, slot.IsArchived, slot.AddedAt, slot.AddedAtFromRest));
-        var totals = await new UsageStatQueryService(db, new SlotReconcileOptions { Enabled = true })
+        var totals = await new UsageStatQueryService(db)
             .GetUsageContextAsync(channel.ChannelName, UsageFrom, UsageTo, set);
         var row = Assert.Single(totals, t => t.EmoteId == emote.Id);
         Assert.Equal((slotId, expectedUses), (row.SlotId, row.TotalUseCount));

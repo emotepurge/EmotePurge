@@ -9,21 +9,20 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 
 // The slot-aware readers of EmoteSetStatusService (plan #372, 2.5 / 6.7): OccupiedSlots and
 // DuplicateNames count active own slots, with the virtual slot of E14 for an emote that has none.
-// The flag-off cases prove that slots left behind by an earlier on-phase do not change the answer.
 [Collection("Postgres")]
 public class EmoteSetStatusServiceSlotTests(PostgresFixture fixture)
 {
-    private async Task<EmoteSetStatusDto> StatusAsync(Channel channel, bool slotsEnabled)
+    private async Task<EmoteSetStatusDto> StatusAsync(Channel channel)
     {
         await using var db = fixture.CreateDbContext();
-        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db), new SlotReconcileOptions { Enabled = slotsEnabled })
+        var status = await new EmoteSetStatusService(db, new UsageStatQueryService(db))
             .GetAsync(channel.ChannelName);
         return status!;
     }
 
     // AK 32: two slots of one emote are two places and never a duplicate.
     [Fact]
-    public async Task On_TwoSlotsOfOneEmote_AreTwoPlacesAndNoDuplicate()
+    public async Task TwoSlotsOfOneEmote_AreTwoPlacesAndNoDuplicate()
     {
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "slotrd_two_slots");
@@ -33,7 +32,7 @@ public class EmoteSetStatusServiceSlotTests(PostgresFixture fixture)
         var y = await SeedEmoteAsync(db, channel, "y", "Other");
         await SeedSlotAsync(db, y, "Other", T1);
 
-        var status = await StatusAsync(channel, true);
+        var status = await StatusAsync(channel);
 
         Assert.Equal(3, status.OccupiedSlots);
         Assert.Empty(status.DuplicateNames);
@@ -41,7 +40,7 @@ public class EmoteSetStatusServiceSlotTests(PostgresFixture fixture)
 
     // AK 32: a collision across emotes is found through a second name, not only Emote.Name.
     [Fact]
-    public async Task On_CollisionThroughASecondAlias_ReportsBothEmotes()
+    public async Task CollisionThroughASecondAlias_ReportsBothEmotes()
     {
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "slotrd_collision");
@@ -51,7 +50,7 @@ public class EmoteSetStatusServiceSlotTests(PostgresFixture fixture)
         var y = await SeedEmoteAsync(db, channel, "y", "Shared");
         await SeedSlotAsync(db, y, "Shared", T3);
 
-        var status = await StatusAsync(channel, true);
+        var status = await StatusAsync(channel);
 
         var group = Assert.Single(status.DuplicateNames);
         Assert.Equal("Shared", group.Name);
@@ -62,7 +61,7 @@ public class EmoteSetStatusServiceSlotTests(PostgresFixture fixture)
     // E14: no active own slot means exactly one virtual slot under Emote.Name; an unsettled seed is
     // not a slot of its own; slots under an archived emote and archived slots do not count.
     [Fact]
-    public async Task On_VirtualSlotRule()
+    public async Task VirtualSlotRule()
     {
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "slotrd_virtual");
@@ -76,33 +75,12 @@ public class EmoteSetStatusServiceSlotTests(PostgresFixture fixture)
         var clash = await SeedEmoteAsync(db, channel, "clash", "Clash");
         await SeedSlotAsync(db, clash, "Bare", T1);
 
-        var status = await StatusAsync(channel, true);
+        var status = await StatusAsync(channel);
 
         // bare (virtual) + seeded (virtual) + oas (virtual) + clash (one slot) = 4
         Assert.Equal(4, status.OccupiedSlots);
         var group = Assert.Single(status.DuplicateNames);
         Assert.Equal("Bare", group.Name);
         Assert.Equal(["bare", "clash"], group.Emotes.Select(e => e.SevenTvEmoteId));
-    }
-
-    // 2.0: with the flag off, own slots left from an earlier on-phase change nothing.
-    [Fact]
-    public async Task Off_WithOwnSlotsPresent_AnswersEmoteWide()
-    {
-        await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "slotrd_off");
-        var x = await SeedEmoteAsync(db, channel, "x", "Plain");
-        await SeedSlotAsync(db, x, "Plain", T1);
-        await SeedSlotAsync(db, x, "Second", T2);
-        var y = await SeedEmoteAsync(db, channel, "y", "Second");
-        await SeedSlotAsync(db, y, "Second", T3);
-        await SeedEmoteAsync(db, channel, "z", "Plain");
-
-        var status = await StatusAsync(channel, false);
-
-        Assert.Equal(3, status.OccupiedSlots); // three active emotes, however many slots they hold
-        var group = Assert.Single(status.DuplicateNames);
-        Assert.Equal("Plain", group.Name);
-        Assert.Equal(["x", "z"], group.Emotes.Select(e => e.SevenTvEmoteId));
     }
 }

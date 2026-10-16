@@ -10,8 +10,7 @@ public record EmoteUsageDto(string EmoteName, DateOnly Date, int UseCount);
 /// <b>Two modes.</b> A slot-mode row (<see cref="SlotId"/> set) shows exactly one slot: its name, its add
 /// date and the counts of that one slot, which is what <c>/daily?slotId=</c> answers for it. An emote-mode
 /// row (<see cref="SlotId"/> <c>null</c>) is the row as it was before slots: the emote's name and
-/// <c>FirstSeenAt</c>, and the counts of every slot of the emote under the requested set. With
-/// <c>SevenTv:SlotReconcile:Enabled</c> off every row is in emote mode (R1); with it on, an emote whose
+/// <c>FirstSeenAt</c>, and the counts of every slot of the emote under the requested set. An emote whose
 /// counts under the set still sit on an unsettled seed, or — in the active set's view — that has no active
 /// slot of its own, is in emote mode (R2), every other one shows one row per slot.
 /// </remarks>

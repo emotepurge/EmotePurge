@@ -953,6 +953,10 @@ test.describe('set view (#200, K4)', () => {
             lastUsedDate: emote.lastUsedDate ?? null,
             previousWindowUseCount: emote.previousWindowUseCount ?? 0,
             firstSeenAt: emote.firstSeenAt ?? null,
+            slotId: emote.slotId ?? null,
+            firstSeenAtFromRest: emote.firstSeenAtFromRest ?? false,
+            siblingNames: emote.siblingNames ?? [],
+            firstSeenAtShared: emote.firstSeenAtShared ?? false,
             isArchived: false,
             nameTwinEmoteSetIds: [],
           })),
@@ -1303,6 +1307,10 @@ test.describe('set view (#200, K4)', () => {
             lastUsedDate: null,
             previousWindowUseCount: 0,
             firstSeenAt: null,
+            slotId: null,
+            firstSeenAtFromRest: false,
+            siblingNames: [],
+            firstSeenAtShared: false,
             isArchived: false,
             nameTwinEmoteSetIds: [],
           },
@@ -1339,7 +1347,7 @@ test.describe('set view (#200, K4)', () => {
 
 /**
  * Emote slots (#365, #377): one emote under two names in a set is two cards in slot mode. The
- * flag-off world these mocks default to is covered by the whole rest of the suite; here the server
+ * emote-mode answer these mocks default to is covered by the whole rest of the suite; here the server
  * answers with slot rows.
  */
 test.describe('emote slot cards (#365, #377)', () => {
@@ -1702,7 +1710,7 @@ test.describe('emote slot delete runs (#378)', () => {
     await page.getByRole('dialog').getByRole('button', { name: 'Löschen starten' }).click();
   }
 
-  test('flag off: a delete run sends the unchanged REMOVE without an alias, reads the set without add dates and reports without entries', async ({
+  test('emote mode: a delete run sends the unchanged REMOVE without an alias, reads the set without add dates and reports without entries', async ({
     page,
   }) => {
     await mockRunSurroundings(page, false);
@@ -1753,7 +1761,7 @@ test.describe('emote slot delete runs (#378)', () => {
     await expect.poll(() => syncDeleted.length).toBeGreaterThan(0);
   }
 
-  test('flag on, partial delete: only the marked slot card is removed, by its alias, and reported with its slot and add date (AK 37)', async ({
+  test('slot mode, partial delete: only the marked slot card is removed, by its alias, and reported with its slot and add date (AK 37)', async ({
     page,
   }) => {
     await mockRunSurroundings(page, true);
@@ -1794,7 +1802,7 @@ test.describe('emote slot delete runs (#378)', () => {
     expect(backend.live.map((entry) => entry.alias)).toEqual(['ome44', 'plainOne']);
   });
 
-  test('flag on, restore: the dock re-adds the alias and reports the slot with the original add date (AK 42)', async ({
+  test('slot mode, restore: the dock re-adds the alias and reports the slot with the original add date (AK 42)', async ({
     page,
   }) => {
     await mockRunSurroundings(page, true);
