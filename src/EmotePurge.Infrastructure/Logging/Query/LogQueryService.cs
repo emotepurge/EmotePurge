@@ -143,9 +143,10 @@ internal sealed class LogQueryService(AppDbContext db, LogViewerOptions options,
         // filter must not hide lost entries) and its process start.
         var instancesSql =
             "SELECT e.\"Source\" AS \"Source\", e.\"InstanceId\" AS \"InstanceId\", e.\"ProcessStartedUtc\" AS \"ProcessStartedUtc\", " +
-            $"{DropSum("dropped", "Dropped")}, {DropSum("queuefull", "QueueFull")}, {DropSum("budget", "Budget")}, " +
-            $"{DropSum("writeunconfirmed", "WriteUnconfirmed")}, {DropSum("capturefailed", "CaptureFailed")}, " +
-            $"{DropSum("reentrant", "Reentrant")}, {DropSum("rejected", "Rejected")} " +
+            $"{DropSum(LogDropReasonNames.TotalPropertyName, "Dropped")}, {DropSum(LogDropReason.QueueFull, "QueueFull")}, " +
+            $"{DropSum(LogDropReason.Budget, "Budget")}, {DropSum(LogDropReason.WriteUnconfirmed, "WriteUnconfirmed")}, " +
+            $"{DropSum(LogDropReason.CaptureFailed, "CaptureFailed")}, {DropSum(LogDropReason.Reentrant, "Reentrant")}, " +
+            $"{DropSum(LogDropReason.Rejected, "Rejected")} " +
             $"FROM \"LogEntries\" e WHERE {InRange} GROUP BY e.\"Source\", e.\"InstanceId\", e.\"ProcessStartedUtc\"";
         var instanceParameters = RangeParameters(exact.FromUtc, exact.ToUtc).ToList();
         instanceParameters.Add(Parameter("dropCategory", NpgsqlDbType.Varchar, LogCaptureWriter.DropCategory));
@@ -383,6 +384,9 @@ internal sealed class LogQueryService(AppDbContext db, LogViewerOptions options,
     ];
 
     private static NpgsqlParameter Parameter(string name, NpgsqlDbType type, object value) => new(name, type) { Value = value };
+
+    // Sum of one reason's count over the drop reports, under the key the writer writes (LogCaptureWriter.BuildDropEntry).
+    private static string DropSum(LogDropReason reason, string alias) => DropSum(LogDropReasonNames.PropertyName(reason), alias);
 
     // Sum of one numeric property of the drop reports; anything that is not a JSON number counts as 0.
     private static string DropSum(string property, string alias) =>

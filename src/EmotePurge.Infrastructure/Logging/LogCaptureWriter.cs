@@ -154,13 +154,13 @@ public sealed class LogCaptureWriter : BackgroundService
         using (var json = new Utf8JsonWriter(stream))
         {
             json.WriteStartObject();
-            json.WriteNumber("dropped", snapshot.Total);
-            json.WriteNumber("queuefull", snapshot.QueueFull);
-            json.WriteNumber("budget", snapshot.Budget);
-            json.WriteNumber("writeunconfirmed", snapshot.WriteUnconfirmed);
-            json.WriteNumber("capturefailed", snapshot.CaptureFailed);
-            json.WriteNumber("reentrant", snapshot.Reentrant);
-            json.WriteNumber("rejected", snapshot.Rejected);
+            // The same names LogQueryService sums for the summary's drop counts, from one source.
+            json.WriteNumber(LogDropReasonNames.TotalPropertyName, snapshot.Total);
+            foreach (var reason in LogDropReasonNames.All)
+            {
+                json.WriteNumber(LogDropReasonNames.PropertyName(reason), snapshot.Count(reason));
+            }
+
             json.WriteString("firstdroputc", snapshot.FirstDropUtc.ToString(UtcFormat, CultureInfo.InvariantCulture));
             json.WriteString("lastdroputc", snapshot.LastDropUtc.ToString(UtcFormat, CultureInfo.InvariantCulture));
             json.WriteEndObject();

@@ -42,6 +42,9 @@ internal sealed record LogDropSnapshot(
 /// </summary>
 internal static class LogDropReasonNames
 {
+    /// <summary>Property key of the drop entry's total; the summary sums it next to the per-reason keys.</summary>
+    public const string TotalPropertyName = "dropped";
+
     /// <summary>All reasons in the order the drop message lists them.</summary>
     public static readonly IReadOnlyList<LogDropReason> All =
     [

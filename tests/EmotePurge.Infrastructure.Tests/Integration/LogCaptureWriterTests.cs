@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
 using EmotePurge.Core.Entities;
+using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Logging;
+using EmotePurge.Infrastructure.Logging.Query;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
@@ -205,6 +207,12 @@ public class LogCaptureWriterTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal(0, DropCount(drop, "writeunconfirmed"));
         Assert.Equal(0, harness.Drops.PendingTotal);
         Assert.True(harness.Store.InsertCalls >= 4, "both the batch and the drop entry were written twice");
+
+        // Spec 13.1: the writer's own drop entry, not a hand-seeded one, counts exactly once in the summary.
+        await using var db = fixture.CreateDbContext(DatabaseName);
+        var summary = await new LogQueryService(db, new LogViewerOptions(), TimeProvider.System)
+            .GetSummaryAsync(null, new LogRangeRequest("1h", null, null), default);
+        Assert.Equal(new LogDropTotals(Total: 1, QueueFull: 0, Budget: 1, WriteUnconfirmed: 0, CaptureFailed: 0, Reentrant: 0, Rejected: 0), summary.Dropped);
     }
 
     [Fact]
