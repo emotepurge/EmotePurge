@@ -57,6 +57,7 @@ const DE_TRANSLATIONS = {
         label: 'Für alle:',
         skipAll: 'Alle überspringen',
         replaceAll: 'Alle ersetzen',
+        adoptAll: 'Alle Namen übernehmen',
         done: '{{ count }} auf „{{ action }}“ gesetzt',
         renamesKept: {
           one: '{{ count }} Umbenennung bleibt',
@@ -65,6 +66,10 @@ const DE_TRANSLATIONS = {
         replaceUnavailable: {
           one: '{{ count }} nicht ersetzbar, Ziel hat sich geändert',
           other: '{{ count }} nicht ersetzbar, Ziel hat sich geändert',
+        },
+        adoptUnavailable: {
+          one: '{{ count }} nicht möglich',
+          other: '{{ count }} nicht möglich',
         },
       },
       renameLabel: 'Neuer Name',
@@ -809,17 +814,88 @@ describe('ImportConflictResolutionStep', () => {
         return collisionStepRows([collision('a', 'Kappa'), collision('b', 'Pog')], new Map());
       }
 
+      function twoMismatches(): ConflictStepRow[] {
+        return mismatchStepRows([mismatch('a', 'Kappa'), mismatch('b', 'Pog')], new Map());
+      }
+
       it('is absent with a single row', async () => {
         await render('nameCollision', collisionStepRows([collision('a', 'Kappa')], new Map()));
         expect(host.querySelector('button')).toBeNull();
       });
 
-      it('is absent for the alias-mismatch group', async () => {
+      it('is absent for a mismatch group with a single row too', async () => {
+        await render('aliasMismatch', mismatchStepRows([mismatch('a', 'Kappa')], new Map()));
+        expect(host.querySelector('button')).toBeNull();
+      });
+
+      it('offers "Alle Namen übernehmen" instead of replace in the alias-mismatch group', async () => {
+        await render('aliasMismatch', twoMismatches());
+        expect(bulkButton('Alle Namen übernehmen')).toBeTruthy();
+        expect(() => bulkButton('Alle ersetzen')).toThrow();
+      });
+
+      it('adopts every adoptable mismatch row in one event and counts the blocked ones', async () => {
         await render(
           'aliasMismatch',
-          mismatchStepRows([mismatch('a', 'Kappa'), mismatch('b', 'Pog')], new Map()),
+          mismatchStepRows(
+            [
+              mismatch('a', 'Kappa'),
+              mismatch('b', 'Pog'),
+              mismatch('c', 'Sadge', 'nameTaken'),
+              mismatch('d', 'Lul', 'duplicateTarget'),
+            ],
+            new Map(),
+          ),
         );
-        expect(host.querySelector('button')).toBeNull();
+
+        bulkButton('Alle Namen übernehmen').click();
+        fixture.detectChanges();
+
+        expect(bulked).toEqual([
+          new Map<string, RowDecision>([
+            ['a', { kind: 'adoptSourceName' }],
+            ['b', { kind: 'adoptSourceName' }],
+          ]),
+        ]);
+        expect(decided).toEqual([]);
+        expect(statusText()).toBe('2 auf „Namen übernehmen“ gesetzt · 2 nicht möglich');
+      });
+
+      it('sets every adopting mismatch row back to skip, and disables what would change nothing', async () => {
+        await render('aliasMismatch', twoMismatches());
+        expect(bulkButton('Alle überspringen').getAttribute('aria-disabled')).toBe('true');
+
+        fixture.componentRef.setInput(
+          'decisions',
+          new Map<string, RowDecision>([
+            ['a', { kind: 'adoptSourceName' }],
+            ['b', { kind: 'adoptSourceName' }],
+          ]),
+        );
+        fixture.detectChanges();
+        expect(bulkButton('Alle Namen übernehmen').getAttribute('aria-disabled')).toBe('true');
+
+        bulkButton('Alle überspringen').click();
+        expect(bulked).toEqual([
+          new Map<string, RowDecision>([
+            ['a', { kind: 'skip' }],
+            ['b', { kind: 'skip' }],
+          ]),
+        ]);
+      });
+
+      it('stays disabled when every mismatch row is blocked, and says nothing is possible', async () => {
+        await render(
+          'aliasMismatch',
+          mismatchStepRows(
+            [mismatch('a', 'Kappa', 'nameTaken'), mismatch('b', 'Pog', 'aliaslessTarget')],
+            new Map(),
+          ),
+        );
+        const adopt = bulkButton('Alle Namen übernehmen');
+        expect(adopt.getAttribute('aria-disabled')).toBe('true');
+        adopt.click();
+        expect(bulked).toEqual([]);
       });
 
       it('emits one event carrying every changed row on "Alle ersetzen"', async () => {

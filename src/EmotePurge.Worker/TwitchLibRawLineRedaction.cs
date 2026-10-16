@@ -1,6 +1,13 @@
 namespace EmotePurge.Worker;
 
 /// <summary>
+/// A redacted raw IRC line: the safe <see cref="Text"/> plus the recognised <see cref="Command"/> as its
+/// own value (<c>&lt;none&gt;</c>, <c>&lt;unparsed&gt;</c>, a known IRC command or three digits), so
+/// callers never have to parse <see cref="Text"/> again.
+/// </summary>
+public readonly record struct RedactedRawLine(string Text, string Command);
+
+/// <summary>
 /// Reduces a raw IRC line to a diagnosable but safe form for <see cref="RedactingTwitchClientLoggerFactory"/>
 /// (#246): the tag block's <em>keys</em> only — never a value, since a value can carry chat text, a
 /// display name, a login, a numeric user id, or (on a reply) the quoted parent message — plus,
@@ -46,21 +53,25 @@ public static class TwitchLibRawLineRedaction
         "USERNOTICE", "MODE",
     };
 
-    public static string Redact(string? rawLine)
+    public static string Redact(string? rawLine) => RedactLine(rawLine).Text;
+
+    public static RedactedRawLine RedactLine(string? rawLine)
     {
         if (string.IsNullOrEmpty(rawLine))
         {
-            return $"command={NoCommandMarker}, tagKeys=[]";
+            return new RedactedRawLine($"command={NoCommandMarker}, tagKeys=[]", NoCommandMarker);
         }
 
         var remaining = rawLine.AsSpan();
         var tagKeys = string.Empty;
+        var withheldTagKeys = 0;
 
         if (remaining.Length > 0 && remaining[0] == '@')
         {
             var tagBlockEnd = remaining.IndexOf(' ');
             var tagBlock = tagBlockEnd < 0 ? remaining[1..] : remaining[1..tagBlockEnd];
-            tagKeys = string.Join(',', ExtractKeys(tagBlock));
+            var keys = ExtractKeys(tagBlock, out withheldTagKeys);
+            tagKeys = string.Join(',', keys);
             remaining = tagBlockEnd < 0 ? [] : remaining[(tagBlockEnd + 1)..];
         }
 
@@ -96,7 +107,10 @@ public static class TwitchLibRawLineRedaction
             commandText = UnparsedCommandMarker;
         }
 
-        return $"command={commandText}, tagKeys=[{tagKeys}]";
+        // The suffix appears only when something was withheld, so a line without withheld keys
+        // renders byte-identically to what this class has always produced.
+        var withheldSuffix = withheldTagKeys > 0 ? $", withheldTagKeys={withheldTagKeys}" : string.Empty;
+        return new RedactedRawLine($"command={commandText}, tagKeys=[{tagKeys}]{withheldSuffix}", commandText);
     }
 
     /// <summary>
@@ -129,19 +143,32 @@ public static class TwitchLibRawLineRedaction
         return true;
     }
 
-    private static List<string> ExtractKeys(ReadOnlySpan<char> tagBlock)
+    /// <summary>
+    /// Collects the allowlisted keys (<see cref="TwitchTagKeyAllowlist"/>) of <paramref name="tagBlock"/>.
+    /// A non-empty fragment that is not a <c>key=value</c> pair with an allowlisted key — a bare
+    /// fragment, an invented key, a grammar violation — is never reported, only counted in
+    /// <paramref name="withheld"/>: after a splice (#114) it can be chat text or a display name.
+    /// </summary>
+    private static List<string> ExtractKeys(ReadOnlySpan<char> tagBlock, out int withheld)
     {
         var keys = new List<string>();
+        withheld = 0;
         var remaining = tagBlock;
-        while (!remaining.IsEmpty && keys.Count < MaxTagKeys)
+        while (!remaining.IsEmpty && keys.Count + withheld < MaxTagKeys)
         {
             var separator = remaining.IndexOf(';');
             var tag = separator < 0 ? remaining : remaining[..separator];
-            var equalsIndex = tag.IndexOf('=');
-            var key = equalsIndex < 0 ? tag : tag[..equalsIndex];
-            if (!key.IsEmpty)
+            if (!tag.IsEmpty)
             {
-                keys.Add(key.ToString());
+                var equalsIndex = tag.IndexOf('=');
+                if (equalsIndex >= 0 && TwitchTagKeyAllowlist.IsAllowed(tag[..equalsIndex]))
+                {
+                    keys.Add(tag[..equalsIndex].ToString());
+                }
+                else
+                {
+                    withheld++;
+                }
             }
 
             remaining = separator < 0 ? [] : remaining[(separator + 1)..];

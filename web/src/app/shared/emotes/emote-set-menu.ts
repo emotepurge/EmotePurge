@@ -81,7 +81,7 @@ let nextLockReasonId = 0;
           } @else if (selectedSet(); as set) {
             {{ set.name }}
             @if (set.isActive) {
-              <span class="text-fg-muted">({{ 'emoteSetMenu.active' | transloco }})</span>
+              <span class="text-fg-secondary">({{ 'emoteSetMenu.active' | transloco }})</span>
             }
           }
           <span aria-hidden="true" class="ml-1 text-fg-muted">▾</span>

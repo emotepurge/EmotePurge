@@ -1075,17 +1075,15 @@ public class TwitchChatManager(
         if (IrcLineSpliceRule.IsSpliced(rawIrc))
         {
             stats.RecordSplicedIrcLine();
-            var tagBlock = IrcLineSpliceRule.TagBlockForLog(rawIrc);
+            var fields = IrcLineSpliceRule.ForSpliceWarning(e.ChatMessage.Channel, e.ChatMessage.RoomId, rawIrc);
 
-            // No message text here on purpose (data minimisation) — the tag block alone is enough
-            // to diagnose the splice. That holds for *foreign* text too: TagBlockForLog redacts the
-            // value of every free-text tag (e.g. reply-parent-msg-body, which on a reply carries the
-            // parent message verbatim) and, since #246, the value of every identifying tag —
-            // display-name, login, user-id, badges — as well, so this line carries the chatter's
-            // presence but not their identity.
-            logger.LogWarning(
-                "Gespleißte IRC-Zeile erkannt (#114) in Channel {Channel}, RoomId {RoomId}: {TagBlock}",
-                e.ChatMessage.Channel, e.ChatMessage.RoomId, tagBlock);
+            // No message text here on purpose (data minimisation) — the tag keys alone are enough
+            // to diagnose the splice. ForSpliceWarning logs keys only: every tag value is replaced
+            // except format-checked timestamps, room ids and 0/1 flags, and a key that is not a
+            // known Twitch tag is withheld with its value (#246). RoomId is TwitchLib's raw room-id
+            // value and can itself carry a spliced second line, so it passes only as digits. No
+            // further ChatMessage field may be added to this line.
+            logger.LogWarning(IrcLineSpliceRule.SpliceWarningTemplate, fields.Channel, fields.RoomId, fields.TagBlock);
         }
 
         var snapshot = emoteMatchCache.GetChannelSnapshot(e.ChatMessage.Channel);

@@ -56,10 +56,11 @@ public class TwitchLibRawLineRedactionTests
     [Fact]
     public void Redact_TagBlockWithNoValues_KeysOnlyNoEquals()
     {
-        // A splice or truncation can leave a bare key with no '=' at all.
+        // A splice or truncation can leave a bare key with no '=' at all. Such a fragment may be a
+        // piece of chat text, so it is withheld and only counted (S2).
         var line = "@badge-info;id=aaaa1111 PRIVMSG #targetchannel_test :hi";
 
-        Assert.Equal("command=PRIVMSG, tagKeys=[badge-info,id]", TwitchLibRawLineRedaction.Redact(line));
+        Assert.Equal("command=PRIVMSG, tagKeys=[id], withheldTagKeys=1", TwitchLibRawLineRedaction.Redact(line));
     }
 
     [Fact]
@@ -147,4 +148,37 @@ public class TwitchLibRawLineRedactionTests
         Assert.Equal("command=<unparsed>, tagKeys=[]", redacted);
         Assert.DoesNotContain("X", redacted, StringComparison.Ordinal);
     }
+
+    public static TheoryData<string?> ExistingCaseLines() => new()
+    {
+        null,
+        string.Empty,
+        "@badge-info=;badges=;display-name=TestUser1;id=aaaa1111;mod=0 :t!t@t.tmi.twitch.tv PRIVMSG #c_test :hello",
+        ":testuser1!testuser1@testuser1.tmi.twitch.tv PRIVMSG #targetchannel_test :hello",
+        "PING :tmi.twitch.tv",
+        "@badge-info=;id=aaaa1111-1111-1111-1111-111111111111",
+        "@badge-info;id=aaaa1111 PRIVMSG #targetchannel_test :hi",
+        "@reply-parent-msg-body=hello SECRET PRIVMSG #room :more",
+        "@id=1 SECRET #room :more",
+        "@id=1 :x!x@x.tmi.twitch.tv USERNOTICE #room :text",
+        "@id=1 :tmi.twitch.tv 372 nick :motd",
+        "@id=1 :tmi.twitch.tv NOTICE #room :msg",
+        "@id=1 " + new string('A', 80) + " rest",
+    };
+
+    [Theory]
+    [MemberData(nameof(ExistingCaseLines))]
+    public void RedactLine_TextEqualsRedact_ForEveryExistingCase(string? line) =>
+        Assert.Equal(TwitchLibRawLineRedaction.Redact(line), TwitchLibRawLineRedaction.RedactLine(line).Text);
+
+    [Theory]
+    [InlineData(null, "<none>")]
+    [InlineData("", "<none>")]
+    [InlineData("PING :tmi.twitch.tv", "PING")]
+    [InlineData("@id=1 :x!x@x.tmi.twitch.tv USERNOTICE #room :text", "USERNOTICE")]
+    [InlineData(":tmi.twitch.tv 372 nick :motd", "372")]
+    [InlineData("@id=1 SECRET #room :more", "<unparsed>")]
+    [InlineData("@badge-info=;id=1", "<none>")]
+    public void RedactLine_ExposesTheRecognisedCommandAsItsOwnValue(string? line, string expected) =>
+        Assert.Equal(expected, TwitchLibRawLineRedaction.RedactLine(line).Command);
 }

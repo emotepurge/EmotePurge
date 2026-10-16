@@ -161,6 +161,16 @@ jobs:
       # decision logic to one of these files should pull it into a tested, non-endpoint class
       # instead of relying on this line to cover it. Handler bodies and services elsewhere are
       # untouched — S3776 still applies there.
+      #
+      # multicriteria e5 filters the jssecurity:S870* family for scripts/**. SonarCloud's
+      # "Agentic workflows should not be vulnerable to ..." rules (jssecurity S8701-S8707: command,
+      # SQL, SSRF, code, argument, connection-string and path injection) treat process.argv as
+      # LLM-supplied and therefore hostile. The files under scripts/** are developer/CI tools whose
+      # arguments come from the developer or from CI itself, so that threat model does not apply
+      # there. The family stays active for src/ and web/, and the classic taint rules stay active
+      # everywhere, scripts/ included. The wildcard is intentional: ignoring only S8707 would let
+      # its siblings turn main red one at a time. Note the sub-parameter is resourceKey;
+      # resourcePattern would break the analysis.
       - name: Sonar Scanner begin
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -174,7 +184,7 @@ jobs:
           /d:sonar.exclusions="**/Migrations/**,src/EmotePurge.Api/wwwroot/**,web/dist/**,**/node_modules/**,docs/superpowers/prototypes/**"
           /d:sonar.coverage.exclusions="web/e2e/**,**/Migrations/**,scripts/**,src/EmotePurge.Worker/TwitchChatManager.cs,src/EmotePurge.Worker/TwitchConnectionWatchdog.cs"
           /d:sonar.qualitygate.wait=true
-          /d:sonar.issue.ignore.multicriteria=e1,e2,e3,e4
+          /d:sonar.issue.ignore.multicriteria=e1,e2,e3,e4,e5
           /d:sonar.issue.ignore.multicriteria.e1.ruleKey="javascript:S4036"
           /d:sonar.issue.ignore.multicriteria.e1.resourceKey="scripts/**/*.mjs"
           /d:sonar.issue.ignore.multicriteria.e2.ruleKey="csharpsquid:S2325"
@@ -183,6 +193,8 @@ jobs:
           /d:sonar.issue.ignore.multicriteria.e3.resourceKey="web/src/**/*.html"
           /d:sonar.issue.ignore.multicriteria.e4.ruleKey="csharpsquid:S3776"
           /d:sonar.issue.ignore.multicriteria.e4.resourceKey="src/EmotePurge.Api/Endpoints/*.cs"
+          /d:sonar.issue.ignore.multicriteria.e5.ruleKey="jssecurity:S870*"
+          /d:sonar.issue.ignore.multicriteria.e5.resourceKey="scripts/**"
 
       # --no-incremental is mandatory, not style: MSBuild otherwise skips already-built projects
       # incrementally (e.g. from a previous cache restore), and the Sonar-Scanner-MSBuild hook sees

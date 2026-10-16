@@ -1663,6 +1663,7 @@
         "label": "Für alle:",
         "skipAll": "Alle überspringen",
         "replaceAll": "Alle ersetzen",
+        "adoptAll": "Alle Namen übernehmen",
         "done": "{{ count }} auf „{{ action }}“ gesetzt",
         "renamesKept": {
           "one": "{{ count }} Umbenennung bleibt",
@@ -1671,6 +1672,10 @@
         "replaceUnavailable": {
           "one": "{{ count }} nicht ersetzbar, Ziel hat sich geändert",
           "other": "{{ count }} nicht ersetzbar, Ziel hat sich geändert"
+        },
+        "adoptUnavailable": {
+          "one": "{{ count }} nicht möglich",
+          "other": "{{ count }} nicht möglich"
         }
       },
       "listLabelCollisions": "Namenskollisionen",
