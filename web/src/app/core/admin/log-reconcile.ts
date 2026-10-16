@@ -131,7 +131,7 @@ export class LogReconcileScheduler {
     const waitMs = this.lastEndMs + MIN_GAP_MS - this.now();
     if (waitMs <= 0) {
       this.clearTimer();
-      this.start();
+      void this.start();
       return;
     }
     this.trailing = true;
@@ -148,16 +148,16 @@ export class LogReconcileScheduler {
     this.paused = false;
   }
 
-  private start(): void {
+  private async start(): Promise<void> {
     this.trailing = false;
     this.running = true;
-    let result: Promise<void>;
     try {
-      result = this.run();
+      await this.run();
     } catch {
-      result = Promise.resolve();
+      // errors are swallowed: the next trigger retries
+    } finally {
+      this.finish();
     }
-    void result.catch(() => undefined).then(() => this.finish());
   }
 
   private finish(): void {
@@ -175,7 +175,7 @@ export class LogReconcileScheduler {
     this.timer = setTimeout(() => {
       this.timer = null;
       if (this.trailing && !this.paused && !this.running) {
-        this.start();
+        void this.start();
       }
     }, delayMs);
   }
