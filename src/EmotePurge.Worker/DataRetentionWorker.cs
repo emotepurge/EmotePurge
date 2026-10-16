@@ -4,7 +4,14 @@ using Npgsql;
 
 namespace EmotePurge.Worker;
 
-// Enforces the periods of RetentionPolicy (issues #243/#244) once a day by default. Waits for
+// Enforces the periods of RetentionPolicy (issues #243/#244) in two independent loops.
+//
+// The hourly log-expiry loop deletes captured log entries older than RetentionPolicy.LogEntry
+// (7 days) in batches, and capture status rows whose last heartbeat is older than that. Its first
+// pass runs one minute after start, and it never waits for the boot gate (see ExecuteAsync). In dry
+// run it deletes nothing and warns at most once per UTC day.
+//
+// The daily loop handles everything else, once a day by default. It waits for
 // BootRecoveryGate.Completed because the channel purge inside IDataRetentionService.RunAsync
 // touches the very rows boot recovery reads and writes (see TwitchIdentityReconcileWorker for the
 // same reasoning about renames/merges), then RetentionOptions.StartupDelayMinutes so a restart loop
