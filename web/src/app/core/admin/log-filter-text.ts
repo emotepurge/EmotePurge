@@ -13,6 +13,8 @@ import { LogFilterApiError } from './admin-logs.model';
 
 /** The server's limit for a saved filter's name (trimmed length). */
 export const LOG_FILTER_NAME_MAX_LENGTH = 60;
+/** The server's limit for one value in a term (spec §7.1); a longer one is `400 too_long`. */
+export const LOG_FILTER_VALUE_MAX_LENGTH = 200;
 
 /** Anything here makes a bare word mean something else: whitespace or a comma ends it, a quote opens a
  *  quoted value, and `:`/`<`/`>` turn free text into a key term. `\u0085` is whitespace to .NET only. */
@@ -35,6 +37,18 @@ export function quoteFilterValue(value: string): string {
   }
   const escaped = value.replaceAll('"', '\\"');
   return `"${escaped}${escaped.endsWith('\\') ? '*' : ''}"`;
+}
+
+/**
+ * Whether {@link quoteFilterValue}'s term for `value` stays within the server's value limit. The parser
+ * counts the value's own characters, quotes and escapes not included — plus the `*` a quoted value that
+ * ends in a backslash gets. A captured property may be up to 256 characters long, so a term offered for
+ * a longer one would only clear the list with `too_long`.
+ */
+export function filterValueFits(value: string): boolean {
+  const quoted = quoteFilterValue(value) !== value;
+  const widened = quoted && value.endsWith('\\') ? 1 : 0;
+  return value.length + widened <= LOG_FILTER_VALUE_MAX_LENGTH;
 }
 
 /** `key:value`, or `-key:value` to exclude; the value is quoted as needed. */

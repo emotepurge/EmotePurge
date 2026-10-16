@@ -123,8 +123,6 @@ export function currentFilterBlockedKey(q: string): string | null {
   `,
 })
 export class AdminLogFilterChips {
-  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
-
   readonly filters = input.required<readonly SavedLogFilter[]>();
   /** The applied filter: decides which chip is active and whether "save" is possible. */
   readonly currentQ = input.required<string>();
@@ -136,6 +134,8 @@ export class AdminLogFilterChips {
   readonly overwriteRequested = output<SavedLogFilter>();
   readonly deleteRequested = output<SavedLogFilter>();
   readonly retryRequested = output<void>();
+
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   protected readonly rowClass =
     'flex min-h-11 w-full items-center px-3 text-left text-sm transition disabled:text-fg-disabled disabled:hover:bg-transparent lg:min-h-9';

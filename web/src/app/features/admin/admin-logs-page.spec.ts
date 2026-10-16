@@ -664,6 +664,19 @@ describe('AdminLogsPage', () => {
     expect(slot.getAttribute('tabindex')).toBe('-1');
   });
 
+  it('says so when "Copy visible" finds no clipboard', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    try {
+      await openAndLoad('/admin/logs');
+      buttonNamed('Copy visible').click();
+      await settle();
+
+      expect(root().textContent).toContain('Copying is not possible');
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
+
   it('puts the time range behind the Filter button below the desktop breakpoint', async () => {
     desktop = false;
     await openAndLoad('/admin/logs');

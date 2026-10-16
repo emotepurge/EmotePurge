@@ -137,6 +137,7 @@ export function logFilterSaveBlockedKey(name: string, filter: string): string | 
         type="button"
         appButton="outline"
         buttonSize="lg"
+        [disabled]="saving()"
         (click)="ref.close(undefined)"
       >
         {{ 'common.cancel' | transloco }}
@@ -208,6 +209,9 @@ export class AdminLogFilterDialog {
     const filter = this.filter();
     const existing = this.data.filter;
     this.saving.set(true);
+    // Not dismissible while the request is out: the server may store the filter after all, and the
+    // page would never add its chip — a second try would then meet its own name as taken.
+    this.ref.disableClose = true;
     this.nameError.set(null);
     this.filterError.set(null);
     this.dialogError.set(null);
@@ -218,6 +222,7 @@ export class AdminLogFilterDialog {
       next: (saved) => this.ref.close(saved),
       error: (error: HttpErrorResponse) => {
         this.saving.set(false);
+        this.ref.disableClose = false;
         const mapped = mapLogFilterSaveError(error);
         switch (mapped.place) {
           case 'name':

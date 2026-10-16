@@ -3,7 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import en from '../../../../public/i18n/en.json';
 import { LogEntry, LogEntryDetail } from '../../core/admin/admin-logs.model';
@@ -246,6 +246,61 @@ describe('AdminLogList', () => {
         (b.getAttribute('aria-label') ?? '').includes('property nested'),
       ),
     ).toBe(false);
+  });
+
+  it('gives no actions to a value longer than the filter language accepts', () => {
+    const root = render([
+      entry(1, { properties: { token: 'y'.repeat(201), channel: 'x'.repeat(200) } }),
+    ]);
+    rowButton(root).click();
+    fixture.detectChanges();
+
+    const labels = Array.from(root.querySelectorAll('button')).map(
+      (b) => b.getAttribute('aria-label') ?? '',
+    );
+    expect(labels.some((label) => label.includes('property token'))).toBe(false);
+    expect(labels.some((label) => label.includes('property channel'))).toBe(true);
+  });
+
+  describe('copy', () => {
+    const setClipboard = (value: unknown) =>
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value });
+
+    afterEach(() => Reflect.deleteProperty(navigator, 'clipboard'));
+
+    async function copyFirstRow(): Promise<string> {
+      const root = render([entry(1)]);
+      rowButton(root).click();
+      fixture.detectChanges();
+      Array.from(root.querySelectorAll('button'))
+        .find((b) => b.textContent?.trim() === 'Copy')!
+        .click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      fixture.detectChanges();
+      return root.querySelector('[role="status"]')?.textContent?.trim() ?? '';
+    }
+
+    it('confirms a copied line', async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      setClipboard({ writeText });
+
+      expect(await copyFirstRow()).toBe('Copied');
+      expect(writeText).toHaveBeenCalledWith(
+        '2026-10-14T12:00:01.5Z info worker EmotePurge.Worker.TwitchChatManager: message 1',
+      );
+    });
+
+    it('says so when the clipboard refuses the text', async () => {
+      setClipboard({ writeText: vi.fn().mockRejectedValue(new Error('denied')) });
+
+      expect(await copyFirstRow()).toBe('Copying is not possible');
+    });
+
+    it('says so when there is no clipboard at all', async () => {
+      setClipboard(undefined);
+
+      expect(await copyFirstRow()).toBe('Copying is not possible');
+    });
   });
 
   it('gives no actions to a property named like a built-in key', () => {

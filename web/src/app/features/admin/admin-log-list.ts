@@ -19,7 +19,7 @@ import {
   LogProcessStart,
   LogPropertyValue,
 } from '../../core/admin/admin-logs.model';
-import { filterTerm } from '../../core/admin/log-filter-text';
+import { filterTerm, filterValueFits } from '../../core/admin/log-filter-text';
 import { LOG_LEVEL_NAMES } from './admin-log-facets';
 
 /** Keys the filter language reads itself — a property of the same name cannot be addressed. */
@@ -279,10 +279,19 @@ type DetailState =
                 >
                   {{ 'admin.logs.row.copy' | transloco }}
                 </button>
-                @if (copiedId() === row.entry.id) {
-                  <span class="text-xs text-fg-muted" role="status">{{
-                    'admin.logs.row.copied' | transloco
-                  }}</span>
+                @if (copyResult(); as result) {
+                  @if (result.id === row.entry.id) {
+                    <span
+                      class="text-xs"
+                      [class.text-fg-muted]="result.ok"
+                      [class.text-danger-fg]="!result.ok"
+                      role="status"
+                      >{{
+                        (result.ok ? 'admin.logs.row.copied' : 'admin.logs.list.copyFailed')
+                          | transloco
+                      }}</span
+                    >
+                  }
                 }
               </div>
             </div>
@@ -314,9 +323,6 @@ type DetailState =
   `,
 })
 export class AdminLogList {
-  private readonly service = inject(AdminLogsService);
-  private readonly destroyRef = inject(DestroyRef);
-
   readonly entries = input.required<readonly LogEntry[]>();
   /** Rows the live mode just inserted; they carry the fading accent wash. */
   readonly highlighted = input<ReadonlySet<number>>(new Set());
@@ -326,6 +332,9 @@ export class AdminLogList {
   /** A complete filter term (`key:value` or `-key:value`) the reader asked to append. */
   readonly termAdded = output<string>();
 
+  private readonly service = inject(AdminLogsService);
+  private readonly destroyRef = inject(DestroyRef);
+
   /** Row-local state follows the rows actually present: a row that a new filter, an exclusion or a
    *  reload took out of the list is forgotten, so it can neither hold the live mode back nor come back
    *  unfolded later. */
@@ -333,7 +342,8 @@ export class AdminLogList {
     source: () => this.entries(),
     computation: (entries, previous) => keepPresent(previous?.value ?? new Map(), entries),
   });
-  protected readonly copiedId = signal<number | null>(null);
+  /** The row whose "Kopieren" just answered, and whether the clipboard took the text. */
+  protected readonly copyResult = signal<{ id: number; ok: boolean } | null>(null);
 
   /** The unfolded rows (the value is unused; a map so both row-local states prune alike). */
   private readonly open = linkedSignal<readonly LogEntry[], ReadonlyMap<number, true>>({
@@ -404,11 +414,14 @@ export class AdminLogList {
   protected propertyRows(entry: LogEntry): PropertyRow[] {
     return Object.entries(entry.properties).map(([key, value]) => {
       const text = propertyText(value);
+      // A value over the parser's 200-character limit gets no actions: the term would only be
+      // refused with `too_long` and clear the list (a captured property may be 256 long).
       const addressable =
         PROPERTY_KEY.test(key) &&
         !RESERVED_KEYS.has(key.toLowerCase()) &&
         value !== null &&
-        typeof value !== 'object';
+        typeof value !== 'object' &&
+        filterValueFits(text);
       return {
         key,
         text,
@@ -432,11 +445,20 @@ export class AdminLogList {
   protected copy(entry: LogEntry): void {
     const state = this.details().get(entry.id);
     const exception = state?.status === 'loaded' ? state.detail.exception : null;
-    void navigator.clipboard?.writeText(formatLogLine(entry, exception)).then(() => {
-      this.copiedId.set(entry.id);
-      clearTimeout(this.copiedTimer);
-      this.copiedTimer = setTimeout(() => this.copiedId.set(null), 2000);
-    });
+    // No clipboard API at all on an insecure origin (a plain-http LAN host), and the write may be refused.
+    const write =
+      navigator.clipboard?.writeText(formatLogLine(entry, exception)) ??
+      Promise.reject(new Error('no clipboard'));
+    void write.then(
+      () => this.showCopyResult(entry.id, true),
+      () => this.showCopyResult(entry.id, false),
+    );
+  }
+
+  private showCopyResult(id: number, ok: boolean): void {
+    this.copyResult.set({ id, ok });
+    clearTimeout(this.copiedTimer);
+    this.copiedTimer = setTimeout(() => this.copyResult.set(null), 2000);
   }
 
   /** Only a row with an exception needs the single-entry call; the rest of the details are in the list. */

@@ -4,6 +4,7 @@ import {
   appendFilterTerm,
   filterErrorSelection,
   filterTerm,
+  filterValueFits,
   normalizeFilterWhitespace,
   quoteFilterValue,
 } from './log-filter-text';
@@ -57,6 +58,23 @@ describe('filterTerm', () => {
   it('quotes the value when needed', () => {
     expect(filterTerm('channel', 'hand of blood', false)).toBe('channel:"hand of blood"');
     expect(filterTerm('path', '/a,b', true)).toBe('-path:"/a,b"');
+  });
+});
+
+describe('filterValueFits', () => {
+  it('accepts a value up to the server limit of 200 characters and refuses a longer one', () => {
+    expect(filterValueFits('x'.repeat(200))).toBe(true);
+    expect(filterValueFits('x'.repeat(201))).toBe(false);
+    // Quotes and escapes are not part of the value the parser measures.
+    expect(filterValueFits(`${'"'.repeat(100)} ${'y'.repeat(99)}`)).toBe(true);
+  });
+
+  it('counts the * a quoted value ending in a backslash is widened with', () => {
+    // 199 characters plus the *: still 200.
+    expect(filterValueFits(`a b${'c'.repeat(195)}\\`)).toBe(true);
+    expect(filterValueFits(`a b${'c'.repeat(196)}\\`)).toBe(false);
+    // Bare, a trailing backslash is literal and widens nothing.
+    expect(filterValueFits(`${'c'.repeat(199)}\\`)).toBe(true);
   });
 });
 

@@ -67,9 +67,11 @@ describe('AdminLogFilterDialog', () => {
   let fixture: ComponentFixture<AdminLogFilterDialog>;
   let httpMock: HttpTestingController;
   let closed: unknown[];
+  let ref: { close: (r: unknown) => void; disableClose: boolean };
 
   function create(data: LogFilterDialogData): void {
     closed = [];
+    ref = { close: (r: unknown) => closed.push(r), disableClose: false };
     TestBed.configureTestingModule({
       imports: [
         TranslocoTestingModule.forRoot({
@@ -81,7 +83,7 @@ describe('AdminLogFilterDialog', () => {
         provideHttpClient(),
         provideHttpClientTesting(),
         { provide: DIALOG_DATA, useValue: data },
-        { provide: DialogRef, useValue: { close: (r: unknown) => closed.push(r) } },
+        { provide: DialogRef, useValue: ref },
       ],
     });
     httpMock = TestBed.inject(HttpTestingController);
@@ -188,6 +190,28 @@ describe('AdminLogFilterDialog', () => {
     expect(root().querySelector('[role="alert"]')?.textContent).toContain('no longer exists');
     expect(name().getAttribute('aria-invalid')).toBeNull();
     expect(filter().getAttribute('aria-invalid')).toBeNull();
+  });
+
+  it('cannot be dismissed while the save is out, so a late answer cannot get lost', () => {
+    create({ filter: null, initialFilter: 'level>=warn' });
+    type(name(), 'Mine');
+    const cancel = () =>
+      Array.from(root().querySelectorAll('button')).find(
+        (b) => b.textContent?.trim() === 'Cancel',
+      )!;
+    saveButton().click();
+    fixture.detectChanges();
+
+    expect(ref.disableClose).toBe(true);
+    expect(cancel().disabled).toBe(true);
+
+    httpMock
+      .expectOne('/api/admin/log-filters')
+      .flush({ errorCode: 'log_filter_name_taken' }, { status: 409, statusText: 'Conflict' });
+    fixture.detectChanges();
+
+    expect(ref.disableClose).toBe(false);
+    expect(cancel().disabled).toBe(false);
   });
 
   it('clears a field error as soon as that field is edited', () => {

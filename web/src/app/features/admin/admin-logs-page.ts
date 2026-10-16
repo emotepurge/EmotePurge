@@ -1095,7 +1095,9 @@ export class AdminLogsPage {
     const rows = (this.entries() ?? []).slice(0, LOG_COPY_LIMIT);
     const text = rows.map((entry) => formatLogLine(entry)).join('\n');
     const capped = (this.entries()?.length ?? 0) > LOG_COPY_LIMIT;
-    navigator.clipboard?.writeText(text).then(
+    // Without a clipboard API (an insecure origin such as a plain-http LAN host) say so, too.
+    const write = navigator.clipboard?.writeText(text) ?? Promise.reject(new Error('no clipboard'));
+    void write.then(
       () =>
         this.showCopyFeedback(
           this.transloco.translate(
