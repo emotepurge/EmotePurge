@@ -240,7 +240,7 @@ public class LogQueryServiceTests(PostgresFixture fixture) : IAsyncLifetime
         var first = await WithService(s => s.GetPageAsync(null, LastHour, null, 3, default));
         Assert.Equal(["old 4", "old 3", "old 2"], first.Entries.Select(e => e.Message));
 
-        // Ten minutes later: newer entries arrive, and the relative range would now start later than "old 0".
+        // Fifteen minutes later: newer entries arrive, and the relative range would now start later than "old 0".
         _time.Advance(TimeSpan.FromMinutes(15));
         await LogEntrySeed.InsertAsync(fixture, DatabaseName, LogEntrySeed.Entry(Now.AddMinutes(5), "newer"));
 
@@ -376,6 +376,22 @@ public class LogQueryServiceTests(PostgresFixture fixture) : IAsyncLifetime
             LogEntrySeed.Entry(Now.AddMinutes(-10), "worker new", instanceId: "b0000002", processStartedUtc: Now.AddMinutes(-30)));
 
         Assert.Equal(["worker new", "api"], await ReadMessagesAsync("instance:latest"));
+    }
+
+    [Fact]
+    public async Task InstanceLatest_SourceWithoutAnyRows_KeepsTheOtherSourceAndItsNegation()
+    {
+        // The Api has neither a status row nor an entry, so its branch of the lookup yields (api, NULL).
+        // That pair must neither match nor turn the worker's comparison into NULL, also under negation.
+        await LogEntrySeed.InsertAsync(
+            fixture,
+            DatabaseName,
+            LogEntrySeed.Entry(Now.AddMinutes(-35), "worker old", instanceId: "b0000001", processStartedUtc: Now.AddHours(-6)),
+            LogEntrySeed.Entry(Now.AddMinutes(-10), "worker new", instanceId: "b0000002", processStartedUtc: Now.AddMinutes(-30)));
+
+        Assert.Equal(["worker new"], await ReadMessagesAsync("instance:latest"));
+        Assert.Equal(["worker old"], await ReadMessagesAsync("-instance:latest"));
+        Assert.Empty(await ReadMessagesAsync("instance:latest source:api"));
     }
 
     [Fact]

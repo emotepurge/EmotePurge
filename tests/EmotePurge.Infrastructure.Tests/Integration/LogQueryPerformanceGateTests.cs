@@ -207,7 +207,6 @@ public sealed class LogQueryPerformanceGateTests(ITestOutputHelper output)
                 AssertNotEmpty(label, result);
             }
 
-
             lastCommands = recorder.Commands;
             if (run >= WarmupRuns)
             {
