@@ -1512,6 +1512,74 @@ describe('AdminLogsPage', () => {
       keysRequest().flush(keyPage(loaded()));
     });
 
+    it('freezes rows an earlier filter left behind: no reconcile, no next page until the new filter answers', async () => {
+      let state: DocumentVisibilityState = 'visible';
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+      const first = page(200, 100, 'c1');
+      await openAndLoad('/admin/logs', { page: first });
+      state = 'hidden';
+      document.dispatchEvent(new Event('visibilitychange'));
+      await settle();
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      state = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+      harness.detectChanges();
+      await vi.advanceTimersByTimeAsync(0);
+      statusRequest().flush(healthyStatus());
+      keysRequest().flush(keyPage(first.entries));
+
+      input().value = 'source:worker';
+      input().dispatchEvent(new Event('input'));
+      root().querySelector('form')!.dispatchEvent(new Event('submit'));
+      await vi.advanceTimersByTimeAsync(0);
+      statusRequest().flush(healthyStatus());
+      listRequest((r) => r.params.get('q') === 'source:worker').flush(
+        { errorCode: 'log_query_timeout' },
+        { status: 503, statusText: 'x' },
+      );
+      summaryRequest((r) => r.params.get('q') === 'source:worker').flush(
+        { errorCode: 'log_query_timeout' },
+        { status: 503, statusText: 'x' },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      harness.detectChanges();
+
+      // The last good answer stays, marked out of date, and nothing claims it is live.
+      expect(root().querySelector('[role="alert"]')?.textContent).toContain('out of date');
+      expect(rowIds().length).toBe(100);
+      expect(marker()).toBe('Reload needed');
+
+      // Neither a hint nor the tick reconciles the old rows against the new filter.
+      emitLive('logs.appended');
+      await vi.advanceTimersByTimeAsync(30_000);
+      statusRequest().flush(healthyStatus());
+      noKeysRequest();
+
+      // No sentinel to scroll into, and a late observer callback pages nothing.
+      expect(FakeIntersectionObserver.instances.every((o) => o.disconnected)).toBe(true);
+      FakeIntersectionObserver.instances.at(-1)!.fire();
+      httpMock.expectNone((r) => r.url === '/api/admin/logs' && r.params.has('before'));
+
+      buttonNamed('Try again').click();
+      await vi.advanceTimersByTimeAsync(0);
+      statusRequest().flush(healthyStatus());
+      const replacement = page(50, 3, null);
+      listRequest((r) => r.params.get('q') === 'source:worker').flush(replacement);
+      summaryRequest((r) => r.params.get('q') === 'source:worker').flush(summary());
+      await vi.advanceTimersByTimeAsync(0);
+      harness.detectChanges();
+      expect(rowIds()).toEqual([50, 49, 48]);
+      expect(marker()).not.toBe('Reload needed');
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      statusRequest().flush(healthyStatus());
+      const keys = keysRequest();
+      expect(keys.request.params.get('q')).toBe('source:worker');
+      keys.flush(keyPage(replacement.entries));
+    });
+
     it('marks a live summary refresh as current, so "n of total" comes back after a failed one', async () => {
       startFakeDate('2026-10-14T12:00:05Z');
       await open('/admin/logs');

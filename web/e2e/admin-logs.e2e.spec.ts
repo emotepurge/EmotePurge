@@ -679,6 +679,49 @@ test.describe('admin log viewer live mode', () => {
     await expect(rows(page).first()).toHaveAttribute('data-log-id', '7');
   });
 
+  test('rows an earlier filter left behind stay frozen until the new filter answers', async ({
+    page,
+  }) => {
+    const store = storeOf(5);
+    let failWorker = true;
+    const calls = await adminLogsPage(page, {
+      store,
+      fail: (url, endpoint) =>
+        failWorker &&
+        (endpoint === 'list' || endpoint === 'summary') &&
+        url.searchParams.get('q') === 'source:worker'
+          ? { status: 503, body: { errorCode: 'log_query_timeout' } }
+          : undefined,
+    });
+    await page.clock.install({ time: NOW });
+    await page.goto('/admin/logs');
+    await expect(rows(page)).toHaveCount(5);
+
+    await filterField(page).fill('source:worker');
+    await filterField(page).press('Enter');
+    await expect(
+      page.getByRole('alert').getByText('Abfrage zu aufwendig — Zeitraum oder Filter eingrenzen'),
+    ).toBeVisible();
+    await expect(page.getByText('Neu laden nötig', { exact: true })).toBeVisible();
+
+    // Neither a hint nor the 30 s tick reconciles the old rows against the new filter.
+    const keys = calls.keys.length;
+    store.push(at(6, '2026-10-14T12:00:05Z'));
+    await emitLive(page, hint);
+    await page.clock.runFor(30_000);
+    await syncWithMock(page);
+    expect(calls.keys).toHaveLength(keys);
+    await expect(rows(page)).toHaveCount(5);
+
+    failWorker = false;
+    await page.getByRole('button', { name: 'Erneut versuchen' }).click();
+    await expect(rows(page)).toHaveCount(6);
+    store.push(at(7, '2026-10-14T12:00:07Z'));
+    await emitLive(page, hint);
+    await expect(rows(page).first()).toHaveAttribute('data-log-id', '7');
+    expect(calls.keys.at(-1)?.searchParams.get('q')).toBe('source:worker');
+  });
+
   test('a closed stream shows "Neu laden" and the 30 s reconcile keeps running', async ({
     page,
   }) => {

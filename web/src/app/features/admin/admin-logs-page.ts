@@ -591,7 +591,9 @@ export function absoluteRangeLabelBounds(from: string, to: string): { from: stri
                   {{ 'admin.logs.list.limit' | transloco: { count: rows.length } }}
                 </p>
               } @else if (cursor()) {
-                <div #sentinel class="h-px" aria-hidden="true"></div>
+                @if (listCurrent()) {
+                  <div #sentinel class="h-px" aria-hidden="true"></div>
+                }
               } @else {
                 <p class="text-xs text-fg-muted">{{ 'admin.logs.list.end' | transloco }}</p>
               }
@@ -713,6 +715,20 @@ export class AdminLogsPage {
   protected readonly cursor = signal<string | null>(null);
   /** The exact bounds of the first page; paging sends them back as an absolute range (R4). */
   private frozen: { from: string; to: string } | null = null;
+  /** Which request the loaded rows answer; `null` while nothing is loaded. */
+  private readonly loadedKey = signal<string | null>(null);
+  /**
+   * The rows on screen answer the current request. After a filter or range switch whose first page
+   * failed they belong to the previous one: they stay as the stale last answer (spec §9.4) but are
+   * frozen — no reconcile, no paging, no sentinel — until a first page of the current request lands.
+   */
+  protected readonly listCurrent = computed(
+    () => this.loadedKey() !== null && this.loadedKey() === requestKey(this.request()),
+  );
+  /** Settled on an earlier request's rows: the current request's first page failed. */
+  private readonly showsStaleList = computed(
+    () => this.entries() !== null && !this.listCurrent() && !this.listLoading(),
+  );
 
   protected readonly listLoading = signal(false);
   protected readonly summaryLoading = signal(false);
@@ -755,8 +771,9 @@ export class AdminLogsPage {
     if (this.paused()) {
       return 'paused';
     }
-    // No reconcile runs while the hint asks for a reload, so the marker must not claim "Live".
-    if (this.tooManyNew()) {
+    // No reconcile runs while the hint asks for a reload, or while the rows on screen are an
+    // earlier request's stale answer, so the marker must not claim "Live".
+    if (this.tooManyNew() || this.showsStaleList()) {
       return 'reload';
     }
     const stream = this.liveUpdate.status();
@@ -792,7 +809,7 @@ export class AdminLogsPage {
    * too (either way): the histogram, the drop banner and the capture banners then arrive together with
    * the rows instead of pushing rendered rows down (spec §9.7, B8 "no jumps").
    */
-  private pendingPage: { page: LogPage; range: LogRangeQuery } | null = null;
+  private pendingPage: { page: LogPage; request: LogRequest } | null = null;
   private summarySettled = true;
   private statusSettled = true;
   private moreSub?: Subscription;
@@ -812,7 +829,7 @@ export class AdminLogsPage {
    *  shown belongs to an earlier request and its total would describe a different filter. */
   protected readonly loadedTotal = computed(() => {
     const summary = this.summary();
-    if (!summary || !this.summaryCurrent()) {
+    if (!summary || !this.summaryCurrent() || !this.listCurrent()) {
       return null;
     }
     return Math.max(this.entries()?.length ?? 0, summary.total + this.insertedSinceSummary());
@@ -1156,6 +1173,7 @@ export class AdminLogsPage {
       !frozen ||
       this.moreLoading() ||
       this.listLoading() ||
+      !this.listCurrent() ||
       this.limitReached()
     ) {
       return;
@@ -1302,6 +1320,7 @@ export class AdminLogsPage {
       this.summary.set(null);
       this.cursor.set(null);
       this.frozen = null;
+      this.loadedKey.set(null);
       this.listLoading.set(false);
       this.summaryLoading.set(false);
       return;
@@ -1313,7 +1332,7 @@ export class AdminLogsPage {
 
     this.pageSub = this.service.getPage(request.q, request.range).subscribe({
       next: (page) => {
-        this.pendingPage = { page, range: request.range };
+        this.pendingPage = { page, request };
         this.applyPendingPage();
       },
       error: (error: unknown) => this.onLoadError(error, 'list'),
@@ -1343,16 +1362,17 @@ export class AdminLogsPage {
       return;
     }
     this.pendingPage = null;
-    this.onFirstPage(pending.page, pending.range);
+    this.onFirstPage(pending.page, pending.request);
   }
 
-  private onFirstPage(page: LogPage, range: LogRangeQuery): void {
+  private onFirstPage(page: LogPage, request: LogRequest): void {
     this.listLoading.set(false);
     this.entries.set(page.entries);
+    this.loadedKey.set(requestKey(request));
     this.frozen =
       page.rangeFromUtc && page.rangeToUtc
         ? { from: page.rangeFromUtc, to: page.rangeToUtc }
-        : boundsOf(range);
+        : boundsOf(request.range);
     // Without bounds to page on there is no next page: show the end, not a dead sentinel.
     this.cursor.set(this.frozen ? page.nextCursor : null);
     // A load the reader asked for went through: live mode may fetch on its own again (S1).
@@ -1373,6 +1393,7 @@ export class AdminLogsPage {
       this.entries() !== null &&
       this.frozen !== null &&
       !this.listLoading() &&
+      this.listCurrent() &&
       this.visible() &&
       !this.paused() &&
       !this.tooManyNew()
@@ -1564,6 +1585,7 @@ export class AdminLogsPage {
       // Never applied partially: nothing of the old answer stays under a filter that is not valid.
       this.serverFilterError.set(error.error);
       this.entries.set(null);
+      this.loadedKey.set(null);
       this.summary.set(null);
       this.cursor.set(null);
       this.cancelLoads();
@@ -1608,6 +1630,11 @@ export class AdminLogsPage {
     clearTimeout(this.copyTimer);
     this.copyTimer = setTimeout(() => this.copyFeedback.set(null), COPY_FEEDBACK_MS);
   }
+}
+
+/** Identifies a request by its filter and range, so rows can be matched to the query they answer. */
+function requestKey(request: LogRequest | null): string | null {
+  return request ? JSON.stringify([request.q, request.range]) : null;
 }
 
 function isInvalidRange(error: unknown): boolean {
