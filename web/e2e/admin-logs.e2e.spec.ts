@@ -651,14 +651,20 @@ test.describe('admin log viewer live mode', () => {
     await expect(page.getByText('Live pausiert', { exact: true })).toBeVisible();
     await expect(page.getByText('Live pausiert nach Fehler')).toBeVisible();
 
+    // Every request of the page, of any kind; the sync probe below is the test's own.
     const sent = () =>
-      calls.keys.length + calls.ids.length + calls.list.length + calls.summary.length;
+      calls.keys.length +
+      calls.ids.length +
+      calls.list.length +
+      calls.summary.length +
+      calls.entry.length +
+      calls.filters.length +
+      calls.status.filter((url) => !url.searchParams.has('sync')).length;
     const before = sent();
     store.push(at(6, '2026-10-14T12:00:05Z'));
     await emitLive(page, hint);
     await emitLive(page, hint);
-    await page.clock.runFor(65_000);
-    // The ticks still refresh the capture status; everything else stays quiet.
+    await page.clock.runFor(125_000);
     await syncWithMock(page);
     expect(sent()).toBe(before);
     await expect(rows(page)).toHaveCount(5);

@@ -570,6 +570,43 @@ describe('AdminLogsPage', () => {
     expect(text).toContain('older than 7 days are still present');
   });
 
+  it('shows the held page when the status call fails', async () => {
+    await open('/admin/logs');
+    listRequest().flush(page(4, 4, null));
+    summaryRequest().flush(summary());
+    await settle();
+    expect(root().querySelectorAll('[data-log-id]').length).toBe(0);
+
+    statusRequest().flush({}, { status: 500, statusText: 'x' });
+    await settle();
+
+    expect(root().querySelectorAll('[data-log-id]').length).toBe(4);
+    // The status is advisory: its failure is no page error.
+    expect(root().querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('clears list and histogram when the summary refuses the filter while the page is held', async () => {
+    await openAndLoad('/admin/logs');
+    expect(root().querySelectorAll('[data-log-id]').length).toBe(4);
+
+    input().value = 'level:debug';
+    input().dispatchEvent(new Event('input'));
+    root().querySelector('form')!.dispatchEvent(new Event('submit'));
+    await settle();
+    statusRequest().flush(healthyStatus());
+    listRequest().flush(page(4, 4, null));
+    await settle();
+    summaryRequest().flush(
+      { errorCode: 'invalid_log_filter', reason: 'invalid_level', position: 6, length: 5 },
+      { status: 400, statusText: 'Bad Request' },
+    );
+    await settle();
+
+    expect(root().querySelectorAll('[data-log-id]').length).toBe(0);
+    expect(root().querySelector('app-time-histogram')).toBeNull();
+    expect(input().getAttribute('aria-invalid')).toBe('true');
+  });
+
   it('shows the rows when the summary fails, together with the error', async () => {
     await open('/admin/logs');
     statusRequest().flush(healthyStatus());
@@ -1430,6 +1467,66 @@ describe('AdminLogsPage', () => {
 
       expect(root().textContent).toContain('capture of worker has written nothing since 11:50 UTC');
       expect(marker()).toBe('Capture incomplete');
+    });
+
+    it('sends nothing on the tick while paused, not even the status, until a retry succeeds', async () => {
+      let state: DocumentVisibilityState = 'visible';
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+      await openAndLoad('/admin/logs');
+      state = 'hidden';
+      document.dispatchEvent(new Event('visibilitychange'));
+      await settle();
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      state = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+      harness.detectChanges();
+      await vi.advanceTimersByTimeAsync(0);
+      // A failed status refresh is advisory and does not pause; the failed key query does.
+      statusRequest().flush({}, { status: 503, statusText: 'Busy' });
+      keysRequest().flush({}, { status: 500, statusText: 'x' });
+      harness.detectChanges();
+      expect(marker()).toBe('Live paused');
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      state = 'hidden';
+      document.dispatchEvent(new Event('visibilitychange'));
+      state = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+      await vi.advanceTimersByTimeAsync(0);
+      httpMock.expectNone('/api/admin/logs/status');
+      noKeysRequest();
+
+      buttonNamed('Try again').click();
+      await vi.advanceTimersByTimeAsync(0);
+      statusRequest().flush(healthyStatus());
+      listRequest().flush(page(4, 4, null));
+      summaryRequest().flush(summary());
+      await vi.advanceTimersByTimeAsync(0);
+      harness.detectChanges();
+      expect(marker()).not.toBe('Live paused');
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      statusRequest().flush(healthyStatus());
+      keysRequest().flush(keyPage(loaded()));
+    });
+
+    it('marks a live summary refresh as current, so "n of total" comes back after a failed one', async () => {
+      startFakeDate('2026-10-14T12:00:05Z');
+      await open('/admin/logs');
+      statusRequest().flush(healthyStatus());
+      listRequest().flush(page(4, 4, null));
+      summaryRequest().flush({}, { status: 503, statusText: 'Busy' });
+      await settle();
+      expect(root().textContent).toContain('4 entries loaded');
+
+      // No summary was ever counted, so the first insert refreshes it at once.
+      await reconcile([at(5, '2026-10-14T12:00:01Z')]);
+      summaryRequest().flush(summary({ total: 5 }));
+      await settle();
+
+      expect(root().textContent).toContain('5 of 5 entries loaded');
     });
 
     it('refreshes the summary at most once per 30 s, and only after something was inserted', async () => {

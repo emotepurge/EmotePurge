@@ -948,14 +948,18 @@ export class AdminLogsPage {
     // the reconcile sooner, it is never what makes the list correct. pollWhileVisible also ticks once
     // when the tab comes back; its very first tick is skipped because the page is loading anyway.
     // The same tick refreshes the capture status, so an open page learns that a source stopped
-    // writing; `/logs/status` is cached 30 s on the server, so this tick is its natural pace.
+    // writing; `/logs/status` is cached 30 s on the server, so this tick is its natural pace. While
+    // live mode is paused the tick sends nothing at all, the status included (§5.4, AK 20); a failed
+    // status refresh itself never pauses, the banners are advisory.
     liveEvents(ADMIN_LIVE_URL, [LIVE_EVENT_TYPES.logsAppended]).subscribe(() =>
       this.requestReconcile(),
     );
     pollWhileVisible(LOG_RECONCILE_INTERVAL_MS, this.visible)
       .pipe(skip(this.visible() ? 1 : 0))
       .subscribe(() => {
-        this.loadStatus();
+        if (!this.paused()) {
+          this.loadStatus();
+        }
         this.requestReconcile();
       });
     effect(() => {
@@ -1491,6 +1495,8 @@ export class AdminLogsPage {
         this.summary.set(summary);
         this.lastSummaryAtMs = Date.now();
         this.summaryBehind = false;
+        // Same request as the list: after a failed load summary, this one is current again.
+        this.summaryCurrent.set(true);
         this.insertedSinceSummary.set(0);
       }),
     );
