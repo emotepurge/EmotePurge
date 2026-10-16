@@ -43,6 +43,8 @@ import { EmoteUsageTotal, EmoteUsageTotalDto } from './usage-stat.model';
  * 5. The rest of the live entries are Klasse 3 (`emoteId: null`, null payload, E17): one row per
  *    entry in a slot response (D22), carrying the entry's raw `addedAt` as `liveAddedAt` (plan 378,
  *    R1 a), one row per 7TV id in an emote response (F2).
+ *    Every live card of a non-active view (bound or Klasse 3, grouped or per entry) also carries
+ *    `setAddedAt`, the newest 7TV add date of its entries, which the "Recently added" sort prefers.
  * 6. `siblingNames` of a bound slot row or a per-entry Klasse-3 row are the names of the id's other
  *    live entries in D2 order; a `'left'` slot row keeps the DTO's, everything else has none.
  *
@@ -170,8 +172,10 @@ export function mergeSetView(
       };
     }
     const first = live[group[0]];
+    const setAddedAt = newestAddedAt(group.map((entryIndex) => live[entryIndex]));
     return {
       ...counted(row),
+      ...(setAddedAt === undefined ? {} : { setAddedAt }),
       emoteName: first.name,
       imageUrl: first.imageUrl,
       membership: 'live',
@@ -195,12 +199,30 @@ export function mergeSetView(
       const free = group.filter((entryIndex) => !consumed[entryIndex]);
       if (free.length > 0) {
         const names = free.map((entryIndex) => live[entryIndex].name);
-        rows.push(uncounted(live[free[0]], sevenTvEmoteId, names, []));
+        const setAddedAt = newestAddedAt(free.map((entryIndex) => live[entryIndex]));
+        const row = uncounted(live[free[0]], sevenTvEmoteId, names, []);
+        rows.push(setAddedAt === undefined ? row : { ...row, setAddedAt });
       }
     }
   }
 
   return rows;
+}
+
+/**
+ * The newest parseable 7TV add date among `entries`, as the raw wire string, or `undefined` when
+ * none has one. This is the viewed set's own date for a card — the DTO's `firstSeenAt` belongs to
+ * the active set (or the emote's oldest slot) and is not a date within the set being viewed.
+ */
+function newestAddedAt(entries: readonly ForeignEmoteRow[]): string | undefined {
+  let best: { raw: string; at: number } | undefined;
+  for (const entry of entries) {
+    const at = entry.addedAt ? Date.parse(entry.addedAt) : Number.NaN;
+    if (!Number.isNaN(at) && (best === undefined || at > best.at)) {
+      best = { raw: entry.addedAt as string, at };
+    }
+  }
+  return best?.raw;
 }
 
 /** A `/totals` row with its slot fields read tolerantly — an older Api omits them (plan 377, 2.1). */

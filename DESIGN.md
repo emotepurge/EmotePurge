@@ -425,11 +425,13 @@ hierarchy, with the proper name of the target as its label, never "Back".
 ### The Sprite Sheet
 
 The signature surface. The usage page and the ballot are not lists but a sheet of uniform cells,
-grouped into four bands that are cut from the set itself rather than from fixed thresholds: the
-emotes that together make up the first half of the usage, then up to 80 %, then the rest with at
-least one hit, then the dead ones. Band headings are a hairline plus a label. The fill bar of a
-cell measures against the peak of its *band*, not against that of the set — otherwise every bar
-in the lower bands would be empty.
+grouped, on the usage page, into four bands that are cut from the set itself rather than from
+fixed thresholds: the emotes that together make up the first half of the usage, then up to 80 %,
+then the rest with at least one hit, then the dead ones. Band headings are a hairline plus a
+label. The fill bar of a cell measures against the peak of its *band*, not against that of the
+set — otherwise every bar in the lower bands would be empty. The sort "Zuletzt hinzugefügt"
+replaces the bands with groups by the local day an emote entered the set (same heading shape,
+no swatch); distribution strip, fill bars and usage rank are then not shown.
 
 ### Named Rules
 

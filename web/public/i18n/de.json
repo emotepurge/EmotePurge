@@ -1102,6 +1102,7 @@
     "usageLabel": "Nutzung",
     "sortByUsage": "Nutzung",
     "sortByLastUsed": "Zuletzt benutzt",
+    "sortByAdded": "Zuletzt hinzugefügt",
     "sortKeyLabel": "Sortieren nach",
     "sortDirectionLabel": "Reihenfolge",
     "sortDescending": "Absteigend",
@@ -1155,6 +1156,12 @@
       "myVoteDelete": "Deine Stimme: Löschen",
       "myVoteNone": "Du hast noch nicht abgestimmt."
     },
+    "addedGroup": {
+      "today": "Heute · {{date}}",
+      "yesterday": "Gestern · {{date}}",
+      "day": "{{date}}",
+      "unknown": "Datum unbekannt"
+    },
     "atlas": {
       "label": "Emote-Bogen",
       "keyboardHint": "Mit den Pfeiltasten zwischen den Emotes wechseln, mit der Leertaste markieren, mit Enter den Verlauf öffnen. Umschalt+Klick wiederholt den letzten Klick über einen ganzen Bereich: markiert ihn oder hebt die Markierung auf."
@@ -1177,6 +1184,7 @@
       "count": "{{count}} Emotes",
       "countOne": "1 Emote",
       "selectAll": "alle markieren",
+      "selectAllIn": "alle markieren: {{group}}",
       "uncounted": {
         "title": "Keine Zählungen",
         "hint": "unter diesem Set"

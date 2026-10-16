@@ -408,7 +408,8 @@
         <!-- Which band this one is in. The header that says so may be dozens of rows up by the time
              the pointer is here, and "is this still the regular cast or already the tail" is the
              whole question the atlas is scanned for. -->
-        <span>{{ 'usageStats.bands.' + inspectedBand() + '.title' | transloco }}</span>
+        @let inspectedGroup = groupTitle(inspectedBand());
+        <span>{{ inspectedGroup.key | transloco: inspectedGroup.params }}</span>
         @if (emote.totalUseCount !== null) {
           <span class="font-mono text-fg-body">
             {{ formatCount(emote.totalUseCount) }}×
@@ -575,7 +576,7 @@
        and how long the dead tail runs — and it is annotated with the two numbers that matter, so it
        never has to be read as decoration. Not sticky: this is read once, on arrival. Not after a
        failed set switch either (setSwitchFailed): the rows still loaded belong to the previous set. -->
-  @if (countedEmotes().length > 0 && !viewLoading() && !setSwitchFailed()) {
+  @if (!addedMode() && countedEmotes().length > 0 && !viewLoading() && !setSwitchFailed()) {
     <div class="flex flex-wrap items-end gap-x-5 gap-y-2">
       <div class="w-28 shrink-0">
         <span class="text-[10px] font-semibold tracking-[0.13em] text-fg-muted uppercase">
@@ -723,15 +724,19 @@
           <div *cdkVirtualFor="let row of rows(); trackBy: trackRow" [style.height.px]="rowHeight">
             @if (row.kind === 'band') {
               <div class="flex h-full items-end gap-3 pb-2">
+                @let title = groupTitle(row.band);
+                @let titleText = title.key | transloco: title.params;
                 <!-- Purely decorative: the band is named in words right next to it, so the swatch
                      carries no information of its own. It exists to tie the header to its stretch
                      of the distribution strip above. -->
-                <span
-                  [class]="'mb-1 size-2 shrink-0 rounded-xs ' + bandFill(row.band)"
-                  aria-hidden="true"
-                ></span>
+                @if (!addedMode()) {
+                  <span
+                    [class]="'mb-1 size-2 shrink-0 rounded-xs ' + bandFill(row.band)"
+                    aria-hidden="true"
+                  ></span>
+                }
                 <h3 class="text-[11px] font-semibold tracking-[0.13em] text-fg-secondary uppercase">
-                  {{ 'usageStats.bands.' + row.band + '.title' | transloco }}
+                  {{ titleText }}
                 </h3>
                 <!-- Two unbreakable phrases that wrap as wholes: where the column is too narrow for
                      one line (German at 360 px), the heading breaks between the two numbers instead
@@ -739,18 +744,21 @@
                      scroller's content wrapper, and with it every row of the sheet, into the gutter.
                      The 1ch column gap is one space in this monospace face. -->
                 <span class="flex flex-wrap gap-x-[1ch] font-mono text-[11px] text-fg-muted">
-                  <span class="whitespace-nowrap">
-                    @if (row.band === 'dead') {
-                      {{ 'usageStats.bands.dead.hint' | transloco }}
-                    } @else if (row.band === 'uncounted') {
-                      {{ 'usageStats.bands.uncounted.hint' | transloco }}
-                    } @else {
-                      {{
-                        'usageStats.bands.share' | transloco: { share: formatBandShare(row.share) }
-                      }}
-                    }
-                    ·
-                  </span>
+                  @if (!addedMode()) {
+                    <span class="whitespace-nowrap">
+                      @if (row.band === 'dead') {
+                        {{ 'usageStats.bands.dead.hint' | transloco }}
+                      } @else if (row.band === 'uncounted') {
+                        {{ 'usageStats.bands.uncounted.hint' | transloco }}
+                      } @else {
+                        {{
+                          'usageStats.bands.share'
+                            | transloco: { share: formatBandShare(row.share) }
+                        }}
+                      }
+                      ·
+                    </span>
+                  }
                   <span class="whitespace-nowrap">
                     @if (row.count === 1) {
                       {{ 'usageStats.bands.countOne' | transloco }}
@@ -762,8 +770,9 @@
                 <span class="h-px min-w-4 flex-1 bg-border"></span>
                 <!-- Only on the dead band: it is the one group whose members are candidates by
                    definition, so "all of them" is a sentence a moderator actually means. Offering
-                   it on the heavy band would be a loaded gun with no purpose. -->
-                @if (row.band === 'dead' && !isCoarse()) {
+                   it on the heavy band would be a loaded gun with no purpose. The same holds for
+                   an add day in the "Recently added" sort: the evening's throwaway emotes. -->
+                @if ((row.band === 'dead' || isAddedDayGroup(row.band)) && !isCoarse()) {
                   <!-- No [disabled] here (Codex/Opus review): this row only ever renders in the
                        grid's own @else branch, which isLoading() never reaches (see sheetShowsRows)
                        — a loading-window guard on this button could never fire, so binding one was
@@ -772,7 +781,10 @@
                   <button
                     type="button"
                     class="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium text-accent-fg transition hover:bg-surface-inset"
-                    (click)="selectBand('dead')"
+                    [attr.aria-label]="
+                      'usageStats.bands.selectAllIn' | transloco: { group: titleText }
+                    "
+                    (click)="selectBand(row.band)"
                   >
                     {{ 'usageStats.bands.selectAll' | transloco }}
                   </button>
@@ -911,7 +923,7 @@
                       }
                       <!-- Weight without a change of size: the bar is the only thing on the cell that
                        differs by usage, measured against its own band's peak. -->
-                      @if ((emote.totalUseCount ?? 0) > 0) {
+                      @if (!addedMode() && (emote.totalUseCount ?? 0) > 0) {
                         <span class="absolute inset-x-0 bottom-0 block h-0.5 bg-border">
                           <i
                             class="block h-full bg-accent-fg/75"
@@ -1006,7 +1018,8 @@
                 @if (inspectedRank(); as rank) {
                   #{{ rank }} ·
                 }
-                {{ 'usageStats.bands.' + inspectedBand() + '.title' | transloco }}
+                @let inspectedGroup = groupTitle(inspectedBand());
+                {{ inspectedGroup.key | transloco: inspectedGroup.params }}
               </p>
             </div>
           </div>

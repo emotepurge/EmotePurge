@@ -1102,6 +1102,7 @@
     "usageLabel": "uses",
     "sortByUsage": "Usage",
     "sortByLastUsed": "Last used",
+    "sortByAdded": "Recently added",
     "sortKeyLabel": "Sort by",
     "sortDirectionLabel": "Order",
     "sortDescending": "Descending",
@@ -1155,6 +1156,12 @@
       "myVoteDelete": "Your vote: delete",
       "myVoteNone": "You have not voted yet."
     },
+    "addedGroup": {
+      "today": "Today · {{date}}",
+      "yesterday": "Yesterday · {{date}}",
+      "day": "{{date}}",
+      "unknown": "Date unknown"
+    },
     "atlas": {
       "label": "Emote sheet",
       "keyboardHint": "Use the arrow keys to move between emotes, space to mark one and enter to open its history. Shift-click repeats your last click across a whole range, marking it or clearing the mark."
@@ -1177,6 +1184,7 @@
       "count": "{{count}} emotes",
       "countOne": "1 emote",
       "selectAll": "mark all",
+      "selectAllIn": "mark all: {{group}}",
       "uncounted": {
         "title": "No counts",
         "hint": "under this set"

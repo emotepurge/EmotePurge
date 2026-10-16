@@ -110,6 +110,12 @@ import {
 import { EmoteSetMenu } from '../../shared/emotes/emote-set-menu';
 import { EmoteSprite } from '../../shared/emotes/emote-sprite';
 import { EmoteSpriteAnimated } from '../../shared/emotes/emote-sprite-animated';
+import {
+  addedDayKeyOf,
+  addedDayKind,
+  groupByAddedDay,
+  UNKNOWN_ADDED_DAY,
+} from '../../shared/emotes/added-day-groups';
 import { EmoteUsageFilter } from '../../shared/emotes/emote-usage-filter';
 import { UsageRangeMenu } from '../../shared/emotes/usage-range-menu';
 import { UsageSparkline } from '../../shared/emotes/usage-sparkline';
@@ -179,7 +185,7 @@ import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { SegmentedControl, SegmentedControlOption } from '../../shared/ui/segmented-control';
 
 type SortDirection = 'asc' | 'desc';
-type SortKey = 'usage' | 'lastUsed';
+type SortKey = 'usage' | 'lastUsed' | 'added';
 
 /**
  * The atlas's group headings: the four usage bands, plus the set view's own trailing group of rows
@@ -187,7 +193,11 @@ type SortKey = 'usage' | 'lastUsed';
  * That group is deliberately not a band: `null` is not a small number, it has no share of usage and
  * no place in the Pareto cut, so it can never be `usageBandOf`'s answer.
  */
-type AtlasGroupKey = UsageBandKey | 'uncounted';
+type AtlasGroupKey = UsageBandKey | 'uncounted' | AddedGroupKey;
+
+/** The groups of the "Recently added" sort: `day:yyyy-MM-dd` for a local calendar day, or the
+ *  trailing group of rows whose add date is unknown. */
+type AddedGroupKey = `day:${string}` | 'unknown-date';
 
 /** A row that has a count under the shown set — the only kind bands, sort, sums and fill bars may
  *  ever see (spec F16: every one of them would turn a `null` into a silent `NaN`). */
@@ -332,6 +342,14 @@ function tagAssignedFeedback(result: TagAssignDialogResult): CaptionSentence[] {
     });
   }
   return sentences;
+}
+
+function isUsageBand(key: AtlasGroupKey): key is UsageBandKey {
+  return key in USAGE_BAND_FILL;
+}
+
+function addedGroupKeyOf(dayKey: string): AddedGroupKey {
+  return dayKey === UNKNOWN_ADDED_DAY ? 'unknown-date' : `day:${dayKey}`;
 }
 
 function isCounted(emote: EmoteUsageTotal): emote is CountedEmote {
@@ -595,6 +613,7 @@ export class UsageStatsPage {
   protected readonly sortKeyOptions: SegmentedControlOption[] = [
     { value: 'usage', labelKey: 'usageStats.sortByUsage' },
     { value: 'lastUsed', labelKey: 'usageStats.sortByLastUsed' },
+    { value: 'added', labelKey: 'usageStats.sortByAdded' },
   ];
 
   protected readonly sortDirectionOptions: SegmentedControlOption[] = [
@@ -1488,6 +1507,9 @@ export class UsageStatsPage {
   /** The bands, then — only in a set view that has any — the trailing "no counts under this set"
    *  group (spec 8.2, AK 56). */
   private readonly atlasGroups = computed(() => {
+    if (this.addedMode()) {
+      return this.addedGroups();
+    }
     const groups: { key: AtlasGroupKey; items: readonly EmoteUsageTotal[]; share: number }[] = [
       ...this.bands(),
     ];
@@ -1497,6 +1519,26 @@ export class UsageStatsPage {
     }
     return groups;
   });
+
+  /** "Recently added" replaces the usage bands by local-day groups (and hides the distribution
+   *  strip and the fill bars, which are measures of those bands). */
+  protected readonly addedMode = computed(() => this.sortKey() === 'added');
+
+  /**
+   * Every displayed row — counted or not, since a freshly added emote may have no counts yet and is
+   * exactly what this sort is for — in local-day groups, newest first unless the direction is
+   * ascending. `'left'` rows are treated as in the other modes: `emotes()` drops them unless the
+   * live member list is truncated, and then they show up here exactly as they show up in the bands.
+   */
+  private readonly addedGroups = computed(() =>
+    groupByAddedDay(this.filteredEmotes(), this.sortDirection(), (emote) => emote.emoteName).map(
+      (group) => ({
+        key: addedGroupKeyOf(group.key),
+        items: group.items as readonly EmoteUsageTotal[],
+        share: 0,
+      }),
+    ),
+  );
 
   protected readonly atlasOrder = computed(() =>
     this.atlasGroups().flatMap((group) => group.items),
@@ -1828,13 +1870,17 @@ export class UsageStatsPage {
 
   protected readonly inspectedRank = computed(() => {
     const emote = this.inspected();
-    return emote ? (this.usageRank().get(emote.slotKey) ?? null) : null;
+    // The rank is a position in the usage ranking, which the "Recently added" mode does not show.
+    return emote && !this.addedMode() ? (this.usageRank().get(emote.slotKey) ?? null) : null;
   });
 
   protected readonly inspectedBand = computed<AtlasGroupKey>(() => {
     const emote = this.inspected();
     if (!emote) {
       return 'dead';
+    }
+    if (this.addedMode()) {
+      return addedGroupKeyOf(addedDayKeyOf(emote));
     }
     return emote.totalUseCount === null
       ? 'uncounted'
@@ -3215,10 +3261,11 @@ export class UsageStatsPage {
     this.focusCell(next);
   }
 
-  protected selectBand(key: UsageBandKey): void {
-    const band = this.bands().find((candidate) => candidate.key === key);
-    if (band) {
-      this.selection.selectMany(band.items);
+  /** Adds every row of one atlas group to the selection — the "never used" band, or one add day. */
+  protected selectBand(key: AtlasGroupKey): void {
+    const group = this.atlasGroups().find((candidate) => candidate.key === key);
+    if (group) {
+      this.selection.selectMany(group.items);
       // A bulk gesture, unlike an individual click, has no cell of its own to announce through —
       // see `dockMarkedCount`'s comment for why only these two writers exist.
       this.recordBulkMarkAnnouncement();
@@ -3235,7 +3282,9 @@ export class UsageStatsPage {
   }
 
   protected fillPercent(emote: EmoteUsageTotal): number {
-    return this.fillPercents().get(emote.slotKey) ?? 0;
+    // Band peaks are not on screen in the "Recently added" mode, so a bar measured against one would
+    // claim a comparison the sheet does not show.
+    return this.addedMode() ? 0 : (this.fillPercents().get(emote.slotKey) ?? 0);
   }
 
   /** Compact figure printed onto the sprite — "9,4k" fits a 64 px cell, "9412" does not. */
@@ -3276,7 +3325,28 @@ export class UsageStatsPage {
   /** The "no counts" group gets an outline instead of a band fill: it is not a fifth band on the
    *  lightness ramp (§2.5), and a filled chip would claim a place on it. */
   protected bandFill(band: AtlasGroupKey): string {
-    return band === 'uncounted' ? 'inset-ring-1 inset-ring-border-strong' : USAGE_BAND_FILL[band];
+    return isUsageBand(band) ? USAGE_BAND_FILL[band] : 'inset-ring-1 inset-ring-border-strong';
+  }
+
+  protected isAddedDayGroup(key: AtlasGroupKey): boolean {
+    return key.startsWith('day:');
+  }
+
+  /**
+   * The heading of a group as a translation key plus its parameters: a usage band, the "no counts"
+   * group, or an add day ("Today · 16.10." / "Yesterday · …" / the bare date, "Date unknown").
+   * Reads the language and the clock on every call, like `formatDate`, so a switch re-renders it.
+   */
+  protected groupTitle(key: AtlasGroupKey): { key: string; params: Record<string, string> } {
+    if (key === 'unknown-date') {
+      return { key: 'usageStats.addedGroup.unknown', params: {} };
+    }
+    if (!key.startsWith('day:')) {
+      return { key: `usageStats.bands.${key}.title`, params: {} };
+    }
+    const day = key.slice(4);
+    const kind = addedDayKind(day, new Date());
+    return { key: `usageStats.addedGroup.${kind}`, params: { date: this.formatDate(day) } };
   }
 
   protected trendFor(

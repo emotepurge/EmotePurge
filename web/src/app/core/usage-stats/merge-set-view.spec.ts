@@ -562,3 +562,53 @@ describe('mergeSetView per slot (plan 377)', () => {
     expect(bound([b, a])).toEqual(['slot-a']);
   });
 });
+
+describe('mergeSetView: the viewed set\u2019s own add date (setAddedAt)', () => {
+  it('gives a bound slot row the live entry\u2019s date, not the DTO firstSeenAt of another set', () => {
+    const result = mergeSetView(
+      [slotDto('slot-ome', 'ome44', { firstSeenAt: T, firstSeenAtFromRest: false })],
+      [slotEntry('ome44', LATER)],
+      false,
+    );
+
+    expect(result[0].setAddedAt).toBe(LATER);
+    expect(result[0].firstSeenAt).toBe(T);
+  });
+
+  it('takes the newest date of the entries an emote-mode row binds', () => {
+    const result = mergeSetView(
+      [dto({ sevenTvEmoteId: '01SLOT', emoteName: 'Base' })],
+      [slotEntry('Base', T), slotEntry('Base2', LATER)],
+      false,
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].setAddedAt).toBe(LATER);
+  });
+
+  it('dates a grouped Klasse-3 row in an emote response by its newest free entry', () => {
+    const result = mergeSetView(
+      [],
+      [
+        liveRow({ sevenTvEmoteId: '01BBB', name: 'A', addedAt: T }),
+        liveRow({ sevenTvEmoteId: '01BBB', name: 'B', addedAt: LATER }),
+      ],
+      false,
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].setAddedAt).toBe(LATER);
+  });
+
+  it('leaves it off when 7TV named no date, on a left row and in the active view', () => {
+    const undated = mergeSetView([], [liveRow({ sevenTvEmoteId: '01BBB', name: 'A' })], false);
+    expect(undated[0].setAddedAt).toBeUndefined();
+
+    const left = mergeSetView([dto({ sevenTvEmoteId: '01GONE' })], [], false);
+    expect(left[0].membership).toBe('left');
+    expect(left[0].setAddedAt).toBeUndefined();
+
+    const active = mergeSetView([dto()], [liveRow({ addedAt: T })], true);
+    expect(active[0].setAddedAt).toBeUndefined();
+  });
+});
