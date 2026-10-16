@@ -1,10 +1,29 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, inject, input, linkedSignal, signal } from '@angular/core';
+import {
+  afterNextRender,
+  Component,
+  computed,
+  DestroyRef,
+  effect,
+  ElementRef,
+  inject,
+  Injector,
+  input,
+  linkedSignal,
+  untracked,
+  viewChild,
+} from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
+import { catchError, map, of } from 'rxjs';
 
-import { BackfillOption, BackfillStatus } from '../../core/channels/backfill.model';
+import {
+  BackfillCoverageInterval,
+  BackfillOption,
+  BackfillRemovalResult,
+  BackfillStatus,
+} from '../../core/channels/backfill.model';
 import { BackfillService } from '../../core/channels/backfill.service';
 import {
   formatIsoDay,
@@ -33,6 +52,9 @@ const REASON_KEYS: Record<string, string> = {
   no_days_before_counting: 'backfill.reasons.noDaysBeforeCounting',
 };
 const UNKNOWN_REASON_KEY = 'backfill.reasons.unknown';
+const REMOVE_BLOCKED_BY_RUN_KEY = 'backfill.remove.blockedByRun';
+// The client-side mismatch says what the server's 409 says: the shown scope is not the current one.
+const REMOVE_SCOPE_CHANGED_KEY = 'errors.api.backfill_remove_scope_changed';
 // Same vocabulary as the run errors (`backfill.errors.<snake_case ErrorCode>`, spec §4.6).
 const CHANNEL_EXCLUDED_KEY = 'backfill.errors.channel_excluded';
 
@@ -118,6 +140,58 @@ export function backfillAnnouncement(
     : null;
 }
 
+/** What the live region says after a removal: a translation key plus the day count. */
+export interface BackfillRemovalAnnouncement {
+  key: string;
+  count: number;
+}
+
+/**
+ * The sentence for a removal's answer. Zeros mean the data was already gone (a second manager, a
+ * double submit — the server answers "already done", D9), which "0 days removed" would misreport.
+ */
+export function backfillRemovalAnnouncement(
+  result: BackfillRemovalResult,
+): BackfillRemovalAnnouncement {
+  const count = result.removedCoverageDays;
+  return count === 0 && result.removedUsageRows === 0
+    ? { key: 'backfill.remove.announceNothingLeft', count }
+    : { key: pluralKey(count, 'backfill.remove.announceDone'), count };
+}
+
+/**
+ * One settled status read. `generation` numbers the reads in the order they were issued, so the
+ * section can tell a read that began after some point in time from one that merely finished after
+ * it. A failed read is a settled read too, so the stream never errors: the failure travels as
+ * `error`.
+ */
+interface StatusRead {
+  generation: number;
+  status: BackfillStatus | undefined;
+  error: unknown;
+}
+
+/** One line of the imported-data section, already formatted for the reader. */
+interface ImportedIntervalView {
+  key: string;
+  from: string;
+  /** Inclusive last day. */
+  to: string;
+  set: string;
+}
+
+/**
+ * What a removal confirmation vouches for: the channel and its coverage intervals as the status
+ * listed them. `key` is their canonical form; the dialog text and the sent expectation are both
+ * built from `coverage`, so the two cannot differ.
+ */
+interface RemovalScope {
+  key: string;
+  channel: string;
+  coverage: readonly BackfillCoverageInterval[];
+  countingSince: string;
+}
+
 /** The statuses of a run that can still be cancelled (B11); the other three are final. */
 const CANCELLABLE_STATUSES: readonly string[] = ['queued', 'running', 'paused'];
 
@@ -131,11 +205,15 @@ interface SetView {
 /**
  * The chat-log backfill section (spec 2026-10-09, §7): what the numbers are, which of the channel's
  * 7TV sets to match against, how far back to go, the start button — and the running and the last
- * run, with progress and cancel.
+ * run, with progress and cancel — and below it, while the channel holds imported days, the section
+ * that removes them again (spec 2026-10-13, §10). Both share one status read, one post-cancel gate
+ * and the request tokens: a second read or a second source of `activeRun` would reopen the gap the
+ * removal's confirmation binding closes.
  */
 @Component({
   selector: 'app-backfill-section',
   imports: [BackfillRunStatusView, Button, NoticeBanner, SkeletonRows, TranslocoPipe],
+  host: { class: 'flex flex-col gap-6' },
   template: `
     <section class="flex flex-col gap-4" aria-labelledby="backfill-heading">
       <h3 id="backfill-heading" class="text-base font-semibold">
@@ -144,6 +222,8 @@ interface SetView {
 
       <!-- Permanently mounted (UI-Designsprache §4.5): a region that appears together with its text
            is not announced, and a run's start and end are exactly what it is for. -->
+      <!-- A removal's outcome is not spoken here: focus moves onto its visible confirmation below,
+           which reads it out once. Saying it here as well would make it heard twice. -->
       <p class="sr-only" role="status">
         @if (announcement(); as announced) {
           {{
@@ -304,12 +384,58 @@ interface SetView {
         @if (status.lastRun; as run) {
           <app-backfill-run-status kind="last" [run]="run" />
         }
-      } @else if (statusResource.error()) {
+      } @else if (statusReadError()) {
         <app-notice-banner variant="error">{{ statusErrorKey() | transloco }}</app-notice-banner>
       } @else {
         <app-skeleton-rows [count]="3" />
       }
     </section>
+
+    @if (removalAnnouncement(); as removal) {
+      <!-- Replaces the section it reports on, under the same heading, so the trigger that vanished
+           with it hands focus to the outcome rather than to <body>. -->
+      <section class="flex flex-col gap-4" aria-labelledby="backfill-imported-heading">
+        <h3 id="backfill-imported-heading" class="text-base font-semibold">
+          {{ 'backfill.remove.title' | transloco }}
+        </h3>
+        <p #removalConfirmation tabindex="-1" class="text-sm">
+          {{ removal.key | transloco: { count: removal.count } }}
+        </p>
+      </section>
+    } @else if (importedIntervals().length > 0) {
+      <section class="flex flex-col gap-4" aria-labelledby="backfill-imported-heading">
+        <h3 id="backfill-imported-heading" class="text-base font-semibold">
+          {{ 'backfill.remove.title' | transloco }}
+        </h3>
+        <p class="text-sm text-fg-secondary">{{ 'backfill.remove.intro' | transloco }}</p>
+        <ul class="flex flex-col gap-1 text-sm">
+          @for (interval of importedIntervals(); track interval.key) {
+            <li>{{ 'backfill.remove.interval' | transloco: interval }}</li>
+          }
+        </ul>
+        <div class="flex flex-col items-start gap-2">
+          <button
+            type="button"
+            appButton="danger"
+            [disabled]="!canRemove()"
+            [attr.aria-describedby]="removeBlockedReasonKey() ? 'backfill-remove-blocked' : null"
+            (click)="remove()"
+          >
+            {{ 'backfill.remove.action' | transloco }}
+          </button>
+          @if (removeBlockedReasonKey(); as reasonKey) {
+            <p id="backfill-remove-blocked" class="text-sm text-fg-muted">
+              {{ reasonKey | transloco }}
+            </p>
+          }
+          @if (removeErrorKey(); as key) {
+            <app-notice-banner variant="error" class="block">{{
+              key | transloco
+            }}</app-notice-banner>
+          }
+        </div>
+      </section>
+    }
   `,
 })
 export class BackfillSection {
@@ -320,11 +446,32 @@ export class BackfillSection {
   private readonly languageService = inject(LanguageService);
   private readonly transloco = inject(TranslocoService);
   private readonly dialog = inject(Dialog);
+  private readonly injector = inject(Injector);
+  private readonly destroyRef = inject(DestroyRef);
+
+  /** How many status reads have been issued so far; the next one gets this number plus one. */
+  private readsIssued = 0;
 
   protected readonly statusResource = rxResource({
     params: () => this.channelName(),
-    stream: ({ params }) => this.backfillService.getStatus(params),
+    stream: ({ params }) => {
+      // Numbered when the GET is actually sent (the stream is subscribed right after this call), not
+      // when a reload is asked for — see `postCancelReadGeneration`.
+      const generation = ++this.readsIssued;
+      return this.backfillService.getStatus(params).pipe(
+        map((status): StatusRead => ({ generation, status, error: undefined })),
+        catchError((error: unknown) => of<StatusRead>({ generation, status: undefined, error })),
+      );
+    },
   });
+
+  /** The last settled read of this channel; kept while a refetch is in flight, gone on a switch. */
+  private readonly lastRead = computed(() =>
+    this.statusResource.hasValue() ? this.statusResource.value() : undefined,
+  );
+
+  /** The failure of the last settled read, if it failed. */
+  protected readonly statusReadError = computed(() => this.lastRead()?.error);
 
   /**
    * The status on screen: the freshest good read of this channel. A failed background refetch must
@@ -337,7 +484,7 @@ export class BackfillSection {
   >({
     source: () => ({
       channel: this.channelName(),
-      value: this.statusResource.hasValue() ? this.statusResource.value() : undefined,
+      value: this.lastRead()?.status,
     }),
     computation: (source, previous) =>
       source.value ??
@@ -478,32 +625,89 @@ export class BackfillSection {
   });
 
   /**
-   * What the status resource held when a cancel was answered with 204, or `null`. The patched
-   * status has no run, but its coverage is the pre-cancel snapshot (a block committed just before
-   * the DELETE is missing), so Start waits for the next read to *settle* — answer or failure; a
-   * failed GET must not lock Start for good. Keyed on the channel like the other request state.
+   * The first read generation that counts as a post-cancel read, or `null`. The status patched on
+   * the 204 has no run, but its coverage is the pre-cancel snapshot (a block committed just before
+   * the DELETE is missing), so Start and Remove wait for a read that was *issued after* the 204 to
+   * settle — answer or failure; a failed GET must not lock them for good. A read that was already in
+   * flight at the 204 does not count, however late it lands: it may still say `running`
+   * (Sol-1, plan #384 §3). Keyed on the channel like the other request state.
    */
-  private readonly cancelRefetchBaseline = linkedSignal<
-    string,
-    { value: unknown; error: unknown } | null
-  >({
+  private readonly postCancelReadGeneration = linkedSignal<string, number | null>({
     source: this.channelName,
     computation: () => null,
   });
 
-  /** The refetch after a cancel has not settled yet: the resource still holds what it held then. */
+  /** No read issued after the cancel's 204 has settled yet. */
   private readonly awaitingPostCancelRead = computed(() => {
-    const baseline = this.cancelRefetchBaseline();
-    return (
-      baseline !== null &&
-      baseline.value === this.currentResourceValue() &&
-      baseline.error === this.statusResource.error()
-    );
+    const needed = this.postCancelReadGeneration();
+    return needed !== null && (this.lastRead()?.generation ?? 0) < needed;
   });
+
+  /**
+   * A status read was asked for while one was in flight. Angular's `reload()` refuses (returns
+   * `false`) while the resource is loading, so without this the request would be lost — an SSE
+   * nudge as much as the read a cancel waits for. Fired once the running load settles.
+   */
+  private readonly statusReadQueued = linkedSignal<string, boolean>({
+    source: this.channelName,
+    computation: () => false,
+  });
+
+  /** The channel and the run on screen — the key the removal's request state goes with. */
+  private readonly channelRunKey = computed(
+    () => `${this.channelName()}|${this.status()?.activeRun?.id ?? ''}`,
+  );
+
+  /**
+   * The channel, the active run and the last run on screen — the key the removal's announcement
+   * goes with. A run short enough to start and end between two status reads never shows up as
+   * `activeRun`, but its `lastRun` changes the key, so the sentence cannot cover its new data.
+   */
+  private readonly announcementKey = computed(
+    () => `${this.channelRunKey()}|${this.status()?.lastRun?.id ?? ''}`,
+  );
+
+  /**
+   * The in-flight removal, or `null` — a request token like `cancelRequest`, keyed on the channel
+   * and the active run, so the answer of a removal for a channel the user has since left touches
+   * nothing.
+   */
+  private readonly removeRequest = linkedSignal<string, object | null>({
+    source: this.channelRunKey,
+    computation: () => null,
+  });
+  protected readonly removing = computed(() => this.removeRequest() !== null);
+
+  /**
+   * The translated error of a failed removal. Goes with the channel, on the next attempt, and when a
+   * run shows up or leaves: while a run exists the section shows the reason instead (a 409
+   * `backfill_remove_run_active` followed by its refetch would otherwise say the same thing twice),
+   * and it must not come back when that run ends.
+   */
+  protected readonly removeErrorKey = linkedSignal<string, string | null>({
+    source: this.channelRunKey,
+    computation: () => null,
+  });
+
+  /**
+   * The outcome of the last removal, shown in place of the imported-data section and focused once.
+   * Outlives the refetch that empties the coverage; goes with the channel and when a new run shows
+   * up, like the rest of the removal's state — no control of its own to dismiss it.
+   */
+  protected readonly removalAnnouncement = linkedSignal<string, BackfillRemovalAnnouncement | null>(
+    {
+      source: this.announcementKey,
+      computation: () => null,
+    },
+  );
+
+  /** The rendered confirmation, the focus target after a successful removal. */
+  private readonly removalConfirmation = viewChild<ElementRef<HTMLElement>>('removalConfirmation');
 
   readonly canStart = computed(
     () =>
       !this.awaitingPostCancelRead() &&
+      !this.removing() &&
       this.status() !== null &&
       this.status()?.activeRun === null &&
       this.selectedMonths() !== null &&
@@ -540,8 +744,52 @@ export class BackfillSection {
     );
   });
 
+  /**
+   * The imported intervals in status order, one line each: range with the inclusive last day, set
+   * name or id.
+   */
+  readonly importedIntervals = computed<ImportedIntervalView[]>(() =>
+    (this.status()?.coverage ?? []).map((interval) => ({
+      key: `${interval.from}|${interval.emoteSetId}|${interval.archiveHost}`,
+      ...this.toIntervalLine(interval),
+    })),
+  );
+
+  /** The confirmation's subject; `null` without a status. See {@link RemovalScope}. */
+  private readonly removalScope = computed<RemovalScope | null>(() => {
+    const status = this.status();
+    if (status === null) {
+      return null;
+    }
+    const channel = this.channelName();
+    return {
+      key: JSON.stringify([
+        channel,
+        status.coverage.map((i) => [i.from, i.to, i.emoteSetId, i.archiveHost]),
+      ]),
+      channel,
+      coverage: status.coverage,
+      countingSince: status.countingSince,
+    };
+  });
+
+  readonly canRemove = computed(
+    () =>
+      this.importedIntervals().length > 0 &&
+      this.status()?.activeRun === null &&
+      !this.awaitingPostCancelRead() &&
+      !this.removing() &&
+      !this.starting(),
+  );
+
+  /** Why Remove is locked, said under it; the short locks (a request, the post-cancel read) say
+   *  nothing. */
+  readonly removeBlockedReasonKey = computed(() =>
+    this.status()?.activeRun ? REMOVE_BLOCKED_BY_RUN_KEY : null,
+  );
+
   protected readonly statusErrorKey = computed(() => {
-    const error = this.statusResource.error();
+    const error = this.statusReadError();
     return error instanceof HttpErrorResponse ? apiErrorTranslationKey(error) : 'errors.generic';
   });
 
@@ -549,9 +797,7 @@ export class BackfillSection {
    * A failed refetch while an earlier answer is on screen: said next to the section, not instead of
    * it.
    */
-  readonly statusRefetchFailed = computed(
-    () => this.status() !== null && !!this.statusResource.error(),
-  );
+  readonly statusRefetchFailed = computed(() => this.status() !== null && !!this.statusReadError());
 
   constructor() {
     liveReload(
@@ -560,7 +806,14 @@ export class BackfillSection {
         accept: [LIVE_EVENT_TYPES.backfillProgress],
         debounceMs: STATUS_RELOAD_DEBOUNCE_MS,
       },
-    ).subscribe(() => this.statusResource.reload());
+    ).subscribe(() => this.requestStatusRead());
+
+    // A read refused while another was loading is issued as soon as that one settles.
+    effect(() => {
+      if (this.statusReadQueued() && !this.statusResource.isLoading()) {
+        untracked(() => this.requestStatusRead());
+      }
+    });
   }
 
   protected onSetChange(event: Event): void {
@@ -593,6 +846,38 @@ export class BackfillSection {
       // changed the coverage, and the user has not agreed to that.
       if (confirmed && this.startPlanKey() === asked) {
         this.sendStart();
+      }
+    });
+  }
+
+  /**
+   * Removes the channel's imported data after a confirmation (spec 2026-10-13, §10.3/§10.4). What
+   * goes out is exactly what the dialog showed, and only while it is still the current scope: a
+   * status refetch behind the modal (a run finished, another manager removed the data) asks for a
+   * new confirmation instead.
+   */
+  protected remove(): void {
+    const scope = this.removalScope();
+    if (scope === null || !this.canRemove()) {
+      return;
+    }
+    openConfirmDialog(this.dialog, {
+      message: this.removeConfirmMessage(scope),
+      confirmLabel: this.transloco.translate('backfill.remove.action'),
+    }).closed.subscribe((confirmed) => {
+      // Another channel is on screen now: none of its business.
+      if (!confirmed || this.channelName() !== scope.channel) {
+        return;
+      }
+      if (this.removalScope()?.key !== scope.key) {
+        // A run on screen says why on its own (the reason under the button).
+        if (!this.status()?.activeRun) {
+          this.removeErrorKey.set(REMOVE_SCOPE_CHANGED_KEY);
+        }
+        return;
+      }
+      if (this.canRemove()) {
+        this.sendRemove(scope.coverage);
       }
     });
   }
@@ -636,7 +921,7 @@ export class BackfillSection {
         // one place that does) so the button stays locked and a second click cannot send a second
         // POST.
         this.status.update((current) => current && { ...current, activeRun: run });
-        this.statusResource.reload();
+        this.requestStatusRead();
       },
       error: (error: HttpErrorResponse) => {
         if (this.startRequest() !== request) {
@@ -647,7 +932,7 @@ export class BackfillSection {
         // A race lost to another manager, or an answer that may have been lost after the commit:
         // either way the status says what is really queued.
         if (errorCodeOf(error) === 'backfill_already_active' || isUnknownOutcome(error.status)) {
-          this.statusResource.reload();
+          this.requestStatusRead();
         }
       },
     });
@@ -685,11 +970,9 @@ export class BackfillSection {
             ? { ...current, activeRun: null, lastRun: { ...run, status: 'cancelled' } }
             : current,
         );
-        this.cancelRefetchBaseline.set({
-          value: this.currentResourceValue(),
-          error: this.statusResource.error(),
-        });
-        this.statusResource.reload();
+        // Every read issued from here on is a post-cancel read.
+        this.postCancelReadGeneration.set(this.readsIssued + 1);
+        this.requestStatusRead();
       },
       error: (error: HttpErrorResponse) => {
         if (this.cancelRequest() !== request) {
@@ -699,20 +982,97 @@ export class BackfillSection {
         // The run ended on its own while the dialog was open: nothing went wrong, the status says
         // so.
         if (errorCodeOf(error) === 'backfill_no_active_run') {
-          this.statusResource.reload();
+          this.requestStatusRead();
           return;
         }
         this.cancelErrorKey.set(apiErrorTranslationKey(error));
         // The outcome of a DELETE with no answer is unknown — the run may be gone after all.
         if (isUnknownOutcome(error.status)) {
-          this.statusResource.reload();
+          this.requestStatusRead();
         }
       },
     });
   }
 
-  private currentResourceValue(): unknown {
-    return this.statusResource.hasValue() ? this.statusResource.value() : undefined;
+  private sendRemove(coverage: readonly BackfillCoverageInterval[]): void {
+    const request = {};
+    this.removeRequest.set(request);
+    this.removeErrorKey.set(null);
+    this.backfillService.removeImported(this.channelName(), coverage).subscribe({
+      next: (result) => {
+        if (this.removeRequest() !== request) {
+          return;
+        }
+        this.removeRequest.set(null);
+        this.removalAnnouncement.set(backfillRemovalAnnouncement(result));
+        // The dialog has handed focus back to the trigger, which goes now: hand it on to the
+        // outcome that takes the section's place.
+        // A view that is already gone (the user left the tab before the answer) takes no focus, and
+        // registering a render hook on it would throw NG0911.
+        if (!this.destroyRef.destroyed) {
+          afterNextRender(() => this.removalConfirmation()?.nativeElement.focus(), {
+            injector: this.injector,
+          });
+        }
+        // After the commit nothing imported is left: take it off screen at once, so a second click
+        // in the window before the refetch lands cannot send a second POST.
+        this.status.update(
+          (current) =>
+            current && {
+              ...current,
+              coverage: [],
+              importedFrom: null,
+              importedTo: null,
+              importedContiguous: false,
+            },
+        );
+        this.requestStatusRead();
+      },
+      error: (error: HttpErrorResponse) => {
+        if (this.removeRequest() !== request) {
+          return;
+        }
+        this.removeRequest.set(null);
+        this.removeErrorKey.set(apiErrorTranslationKey(error));
+        // A 409 says the status on screen is out of date; a 404 or a lost answer leaves the outcome
+        // unknown (the commit may have happened). Either way the status says what is there now.
+        this.requestStatusRead();
+      },
+    });
+  }
+
+  /**
+   * The one way this section asks for a status read. `reload()` refuses while a load is running;
+   * the refusal is remembered and the read issued once that load settles, so neither an SSE nudge
+   * nor the read a cancel waits for can be lost.
+   */
+  private requestStatusRead(): void {
+    this.statusReadQueued.set(!this.statusResource.reload());
+  }
+
+  /** The dialog text: the action first (the dialog has no heading), then each interval, then what
+   *  stays. */
+  private removeConfirmMessage(scope: RemovalScope): string {
+    return [
+      this.transloco.translate('backfill.remove.confirm.title'),
+      this.transloco.translate('backfill.remove.confirm.lead'),
+      ...scope.coverage.map((interval) =>
+        this.transloco.translate('backfill.remove.confirm.interval', this.toIntervalLine(interval)),
+      ),
+      this.transloco.translate('backfill.remove.confirm.label'),
+      this.transloco.translate('backfill.remove.confirm.keeps', {
+        countingSince: this.formatDay(scope.countingSince),
+      }),
+      this.transloco.translate('backfill.remove.confirm.irreversible'),
+    ].join('\n');
+  }
+
+  private toIntervalLine(interval: BackfillCoverageInterval): Omit<ImportedIntervalView, 'key'> {
+    return {
+      from: this.formatDay(interval.from),
+      to: this.formatDay(lastDayOf(interval.to)),
+      set: backfillSetLabel(interval),
+    };
   }
 
   private toSentence(interval: ReplacedInterval): ReplaceSentence {

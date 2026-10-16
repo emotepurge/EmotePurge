@@ -1030,6 +1030,7 @@
       "tagRemoved": "Tag removed from set",
       "backfillRequest": "Backfill requested",
       "backfillCancel": "Backfill cancelled",
+      "backfillRemoveImported": "Imported data removed",
       "userRevokeSessions": "User sessions revoked",
       "userInvalidateRoleCache": "Role cache cleared",
       "userDelete": "Account deleted"
@@ -1063,6 +1064,10 @@
       "backfillMonths": {
         "one": "{{count}} month",
         "other": "{{count}} months"
+      },
+      "backfillRemovedDays": {
+        "one": "{{count}} day",
+        "other": "{{count}} days"
       },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV trending today",
@@ -2480,7 +2485,9 @@
       "backfill_set_empty": "This emote set has no emotes, so there is nothing to look for.",
       "backfill_set_truncated": "This emote set is too large to read completely, so the backfill cannot be started for it.",
       "backfill_channel_identity_changed": "The channel changed while your request was running. Please reload and try again.",
-      "backfill_slots_unsettled": "The emote slots of this set are not fully matched yet. This usually clears after the next sync. If it persists, an emote in the set has no add date."
+      "backfill_slots_unsettled": "The emote slots of this set are not fully matched yet. This usually clears after the next sync. If it persists, an emote in the set has no add date.",
+      "backfill_remove_run_active": "A backfill is queued or running for this channel. Cancel it first, then you can remove the imported data.",
+      "backfill_remove_scope_changed": "The imported data has changed in the meantime. Check the new state and confirm again."
     }
   },
   "backfill": {
@@ -2563,6 +2570,26 @@
       "completed": "Backfill completed.",
       "failed": "Backfill failed.",
       "cancelled": "Backfill cancelled."
+    },
+    "remove": {
+      "title": "Imported data",
+      "intro": "For these days the numbers come from the chat archive, and the usage page says so:",
+      "interval": "{{ from }} – {{ to }} · {{ set }}",
+      "action": "Remove imported data",
+      "blockedByRun": "Cancel the running backfill first.",
+      "confirm": {
+        "title": "Remove the imported data of this channel?",
+        "lead": "This removes the numbers imported from the chat archive for:",
+        "interval": "· {{ from }} – {{ to }} · {{ set }}",
+        "label": "and with them the “from the chat archive” note on the usage page.",
+        "keeps": "Kept: every number we have counted ourselves since {{ countingSince }}, and the list of past runs.",
+        "irreversible": "This cannot be undone. A new backfill reads the archive again; its numbers may differ."
+      },
+      "announceDone": {
+        "one": "Imported data removed: {{ count }} day.",
+        "other": "Imported data removed: {{ count }} days."
+      },
+      "announceNothingLeft": "The imported data had already been removed."
     }
   }
 }

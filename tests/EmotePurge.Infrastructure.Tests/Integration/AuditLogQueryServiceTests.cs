@@ -141,6 +141,8 @@ public class AuditLogQueryServiceTests(PostgresFixture fixture)
     [InlineData("""{"title": "Sommer-Purge"}""", AuditLogDetail.Kinds.Title, null, "Sommer-Purge")]
     // backfill.request (#349): the requested months.
     [InlineData("""{"backfillMonths": 6}""", AuditLogDetail.Kinds.BackfillMonths, 6L, null)]
+    // backfill.removeImported (#384): the removed coverage days.
+    [InlineData("""{"backfillRemovedDays": 183}""", AuditLogDetail.Kinds.BackfillRemovedDays, 183L, null)]
     // Fixed precedence when a payload carries more than one known key.
     [InlineData("""{"title": "x", "emoteCount": 7}""", AuditLogDetail.Kinds.EmoteCount, 7L, null)]
     // Everything unrecognized degrades to "no detail" instead of leaking or throwing. `login` is

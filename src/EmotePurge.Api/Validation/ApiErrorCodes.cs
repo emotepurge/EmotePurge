@@ -197,6 +197,11 @@ internal static class ApiErrorCodes
     // 409 (emote slots spec 5.6, D12): a preview entry cannot be bound to its slot yet (an unsettled seed
     // of the active set, or an undated entry); nothing written, retry later.
     public const string BackfillSlotsUnsettled = "backfill_slots_unsettled";
+    // 409 from POST .../backfill/imported/remove (#384): the channel has a queued, running or paused run;
+    // cancel it first.
+    public const string BackfillRemoveRunActive = "backfill_remove_run_active";
+    // 409 from the same route: the channel's coverage is not the one the confirmation showed.
+    public const string BackfillRemoveScopeChanged = "backfill_remove_scope_changed";
 
     // Admin dashboard (#381).
     // 400 from both dashboard routes: the range query value is present but not one of 30d, 90d, 13mo.

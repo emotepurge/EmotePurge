@@ -1152,7 +1152,40 @@ SELECT "Id", "ChannelId", "Status", "WeeksDone", "WeeksTotal", "ErrorCode", "Pau
 FROM "ChatLogBackfillRuns" ORDER BY "Id" DESC LIMIT 20;
 ```
 
+### Removing imported data (channel managers)
+
+A channel manager (admin, broadcaster or live moderator; not a 7TV editor) can remove everything the
+backfill imported for **one channel** in the Settings tab, section "Imported data". The section shows
+one line per covered range and set, and the button asks for confirmation with exactly those ranges.
+It exists only while the flag is on (the tab is hidden and the route answers 404 `backfill_disabled`
+otherwise).
+
+- **Route:** `POST /api/channels/{channelName}/backfill/imported/remove`. The body carries the ranges
+  the dialog showed (`expectedCoverage`); the server compares them day by day with the current
+  coverage under the channel lock. A mismatch answers 409 `backfill_remove_scope_changed` and removes
+  nothing, so a run that finished behind the dialog is never deleted unseen.
+- **Blocked while a run is queued, running or paused:** 409 `backfill_remove_run_active`. Cancel the
+  run first, then remove.
+- **Removed:** the channel's `UsageStats` rows with `Source = 1`, the `ChatLogBackfillCoverage` rows,
+  and every `EmoteSlots` seed that is still unsettled and lost its last row to this removal. That
+  includes `CreatedSlot` seeds left by imports from the time the slot flag was off.
+- **Kept:** live rows (`Source = 0`), the run history (the "Last run" line still reads as before),
+  snapshots, emotes including placeholders, settled slots, votes, ballots and tags. The usage page
+  loses the "from the chat archive" caption because the coverage is gone.
+- **Nothing to remove** is a plain 200 with zeros and writes no audit entry.
+- **Audit:** action `backfill.removeImported` with the number of removed days; the activity tab shows
+  it as "Imported data removed".
+- **No migration.** A new backfill for the same window reads the archive again; its numbers may
+  differ from the removed ones.
+
+This is the per-channel path for managers. The operator procedure below stays the global rollback and
+the only way to do steps 3, 3b and 5, with the flag off, or for several channels at once.
+
 ### Rolling back
+
+For a single channel, a manager can remove the imported rows and the coverage from the Settings tab
+(#384, see "Removing imported data (channel managers)"); that replaces the per-channel variant of
+step 4 but not steps 3, 3b and 5.
 
 **Switching it off is cheap, but cancel first.** `ChatLogBackfill:Enabled=false` on api **and** worker,
 recreate both: the routes answer 404 `backfill_disabled` (including the cancel route), the tab
@@ -1225,6 +1258,9 @@ matters:
    `EmoteSlots` table. Seeds that a flag-off enqueue (an image from before #379 part B) created for active emotes
    are not archived and are not removed here: they remain as unsettled seeds without rows, inert (no numbers,
    no cards, no permanent 409), and are removed by "Sweeping row-less unsettled seeds (#379, part B)" below.
+   A seed that the "Removing imported data (channel managers)" action removed because the removal left it
+   without rows (a `CreatedSlot` seed of a flag-off enqueue) is gone already and does not appear in this
+   statement's set; if a manager has removed a channel's data, expect fewer `CreatedSlot` slots there.
 
    ```sql
    DELETE FROM "EmoteSlots" s
@@ -1252,6 +1288,18 @@ matters:
    older imported rows on the acceptance copy). For a single channel use the per-channel variant, which removes
    all imported rows and the coverage of that channel from every run and every set; steps 3, 3b and 5 are
    global and are not scoped to the channel.
+
+   Prefer the "Remove imported data" action in the Settings tab (see "Removing imported data (channel
+   managers)") over the per-channel statements: it also deletes the unsettled seeds that the removal leaves
+   without rows. **Running the per-channel statements by hand does not**, and the one-off sweep of #379 part B
+   ran only once per database, so such seeds stay behind as inert rows (no numbers, no cards, no 409). Find
+   them with `EmoteSlotRollbackSql.CountRowlessUnsettledSeedsSql` and remove them with
+   `EmoteSlotRollbackSql.SweepRowlessUnsettledSeedsSql`, both quoted in "Sweeping row-less unsettled seeds
+   (#379, part B)". The sweep may be re-run on a database that runs an image from #379 part B on, because
+   no runtime path creates unsettled seeds any more and a row-less one is always a leftover. The worker may
+   stay up; stopping it first removes any doubt. Use the statements verbatim (count, delete, count in one
+   transaction) as in that section, and never run them against an image from before part B. They are not
+   scoped to a channel and match every row-less unsettled seed in every set.
 5. **Close the runs that are still open:**
 
    ```sql

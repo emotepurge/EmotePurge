@@ -244,6 +244,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// <summary>Substituted like <see cref="LogQuery"/>.</summary>
     public ILogFilterService LogFilters { get; } = Substitute.For<ILogFilterService>();
 
+    /// <summary>Substituted for the imported-data removal route (#384) for the same reason as <see cref="ChatLogBackfill"/>.</summary>
+    public IChatLogImportRemovalService ChatLogImportRemoval { get; } = Substitute.For<IChatLogImportRemovalService>();
+
     public ApiFactory()
     {
         LegalContent.GetAvailabilityAsync(Arg.Any<CancellationToken>())
@@ -321,6 +324,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => LogQuery);
             services.AddSingleton(_ => LogStatus);
             services.AddScoped(_ => LogFilters);
+            services.AddScoped(_ => ChatLogImportRemoval);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected
             // services *before* it runs the endpoint filter pipeline. A request the filter is about

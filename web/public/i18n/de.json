@@ -1030,6 +1030,7 @@
       "tagRemoved": "Tag aus dem Set entfernt",
       "backfillRequest": "Backfill angefordert",
       "backfillCancel": "Backfill abgebrochen",
+      "backfillRemoveImported": "Importierte Daten entfernt",
       "userRevokeSessions": "User-Sessions widerrufen",
       "userInvalidateRoleCache": "Rollen-Cache geleert",
       "userDelete": "Account gelöscht"
@@ -1063,6 +1064,10 @@
       "backfillMonths": {
         "one": "{{count}} Monat",
         "other": "{{count}} Monate"
+      },
+      "backfillRemovedDays": {
+        "one": "{{count}} Tag",
+        "other": "{{count}} Tage"
       },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV Trend heute",
@@ -2480,7 +2485,9 @@
       "backfill_set_empty": "Dieses Emote-Set enthält keine Emotes, es gibt also nichts zu suchen.",
       "backfill_set_truncated": "Dieses Emote-Set ist zu groß, um es vollständig zu lesen, der Backfill kann dafür nicht gestartet werden.",
       "backfill_channel_identity_changed": "Der Channel hat sich während deiner Anfrage geändert. Bitte lade neu und versuche es erneut.",
-      "backfill_slots_unsettled": "Die Emote-Slots dieses Sets sind noch nicht vollständig abgeglichen. Das erledigt sich meist mit dem nächsten Sync. Bleibt es dabei, hat ein Emote im Set kein Hinzufügedatum."
+      "backfill_slots_unsettled": "Die Emote-Slots dieses Sets sind noch nicht vollständig abgeglichen. Das erledigt sich meist mit dem nächsten Sync. Bleibt es dabei, hat ein Emote im Set kein Hinzufügedatum.",
+      "backfill_remove_run_active": "Für diesen Channel wartet oder läuft gerade ein Backfill. Brich ihn zuerst ab, dann kannst du die importierten Daten entfernen.",
+      "backfill_remove_scope_changed": "Die importierten Daten haben sich inzwischen geändert. Sieh dir den neuen Stand an und bestätige erneut."
     }
   },
   "backfill": {
@@ -2563,6 +2570,26 @@
       "completed": "Backfill abgeschlossen.",
       "failed": "Backfill fehlgeschlagen.",
       "cancelled": "Backfill abgebrochen."
+    },
+    "remove": {
+      "title": "Importierte Daten",
+      "intro": "Für diese Tage stammen die Zahlen aus dem Chat-Archiv, und die Nutzungsseite weist sie so aus:",
+      "interval": "{{ from }} – {{ to }} · {{ set }}",
+      "action": "Importierte Daten entfernen",
+      "blockedByRun": "Brich zuerst den laufenden Backfill ab.",
+      "confirm": {
+        "title": "Importierte Daten dieses Channels entfernen?",
+        "lead": "Entfernt werden die aus dem Chat-Archiv importierten Zahlen für:",
+        "interval": "· {{ from }} – {{ to }} · {{ set }}",
+        "label": "und damit der Hinweis „aus dem Chat-Archiv“ auf der Nutzungsseite.",
+        "keeps": "Bleiben: alle Zahlen, die wir selbst seit dem {{ countingSince }} zählen, und die Liste der bisherigen Läufe.",
+        "irreversible": "Das lässt sich nicht rückgängig machen. Ein neuer Backfill liest das Archiv neu; seine Zahlen können abweichen."
+      },
+      "announceDone": {
+        "one": "Importierte Daten entfernt: {{ count }} Tag.",
+        "other": "Importierte Daten entfernt: {{ count }} Tage."
+      },
+      "announceNothingLeft": "Die importierten Daten waren bereits entfernt."
     }
   }
 }

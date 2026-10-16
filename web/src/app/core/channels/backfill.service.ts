@@ -2,7 +2,14 @@ import { HttpClient } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 
-import { BackfillRun, BackfillStatus, StartBackfillRequest } from './backfill.model';
+import {
+  BackfillRemovalResult,
+  BackfillRun,
+  BackfillStatus,
+  ExpectedCoverageInterval,
+  RemoveImportedBackfillRequest,
+  StartBackfillRequest,
+} from './backfill.model';
 import { normalizeChannelName } from './channel-name';
 
 /**
@@ -25,6 +32,26 @@ export class BackfillService {
 
   cancel(channelName: string): Observable<void> {
     return this.http.delete<void>(this.url(channelName));
+  }
+
+  /**
+   * Removes the channel's imported data (spec 2026-10-13, §10.1). `coverage` is what the confirmation
+   * showed; each interval goes out with exactly its four keys — a status interval's `emoteSetName` is
+   * left out, not sent as `null`.
+   */
+  removeImported(
+    channelName: string,
+    coverage: readonly ExpectedCoverageInterval[],
+  ): Observable<BackfillRemovalResult> {
+    const body: RemoveImportedBackfillRequest = {
+      expectedCoverage: coverage.map(({ from, to, emoteSetId, archiveHost }) => ({
+        from,
+        to,
+        emoteSetId,
+        archiveHost,
+      })),
+    };
+    return this.http.post<BackfillRemovalResult>(`${this.url(channelName)}/imported/remove`, body);
   }
 
   private url(channelName: string): string {

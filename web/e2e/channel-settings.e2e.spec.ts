@@ -1,4 +1,4 @@
-import { expect, test } from './support/test';
+import { expect, Page, test } from './support/test';
 
 import {
   AUTH_USER,
@@ -8,6 +8,7 @@ import {
   installLiveStub,
   mockAuthMe,
   mockBackfillCancel,
+  mockBackfillRemove,
   mockBackfillStart,
   mockBackfillStatus,
   mockChannelEmoteSetList,
@@ -352,5 +353,189 @@ test.describe('channel settings tab (chat-log backfill, start half)', () => {
     await expect(page.getByText('Set: Other (10 Einträge)')).toBeVisible();
     await expect(page.getByText('Zeitraum: 08.07.2026 – 07.10.2026')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Backfill abbrechen' })).toHaveCount(0);
+  });
+});
+
+test.describe('channel settings tab (imported data removal)', () => {
+  const importedSection = (page: Page) =>
+    page.locator('section[aria-labelledby="backfill-imported-heading"]');
+
+  test.beforeEach(async ({ page }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page, 'connected');
+    await installLiveStub(page);
+    await mockChannelPermissions(page, 'sensitron');
+    await mockChannelEmoteSetList(page, 'sensitron', SETS);
+  });
+
+  test('removing sends exactly the shown intervals, then confirms in place with focus on the sentence', async ({
+    page,
+  }) => {
+    const coverage = [
+      backfillCoverageBody(),
+      backfillCoverageBody({
+        from: '2026-09-01',
+        to: '2026-09-08',
+        emoteSetId: 'set-active',
+        emoteSetName: 'Normal',
+      }),
+    ];
+    const status = await mockBackfillStatus(page, 'sensitron', { coverage });
+    const remove = await mockBackfillRemove(page, 'sensitron', 'removed', () =>
+      status.set({ coverage: [] }),
+    );
+
+    await page.goto('/channels/sensitron/settings');
+    const section = importedSection(page);
+    await expect(section.getByRole('heading', { name: 'Importierte Daten' })).toBeVisible();
+    await expect(section).toContainText('Halloween');
+    await expect(section).toContainText('Normal');
+
+    await section.getByRole('button', { name: 'Importierte Daten entfernen' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toContainText('Importierte Daten dieses Channels entfernen?');
+    expect(remove.bodies()).toHaveLength(0);
+    await dialog.getByRole('button', { name: 'Importierte Daten entfernen' }).click();
+
+    await expect.poll(() => remove.bodies().length).toBe(1);
+    expect(remove.bodies()[0]).toEqual({
+      expectedCoverage: coverage.map(({ from, to, emoteSetId, archiveHost }) => ({
+        from,
+        to,
+        emoteSetId,
+        archiveHost,
+      })),
+    });
+
+    const confirmation = section.getByText('Importierte Daten entfernt: 31 Tage.');
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation).toBeFocused();
+    await expect(section.getByRole('heading', { name: 'Importierte Daten' })).toBeVisible();
+    await expect(section.getByRole('button', { name: 'Importierte Daten entfernen' })).toHaveCount(
+      0,
+    );
+    await expect(section.getByRole('list')).toHaveCount(0);
+  });
+
+  test('cancelling the dialog sends nothing', async ({ page }) => {
+    await mockBackfillStatus(page, 'sensitron', { coverage: [backfillCoverageBody()] });
+    const remove = await mockBackfillRemove(page, 'sensitron');
+
+    await page.goto('/channels/sensitron/settings');
+    await importedSection(page)
+      .getByRole('button', { name: 'Importierte Daten entfernen' })
+      .click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Abbrechen' }).click();
+
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect(remove.bodies()).toHaveLength(0);
+  });
+
+  test('an active run locks the button and says why', async ({ page }) => {
+    await mockBackfillStatus(page, 'sensitron', {
+      coverage: [backfillCoverageBody()],
+      activeRun: backfillRunBody({ status: 'running', queuePosition: null }),
+    });
+    const remove = await mockBackfillRemove(page, 'sensitron');
+
+    await page.goto('/channels/sensitron/settings');
+    const section = importedSection(page);
+    const button = section.getByRole('button', { name: 'Importierte Daten entfernen' });
+    await expect(button).toBeDisabled();
+    await expect(section.locator('#backfill-remove-blocked')).toHaveText(
+      'Brich zuerst den laufenden Backfill ab.',
+    );
+    await expect(button).toHaveAccessibleDescription('Brich zuerst den laufenden Backfill ab.');
+    expect(remove.bodies()).toHaveLength(0);
+  });
+
+  test('backfill_remove_run_active shows its text and reloads the status', async ({ page }) => {
+    const status = await mockBackfillStatus(page, 'sensitron', {
+      coverage: [backfillCoverageBody()],
+    });
+    await mockBackfillRemove(page, 'sensitron', {
+      status: 409,
+      errorCode: 'backfill_remove_run_active',
+    });
+
+    await page.goto('/channels/sensitron/settings');
+    const section = importedSection(page);
+    await expect(
+      section.getByRole('button', { name: 'Importierte Daten entfernen' }),
+    ).toBeEnabled();
+    const before = status.requests();
+    // The refetch behind the 409 sees the run the server saw. Its answer is held back: the error
+    // only lives until that answer shows the run, so the alert can be checked only meanwhile.
+    status.set({
+      coverage: [backfillCoverageBody()],
+      activeRun: backfillRunBody({ status: 'running', queuePosition: null }),
+    });
+    let releaseRefetch!: () => void;
+    const refetchHeld = new Promise<void>((resolve) => (releaseRefetch = resolve));
+    let refetchAsked = false;
+    await page.route('**/api/channels/sensitron/backfill', async (route) => {
+      if (route.request().method() !== 'GET') {
+        return route.fallback();
+      }
+      refetchAsked = true;
+      await refetchHeld;
+      return route.fallback();
+    });
+    await section.getByRole('button', { name: 'Importierte Daten entfernen' }).click();
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: 'Importierte Daten entfernen' })
+      .click();
+
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'wartet oder läuft gerade' }),
+    ).toBeVisible();
+    await expect.poll(() => refetchAsked).toBe(true);
+    releaseRefetch();
+
+    await expect.poll(() => status.requests()).toBeGreaterThan(before);
+    await expect(section.locator('#backfill-remove-blocked')).toBeVisible();
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'wartet oder läuft gerade' }),
+    ).toHaveCount(0);
+    await expect(
+      section.getByRole('button', { name: 'Importierte Daten entfernen' }),
+    ).toBeDisabled();
+  });
+
+  test('backfill_remove_scope_changed shows its text and the new status', async ({ page }) => {
+    const status = await mockBackfillStatus(page, 'sensitron', {
+      coverage: [backfillCoverageBody()],
+    });
+    await mockBackfillRemove(page, 'sensitron', {
+      status: 409,
+      errorCode: 'backfill_remove_scope_changed',
+    });
+
+    await page.goto('/channels/sensitron/settings');
+    const section = importedSection(page);
+    await expect(section).toContainText('01.08.2026');
+    status.set({
+      coverage: [backfillCoverageBody({ from: '2026-08-01', to: '2026-09-10' })],
+    });
+    await section.getByRole('button', { name: 'Importierte Daten entfernen' }).click();
+    await page
+      .getByRole('dialog')
+      .getByRole('button', { name: 'Importierte Daten entfernen' })
+      .click();
+
+    await expect(
+      page.getByRole('alert').filter({ hasText: 'haben sich inzwischen geändert' }),
+    ).toBeVisible();
+    await expect(section).toContainText('09.09.2026');
+  });
+
+  test('without imported coverage there is no section', async ({ page }) => {
+    await mockBackfillStatus(page, 'sensitron');
+
+    await page.goto('/channels/sensitron/settings');
+    await expect(page.getByRole('heading', { name: 'Backfill aus dem Chat-Archiv' })).toBeVisible();
+    await expect(importedSection(page)).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Importierte Daten' })).toHaveCount(0);
   });
 });

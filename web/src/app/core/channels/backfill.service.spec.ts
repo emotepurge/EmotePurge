@@ -3,6 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { BackfillCoverageInterval } from './backfill.model';
 import { BackfillService } from './backfill.service';
 
 describe('BackfillService', () => {
@@ -43,5 +44,47 @@ describe('BackfillService', () => {
     const request = httpMock.expectOne('/api/channels/sensitron/backfill');
     expect(request.request.method).toBe('DELETE');
     request.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  it('posts the confirmed coverage to the removal route, without the set names', () => {
+    const coverage: BackfillCoverageInterval[] = [
+      {
+        from: '2026-04-08',
+        to: '2026-07-08',
+        emoteSetId: 'set-halloween',
+        emoteSetName: 'Halloween',
+        archiveHost: 'logs.cyex.app',
+      },
+      {
+        from: '2026-07-08',
+        to: '2026-10-08',
+        emoteSetId: 'set-normal',
+        emoteSetName: null,
+        archiveHost: 'logs.cyex.app',
+      },
+    ];
+
+    service.removeImported('HandOfBlood', coverage).subscribe();
+
+    const request = httpMock.expectOne('/api/channels/handofblood/backfill/imported/remove');
+    expect(request.request.method).toBe('POST');
+    // toStrictEqual: a key sent as `null` or `undefined` would fail here, not only a wrong value.
+    expect(request.request.body).toStrictEqual({
+      expectedCoverage: [
+        {
+          from: '2026-04-08',
+          to: '2026-07-08',
+          emoteSetId: 'set-halloween',
+          archiveHost: 'logs.cyex.app',
+        },
+        {
+          from: '2026-07-08',
+          to: '2026-10-08',
+          emoteSetId: 'set-normal',
+          archiveHost: 'logs.cyex.app',
+        },
+      ],
+    });
+    request.flush({ removedUsageRows: 12, removedCoverageDays: 183 });
   });
 });
