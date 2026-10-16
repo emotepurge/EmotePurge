@@ -1,10 +1,13 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { BreakpointObserver } from '@angular/cdk/layout';
+import { DOCUMENT } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import {
   Component,
   DestroyRef,
   ElementRef,
+  Injector,
+  afterNextRender,
   afterRenderEffect,
   computed,
   effect,
@@ -15,7 +18,19 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
-import { Subscription, finalize, map } from 'rxjs';
+import {
+  EMPTY,
+  Observable,
+  Subscription,
+  catchError,
+  concat,
+  finalize,
+  map,
+  skip,
+  switchMap,
+  tap,
+  toArray,
+} from 'rxjs';
 
 import {
   LogEntry,
@@ -35,13 +50,26 @@ import {
   filterErrorSelection,
   normalizeFilterWhitespace,
 } from '../../core/admin/log-filter-text';
+import {
+  LogReconcileScheduler,
+  mergeLogEntries,
+  planReconcile,
+  preflightReconcile,
+  reconcileFromUtc,
+} from '../../core/admin/log-reconcile';
 import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LanguageService } from '../../core/i18n/language.service';
+import { ADMIN_LIVE_URL, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
+import { liveEvents } from '../../core/live/live-reload';
+import { LiveStatus, LiveUpdateService } from '../../core/live/live-update.service';
+import { pollWhileVisible } from '../../core/live/poll-while-visible';
+import { pageVisible } from '../../core/page-visibility/page-visibility';
 import { listQueryState } from '../../core/routing/list-query-state';
 import { TimeHistogram } from '../../shared/charts/time-histogram';
 import { Button } from '../../shared/ui/button';
 import { openConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { EmptyState } from '../../shared/ui/empty-state';
+import { HealthMarker, HealthTone } from '../../shared/ui/health-marker';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { Popover } from '../../shared/ui/popover';
 import { SegmentedControl, SegmentedControlOption } from '../../shared/ui/segmented-control';
@@ -63,6 +91,47 @@ const PRESETS: readonly LogRangePreset[] = ['1h', '6h', '24h', '7d'];
 const DEFAULT_PRESET: LogRangePreset = '24h';
 const DESKTOP_QUERY = '(min-width: 64rem)';
 const COPY_FEEDBACK_MS = 2500;
+
+/** The periodic reconcile; the hint, the tab's return and the stream's (re)opening only make it sooner
+ *  (spec §8.3, A36). */
+const LOG_RECONCILE_INTERVAL_MS = 30_000;
+/** The summary (histogram, facets) reloads at most this often in live mode (spec §8.3). */
+const SUMMARY_MIN_INTERVAL_MS = 30_000;
+/** How long an inserted row stays marked (spec §9.4). */
+const HIGHLIGHT_MS = 2000;
+
+/** What the live status marker in the filter bar says: the stream's own state, or why live is off. */
+type LiveState = LiveStatus | 'paused' | 'absolute';
+
+const LIVE_TONES: Record<LiveState, HealthTone> = {
+  idle: 'idle',
+  connecting: 'idle',
+  open: 'ok',
+  closed: 'danger',
+  paused: 'warning',
+  absolute: 'idle',
+};
+
+/**
+ * "Oben" (spec §9.4): the first row is in view below the sticky bars **and** no row is unfolded. Only
+ * then may new entries go into the list; otherwise they wait behind "n neue". An empty list counts as
+ * the top — there is nothing to push away. All numbers are viewport pixels (`getBoundingClientRect`).
+ */
+export function isLogListAtTop(
+  firstRowTop: number | null,
+  stickyBottom: number,
+  viewportHeight: number,
+  expanded: boolean,
+): boolean {
+  if (expanded) {
+    return false;
+  }
+  if (firstRowTop === null) {
+    return true;
+  }
+  // One pixel of slack for sub-pixel layout where the row meets the bar's edge.
+  return firstRowTop >= stickyBottom - 1 && firstRowTop < viewportHeight;
+}
 
 /** What the `range`/`from`/`to` URL parameters say. An empty `range` means the default preset. */
 export type ParsedLogRange =
@@ -136,8 +205,14 @@ function utcMinute(instant: string): string {
  *
  * Seams for what comes next: {@link applyQuery} is the one way a new filter enters (saved-filter chips),
  * {@link entries} and {@link list} expose what is loaded and whether a row is unfolded, and
- * {@link pendingNew} feeds the reserved "n neue" slot (live mode). This page loads once per query and
- * never polls.
+ * {@link pendingNew} feeds the reserved "n neue" slot.
+ *
+ * Live mode (spec §8.3, §9.4), relative ranges only: a `logs.appended` hint, the tab's return, the admin
+ * stream's (re)opening and a 30 s tick each ask {@link LogReconcileScheduler} for a reconcile — one at a
+ * time, 5 s apart. A reconcile compares the server's keys of the loaded interval with what is loaded and
+ * fetches the missing entries by id. At the top they go into the list (highlighted, one announcement);
+ * otherwise they wait behind "n neue". Any failed automatic fetch pauses live mode until a load the
+ * reader asked for succeeds; a key list the client cannot reconcile asks for a reload instead.
  */
 @Component({
   selector: 'app-admin-logs-page',
@@ -147,6 +222,7 @@ function utcMinute(instant: string): string {
     AdminLogList,
     Button,
     EmptyState,
+    HealthMarker,
     NoticeBanner,
     Popover,
     SegmentedControl,
@@ -156,8 +232,12 @@ function utcMinute(instant: string): string {
   ],
   template: `
     <div class="flex flex-col gap-4">
+      <!-- One polite message per insert ("3 neue Einträge"), never one per row (spec §9.4). -->
+      <p class="sr-only" role="status" aria-live="polite" data-testid="log-live-announcement">
+        {{ announcement() }}
+      </p>
       <!-- Sticky below header (top-14) + admin tabs (h-10): top-24 (design doc §8.5). -->
-      <div class="app-sticky-bar top-24 flex flex-col gap-2 py-2">
+      <div #stickyBar class="app-sticky-bar top-24 flex flex-col gap-2 py-2">
         <form class="flex flex-wrap items-end gap-2" (submit)="onSubmit($event)">
           <div class="flex min-w-0 flex-1 basis-64 flex-col gap-1">
             <label for="admin-log-filter" class="text-xs font-medium text-fg-muted">{{
@@ -252,20 +332,35 @@ function utcMinute(instant: string): string {
               {{ 'admin.logs.range.backTo' | transloco: { range: range } }}
             </button>
           }
-          <!-- Reserved even at zero (invisible), so the bar never jumps when "n neue" appears. -->
-          <span class="ml-auto min-w-24 text-right" data-testid="log-new-slot">
-            <button
-              type="button"
-              class="text-sm text-accent-fg underline-offset-2 hover:underline"
-              [class.invisible]="pendingNew() === 0"
-              [attr.aria-hidden]="pendingNew() === 0 ? 'true' : null"
-              [tabindex]="pendingNew() === 0 ? -1 : 0"
-              [attr.aria-label]="'admin.logs.newEntries.aria' | transloco: { count: pendingNew() }"
-              (click)="showPending()"
-            >
-              {{ 'admin.logs.newEntries.label' | transloco: { count: pendingNew() } }}
-            </button>
-          </span>
+          <div class="ml-auto flex flex-wrap items-center justify-end gap-3">
+            <app-health-marker
+              [tone]="liveTone()"
+              [label]="'admin.logs.live.' + liveState() | transloco"
+            />
+            <!-- No polling replaces a closed stream for hints (spec §9.4); the 30 s reconcile keeps
+                 running, and this is the way to ask now. -->
+            @if (liveState() === 'closed') {
+              <button type="button" appButton="outline" (click)="reload()">
+                {{ 'admin.logs.states.reload' | transloco }}
+              </button>
+            }
+            <!-- Reserved even at zero (invisible), so the bar never jumps when "n neue" appears. -->
+            <span class="min-w-24 text-right" data-testid="log-new-slot">
+              <button
+                type="button"
+                class="inline-flex min-h-11 items-center px-2 text-sm text-accent-fg underline-offset-2 hover:underline sm:min-h-8"
+                [class.invisible]="pendingNew() === 0"
+                [attr.aria-hidden]="pendingNew() === 0 ? 'true' : null"
+                [tabindex]="pendingNew() === 0 ? -1 : 0"
+                [attr.aria-label]="
+                  'admin.logs.newEntries.aria' | transloco: { count: pendingNew() }
+                "
+                (click)="showPending()"
+              >
+                {{ 'admin.logs.newEntries.label' | transloco: { count: pendingNew() } }}
+              </button>
+            </span>
+          </div>
         </div>
       </div>
 
@@ -336,6 +431,22 @@ function utcMinute(instant: string): string {
               </button>
             </app-notice-banner>
           }
+          @if (paused()) {
+            <app-notice-banner variant="warning">
+              <span>{{ 'admin.logs.live.pausedNotice' | transloco }}</span>
+              <button notice-action type="button" appButton="outline" (click)="reload()">
+                {{ 'admin.logs.states.retry' | transloco }}
+              </button>
+            </app-notice-banner>
+          }
+          @if (tooManyNew()) {
+            <app-notice-banner variant="info">
+              <span>{{ 'admin.logs.live.tooMany' | transloco }}</span>
+              <button notice-action type="button" appButton="outline" (click)="reload()">
+                {{ 'admin.logs.live.reloadList' | transloco }}
+              </button>
+            </app-notice-banner>
+          }
           @if (dropBanner(); as drop) {
             <app-notice-banner variant="warning">
               {{ drop }}
@@ -385,6 +496,7 @@ function utcMinute(instant: string): string {
               </div>
               <app-admin-log-list
                 [entries]="rows"
+                [highlighted]="highlighted()"
                 [processStarts]="summary()?.processStarts ?? []"
                 (termAdded)="addTerm($event)"
               />
@@ -426,11 +538,16 @@ export class AdminLogsPage {
   private readonly languageService = inject(LanguageService);
   private readonly transloco = inject(TranslocoService);
   private readonly breakpoints = inject(BreakpointObserver);
+  private readonly liveUpdate = inject(LiveUpdateService);
+  private readonly document = inject(DOCUMENT);
+  private readonly injector = inject(Injector);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   private readonly query = listQueryState({ q: '', range: '', from: '', to: '' });
 
   private readonly filterInput = viewChild<ElementRef<HTMLInputElement>>('filterInput');
   private readonly sentinel = viewChild<ElementRef<HTMLElement>>('sentinel');
+  private readonly stickyBar = viewChild<ElementRef<HTMLElement>>('stickyBar');
   protected readonly list = viewChild(AdminLogList);
 
   protected readonly helpKeys = [
@@ -538,8 +655,37 @@ export class AdminLogsPage {
   /** Translation key of the last failed overwrite or delete, shown as a banner. */
   protected readonly savedFilterError = signal<string | null>(null);
 
-  /** Entries waiting behind the reserved "n neue" slot; fed by the live mode, zero until then. */
-  readonly pendingNew = signal(0);
+  /** New entries the live mode holds back while the reader is not at the top (spec §9.4). */
+  private readonly held = signal<LogEntry[]>([]);
+  /** How many entries wait behind the reserved "n neue" slot. */
+  readonly pendingNew = computed(() => this.held().length);
+  /** Rows inserted by the live mode in the last two seconds. */
+  protected readonly highlighted = signal<ReadonlySet<number>>(new Set());
+  /** The polite live-region text, one message per insert. */
+  protected readonly announcement = signal('');
+  /** A failed automatic fetch stopped every automatic fetch until a load the reader asked for succeeds. */
+  protected readonly paused = signal(false);
+  /** The loaded interval cannot be reconciled any more (too many new entries, span beyond 8 days). */
+  protected readonly tooManyNew = signal(false);
+
+  private readonly visible = pageVisible();
+  private readonly scheduler = new LogReconcileScheduler(
+    () => Date.now(),
+    () => this.reconcile(),
+  );
+  private reconcileSub?: Subscription;
+  private lastSummaryAtMs = Number.NEGATIVE_INFINITY;
+  /** Rows went into the list since the summary last loaded, so its counts are behind. */
+  private summaryBehind = false;
+  private readonly highlightTimers = new Set<ReturnType<typeof setTimeout>>();
+
+  protected readonly liveState = computed<LiveState>(() => {
+    if (this.parsedRange().kind === 'absolute') {
+      return 'absolute';
+    }
+    return this.paused() ? 'paused' : this.liveUpdate.status();
+  });
+  protected readonly liveTone = computed(() => LIVE_TONES[this.liveState()]);
 
   protected readonly copyFeedback = signal<string | null>(null);
   protected readonly helpOpen = signal(false);
@@ -660,9 +806,27 @@ export class AdminLogsPage {
   constructor() {
     this.loadSavedFilters();
     this.destroyRef.onDestroy(() => {
+      this.scheduler.pause();
+      this.reconcileSub?.unsubscribe();
       this.cancelLoads();
       this.statusSub?.unsubscribe();
       clearTimeout(this.copyTimer);
+      this.highlightTimers.forEach((timer) => clearTimeout(timer));
+    });
+
+    // Reconcile triggers (spec §8.3). The 30 s tick runs whatever the stream does — the hint only makes
+    // the reconcile sooner, it is never what makes the list correct. pollWhileVisible also ticks once
+    // when the tab comes back; its very first tick is skipped because the page is loading anyway.
+    liveEvents(ADMIN_LIVE_URL, [LIVE_EVENT_TYPES.logsAppended]).subscribe(() =>
+      this.requestReconcile(),
+    );
+    pollWhileVisible(LOG_RECONCILE_INTERVAL_MS, this.visible)
+      .pipe(skip(this.visible() ? 1 : 0))
+      .subscribe(() => this.requestReconcile());
+    effect(() => {
+      if (this.liveUpdate.status() === 'open') {
+        untracked(() => this.requestReconcile());
+      }
     });
 
     // URL -> field, so a chip, a facet or the browser's back button shows in the input.
@@ -762,8 +926,19 @@ export class AdminLogsPage {
     }
   }
 
+  /** "n neue ↑": back to the top, then in with what waited. Focus moves to the first row, since the
+   *  slot itself turns inert. */
   protected showPending(): void {
-    // Live mode attaches here; with nothing pending the slot is inert.
+    const rows = this.held();
+    if (rows.length === 0) {
+      return;
+    }
+    this.document.defaultView?.scrollTo({ top: 0 });
+    this.insert(rows);
+    afterNextRender(
+      () => this.host.nativeElement.querySelector<HTMLElement>('[data-log-id] button')?.focus(),
+      { injector: this.injector },
+    );
   }
 
   protected openFilterDialog(): void {
@@ -825,10 +1000,8 @@ export class AdminLogsPage {
         next: (page) => {
           this.moreLoading.set(false);
           this.cursor.set(page.nextCursor);
-          this.entries.update((current) => {
-            const seen = new Set((current ?? []).map((entry) => entry.id));
-            return [...(current ?? []), ...page.entries.filter((entry) => !seen.has(entry.id))];
-          });
+          // Merged, not appended: a live insert may already sit at the old end of the list.
+          this.entries.update((current) => mergeLogEntries(current ?? [], page.entries));
         },
         error: () => {
           this.moreLoading.set(false);
@@ -946,6 +1119,10 @@ export class AdminLogsPage {
 
   private load(request: LogRequest | null): void {
     this.cancelLoads();
+    // A reconcile of the previous answer must not land on the new one.
+    this.reconcileSub?.unsubscribe();
+    this.held.set([]);
+    this.tooManyNew.set(false);
     this.queryError.set(null);
     this.serverFilterError.set(null);
     this.loadStatus();
@@ -971,6 +1148,8 @@ export class AdminLogsPage {
       next: (summary) => {
         this.summaryLoading.set(false);
         this.summary.set(summary);
+        this.lastSummaryAtMs = Date.now();
+        this.summaryBehind = false;
       },
       error: (error: unknown) => this.onLoadError(error, 'summary'),
     });
@@ -985,6 +1164,154 @@ export class AdminLogsPage {
         : boundsOf(range);
     // Without bounds to page on there is no next page: show the end, not a dead sentinel.
     this.cursor.set(this.frozen ? page.nextCursor : null);
+    // A load the reader asked for went through: live mode may fetch on its own again (S1).
+    if (this.paused()) {
+      this.paused.set(false);
+      this.scheduler.resume();
+    }
+  }
+
+  // --- Live mode ------------------------------------------------------------------------------
+
+  /** Live only on a relative range with something loaded, on a visible tab, and not paused. */
+  private canReconcile(): boolean {
+    const request = this.request();
+    return (
+      request !== null &&
+      'range' in request.range &&
+      this.entries() !== null &&
+      this.frozen !== null &&
+      !this.listLoading() &&
+      this.visible() &&
+      !this.paused() &&
+      !this.tooManyNew()
+    );
+  }
+
+  private requestReconcile(): void {
+    if (this.canReconcile()) {
+      this.scheduler.trigger();
+    }
+  }
+
+  /** One reconcile for the scheduler; resolves when it ended, was cancelled or did nothing. */
+  private reconcile(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      this.reconcileSub?.unsubscribe();
+      this.reconcileSub = this.reconcile$()
+        .pipe(finalize(() => resolve()))
+        .subscribe();
+    });
+  }
+
+  private reconcile$(): Observable<unknown> {
+    const request = this.request();
+    const loaded = this.entries();
+    const frozen = this.frozen;
+    if (!this.canReconcile() || !request || !loaded || !frozen) {
+      return EMPTY;
+    }
+    const fromL = reconcileFromUtc(loaded, frozen.from, this.cursor());
+    // Asked before every key query: past the 8-day span the server would answer 400 (L3).
+    const preflight = preflightReconcile(fromL, Date.now(), request.range);
+    if (preflight.kind !== 'request') {
+      if (preflight.kind === 'reload') {
+        this.tooManyNew.set(true);
+      }
+      return EMPTY;
+    }
+    return this.service.getKeys(request.q, fromL).pipe(
+      catchError((error: unknown) => {
+        // Clock skew at the 8-day edge: the server's "range too long" means reload, not failure.
+        if (isInvalidRange(error)) {
+          this.tooManyNew.set(true);
+        } else {
+          this.pause();
+        }
+        return EMPTY;
+      }),
+      switchMap((keys) => {
+        const known = new Set([...(this.entries() ?? []), ...this.held()].map((e) => e.id));
+        const plan = planReconcile(keys, known);
+        if (plan.kind === 'reload') {
+          this.tooManyNew.set(true);
+          return EMPTY;
+        }
+        const batches = plan.kind === 'fetch' ? plan.idBatches : [];
+        return concat(...batches.map((ids) => this.service.getByIds(ids))).pipe(
+          toArray(),
+          tap((pages) => this.receive(pages.flatMap((p) => p.entries))),
+          switchMap(() => this.refreshSummary$(request)),
+          catchError(() => {
+            this.pause();
+            return EMPTY;
+          }),
+        );
+      }),
+    );
+  }
+
+  /** Into the list at the top, behind "n neue" otherwise — together with what already waited. */
+  private receive(incoming: LogEntry[]): void {
+    const rows = mergeLogEntries(this.held(), incoming);
+    if (rows.length === 0) {
+      return;
+    }
+    if (this.atTop()) {
+      this.insert(rows);
+    } else {
+      this.held.set(rows);
+    }
+  }
+
+  private insert(rows: LogEntry[]): void {
+    this.entries.update((current) => mergeLogEntries(current ?? [], rows));
+    this.held.set([]);
+    this.summaryBehind = true;
+    this.announcement.set(
+      this.transloco.translate('admin.logs.live.inserted', { count: rows.length }),
+    );
+    const ids = rows.map((row) => row.id);
+    this.highlighted.update((current) => new Set([...current, ...ids]));
+    const timer = setTimeout(() => {
+      this.highlightTimers.delete(timer);
+      this.highlighted.update((current) => {
+        const next = new Set(current);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
+    }, HIGHLIGHT_MS);
+    this.highlightTimers.add(timer);
+  }
+
+  /** The histogram and facets follow inserted rows, at most once per 30 s. */
+  private refreshSummary$(request: LogRequest): Observable<unknown> {
+    if (!this.summaryBehind || Date.now() - this.lastSummaryAtMs < SUMMARY_MIN_INTERVAL_MS) {
+      return EMPTY;
+    }
+    return this.service.getSummary(request.q, request.range).pipe(
+      tap((summary) => {
+        this.summary.set(summary);
+        this.lastSummaryAtMs = Date.now();
+        this.summaryBehind = false;
+      }),
+    );
+  }
+
+  private pause(): void {
+    this.paused.set(true);
+    this.scheduler.pause();
+  }
+
+  private atTop(): boolean {
+    const first = this.host.nativeElement.querySelector<HTMLElement>('[data-log-id]');
+    const bar = this.stickyBar()?.nativeElement;
+    return isLogListAtTop(
+      first ? first.getBoundingClientRect().top : null,
+      bar ? bar.getBoundingClientRect().bottom : 0,
+      this.document.defaultView?.innerHeight ?? 0,
+      this.list()?.hasExpanded() ?? false,
+    );
   }
 
   private onLoadError(error: unknown, source: 'list' | 'summary'): void {
@@ -1034,4 +1361,12 @@ export class AdminLogsPage {
     clearTimeout(this.copyTimer);
     this.copyTimer = setTimeout(() => this.copyFeedback.set(null), COPY_FEEDBACK_MS);
   }
+}
+
+function isInvalidRange(error: unknown): boolean {
+  return (
+    error instanceof HttpErrorResponse &&
+    error.status === 400 &&
+    (error.error as { errorCode?: string } | null)?.errorCode === 'invalid_log_range'
+  );
 }

@@ -3,11 +3,15 @@ import { expect, test, type Page } from './support/test';
 import {
   AUTH_USER,
   buildLogEntry,
+  emitLive,
+  failLive,
   installLiveStub,
   mockAdminLogs,
   mockAuthMe,
+  mockLiveQuota,
   mockWorkerHealth,
   type MockAdminLogsOptions,
+  type MockLogEntry,
 } from './support/mocks';
 
 const ADMIN_USER = { ...AUTH_USER, isGlobalAdmin: true };
@@ -96,7 +100,10 @@ test.describe('admin log viewer on /admin/logs', () => {
     await chart.press('Enter');
 
     await expect(page).toHaveURL(/from=2026-10-13T12:00:00Z&to=2026-10-13T12:15:00Z/);
-    expect(calls.list.at(-1)?.searchParams.get('from')).toBe('2026-10-13T12:00:00Z');
+    // The URL changes before the request goes out, so wait for the request itself.
+    await expect
+      .poll(() => calls.list.at(-1)?.searchParams.get('from'))
+      .toBe('2026-10-13T12:00:00Z');
     expect(calls.list.at(-1)?.searchParams.has('range')).toBe(false);
 
     await page.getByRole('button', { name: 'Zurück zu 24 h' }).click();
@@ -396,5 +403,185 @@ test.describe('admin log viewer on a phone', () => {
       () => document.documentElement.scrollWidth - window.innerWidth,
     );
     expect(overflow).toBeLessThanOrEqual(0);
+  });
+});
+
+test.describe('admin log viewer live mode', () => {
+  const NOW = new Date('2026-10-14T12:00:10Z');
+  const at = (id: number, timestampUtc: string, overrides: Partial<MockLogEntry> = {}) =>
+    buildLogEntry(id, { timestampUtc, ...overrides });
+  /** `count` stored rows, ids `count`..1, the newest at 11:59:50 and each 10 s older. */
+  const storeOf = (count: number) =>
+    Array.from({ length: count }, (_, i) =>
+      at(count - i, new Date(Date.parse('2026-10-14T11:59:50Z') - i * 10_000).toISOString()),
+    );
+  const rowIds = (page: Page) =>
+    rows(page).evaluateAll((items) => items.map((li) => Number(li.getAttribute('data-log-id'))));
+  const slot = (page: Page) => page.getByTestId('log-new-slot').getByRole('button');
+  const hint = { type: 'logs.appended' };
+
+  test('logs.appended at the top inserts the entry, highlights it and announces it once', async ({
+    page,
+  }) => {
+    const store = storeOf(5);
+    await adminLogsPage(page, { store });
+    await page.clock.install({ time: NOW });
+    await page.goto('/admin/logs');
+    await expect(rows(page)).toHaveCount(5);
+
+    store.push(at(6, '2026-10-14T12:00:05Z'));
+    await emitLive(page, hint);
+
+    await expect(rows(page).first()).toHaveAttribute('data-log-id', '6');
+    await expect(rows(page).first()).toHaveAttribute('data-log-new', '');
+    await expect(page.getByTestId('log-live-announcement')).toHaveText('1 neue Einträge');
+    await page.clock.runFor(2500);
+    await expect(rows(page).first()).not.toHaveAttribute('data-log-new');
+  });
+
+  test('after scrolling, "n neue" counts without moving the content; a click scrolls up and inserts', async ({
+    page,
+  }) => {
+    const store = storeOf(80);
+    await adminLogsPage(page, { store });
+    await page.clock.install({ time: NOW });
+    await page.goto('/admin/logs');
+    await expect(rows(page)).toHaveCount(80);
+
+    const anchor = rows(page).nth(40);
+    await anchor.scrollIntoViewIfNeeded();
+    const before = await anchor.boundingBox();
+
+    store.push(at(81, '2026-10-14T12:00:01Z'), at(82, '2026-10-14T12:00:02Z'));
+    await emitLive(page, hint);
+
+    await expect(slot(page)).toHaveText('2 neue ↑');
+    expect(await anchor.boundingBox()).toEqual(before);
+    await expect(rows(page)).toHaveCount(80);
+
+    await slot(page).click();
+    await expect(rows(page)).toHaveCount(82);
+    expect((await rowIds(page)).slice(0, 3)).toEqual([82, 81, 80]);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+    await expect(rows(page).first().getByRole('button').first()).toBeFocused();
+    await expect(slot(page)).toBeHidden();
+  });
+
+  test('a late entry in the middle of a loaded page appears at its place on the next reconcile', async ({
+    page,
+  }) => {
+    const store = storeOf(10);
+    const calls = await adminLogsPage(page, { store });
+    await page.clock.install({ time: NOW });
+    await page.goto('/admin/logs');
+    await expect(rows(page)).toHaveCount(10);
+
+    // Committed late: older than rows 10..7, newer than row 6 — and no hint about it.
+    store.push(at(50, '2026-10-14T11:59:15Z'));
+    await page.clock.runFor(30_000);
+
+    await expect(rows(page)).toHaveCount(11);
+    expect((await rowIds(page)).slice(0, 6)).toEqual([10, 9, 8, 7, 50, 6]);
+    expect(calls.keys.at(-1)?.searchParams.get('from')).toBe('2026-10-13T12:00:00Z');
+    expect(calls.ids.at(-1)?.searchParams.get('ids')).toBe('50');
+  });
+
+  test('an empty "Alle Fehler" list shows its first entry at once with a hint and within 30 s without one', async ({
+    page,
+  }) => {
+    const store: MockLogEntry[] = [];
+    await adminLogsPage(page, { store });
+    await page.clock.install({ time: NOW });
+    await page.goto('/admin/logs?q=level%3E%3Derror');
+    await expect(page.getByText('Keine Einträge für diesen Filter im Zeitraum')).toBeVisible();
+
+    store.push(at(1, '2026-10-14T12:00:02Z', { level: 'error' }));
+    await emitLive(page, hint);
+    await expect(rows(page)).toHaveCount(1);
+
+    // No hint this time (a lost publish, Redis down): the periodic reconcile still finds it.
+    store.push(at(2, '2026-10-14T12:00:04Z', { level: 'error' }));
+    await page.clock.runFor(30_000);
+    await expect(rows(page)).toHaveCount(2);
+    expect(await rowIds(page)).toEqual([2, 1]);
+  });
+
+  test('a truncated key list asks to reload the list instead of leaving a gap', async ({
+    page,
+  }) => {
+    const calls = await adminLogsPage(page, { store: storeOf(5), keysTruncated: true });
+    await page.clock.install({ time: NOW });
+    await page.goto('/admin/logs');
+    await expect(rows(page)).toHaveCount(5);
+
+    await emitLive(page, hint);
+    await expect(page.getByText('Zu viele neue Einträge')).toBeVisible();
+    expect(calls.ids).toHaveLength(0);
+
+    const pages = calls.list.length;
+    await page.getByRole('button', { name: 'Liste neu laden' }).click();
+    await expect.poll(() => calls.list.length).toBe(pages + 1);
+    await expect(page.getByText('Zu viele neue Einträge')).toHaveCount(0);
+  });
+
+  test('a failed reconcile pauses live: later hints and ticks send nothing until a retry succeeds', async ({
+    page,
+  }) => {
+    const store = storeOf(5);
+    let failKeys = true;
+    const calls = await adminLogsPage(page, {
+      store,
+      fail: (_url, endpoint) =>
+        failKeys && endpoint === 'keys' ? { status: 500, body: {} } : undefined,
+    });
+    await page.clock.install({ time: NOW });
+    await page.goto('/admin/logs');
+    await expect(rows(page)).toHaveCount(5);
+
+    await emitLive(page, hint);
+    await expect(page.getByText('Live pausiert', { exact: true })).toBeVisible();
+    await expect(page.getByText('Live pausiert nach Fehler')).toBeVisible();
+
+    const sent = () =>
+      calls.keys.length + calls.ids.length + calls.list.length + calls.summary.length;
+    const before = sent();
+    store.push(at(6, '2026-10-14T12:00:05Z'));
+    await emitLive(page, hint);
+    await emitLive(page, hint);
+    await page.clock.runFor(65_000);
+    expect(sent()).toBe(before);
+    await expect(rows(page)).toHaveCount(5);
+
+    failKeys = false;
+    await page.getByRole('button', { name: 'Erneut versuchen' }).click();
+    await expect(page.getByText('Live pausiert nach Fehler')).toHaveCount(0);
+    // The reload itself already shows row 6; the next hint reconciles again.
+    await expect(rows(page)).toHaveCount(6);
+    store.push(at(7, '2026-10-14T12:00:07Z'));
+    await emitLive(page, hint);
+    await expect(rows(page).first()).toHaveAttribute('data-log-id', '7');
+  });
+
+  test('a closed stream shows "Neu laden" and the 30 s reconcile keeps running', async ({
+    page,
+  }) => {
+    const store = storeOf(5);
+    await adminLogsPage(page, { store });
+    await mockLiveQuota(page, {
+      openConnections: 0,
+      maxPerSubscriber: 3,
+      perSubscriberLimitReached: false,
+    });
+    await page.clock.install({ time: NOW });
+    await page.goto('/admin/logs');
+    await expect(rows(page)).toHaveCount(5);
+
+    await failLive(page);
+    await expect(page.getByText('Live-Stream getrennt')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Neu laden' })).toBeVisible();
+
+    store.push(at(6, '2026-10-14T12:00:05Z'));
+    await page.clock.runFor(30_000);
+    await expect(rows(page).first()).toHaveAttribute('data-log-id', '6');
   });
 });

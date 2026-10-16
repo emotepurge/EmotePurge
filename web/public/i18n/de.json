@@ -864,6 +864,18 @@
         "label": "{{ count }} neue ↑",
         "aria": "{{ count }} neue Einträge, nach oben springen und einfügen"
       },
+      "live": {
+        "open": "Live",
+        "connecting": "Verbindet…",
+        "idle": "Live-Stream inaktiv",
+        "closed": "Live-Stream getrennt",
+        "paused": "Live pausiert",
+        "absolute": "Kein Live bei festem Zeitraum",
+        "pausedNotice": "Live pausiert nach Fehler",
+        "tooMany": "Zu viele neue Einträge",
+        "reloadList": "Liste neu laden",
+        "inserted": "{{ count }} neue Einträge"
+      },
       "facets": {
         "title": "Facetten",
         "source": "Quelle",

@@ -10,6 +10,18 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-16 — Admin log viewer live mode: client rules (#383)
+
+**Betrifft:** `web/src/app/features/admin/admin-logs-page.ts` · `web/src/app/features/admin/admin-log-list.ts` · `web/src/app/core/admin/log-reconcile.ts` · `web/e2e/support/mocks.ts` · `docs/superpowers/specs/2026-10-14-admin-log-viewer-383-spec.md` (§8.3, §9.4)
+
+`/admin/logs` stays live only on a relative range. Four triggers ask `LogReconcileScheduler` for a reconcile: a `logs.appended` hint on the admin stream, the tab becoming visible again, the stream (re)opening, and a 30 s tick. All of them require a visible tab, a loaded list, no load in flight and no pause. The 30 s tick runs whatever state the stream is in. "No polling fallback" (§9.4) means only that nothing replaces the stream's hints. A closed stream shows in the live marker (the `HealthMarker` of the monitoring page) with a "Neu laden" button, while the periodic reconcile keeps the list correct.
+
+Each reconcile asks `preflightReconcile` first and calls `getKeys` only on `request`. A `400 invalid_log_range` from the key query (clock skew at the 8-day edge) counts like the preflight's `reload`: the page shows "Zu viele neue Einträge" with "Liste neu laden" and does not pause. Any other non-2xx of an automatic fetch (keys, ids, the live summary) pauses live mode: the marker says "pausiert", a banner offers "Erneut versuchen", and no hint or tick sends a request. Only a load the reader started (retry, reload, a new filter or range) resumes it, and only once its first page succeeds.
+
+"At the top" is decided on every reconcile: the first row's top lies between the sticky filter bar's bottom edge and the viewport bottom, and no row is unfolded. At the top, new rows are merged at their `(timestampUtc, id)` place, carry an accent wash for 2 s (a fixed mark under reduced motion) and produce one polite announcement for the whole batch. Otherwise they wait behind "n neue ↑" and count as known, so they are not fetched again. A later reconcile that finds the reader back at the top inserts them, and so does a click on the slot, which also scrolls up and moves focus to the first row. The summary is reloaded at most once per 30 s, and only after rows were inserted. "Load more" now merges instead of appending, because a live insert can already sit at the old end of the list.
+
+The E2E mock answers `keysOnly` and `ids=` requests separately and counts them in `calls.keys` and `calls.ids`, so `calls.list` holds only page requests. Its optional `store` acts as the server's rows for live tests. Without a store, the key query lists exactly what the list has served, so nothing is new.
+
 ### 2026-10-15 — Second chart primitive: stacked time histogram (#383)
 
 **Betrifft:** `web/src/app/shared/charts/time-histogram.ts` · `web/src/app/shared/charts/time-histogram.spec.ts` · `docs/UI-Designsprache.md` (§2.6, §2.6.1) · `web/public/i18n/de.json` · `web/public/i18n/en.json` · `docs/superpowers/specs/2026-10-14-admin-log-viewer-383-spec.md` (§9.6, A27)

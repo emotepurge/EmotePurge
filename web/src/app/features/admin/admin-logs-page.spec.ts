@@ -24,8 +24,9 @@ import {
   LogSummary,
   SavedLogFilter,
 } from '../../core/admin/admin-logs.model';
+import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { TimeHistogram } from '../../shared/charts/time-histogram';
-import { AdminLogsPage, LOG_LIST_LIMIT, parseLogRange } from './admin-logs-page';
+import { AdminLogsPage, LOG_LIST_LIMIT, isLogListAtTop, parseLogRange } from './admin-logs-page';
 
 function entry(id: number): LogEntry {
   return {
@@ -105,6 +106,27 @@ function healthyStatus(overrides: Partial<LogStatus> = {}): LogStatus {
   };
 }
 
+/** jsdom ships no `EventSource`; this one lets a test open, close and push frames into the admin stream. */
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  readyState = 1;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onopen: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  constructor(readonly url: string) {
+    FakeEventSource.instances.push(this);
+  }
+  close(): void {
+    this.readyState = 2;
+  }
+}
+
+function emitLive(type: string): void {
+  for (const source of FakeEventSource.instances) {
+    source.onmessage?.({ data: JSON.stringify({ type }), lastEventId: '' } as MessageEvent);
+  }
+}
+
 /** Collects the observers the sentinel creates, so a test can scroll without a layout engine. */
 class FakeIntersectionObserver {
   static instances: FakeIntersectionObserver[] = [];
@@ -138,6 +160,7 @@ describe('AdminLogsPage', () => {
     savedFiltersFail = false;
     dialogOpen = () => ({ closed: of(undefined) });
     FakeIntersectionObserver.instances = [];
+    FakeEventSource.instances = [];
     vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver);
     TestBed.configureTestingModule({
       imports: [
@@ -153,6 +176,10 @@ describe('AdminLogsPage', () => {
         provideLocationMocks(),
         { provide: Dialog, useValue: { open: (c: unknown, o: unknown) => dialogOpen(c, o) } },
         {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+        {
           provide: BreakpointObserver,
           useValue: {
             observe: () => of({ matches: desktop, breakpoints: {} }),
@@ -164,6 +191,7 @@ describe('AdminLogsPage', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     httpMock?.verify();
   });
@@ -792,6 +820,292 @@ describe('AdminLogsPage', () => {
       statusRequest().flush(healthyStatus());
       listRequest((r) => r.params.get('q') === 'level>=error').flush(page(4, 4, null));
       summaryRequest().flush(summary());
+    });
+  });
+
+  describe('isLogListAtTop', () => {
+    it('is true while the first row sits in view below the sticky bar and nothing is unfolded', () => {
+      expect(isLogListAtTop(300, 200, 900, false)).toBe(true);
+      expect(isLogListAtTop(200, 200, 900, false)).toBe(true);
+    });
+
+    it('is false once the first row has slid under the sticky bar or out of view', () => {
+      expect(isLogListAtTop(150, 200, 900, false)).toBe(false);
+      expect(isLogListAtTop(950, 200, 900, false)).toBe(false);
+    });
+
+    it('is false while a row is unfolded, wherever the list stands', () => {
+      expect(isLogListAtTop(300, 200, 900, true)).toBe(false);
+    });
+
+    it('treats an empty list as the top', () => {
+      expect(isLogListAtTop(null, 200, 900, false)).toBe(true);
+      expect(isLogListAtTop(null, 200, 900, true)).toBe(false);
+    });
+  });
+
+  describe('live mode', () => {
+    const at = (id: number, timestampUtc: string): LogEntry => ({ ...entry(id), timestampUtc });
+    const loaded = () => page(4, 4, null).entries;
+    const isKeys = (r: TestRequest['request']) =>
+      r.url === '/api/admin/logs' && r.params.has('keysOnly');
+    const keysRequest = () => httpMock.expectOne(isKeys);
+    const noKeysRequest = () => httpMock.expectNone(isKeys);
+    const idsRequest = () =>
+      httpMock.expectOne((r) => r.url === '/api/admin/logs' && r.params.has('ids'));
+    const rowIds = () =>
+      Array.from(root().querySelectorAll('[data-log-id]')).map((li) =>
+        Number(li.getAttribute('data-log-id')),
+      );
+    const announcement = () =>
+      root().querySelector('[data-testid="log-live-announcement"]')?.textContent?.trim() ?? '';
+    const marker = () => root().querySelector('app-health-marker')?.textContent?.trim();
+    const slotButton = () =>
+      root().querySelector<HTMLButtonElement>('[data-testid="log-new-slot"] button')!;
+    const keyPage = (entries: LogEntry[], truncated = false) => ({
+      entries: entries.map((e) => ({ id: e.id, timestampUtc: e.timestampUtc })),
+      nextCursor: null,
+      rangeFromUtc: '2026-10-13T12:00:00Z',
+      rangeToUtc: '2026-10-14T12:00:05Z',
+      truncated,
+    });
+    const idsPage = (entries: LogEntry[]): LogPage => ({
+      entries,
+      nextCursor: null,
+      rangeFromUtc: null,
+      rangeToUtc: null,
+      truncated: false,
+    });
+    const startFakeDate = (iso: string) => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(iso));
+    };
+    const advanceDate = (ms: number) => vi.setSystemTime(Date.now() + ms);
+
+    /** One hint, the key query over the loaded interval, and the id fetch for what is missing. */
+    async function reconcile(incoming: LogEntry[]): Promise<void> {
+      emitLive('logs.appended');
+      await settle();
+      keysRequest().flush(keyPage([...incoming, ...loaded()]));
+      if (incoming.length > 0) {
+        idsRequest().flush(idsPage(incoming));
+      }
+      await settle();
+    }
+
+    it('inserts new entries at their sorted place at the top and announces them once', async () => {
+      await openAndLoad('/admin/logs');
+
+      emitLive('logs.appended');
+      await settle();
+      const keys = keysRequest();
+      // Pagination is at its end, so the loaded interval starts at the range start (R7, 3.2).
+      expect(keys.request.params.get('from')).toBe('2026-10-13T12:00:00Z');
+      expect(keys.request.params.has('to')).toBe(false);
+      const newest = at(11, '2026-10-14T12:00:01Z');
+      const late = at(10, '2026-10-14T11:59:59Z');
+      keys.flush(keyPage([newest, ...loaded(), late]));
+      const ids = idsRequest();
+      expect(ids.request.params.get('ids')).toBe('11,10');
+      ids.flush(idsPage([newest, late]));
+      await settle();
+
+      expect(rowIds()).toEqual([11, 4, 3, 2, 1, 10]);
+      expect(announcement()).toBe('2 new entries');
+      expect(slotButton().getAttribute('aria-hidden')).toBe('true');
+    });
+
+    it('holds new entries behind "n new" while a row is unfolded and inserts them on a click', async () => {
+      await openAndLoad('/admin/logs');
+      const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+      root().querySelector<HTMLButtonElement>('[data-log-id] button')!.click();
+      await settle();
+
+      await reconcile([at(5, '2026-10-14T12:00:01Z')]);
+
+      expect(rowIds()).toEqual([4, 3, 2, 1]);
+      expect(announcement()).toBe('');
+      expect(slotButton().getAttribute('aria-hidden')).toBeNull();
+      expect(slotButton().textContent?.trim()).toBe('1 new ↑');
+
+      slotButton().click();
+      await settle();
+
+      expect(scrollTo).toHaveBeenCalled();
+      expect(rowIds()).toEqual([5, 4, 3, 2, 1]);
+      expect(announcement()).toBe('1 new entries');
+      expect(slotButton().getAttribute('aria-hidden')).toBe('true');
+    });
+
+    it('holds new entries once the first row has scrolled under the sticky filter bar', async () => {
+      await openAndLoad('/admin/logs');
+      const first = root().querySelector('[data-log-id]')!;
+      vi.spyOn(first, 'getBoundingClientRect').mockReturnValue({
+        top: -40,
+        bottom: -10,
+      } as DOMRect);
+
+      await reconcile([at(5, '2026-10-14T12:00:01Z')]);
+
+      expect(rowIds()).toEqual([4, 3, 2, 1]);
+      expect(slotButton().textContent?.trim()).toBe('1 new ↑');
+    });
+
+    it('pauses after a failed reconcile: later hints send nothing until a manual load succeeds', async () => {
+      startFakeDate('2026-10-14T12:00:05Z');
+      await openAndLoad('/admin/logs');
+
+      emitLive('logs.appended');
+      await settle();
+      keysRequest().flush({}, { status: 500, statusText: 'x' });
+      await settle();
+
+      expect(marker()).toBe('Live paused');
+      expect(root().textContent).toContain('Live paused after an error');
+
+      advanceDate(60_000);
+      emitLive('logs.appended');
+      FakeEventSource.instances.forEach((source) => source.onopen?.());
+      await settle();
+      noKeysRequest();
+
+      buttonNamed('Try again').click();
+      await settle();
+      statusRequest().flush(healthyStatus());
+      listRequest().flush(page(4, 4, null));
+      summaryRequest().flush(summary());
+      await settle();
+      expect(marker()).not.toBe('Live paused');
+
+      advanceDate(6000);
+      emitLive('logs.appended');
+      await settle();
+      keysRequest().flush(keyPage(loaded()));
+    });
+
+    it('pauses after a failed id fetch as well', async () => {
+      await openAndLoad('/admin/logs');
+
+      emitLive('logs.appended');
+      await settle();
+      keysRequest().flush(keyPage([at(5, '2026-10-14T12:00:01Z'), ...loaded()]));
+      idsRequest().flush({}, { status: 503, statusText: 'x' });
+      await settle();
+
+      expect(marker()).toBe('Live paused');
+      expect(rowIds()).toEqual([4, 3, 2, 1]);
+    });
+
+    it('treats invalid_log_range from the key query as "reload the list", not as a pause', async () => {
+      await openAndLoad('/admin/logs');
+
+      emitLive('logs.appended');
+      await settle();
+      keysRequest().flush(
+        { errorCode: 'invalid_log_range' },
+        { status: 400, statusText: 'Bad Request' },
+      );
+      await settle();
+
+      expect(root().textContent).toContain('Too many new entries');
+      expect(marker()).not.toBe('Live paused');
+
+      buttonNamed('Reload list').click();
+      await settle();
+      statusRequest().flush(healthyStatus());
+      listRequest().flush(page(4, 4, null));
+      summaryRequest().flush(summary());
+      await settle();
+      expect(root().textContent).not.toContain('Too many new entries');
+    });
+
+    it('reconcile_spanBeyondEightDays_showsReloadWithoutRequest', async () => {
+      // from_L is the range start 2026-10-13T12:00:00Z; one second past 8 days the server would
+      // answer 400 for the key query — the client must not ask (Review Focus 3).
+      startFakeDate('2026-10-21T12:00:01Z');
+      await openAndLoad('/admin/logs?range=7d');
+
+      emitLive('logs.appended');
+      FakeEventSource.instances.forEach((source) => source.onopen?.());
+      await settle();
+
+      noKeysRequest();
+      expect(root().textContent).toContain('Too many new entries');
+      expect(marker()).not.toBe('Live paused');
+    });
+
+    it('asks for a reload when the server truncates the keys, without fetching ids', async () => {
+      await openAndLoad('/admin/logs');
+
+      emitLive('logs.appended');
+      await settle();
+      keysRequest().flush(keyPage(loaded(), true));
+      await settle();
+
+      httpMock.expectNone((r) => r.params.has('ids'));
+      expect(root().textContent).toContain('Too many new entries');
+    });
+
+    it('has no live mode on an absolute range: the marker says so and hints send nothing', async () => {
+      await openAndLoad('/admin/logs?from=2026-10-14T10%3A00%3A00Z&to=2026-10-14T11%3A00%3A00Z');
+
+      emitLive('logs.appended');
+      await settle();
+
+      noKeysRequest();
+      expect(marker()).toBe('No live updates for a fixed range');
+    });
+
+    it('reconciles when the stream (re)opens and then shows it as live', async () => {
+      await openAndLoad('/admin/logs');
+
+      FakeEventSource.instances.forEach((source) => source.onopen?.());
+      await settle();
+
+      keysRequest().flush(keyPage(loaded()));
+      await settle();
+      expect(marker()).toBe('Live');
+    });
+
+    it('shows a closed stream in the marker and offers a reload', async () => {
+      await openAndLoad('/admin/logs');
+
+      FakeEventSource.instances.forEach((source) => {
+        source.readyState = 2;
+        source.onerror?.();
+      });
+      await settle();
+
+      expect(marker()).toBe('Live stream disconnected');
+      buttonNamed('Reload').click();
+      await settle();
+      statusRequest().flush(healthyStatus());
+      listRequest().flush(page(4, 4, null));
+      summaryRequest().flush(summary());
+    });
+
+    it('refreshes the summary at most once per 30 s, and only after something was inserted', async () => {
+      startFakeDate('2026-10-14T12:00:05Z');
+      await openAndLoad('/admin/logs');
+
+      advanceDate(6000);
+      await reconcile([at(5, '2026-10-14T12:00:01Z')]);
+      httpMock.expectNone('/api/admin/logs/summary');
+
+      advanceDate(30_000);
+      emitLive('logs.appended');
+      await settle();
+      keysRequest().flush(keyPage([at(5, '2026-10-14T12:00:01Z'), ...loaded()]));
+      await settle();
+      summaryRequest().flush(summary({ total: 5 }));
+      await settle();
+
+      advanceDate(6000);
+      emitLive('logs.appended');
+      await settle();
+      keysRequest().flush(keyPage([at(5, '2026-10-14T12:00:01Z'), ...loaded()]));
+      await settle();
+      httpMock.expectNone('/api/admin/logs/summary');
     });
   });
 });

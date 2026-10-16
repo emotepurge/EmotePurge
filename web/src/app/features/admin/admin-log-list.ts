@@ -110,7 +110,12 @@ type DetailState =
             {{ day }}
           </li>
         }
-        <li class="text-sm" [attr.data-log-id]="row.entry.id">
+        <li
+          class="text-sm"
+          [class.log-row-new]="highlighted().has(row.entry.id)"
+          [attr.data-log-id]="row.entry.id"
+          [attr.data-log-new]="highlighted().has(row.entry.id) ? '' : null"
+        >
           <button
             type="button"
             class="flex min-h-11 w-full items-baseline gap-2 px-3 py-1.5 text-left hover:bg-surface-inset sm:min-h-8"
@@ -265,12 +270,35 @@ type DetailState =
       }
     </ul>
   `,
+  // The live insert's accent wash fades over ~2 s; under reduced motion the row is simply marked for
+  // those 2 s (spec §9.4). The page removes the class afterwards.
+  styles: `
+    .log-row-new {
+      animation: log-row-wash 2s ease-out forwards;
+    }
+    @keyframes log-row-wash {
+      from {
+        background-color: var(--color-accent-wash);
+      }
+      to {
+        background-color: transparent;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .log-row-new {
+        animation: none;
+        background-color: var(--color-accent-wash);
+      }
+    }
+  `,
 })
 export class AdminLogList {
   private readonly service = inject(AdminLogsService);
   private readonly destroyRef = inject(DestroyRef);
 
   readonly entries = input.required<readonly LogEntry[]>();
+  /** Rows the live mode just inserted; they carry the fading accent wash. */
+  readonly highlighted = input<ReadonlySet<number>>(new Set());
   /** The summary's process starts, to word "n min nach Start" without asking for the detail. */
   readonly processStarts = input<readonly LogProcessStart[]>([]);
 

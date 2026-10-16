@@ -3127,10 +3127,18 @@ export interface MockAdminLogsOptions {
   totalEntries?: number;
   /** Rows to serve instead of the generated ones (first page only; no paging). */
   entries?: MockLogEntry[];
+  /**
+   * The server's rows for live tests: the first page, the reconcile's key query (`keysOnly`, every
+   * row from `from` on) and the id fetch (`ids=`) all read this array, so a test that pushes a row
+   * into it between steps has "stored" a new entry. Served newest first by `(timestampUtc, id)`.
+   */
+  store?: MockLogEntry[];
+  /** Answer the key query with `truncated: true` (more than 2,500 keys). */
+  keysTruncated?: boolean;
   summary?: MockLogSummaryOptions;
   status?: Record<string, unknown>;
-  /** Overrides the answer to a list or summary request; return `undefined` to answer normally. */
-  fail?: (url: URL, endpoint: 'list' | 'summary') => MockLogReply | undefined;
+  /** Overrides the answer to a page, summary, key or id request; return `undefined` to answer normally. */
+  fail?: (url: URL, endpoint: 'list' | 'summary' | 'keys' | 'ids') => MockLogReply | undefined;
   /** Exception text served by `GET /api/admin/logs/{id}`. */
   exception?: string;
   /** The saved filters the server holds; the four seeds by default. */
@@ -3140,7 +3148,12 @@ export interface MockAdminLogsOptions {
 }
 
 export interface MockAdminLogsCalls {
+  /** Page requests only — the reconcile's key and id requests are counted apart. */
   list: URL[];
+  /** The reconcile's key queries (`keysOnly=true`). */
+  keys: URL[];
+  /** The reconcile's id fetches (`ids=`). */
+  ids: URL[];
   summary: URL[];
   status: URL[];
   entry: URL[];
@@ -3156,7 +3169,21 @@ export async function mockAdminLogs(
   page: Page,
   options: MockAdminLogsOptions = {},
 ): Promise<MockAdminLogsCalls> {
-  const calls: MockAdminLogsCalls = { list: [], summary: [], status: [], entry: [], filters: [] };
+  const calls: MockAdminLogsCalls = {
+    list: [],
+    keys: [],
+    ids: [],
+    summary: [],
+    status: [],
+    entry: [],
+    filters: [],
+  };
+  // Without a store, the key query lists exactly what the list has served: nothing is ever new.
+  const served = new Map<number, MockLogEntry>();
+  const newestFirst = (a: MockLogEntry, b: MockLogEntry) =>
+    a.timestampUtc === b.timestampUtc
+      ? b.id - a.id
+      : Date.parse(b.timestampUtc) - Date.parse(a.timestampUtc);
   const filters = [...(options.filters ?? SEEDED_LOG_FILTERS)];
   await page.route(
     (url) => /^\/api\/admin\/log-filters(\/\d+)?$/.test(url.pathname),
@@ -3227,6 +3254,40 @@ export async function mockAdminLogs(
           ? fulfillJson(route, reply.status, reply.body ?? {})
           : fulfillJson(route, 200, buildLogSummary(options.summary));
       }
+      if (path === '/api/admin/logs' && url.searchParams.has('keysOnly')) {
+        calls.keys.push(url);
+        const reply = options.fail?.(url, 'keys');
+        if (reply) {
+          return fulfillJson(route, reply.status, reply.body ?? {});
+        }
+        const from = Date.parse(url.searchParams.get('from') ?? '');
+        const rows = options.store
+          ? [...options.store].sort(newestFirst).filter((e) => Date.parse(e.timestampUtc) >= from)
+          : [...served.values()];
+        return fulfillJson(route, 200, {
+          entries: rows.map((e) => ({ id: e.id, timestampUtc: e.timestampUtc })),
+          nextCursor: null,
+          rangeFromUtc: url.searchParams.get('from'),
+          rangeToUtc: '2026-10-14T12:00:00Z',
+          truncated: options.keysTruncated ?? false,
+        });
+      }
+      if (path === '/api/admin/logs' && url.searchParams.has('ids')) {
+        calls.ids.push(url);
+        const reply = options.fail?.(url, 'ids');
+        if (reply) {
+          return fulfillJson(route, reply.status, reply.body ?? {});
+        }
+        const wanted = new Set((url.searchParams.get('ids') ?? '').split(',').map(Number));
+        const pool = options.store ?? [...served.values()];
+        return fulfillJson(route, 200, {
+          entries: pool.filter((e) => wanted.has(e.id)).sort(newestFirst),
+          nextCursor: null,
+          rangeFromUtc: null,
+          rangeToUtc: null,
+          truncated: false,
+        });
+      }
       if (path === '/api/admin/logs') {
         calls.list.push(url);
         const reply = options.fail?.(url, 'list');
@@ -3236,11 +3297,13 @@ export async function mockAdminLogs(
         const before = url.searchParams.get('before');
         const offset = before ? Number(before.slice(1)) : 0;
         const rows =
+          (options.store ? [...options.store].sort(newestFirst) : undefined) ??
           options.entries ??
           Array.from({ length: Math.max(0, Math.min(100, total - offset)) }, (_, i) =>
             buildLogEntry(total - offset - i),
           );
-        const more = !options.entries && offset + rows.length < total;
+        rows.forEach((row) => served.set(row.id, row));
+        const more = !options.store && !options.entries && offset + rows.length < total;
         return fulfillJson(route, 200, {
           entries: rows,
           nextCursor: more ? `c${offset + rows.length}` : null,
