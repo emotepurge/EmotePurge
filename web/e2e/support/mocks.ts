@@ -3093,6 +3093,26 @@ export function buildLogStatus(overrides: Record<string, unknown> = {}): Record<
   };
 }
 
+/**
+ * Only `GET /api/admin/logs/status` — what /admin/monitoring reads for its recorded-errors row.
+ * Pages that also need the log list register {@link mockAdminLogs}, which serves the status too.
+ * Returns the request URLs in order.
+ */
+export async function mockAdminLogStatus(
+  page: Page,
+  status: Record<string, unknown> | { status: number } = {},
+): Promise<URL[]> {
+  const calls: URL[] = [];
+  await page.route('**/api/admin/logs/status', (route) => {
+    calls.push(new URL(route.request().url()));
+    if (typeof status.status === 'number') {
+      return fulfillJson(route, status.status, {});
+    }
+    return fulfillJson(route, 200, buildLogStatus(status));
+  });
+  return calls;
+}
+
 export type MockLogReply = { status: number; body?: unknown };
 
 export interface MockSavedLogFilter {

@@ -10,6 +10,14 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-16 — Recorded-errors row on /admin/monitoring: "none" needs completeness (#383)
+
+**Betrifft:** `web/src/app/features/admin/admin-log-errors-row.ts` · `web/src/app/features/admin/admin-monitoring-page.ts` · `web/e2e/support/mocks.ts` (`mockAdminLogStatus`) · `web/e2e/audit/ui-audit.audit.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` · `docs/superpowers/specs/2026-10-14-admin-log-viewer-383-spec.md` (§11, AK 14)
+
+The monitoring page shows one ruled line directly under its header, "Fehler der letzten 24 h", fed by `GET /api/admin/logs/status` through its own `AdminLogErrorsRow` request. The word "keine" appears only when `isLogCaptureComplete` holds (both sources healthy and `coverage24h.complete`); otherwise the count is a warning badge ("mindestens n", or "0 erfasst, unvollständig") with the reasons in the same row: a stalled, disabled or missing source, a coverage gap of a source whose heartbeat looks fine, and an overdue retention run (which is also shown next to a complete count). A failed request reads "nicht verfügbar" in this row only; a failed reload drops the previous value instead of keeping a possibly stale "keine". The row refreshes on the page's existing visibility-aware 60 s dashboard timer and never on `logs.appended`.
+
+Every harness that renders `/admin/monitoring` must now answer the status request (`mockAdminLogStatus`, or `mockAdminLogs`, which serves it too); an unmocked request would fall through the dev proxy like the dashboard endpoints before it. The monitoring audit scenarios run with `wcagAA` and in both themes at every viewport.
+
 ### 2026-10-16 — Admin log viewer live mode: client rules and audit gate (#383)
 
 **Betrifft:** `web/src/app/features/admin/admin-logs-page.ts` · `web/src/app/features/admin/admin-log-list.ts` · `web/src/app/core/admin/log-reconcile.ts` · `web/src/app/core/i18n/plural.ts` · `web/e2e/support/mocks.ts` · `web/e2e/audit/ui-audit.audit.ts` · `docs/superpowers/specs/2026-10-14-admin-log-viewer-383-spec.md` (§8.3, §9.4, §9.8)

@@ -16,6 +16,7 @@ import {
   mockAdminDashboardActivity,
   mockAdminDashboardLoad,
   mockAdminHealth,
+  mockAdminLogStatus,
   mockAdminLogs,
   mockAdminRateLimits,
   mockAdminRateLimitsTrend,
@@ -287,12 +288,14 @@ async function adminDashboard(
     rateLimits?: Parameters<typeof mockAdminRateLimits>[1];
     trend?: Parameters<typeof mockAdminRateLimitsTrend>[1];
     load?: Parameters<typeof mockAdminDashboardLoad>[1];
+    logStatus?: Parameters<typeof mockAdminLogStatus>[1];
   } = {},
 ): Promise<void> {
   await mockAdminDashboardLoad(page, options.load);
   await mockAdminDashboardActivity(page, options.activity);
   await mockAdminRateLimits(page, options.rateLimits);
   await mockAdminRateLimitsTrend(page, options.trend);
+  await mockAdminLogStatus(page, options.logStatus);
 }
 
 /** /admin/logs with every level, a long message, an exception and properties in the first rows. */
@@ -780,6 +783,8 @@ const SCENARIOS: Scenario[] = [
   {
     slug: 'admin-monitoring',
     path: '/admin/monitoring',
+    wcagAA: true,
+    lightEverywhere: true,
     setup: async (page) => {
       await adminShell(page);
       await mockAdminHealth(page);
@@ -928,6 +933,40 @@ const SCENARIOS: Scenario[] = [
         .click();
       await page.waitForLoadState('networkidle');
       await page.waitForTimeout(400);
+    },
+  },
+  {
+    // The errors row at its widest: a warning count with two reasons, one of them a stalled source.
+    slug: 'admin-monitoring-log-errors-incomplete',
+    path: '/admin/monitoring',
+    wcagAA: true,
+    lightEverywhere: true,
+    setup: async (page) => {
+      await adminShell(page);
+      await mockAdminHealth(page);
+      await mockAdminRoster(page);
+      await adminDashboard(page, {
+        logStatus: {
+          sources: [
+            {
+              source: 'api',
+              state: 'healthy',
+              instanceId: 'a1b2c3d4',
+              startedUtc: '2026-10-13T20:00:00Z',
+              lastFlushUtc: '2026-10-14T11:59:30Z',
+            },
+            {
+              source: 'worker',
+              state: 'stale',
+              instanceId: 'e5f6a7b8',
+              startedUtc: '2026-10-13T20:00:00Z',
+              lastFlushUtc: '2026-10-14T11:41:00Z',
+            },
+          ],
+          coverage24h: { complete: false, recordedErrors: 3, incompleteSince: [] },
+          retention: { oldestEntryUtc: '2026-10-05T12:00:00Z', overdue: true },
+        },
+      });
     },
   },
   {

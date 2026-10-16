@@ -354,6 +354,21 @@
         "lastSuccess": "Last success",
         "lastRowCount": "Rows written last",
         "pending": "Buffered emotes"
+      },
+      "logErrors": {
+        "label": "Errors in the last 24 h",
+        "none": "none",
+        "atLeast": "at least {{count}}",
+        "zeroIncomplete": "0 recorded, incomplete",
+        "unavailable": "not available",
+        "view": "View →",
+        "reasons": {
+          "stale": "Log capture {{source}} stalled since {{time}}",
+          "disabled": "Log capture {{source}} switched off",
+          "missing": "Log capture {{source}} no status report",
+          "incomplete": "Capture of {{source}} incomplete since {{time}}",
+          "retentionOverdue": "Log deletion overdue"
+        }
       }
     },
     "rateLimits": {

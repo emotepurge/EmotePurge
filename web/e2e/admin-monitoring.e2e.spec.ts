@@ -7,6 +7,8 @@ import {
   mockAdminDashboardActivity,
   mockAdminDashboardLoad,
   mockAdminHealth,
+  mockAdminLogStatus,
+  mockAdminLogs,
   mockAdminRateLimits,
   mockAdminRateLimitsTrend,
   mockAdminRoster,
@@ -26,6 +28,7 @@ async function adminPage(page: Page): Promise<void> {
   await mockWorkerHealth(page, 'connected');
   await mockAdminHealth(page);
   await mockAdminRoster(page);
+  await mockAdminLogStatus(page);
 }
 
 const activityChart = (page: Page) =>
@@ -51,6 +54,102 @@ async function advanceTo(page: Page, target: number): Promise<void> {
     await page.clock.runFor(target - now);
   }
 }
+
+const logErrorsRow = (page: Page) => page.getByTestId('admin-log-errors');
+
+test.describe('recorded errors row', () => {
+  test.beforeEach(async ({ page }) => {
+    await adminPage(page);
+    await mockAdminDashboardLoad(page);
+    await mockAdminDashboardActivity(page);
+    await mockAdminRateLimits(page);
+    await mockAdminRateLimitsTrend(page);
+  });
+
+  test('a missing log source reads as incomplete and never as "keine"', async ({ page }) => {
+    await mockAdminLogStatus(page, {
+      sources: [
+        {
+          source: 'api',
+          state: 'healthy',
+          instanceId: 'a1b2c3d4',
+          startedUtc: '2026-10-13T20:00:00Z',
+          lastFlushUtc: '2026-10-14T11:59:30Z',
+        },
+        {
+          source: 'worker',
+          state: 'missing',
+          instanceId: null,
+          startedUtc: null,
+          lastFlushUtc: null,
+        },
+      ],
+    });
+
+    await page.goto('/admin/monitoring');
+
+    const row = logErrorsRow(page);
+    await expect(row).toContainText('Fehler der letzten 24 h');
+    await expect(row).toContainText('0 erfasst, unvollständig');
+    await expect(row).toContainText('Log-Erfassung worker keine Statusmeldung');
+    await expect(row).not.toContainText('keine Statusmeldung keine');
+    await expect(row.getByText('keine', { exact: true })).toHaveCount(0);
+  });
+
+  test('a complete capture with errors shows the count, and a failed request only this row', async ({
+    page,
+  }) => {
+    await mockAdminLogStatus(page, {
+      coverage24h: { complete: true, recordedErrors: 3, incompleteSince: [] },
+    });
+    await page.goto('/admin/monitoring');
+    await expect(logErrorsRow(page)).toContainText('3');
+    await expect(logErrorsRow(page)).not.toContainText('unvollständig');
+
+    await mockAdminLogStatus(page, { status: 500 });
+    await page.reload();
+    await expect(logErrorsRow(page)).toContainText('nicht verfügbar');
+    await expect(page.getByRole('heading', { name: 'Aktivitätsverlauf' })).toBeVisible();
+  });
+
+  test('the link opens the "Alle Fehler" seed over 24 h with its chip active', async ({ page }) => {
+    await mockAdminLogs(page);
+
+    await page.goto('/admin/monitoring');
+    await logErrorsRow(page)
+      .getByRole('link', { name: /Ansehen/ })
+      .click();
+
+    await expect(page).toHaveURL(/\/admin\/logs\?q=level%3E%3Derror&range=24h$/);
+    await expect(
+      page
+        .getByRole('group', { name: 'Gespeicherte Filter' })
+        .getByRole('button', { name: 'Alle Fehler', exact: true }),
+    ).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  test('the 60 s poll asks for the status again, and not earlier', async ({ page }) => {
+    const calls = await mockAdminLogStatus(page);
+    const start = Date.parse('2026-10-11T12:00:00Z');
+    await page.clock.install({ time: start });
+
+    await page.goto('/admin/monitoring');
+    await expect(logErrorsRow(page)).toContainText('keine');
+    await page.clock.pauseAt(start + 5_000);
+    await settle(page);
+    expect(calls).toHaveLength(1);
+
+    await advanceTo(page, start + 59_000);
+    await settle(page);
+    expect(calls).toHaveLength(1);
+
+    await advanceTo(page, start + 65_000);
+    await expect(async () => {
+      await page.clock.runFor(20);
+      expect(calls).toHaveLength(2);
+    }).toPass({ timeout: 10_000 });
+  });
+});
 
 test.describe('admin monitoring dashboard', () => {
   test.beforeEach(async ({ page }) => {

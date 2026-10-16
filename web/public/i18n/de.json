@@ -354,6 +354,21 @@
         "lastSuccess": "Letzter Erfolg",
         "lastRowCount": "Zuletzt geschriebene Zeilen",
         "pending": "Gepufferte Emotes"
+      },
+      "logErrors": {
+        "label": "Fehler der letzten 24 h",
+        "none": "keine",
+        "atLeast": "mindestens {{count}}",
+        "zeroIncomplete": "0 erfasst, unvollständig",
+        "unavailable": "nicht verfügbar",
+        "view": "Ansehen →",
+        "reasons": {
+          "stale": "Log-Erfassung {{source}} steht seit {{time}}",
+          "disabled": "Log-Erfassung {{source}} abgeschaltet",
+          "missing": "Log-Erfassung {{source}} keine Statusmeldung",
+          "incomplete": "Erfassung von {{source}} unvollständig seit {{time}}",
+          "retentionOverdue": "Log-Löschung überfällig"
+        }
       }
     },
     "rateLimits": {
