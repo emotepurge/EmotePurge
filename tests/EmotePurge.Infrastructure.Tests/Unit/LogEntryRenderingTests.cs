@@ -267,6 +267,16 @@ public class LogEntryRenderingTests
     }
 
     [Fact]
+    public void RenderProperties_CollectionElementOverPreCutShrunkByScrub_IsFlaggedTruncated()
+    {
+        // 8,197 characters: the pre-cut drops " tail", then the scrub collapses the rest below 257 characters.
+        var element = "Bearer " + new string('T', 8_185) + " tail";
+        var rendered = LogEntryRendering.RenderProperties(State(("c", new[] { element })), null, null);
+        Assert.Equal("Bearer [redacted]", Parse(rendered).GetProperty("c").GetString());
+        Assert.True(rendered.Truncated);
+    }
+
+    [Fact]
     public void RenderProperties_KeysLowercased_OriginalFormatDropped()
     {
         var rendered = LogEntryRendering.RenderProperties(State(("ChannelName", "abc"), ("{OriginalFormat}", "Joined {ChannelName}")), null, null);

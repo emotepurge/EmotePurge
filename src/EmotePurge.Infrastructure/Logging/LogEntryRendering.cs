@@ -518,7 +518,13 @@ internal static class LogEntryRendering
 
             // Scrub before the element cut, as LimitValue does for scalars: a cut token can fall under
             // the scrubber's minimum length. The ScrubWindow pre-cut only bounds regex cost.
-            var rendered = SecretScrubber.Scrub(CutSafely(RenderElement(element), ScrubWindow));
+            var raw = RenderElement(element);
+            if (raw.Length > ScrubWindow)
+            {
+                truncated = true;
+            }
+
+            var rendered = SecretScrubber.Scrub(CutSafely(raw, ScrubWindow));
             builder.Append(CutSafely(rendered, MaxPropertyValueLength + 1));
         }
 
