@@ -10,6 +10,16 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-16 — Popover: Escape closes the topmost layer only (#383)
+
+**Betrifft:** `web/src/app/shared/ui/popover.ts` · `web/src/app/shared/ui/popover.spec.ts` · `docs/UI-Designsprache.md` §7.1 · `web/e2e/admin-logs.e2e.spec.ts`
+
+`<app-popover>` listened for Escape on `document` and did not stop it. The CDK's overlay keyboard dispatcher listens for `keydown` on `<body>`, which the event passes first, so an Escape inside a popover that sits in a CDK dialog closed both: on the log viewer's phone Filter sheet, dismissing a saved-filter chip menu also threw away the sheet and sent the focus back to the page's "Filter" button.
+
+The popover now also listens on its anchor (the `data-popover-anchor` wrapper, or its own element without one). An Escape whose focus is inside the anchor — on the trigger or in the panel — closes the panel and is stopped there, so no enclosing layer sees it. An Escape from anywhere else still closes the panel through the document listener and travels on unchanged, which keeps every existing popover (account menu, shell disclosure, date-range, usage-range and emote-set menus) closing as before. Rejected: stopping the event in the capture phase on `document`, which would also have hidden it from handlers on the focused element inside the panel.
+
+Tests: three cases in `popover.spec.ts` (consumed from the trigger and from the panel, passed on from outside, untouched once closed) and the E2E case "Escape on a chip menu in the Filter sheet closes the menu, a second one the sheet".
+
 ### 2026-10-16 — Shutdown contract: SSE streams end on ApplicationStopping, the log writer drains on its own budget, the Api gets a 45 s stop grace (#383)
 
 **Betrifft:** `src/EmotePurge.Api/Endpoints/LiveEndpoints.cs` · `src/EmotePurge.Infrastructure/Logging/LogCaptureWriter.cs` · `docker-compose.yml` · `docker-compose.prod.yml` · `docs/Operations.md` ("Deploys and the clean handover") · `tests/EmotePurge.Api.Tests/LiveStreamShutdownTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Integration/LogCaptureWriterTests.cs`

@@ -1,6 +1,6 @@
 import { Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { Popover } from './popover';
 
@@ -256,6 +256,75 @@ describe('Popover', () => {
       expect(fixture.componentInstance.closeCount).toBe(2);
       // Rendered = open, unconditionally: two close requests landed and the panel is still there.
       expect(panel()).not.toBeNull();
+    });
+  });
+
+  describe('Escape closes the topmost layer only', () => {
+    // Stands in for the CDK overlay keyboard dispatcher, which listens for keydown on <body> and
+    // closes the topmost dialog on Escape — the layer a popover inside a sheet sits on.
+    let bodyEscapes: number;
+    const countBodyEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        bodyEscapes += 1;
+      }
+    };
+    const escapeFrom = (element: Element) =>
+      element.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+      );
+
+    beforeEach(() => {
+      bodyEscapes = 0;
+      document.body.addEventListener('keydown', countBodyEscape);
+    });
+
+    afterEach(() => document.body.removeEventListener('keydown', countBodyEscape));
+
+    it('consumes an Escape from the trigger or the panel: the enclosing layer never sees it', () => {
+      const view = renderWired();
+      click(view.trigger);
+      view.fixture.detectChanges();
+
+      escapeFrom(view.trigger);
+      view.fixture.detectChanges();
+
+      expect(view.host.closeCount).toBe(1);
+      expect(view.panel()).toBeNull();
+      expect(bodyEscapes).toBe(0);
+
+      click(view.trigger);
+      view.fixture.detectChanges();
+      escapeFrom(view.panelItem());
+      view.fixture.detectChanges();
+
+      expect(view.host.closeCount).toBe(2);
+      expect(bodyEscapes).toBe(0);
+    });
+
+    it('still closes on an Escape from elsewhere and lets it travel on', () => {
+      const view = renderWired();
+      click(view.trigger);
+      view.fixture.detectChanges();
+
+      escapeFrom(view.outside);
+      view.fixture.detectChanges();
+
+      expect(view.host.closeCount).toBe(1);
+      expect(view.panel()).toBeNull();
+      expect(bodyEscapes).toBe(1);
+    });
+
+    it('leaves Escape alone once it is closed', () => {
+      const view = renderWired();
+      click(view.trigger);
+      view.fixture.detectChanges();
+      click(view.outside);
+      view.fixture.detectChanges();
+
+      escapeFrom(view.trigger);
+
+      expect(view.host.closeCount).toBe(1);
+      expect(bodyEscapes).toBe(1);
     });
   });
 

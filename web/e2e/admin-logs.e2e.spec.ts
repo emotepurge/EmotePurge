@@ -478,6 +478,27 @@ test.describe('admin log viewer on a phone', () => {
     );
     expect(overflow).toBeLessThanOrEqual(0);
   });
+
+  test('Escape on a chip menu in the Filter sheet closes the menu, a second one the sheet', async ({
+    page,
+  }) => {
+    await adminLogsPage(page);
+    await page.goto('/admin/logs');
+    await expect(rows(page)).toHaveCount(8);
+
+    await page.getByRole('button', { name: 'Filter', exact: true }).click();
+    const menuButton = page.getByRole('button', { name: 'Menü für Filter Alle Fehler' });
+    await menuButton.click();
+    await expect(page.getByRole('dialog', { name: 'Menü für Filter Alle Fehler' })).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Menü für Filter Alle Fehler' })).toHaveCount(0);
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    await expect(menuButton).toBeFocused();
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  });
 });
 
 test.describe('admin log viewer live mode', () => {
