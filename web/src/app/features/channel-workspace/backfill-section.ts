@@ -14,7 +14,7 @@ import {
   backfillSetLabel,
 } from '../../core/channels/backfill-window';
 import { isUnknownOutcome } from '../../core/http/unknown-outcome';
-import { apiErrorTranslationKey } from '../../core/i18n/api-error';
+import { apiErrorCode, apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LanguageService } from '../../core/i18n/language.service';
 import { pluralKey } from '../../core/i18n/plural';
 import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
@@ -37,7 +37,7 @@ const UNKNOWN_REASON_KEY = 'backfill.reasons.unknown';
 const CHANNEL_EXCLUDED_KEY = 'backfill.errors.channel_excluded';
 
 function errorCodeOf(error: HttpErrorResponse): string | undefined {
-  return (error.error as { errorCode?: string } | null)?.errorCode;
+  return apiErrorCode(error);
 }
 
 /**

@@ -119,11 +119,24 @@ export const GENERIC_ERROR_TRANSLATION_KEY = 'errors.generic';
  * instruction to the user.
  */
 export function apiErrorTranslationKey(error: HttpErrorResponse): string {
-  const code = (error.error as { errorCode?: string } | null)?.errorCode;
+  const code = apiErrorCode(error);
   if (code && KNOWN_API_ERROR_CODES.has(code)) {
     return `errors.api.${code}`;
   }
   return statusTranslationKey(error.status);
+}
+
+/**
+ * The `errorCode` of an EmotePurge API error body, or `undefined` when the response carries none — no
+ * body at all (a bare `Forbid()`, a dropped connection), a non-JSON body from a proxy, or a code that
+ * is not a string.
+ */
+export function apiErrorCode(error: HttpErrorResponse): string | undefined {
+  const body: unknown = error.error;
+  if (typeof body !== 'object' || body === null || !('errorCode' in body)) {
+    return undefined;
+  }
+  return typeof body.errorCode === 'string' ? body.errorCode : undefined;
 }
 
 function statusTranslationKey(status: number): string {

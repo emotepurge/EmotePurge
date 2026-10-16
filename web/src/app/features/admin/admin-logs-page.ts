@@ -57,7 +57,7 @@ import {
   preflightReconcile,
   reconcileFromUtc,
 } from '../../core/admin/log-reconcile';
-import { apiErrorTranslationKey } from '../../core/i18n/api-error';
+import { apiErrorCode, apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LanguageService } from '../../core/i18n/language.service';
 import { pluralKey } from '../../core/i18n/plural';
 import { ADMIN_LIVE_URL, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
@@ -846,9 +846,10 @@ export class AdminLogsPage {
     if (!error) {
       return null;
     }
-    const code = (error.error as { errorCode?: string } | null)?.errorCode;
     if (error.status === 503) {
-      return code === 'log_query_timeout' ? 'admin.logs.states.timeout' : 'admin.logs.states.busy';
+      return apiErrorCode(error) === 'log_query_timeout'
+        ? 'admin.logs.states.timeout'
+        : 'admin.logs.states.busy';
     }
     return apiErrorTranslationKey(error);
   });
@@ -1273,7 +1274,7 @@ export class AdminLogsPage {
         ? `admin.logs.filterErrors.${mapped.error.reason}`
         : mapped.messageKey,
     );
-    if ((error.error as { errorCode?: string } | null)?.errorCode === 'log_filter_not_found') {
+    if (apiErrorCode(error) === 'log_filter_not_found') {
       this.loadSavedFilters();
     }
   }
@@ -1607,6 +1608,6 @@ function isInvalidRange(error: unknown): boolean {
   return (
     error instanceof HttpErrorResponse &&
     error.status === 400 &&
-    (error.error as { errorCode?: string } | null)?.errorCode === 'invalid_log_range'
+    apiErrorCode(error) === 'invalid_log_range'
   );
 }

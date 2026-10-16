@@ -19,7 +19,7 @@ import {
 } from '../../core/admin/admin-logs.model';
 import { AdminLogsService } from '../../core/admin/admin-logs.service';
 import { LOG_FILTER_NAME_MAX_LENGTH, filterErrorSelection } from '../../core/admin/log-filter-text';
-import { apiErrorTranslationKey } from '../../core/i18n/api-error';
+import { apiErrorCode, apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { Button } from '../../shared/ui/button';
 import { openAppDialog } from '../../shared/ui/dialog';
 import { DialogShell } from '../../shared/ui/dialog-shell';
@@ -45,8 +45,7 @@ export type LogFilterSaveError =
  * else — the 30-filter limit, a filter that has vanished meanwhile, a network error — to the dialog.
  */
 export function mapLogFilterSaveError(error: HttpErrorResponse): LogFilterSaveError {
-  const body = error.error as { errorCode?: string } | null;
-  const code = body?.errorCode;
+  const code = apiErrorCode(error);
   if (code === 'log_filter_name_taken' || code === 'invalid_log_filter_name') {
     return { place: 'name', messageKey: apiErrorTranslationKey(error) };
   }
@@ -233,7 +232,7 @@ export class AdminLogFilterDialog {
             break;
           case 'dialog':
             this.dialogError.set(mapped.messageKey);
-            if (error.error?.errorCode === 'log_filter_not_found') {
+            if (apiErrorCode(error) === 'log_filter_not_found') {
               this.data.onVanished?.();
             }
             break;

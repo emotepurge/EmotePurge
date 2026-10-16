@@ -4,7 +4,7 @@ import { Router } from '@angular/router';
 import { catchError, Observable, of, tap, throwError } from 'rxjs';
 
 import { isUnknownOutcome } from '../http/unknown-outcome';
-import { apiErrorTranslationKey } from '../i18n/api-error';
+import { apiErrorCode, apiErrorTranslationKey } from '../i18n/api-error';
 import { ChannelService } from '../channels/channel.service';
 import { SevenTvTokenService } from '../seven-tv/seven-tv-token.service';
 import { AuthUser } from './auth.model';
@@ -244,7 +244,7 @@ export class AuthService {
     const mismatch =
       error instanceof HttpErrorResponse &&
       status === 409 &&
-      (error.error as { errorCode?: string } | null)?.errorCode === 'account_mismatch';
+      apiErrorCode(error) === 'account_mismatch';
     const unknown = isUnknownOutcome(status);
 
     if (!this.currentUser()) {
