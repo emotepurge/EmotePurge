@@ -236,6 +236,62 @@ test.describe('emote atlas', () => {
     await expect(cell(page, 'catJAM')).toHaveAttribute('aria-pressed', 'false');
   });
 
+  test('"Zuletzt hinzugefügt" swaps the bands for add-day groups, each with its own mark-all', async ({
+    page,
+  }) => {
+    // A fixed "today" so the Heute/Gestern headings are deterministic. Installed before goto: the
+    // zoneless change detection would otherwise race the faked timers.
+    await page.clock.install({ time: new Date(2026, 9, 16, 18, 0) });
+    // Local components on purpose: the groups are the viewer's local days, whatever zone this is.
+    const addedAt = (month: number, day: number, hour: number) =>
+      new Date(2026, month - 1, day, hour).toISOString();
+    const added = [
+      { name: 'catJAM', at: addedAt(10, 16, 10) },
+      { name: 'peepoSad', at: addedAt(10, 16, 14) },
+      { name: 'monkaW', at: addedAt(10, 15, 20) },
+      { name: 'KEKW', at: addedAt(10, 15, 9) },
+      { name: 'Pog', at: addedAt(10, 12, 12) },
+    ];
+    await openAtlas(
+      page,
+      EMOTES.map((emote) => ({
+        ...emote,
+        firstSeenAt: added.find((entry) => entry.name === emote.emoteName)?.at ?? null,
+      })),
+    );
+
+    await page.getByRole('radio', { name: 'Zuletzt hinzugefügt' }).click();
+
+    // The usage bands and their distribution strip are gone ...
+    await expect(page.getByRole('heading', { name: 'Tragend', exact: true })).toHaveCount(0);
+    await expect(page.getByText('Verteilung', { exact: true })).toHaveCount(0);
+    // ... replaced by one heading per local day, newest first, and a trailing group for the rest.
+    const headings = page.getByRole('group', { name: 'Emote-Bogen' }).getByRole('heading');
+    await expect(headings).toHaveText([
+      /Heute · 16\.10\.2026/,
+      /Gestern · 15\.10\.2026/,
+      /12\.10\.2026/,
+      /Datum unbekannt/,
+    ]);
+
+    await page
+      .getByRole('heading', { name: /Gestern · 15\.10\.2026/ })
+      .locator('..')
+      .getByRole('button', { name: 'alle markieren' })
+      .click();
+
+    // Exactly yesterday's two emotes, nothing from the other days.
+    await expect(page.getByRole('button', { name: 'Löschen (2)' })).toBeVisible();
+    await expect(cell(page, 'monkaW')).toHaveAttribute('aria-pressed', 'true');
+    await expect(cell(page, 'KEKW')).toHaveAttribute('aria-pressed', 'true');
+    await expect(cell(page, 'catJAM')).toHaveAttribute('aria-pressed', 'false');
+
+    // Switching back keeps the selection.
+    await page.getByRole('radio', { name: 'Nutzung' }).click();
+    await expect(page.getByRole('heading', { name: 'Tragend', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Löschen (2)' })).toBeVisible();
+  });
+
   test('a shift-click takes a range back out once the anchor click has unmarked it', async ({
     page,
   }) => {
