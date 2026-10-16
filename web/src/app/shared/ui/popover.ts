@@ -1,4 +1,14 @@
-import { Component, ElementRef, computed, inject, input, output } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  ElementRef,
+  Renderer2,
+  afterNextRender,
+  computed,
+  inject,
+  input,
+  output,
+} from '@angular/core';
 
 /**
  * Marker attribute the host puts on the `position: relative` wrapper that contains both the trigger
@@ -19,7 +29,13 @@ export const POPOVER_ANCHOR_ATTRIBUTE = 'data-popover-anchor';
  * carries no focus trap.
  *
  * Contract with the host: rendered = open. The panel never hides itself; it emits `closed` (outside
- * click, Escape) and the host owns the visibility signal. The host also owns focus return — the
+ * click, Escape) and the host owns the visibility signal.
+ *
+ * Escape closes the topmost layer only. An Escape whose focus sits inside the anchor (the trigger or
+ * the panel) is consumed there — `stopPropagation()` on the anchor — so it never reaches the CDK's
+ * overlay keyboard dispatcher on `<body>`: a popover opened inside a dialog or a bottom sheet closes
+ * alone instead of taking the sheet with it. An Escape from anywhere else still closes the panel
+ * through the document listener and travels on unchanged. The host also owns focus return — the
  * panel does not know which element opened it. Bring your own padding: the panel is padding-free so
  * full-bleed rows (menus) and padded forms can both live in it.
  */
@@ -44,6 +60,8 @@ export class Popover {
   readonly closed = output<void>();
 
   private readonly elementRef = inject(ElementRef<HTMLElement>);
+  private readonly renderer = inject(Renderer2);
+  private readonly destroyRef = inject(DestroyRef);
 
   // z-30 inside the filter toolbar's z-20 sticky context — sanctioned by design doc §8.5 (dropdowns
   // opening out of a sticky bar inherit its context). max-w keeps the panel inside a 360 px viewport
@@ -65,16 +83,31 @@ export class Popover {
       this.width(),
   );
 
+  constructor() {
+    // The anchor is only known once the panel sits in the DOM (an @if inserts it after creation).
+    afterNextRender(() => {
+      const stop = this.renderer.listen(this.anchor(), 'keydown', (event: KeyboardEvent) => {
+        if (event.key === 'Escape') {
+          event.stopPropagation();
+          this.closed.emit();
+        }
+      });
+      this.destroyRef.onDestroy(stop);
+    });
+  }
+
   protected onDocumentClick(event: Event): void {
-    const anchor =
-      this.elementRef.nativeElement.closest(`[${POPOVER_ANCHOR_ATTRIBUTE}]`) ??
-      this.elementRef.nativeElement;
-    if (!anchor.contains(event.target as Node)) {
+    if (!this.anchor().contains(event.target as Node)) {
       this.closed.emit();
     }
   }
 
   protected onEscape(): void {
     this.closed.emit();
+  }
+
+  private anchor(): HTMLElement {
+    const host: HTMLElement = this.elementRef.nativeElement;
+    return host.closest<HTMLElement>(`[${POPOVER_ANCHOR_ATTRIBUTE}]`) ?? host;
   }
 }

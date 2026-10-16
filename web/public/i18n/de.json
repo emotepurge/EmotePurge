@@ -306,6 +306,7 @@
     "title": "Admin-Bereich",
     "tabs": {
       "monitoring": "Monitoring",
+      "logs": "Logs",
       "channels": "Channels",
       "users": "User",
       "auditLog": "Audit-Log"
@@ -353,6 +354,21 @@
         "lastSuccess": "Letzter Erfolg",
         "lastRowCount": "Zuletzt geschriebene Zeilen",
         "pending": "Gepufferte Emotes"
+      },
+      "logErrors": {
+        "label": "Fehler der letzten 24 h",
+        "none": "keine",
+        "atLeast": "mindestens {{count}}",
+        "zeroIncomplete": "0 erfasst, unvollständig",
+        "unavailable": "nicht verfügbar",
+        "view": "Ansehen",
+        "reasons": {
+          "stale": "Log-Erfassung {{source}} steht seit {{time}}",
+          "disabled": "Log-Erfassung {{source}} abgeschaltet",
+          "missing": "Log-Erfassung {{source}} keine Statusmeldung",
+          "incomplete": "Erfassung von {{source}} unvollständig seit {{time}}",
+          "retentionOverdue": "Log-Löschung überfällig"
+        }
       }
     },
     "rateLimits": {
@@ -801,6 +817,195 @@
           "hourly": "Stundenbereiche zeigen gespeicherte Stundenstatistik: je Bucket den höchsten Stunden-P95 und das höchste Stundenmaximum, kein neu berechnetes Perzentil. Container-Werte kommen ohne Quota-Anteil; die Arbeit sind aufsummierte Intervallzähler, keine Raten."
         }
       }
+    },
+    "logs": {
+      "title": "Logs",
+      "filter": {
+        "label": "Filter",
+        "placeholder": "z. B. level>=warn cat:TwitchChatManager",
+        "apply": "Anwenden",
+        "open": "Filter",
+        "dialogTitle": "Filter und Zeitraum",
+        "done": "Fertig",
+        "help": "Hilfe zur Filtersprache"
+      },
+      "help": {
+        "intro": "Terme werden mit UND verknüpft. ODER gibt es nur als Kommaliste innerhalb eines Schlüssels, ein Minus davor verneint den Term. Der Zeitraum steht nicht im Filter.",
+        "keysTitle": "Schlüssel",
+        "keys": {
+          "level": "Level: info, warn, error, crit; auch >=, <=, >, <",
+          "source": "Quelle: api oder worker",
+          "cat": "Kategorie oder deren Ende; * als Muster",
+          "event": "Event-Name oder -Id",
+          "instance": "latest oder 8 Hex-Zeichen der Instanz",
+          "uptime": "Zeit seit Prozessstart, etwa uptime<15m",
+          "has": "has:exception: nur Einträge mit Exception",
+          "other": "Jeder andere Schlüssel: Property, etwa channel:handofblood",
+          "free": "Ohne Schlüssel: Text in Message oder Exception"
+        },
+        "examplesTitle": "Beispiele",
+        "examples": {
+          "one": "Warnungen und Fehler einer Kategorie",
+          "two": "Worker-Einträge mit Exception, ohne einen Kanal",
+          "three": "Einen Text mit Doppelpunkt suchen: ein Wort mit Doppelpunkt ist ein Schlüssel (Fehler: ergibt empty_value), also in Anführungszeichen setzen"
+        }
+      },
+      "filterErrors": {
+        "unterminated_quote": "Ein Anführungszeichen wird nicht geschlossen.",
+        "empty_term": "Hier fehlt ein Term (doppeltes oder abschließendes Minus oder Leerzeichen).",
+        "empty_value": "Nach dem Doppelpunkt fehlt ein Wert. Wer den Text selbst sucht, setzt ihn in Anführungszeichen.",
+        "invalid_operator": "Dieser Operator ist für den Schlüssel nicht erlaubt.",
+        "invalid_level": "Ungültiges Level. Erlaubt sind info, warn, error und crit.",
+        "invalid_source": "Ungültige Quelle. Erlaubt sind api und worker.",
+        "invalid_instance": "Ungültige Instanz. Erlaubt sind latest oder 8 Hex-Zeichen.",
+        "invalid_duration": "Ungültige Dauer. Erlaubt ist eine Zahl mit s, m, h oder d, etwa 15m.",
+        "invalid_value": "Dieser Wert ist hier nicht erlaubt (etwa ein Muster mit * bei level, uptime oder has).",
+        "too_long": "Der Filter ist zu lang (höchstens 512 Zeichen).",
+        "too_many_terms": "Der Filter hat zu viele Terme (höchstens 16).",
+        "too_many_values": "Eine Werteliste hat zu viele Werte (höchstens 16)."
+      },
+      "range": {
+        "label": "Zeitraum",
+        "1h": "1 h",
+        "6h": "6 h",
+        "24h": "24 h",
+        "7d": "7 Tage",
+        "backTo": "Zurück zu {{ range }}",
+        "absolute": "{{ from }} bis {{ to }} UTC",
+        "invalid": "Der Zeitraum in der Adresse ist ungültig. Wähle oben einen Zeitraum.",
+        "extend": "Auf 7 Tage erweitern"
+      },
+      "newEntries": {
+        "label": "{{ count }} neue ↑",
+        "aria": {
+          "one": "{{ count }} neuer Eintrag, nach oben springen und einfügen",
+          "other": "{{ count }} neue Einträge, nach oben springen und einfügen"
+        }
+      },
+      "live": {
+        "open": "Live",
+        "connecting": "Verbindet…",
+        "idle": "Live-Stream inaktiv",
+        "closed": "Live-Stream getrennt",
+        "paused": "Live pausiert",
+        "reload": "Neu laden nötig",
+        "absolute": "Kein Live bei festem Zeitraum",
+        "capture": "Erfassung unvollständig",
+        "pausedNotice": "Live pausiert nach Fehler",
+        "tooMany": "Zu viele neue Einträge",
+        "reloadList": "Liste neu laden",
+        "inserted": {
+          "one": "{{ count }} neuer Eintrag",
+          "other": "{{ count }} neue Einträge"
+        }
+      },
+      "facets": {
+        "title": "Facetten",
+        "source": "Quelle",
+        "level": "Level",
+        "category": "Kategorie",
+        "other": "Weitere Kategorien: {{ count }}",
+        "include": "{{ value }} zum Filter hinzufügen",
+        "exclude": "{{ value }} ausschließen"
+      },
+      "list": {
+        "label": "Log-Einträge",
+        "loaded": "{{ shown }} von {{ total }} Einträgen geladen",
+        "loadedCount": "{{ shown }} Einträge geladen",
+        "loadingMore": "Lädt weitere Einträge …",
+        "end": "Ende des Zeitraums erreicht",
+        "limit": "{{ count }} Einträge geladen — Zeitraum oder Filter eingrenzen",
+        "copyVisible": "Sichtbare kopieren",
+        "copyVisibleDone": "{{ count }} Zeilen kopiert",
+        "copyVisibleCapped": "Die ersten {{ count }} Zeilen kopiert",
+        "copyFailed": "Kopieren nicht möglich",
+        "levelShort": {
+          "info": "INF",
+          "warn": "WRN",
+          "error": "ERR",
+          "crit": "CRT"
+        },
+        "loadMoreFailed": "Weitere Einträge konnten nicht geladen werden."
+      },
+      "row": {
+        "timestamp": "Zeit (UTC)",
+        "category": "Kategorie",
+        "source": "Quelle",
+        "event": "Event",
+        "instance": "Instanz",
+        "uptime": "{{ value }} nach Start",
+        "properties": "Properties",
+        "exception": "Exception",
+        "exceptionLoading": "Exception wird geladen",
+        "exceptionFailed": "Die Exception konnte nicht geladen werden.",
+        "truncated": "Ein Feld wurde bei der Erfassung gekürzt.",
+        "copy": "Kopieren",
+        "copied": "Kopiert",
+        "filter": "filtern",
+        "exclude": "ausschließen",
+        "filterProperty": "Property {{ key }} mit Wert {{ value }} zum Filter hinzufügen",
+        "excludeProperty": "Property {{ key }} mit Wert {{ value }} ausschließen"
+      },
+      "states": {
+        "empty": "Keine Einträge für diesen Filter im Zeitraum",
+        "timeout": "Abfrage zu aufwendig — Zeitraum oder Filter eingrenzen",
+        "busy": "Die Log-Abfrage ist gerade ausgelastet. Versuch es gleich erneut.",
+        "stale": "Angezeigt wird die letzte erfolgreiche Antwort; sie ist veraltet.",
+        "retry": "Erneut versuchen",
+        "reload": "Neu laden",
+        "dropsLead": {
+          "one": "Im Zeitraum wurde {{ count }} Eintrag nicht oder möglicherweise nicht gespeichert ({{ reasons }})",
+          "other": "Im Zeitraum wurden {{ count }} Einträge nicht oder möglicherweise nicht gespeichert ({{ reasons }})"
+        },
+        "dropsShow": "Anzeigen",
+        "drops": {
+          "queueFull": "Puffer voll: {{ count }}",
+          "budget": "Tagesbudget: {{ count }}",
+          "writeUnconfirmed": "Schreiben nicht bestätigt: {{ count }}",
+          "captureFailed": "Erfassung fehlgeschlagen: {{ count }}",
+          "reentrant": "Wiedereintritt: {{ count }}",
+          "rejected": "Abgelehnt: {{ count }}"
+        },
+        "coverage": "Die Erfassung von {{ source }} war um {{ time }} UTC nicht lückenlos — Error-Einträge können fehlen",
+        "stalled": "Die Log-Erfassung von {{ source }} hat seit {{ time }} UTC nichts geschrieben — neuere Einträge fehlen hier, `docker logs` hat sie",
+        "disabled": "Die Log-Erfassung von {{ source }} ist abgeschaltet — neuere Einträge fehlen hier, `docker logs` hat sie",
+        "missing": "Die Log-Erfassung von {{ source }} hat sich nie gemeldet — Einträge fehlen hier, `docker logs` hat sie",
+        "overdue": "Log-Einträge älter als 7 Tage sind noch vorhanden (ältester: {{ date }})"
+      },
+      "histogramLabel": "Einträge pro Zeitintervall, gestapelt nach Level",
+      "histogram": {
+        "unit": "Einträge je Intervall",
+        "utc": "Zeiten in UTC",
+        "empty": "Keine Einträge in diesem Zeitraum",
+        "cursorHint": "{{ title }} – mit den Pfeiltasten lesen, Enter grenzt auf das Intervall ein",
+        "summary": "{{ total }} Einträge in {{ buckets }} Intervallen, höchstens {{ max }} je Intervall, {{ warnBuckets }} Intervalle mit Warnungen, {{ errorBuckets }} mit Fehlern.",
+        "partial": "Das letzte Intervall ist noch unvollständig und kann sich ändern.",
+        "partialShort": "unvollständig",
+        "reading": "Information {{ info }}, Warning {{ warn }}, Error {{ error }}",
+        "processStart": "{{ source }} gestartet {{ time }}",
+        "level": {
+          "info": "Information",
+          "warn": "Warning",
+          "error": "Error / Critical"
+        }
+      },
+      "savedFilters": {
+        "label": "Gespeicherte Filter",
+        "add": "+ Filter speichern",
+        "menuFor": "Menü für Filter {{name}}",
+        "edit": "Bearbeiten",
+        "overwrite": "Mit aktuellem Filter überschreiben",
+        "delete": "Löschen",
+        "deleteConfirm": "Gespeicherten Filter „{{name}}“ wirklich löschen? Er kommt nicht von selbst zurück.",
+        "loadFailed": "Die gespeicherten Filter konnten nicht geladen werden.",
+        "blockedEmptyFilter": "Zum Speichern erst einen Filter eingeben.",
+        "blockedEmptyName": "Zum Speichern einen Namen eingeben.",
+        "newTitle": "Filter speichern",
+        "editTitle": "Filter bearbeiten",
+        "nameLabel": "Name",
+        "filterLabel": "Filter",
+        "save": "Speichern"
+      }
     }
   },
   "audit": {
@@ -825,6 +1030,7 @@
       "tagRemoved": "Tag aus dem Set entfernt",
       "backfillRequest": "Backfill angefordert",
       "backfillCancel": "Backfill abgebrochen",
+      "backfillRemoveImported": "Importierte Daten entfernt",
       "userRevokeSessions": "User-Sessions widerrufen",
       "userInvalidateRoleCache": "Rollen-Cache geleert",
       "userDelete": "Account gelöscht"
@@ -858,6 +1064,10 @@
       "backfillMonths": {
         "one": "{{count}} Monat",
         "other": "{{count}} Monate"
+      },
+      "backfillRemovedDays": {
+        "one": "{{count}} Tag",
+        "other": "{{count}} Tage"
       },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV Trend heute",
@@ -2237,6 +2447,14 @@
       "foreign_channel_seventv_unavailable": "7TV ist gerade nicht erreichbar. Bitte versuch es in Kürze erneut.",
       "invalid_leaderboard_sort": "Ungültige Sortierung für die 7TV-Bestenliste.",
       "invalid_dashboard_range": "Ungültiger Zeitraum für das Dashboard.",
+      "invalid_log_filter": "Dieser Log-Filter ist nicht gültig.",
+      "invalid_log_range": "Dieser Zeitraum oder diese Eintragsliste ist nicht gültig.",
+      "invalid_log_filter_name": "Ein Filtername muss 1 bis 60 Zeichen lang sein.",
+      "log_filter_name_taken": "Ein gespeicherter Filter mit diesem Namen existiert bereits.",
+      "log_filter_limit_reached": "Es können höchstens 30 Filter gespeichert werden.",
+      "log_filter_not_found": "Dieser gespeicherte Filter existiert nicht mehr.",
+      "log_entry_not_found": "Dieser Log-Eintrag existiert nicht mehr.",
+      "log_query_timeout": "Die Log-Abfrage hat zu lange gedauert. Grenze den Zeitraum oder den Filter ein und versuch es erneut.",
       "vote_session_not_found": "Abstimmung nicht gefunden.",
       "vote_session_ended": "Diese Abstimmung ist bereits beendet.",
       "emote_not_eligible": "Dieses Emote ist nicht mehr abstimmbar.",
@@ -2275,7 +2493,9 @@
       "backfill_set_empty": "Dieses Emote-Set enthält keine Emotes, es gibt also nichts zu suchen.",
       "backfill_set_truncated": "Dieses Emote-Set ist zu groß, um es vollständig zu lesen, der Backfill kann dafür nicht gestartet werden.",
       "backfill_channel_identity_changed": "Der Channel hat sich während deiner Anfrage geändert. Bitte lade neu und versuche es erneut.",
-      "backfill_slots_unsettled": "Die Emote-Slots dieses Sets sind noch nicht vollständig abgeglichen. Das erledigt sich meist mit dem nächsten Sync. Bleibt es dabei, hat ein Emote im Set kein Hinzufügedatum."
+      "backfill_slots_unsettled": "Die Emote-Slots dieses Sets sind noch nicht vollständig abgeglichen. Das erledigt sich meist mit dem nächsten Sync. Bleibt es dabei, hat ein Emote im Set kein Hinzufügedatum.",
+      "backfill_remove_run_active": "Für diesen Channel wartet oder läuft gerade ein Backfill. Brich ihn zuerst ab, dann kannst du die importierten Daten entfernen.",
+      "backfill_remove_scope_changed": "Die importierten Daten haben sich inzwischen geändert. Sieh dir den neuen Stand an und bestätige erneut."
     }
   },
   "backfill": {
@@ -2358,6 +2578,26 @@
       "completed": "Backfill abgeschlossen.",
       "failed": "Backfill fehlgeschlagen.",
       "cancelled": "Backfill abgebrochen."
+    },
+    "remove": {
+      "title": "Importierte Daten",
+      "intro": "Für diese Tage stammen die Zahlen aus dem Chat-Archiv, und die Nutzungsseite weist sie so aus:",
+      "interval": "{{ from }} – {{ to }} · {{ set }}",
+      "action": "Importierte Daten entfernen",
+      "blockedByRun": "Brich zuerst den laufenden Backfill ab.",
+      "confirm": {
+        "title": "Importierte Daten dieses Channels entfernen?",
+        "lead": "Entfernt werden die aus dem Chat-Archiv importierten Zahlen für:",
+        "interval": "· {{ from }} – {{ to }} · {{ set }}",
+        "label": "und damit der Hinweis „aus dem Chat-Archiv“ auf der Nutzungsseite.",
+        "keeps": "Bleiben: alle Zahlen, die wir selbst seit dem {{ countingSince }} zählen, und die Liste der bisherigen Läufe.",
+        "irreversible": "Das lässt sich nicht rückgängig machen. Ein neuer Backfill liest das Archiv neu; seine Zahlen können abweichen."
+      },
+      "announceDone": {
+        "one": "Importierte Daten entfernt: {{ count }} Tag.",
+        "other": "Importierte Daten entfernt: {{ count }} Tage."
+      },
+      "announceNothingLeft": "Die importierten Daten waren bereits entfernt."
     }
   }
 }

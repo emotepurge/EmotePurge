@@ -68,6 +68,11 @@ export const routes: Routes = [
               import('./features/admin/admin-monitoring-page').then((m) => m.AdminMonitoringPage),
           },
           {
+            path: 'logs',
+            loadComponent: () =>
+              import('./features/admin/admin-logs-page').then((m) => m.AdminLogsPage),
+          },
+          {
             path: 'channels',
             loadComponent: () =>
               import('./features/admin/admin-channels-page').then((m) => m.AdminChannelsPage),

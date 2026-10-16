@@ -1,12 +1,14 @@
 using EmotePurge.Core.ChatLogArchive;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.Logging;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Worker.ChatLogBackfill;
 using EmotePurge.Worker.Harness;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using StackExchange.Redis;
@@ -32,16 +34,50 @@ public class WorkerServiceRegistrationTests
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(IHostedService));
     }
 
-    [Fact]
-    public void AddWorkerHostedServices_RegistersExactlyTheThirteenOfTheWorker()
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    public void AddWorkerHostedServices_RegistersExactlyTheFourteenOfTheWorker(string captureEnabled)
     {
+        var configuration = Configuration(captureEnabled);
         var services = new ServiceCollection();
-        services.AddWorkerCore(Configuration());
-        services.AddWorkerHostedServices();
+        services.AddWorkerCore(configuration);
+        services.AddWorkerHostedServices(configuration);
 
-        Assert.Equal(13, services.Count(d => d.ServiceType == typeof(IHostedService)));
+        Assert.Equal(14, services.Count(d => d.ServiceType == typeof(IHostedService)));
         Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(ChatLogBackfillWorker));
         Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(SystemLoadRollupWorker));
+    }
+
+    [Fact]
+    public void FirstHostedService_IsLogCaptureWriter()
+    {
+        using var provider = BuildWorkerProvider("true");
+
+        Assert.IsType<LogCaptureWriter>(provider.GetServices<IHostedService>().First());
+        Assert.Contains(provider.GetServices<ILoggerProvider>(), p => p is LogCaptureProvider);
+    }
+
+    [Fact]
+    public void FirstHostedService_IsLogCaptureHeartbeat_WhenDisabled()
+    {
+        using var provider = BuildWorkerProvider("false");
+
+        Assert.IsType<LogCaptureHeartbeat>(provider.GetServices<IHostedService>().First());
+        Assert.DoesNotContain(provider.GetServices<IHostedService>(), s => s is LogCaptureWriter);
+        Assert.DoesNotContain(provider.GetServices<ILoggerProvider>(), p => p is LogCaptureProvider);
+    }
+
+    [Fact]
+    public void AddHarness_RegistersNoLogCaptureProviderWriterOrHeartbeat()
+    {
+        var services = new ServiceCollection();
+        services.AddHarness(Configuration());
+
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(ILoggerProvider));
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(IHostedService));
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(LogCaptureIdentity));
+        Assert.DoesNotContain(services, d => d.ServiceType.Name == "LogCaptureBuffer");
     }
 
     // #350: the backfill loop and its wake-up resolve with the worker's own graph, and Worker and the
@@ -54,7 +90,7 @@ public class WorkerServiceRegistrationTests
         services.AddLogging();
         services.AddSingleton(configuration);
         services.AddWorkerCore(configuration);
-        services.AddWorkerHostedServices();
+        services.AddWorkerHostedServices(configuration);
         services.AddSingleton(Substitute.For<IConnectionMultiplexer>());
 
         using var provider = services.BuildServiceProvider();
@@ -344,9 +380,22 @@ public class WorkerServiceRegistrationTests
         return services.BuildServiceProvider();
     }
 
-    private static IConfiguration Configuration() =>
+    private static ServiceProvider BuildWorkerProvider(string captureEnabled)
+    {
+        var configuration = Configuration(captureEnabled);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(configuration);
+        services.AddWorkerCore(configuration);
+        services.AddWorkerHostedServices(configuration);
+        services.AddSingleton(Substitute.For<IConnectionMultiplexer>());
+        return services.BuildServiceProvider();
+    }
+
+    private static IConfiguration Configuration(string? captureEnabled = null) =>
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
+            ["LogCapture:Enabled"] = captureEnabled,
             // AddEmotePurgeInfrastructure throws without these two; nothing is dialed here.
             ["ConnectionStrings:DefaultConnection"] = "Host=localhost;Database=x;Username=u;Password=p",
             ["Redis:ConnectionString"] = "localhost:6379"

@@ -52,6 +52,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         factory.Users.ClearReceivedCalls();
         factory.TwitchAuth.ClearReceivedCalls();
         factory.ChatLogBackfill.ClearReceivedCalls();
+        factory.ChatLogImportRemoval.ClearReceivedCalls();
 
         // Default to "the slot was free", so the cooldown never masks the status code a test is
         // actually asserting. The one case that cares sets it explicitly.
@@ -72,6 +73,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/testchannel/backfill")]
     [InlineData("POST", "/api/channels/testchannel/backfill")]
     [InlineData("DELETE", "/api/channels/testchannel/backfill")]
+    [InlineData("POST", "/api/channels/testchannel/backfill/imported/remove")]
     [InlineData("GET", "/api/channels/testchannel/usage-stats/import-coverage")]
     [InlineData("GET", "/api/channels/mine")]
     [InlineData("GET", "/api/channels/testchannel/usage-stats")]
@@ -100,6 +102,14 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/admin/rate-limits/trend")]
     [InlineData("GET", "/api/admin/dashboard/activity")]
     [InlineData("GET", "/api/admin/dashboard/load")]
+    [InlineData("GET", "/api/admin/logs")]
+    [InlineData("GET", "/api/admin/logs/1")]
+    [InlineData("GET", "/api/admin/logs/summary")]
+    [InlineData("GET", "/api/admin/logs/status")]
+    [InlineData("GET", "/api/admin/log-filters")]
+    [InlineData("POST", "/api/admin/log-filters")]
+    [InlineData("PUT", "/api/admin/log-filters/1")]
+    [InlineData("DELETE", "/api/admin/log-filters/1")]
     [InlineData("DELETE", "/api/admin/users/12345")]
     [InlineData("GET", "/api/auth/me")]
     [InlineData("GET", "/api/channels/live-events")]
@@ -136,6 +146,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     [InlineData("GET", "/api/channels/testchannel/backfill")]
     [InlineData("POST", "/api/channels/testchannel/backfill")]
     [InlineData("DELETE", "/api/channels/testchannel/backfill")]
+    [InlineData("POST", "/api/channels/testchannel/backfill/imported/remove")]
     [InlineData("GET", "/api/channels/testchannel/usage-stats/import-coverage")]
     [InlineData("GET", "/api/channels/testchannel/emote-sets/01GV88A38G0006FW5TVZVMG507/emotes")]
     [InlineData("GET", "/api/channels/testchannel/vote-sessions/1/results")]
@@ -177,35 +188,43 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
     }
 
     // ---- Chat-log backfill routes (#351, acceptance criterion 1) ----
-    // The three routes share one authorization contract: 400 invalid_channel_name before any access
+    // The four routes share one authorization contract: 400 invalid_channel_name before any access
     // check, 403 for a caller who may view usage but not manage (7TV editors are excluded, B1) without
     // the wider check ever being consulted, and the success code for a manager. The service answers
     // are arranged per case; the mapping of every service outcome is pinned in
     // ChatLogBackfillEndpointsTests.
 
-    public static TheoryData<string, string, HttpStatusCode> BackfillRoutes => new()
+    private const string StartBackfillBody = "{\"emoteSetId\":\"" + TrackedPreviewSetId + "\",\"months\":3}";
+
+    // The removal route (#384) reads a confirmed coverage, not a set and months, so the body is a column.
+    private const string RemoveImportedBody =
+        "{\"expectedCoverage\":[{\"from\":\"2026-07-08\",\"to\":\"2026-10-08\",\"emoteSetId\":\"" + TrackedPreviewSetId + "\",\"archiveHost\":\"logs.cyex.app\"}]}";
+
+    public static TheoryData<string, string, HttpStatusCode, string> BackfillRoutes => new()
     {
-        { "GET", "/api/channels/{0}/backfill", HttpStatusCode.OK },
-        { "POST", "/api/channels/{0}/backfill", HttpStatusCode.Accepted },
-        { "DELETE", "/api/channels/{0}/backfill", HttpStatusCode.NoContent },
+        { "GET", "/api/channels/{0}/backfill", HttpStatusCode.OK, StartBackfillBody },
+        { "POST", "/api/channels/{0}/backfill", HttpStatusCode.Accepted, StartBackfillBody },
+        { "DELETE", "/api/channels/{0}/backfill", HttpStatusCode.NoContent, StartBackfillBody },
+        { "POST", "/api/channels/{0}/backfill/imported/remove", HttpStatusCode.OK, RemoveImportedBody },
     };
 
     [Theory]
     [MemberData(nameof(BackfillRoutes))]
-    public async Task BackfillRoutes_Answer400InvalidChannelName_BeforeAnyAccessCheck(string method, string pathFormat, HttpStatusCode _)
+    public async Task BackfillRoutes_Answer400InvalidChannelName_BeforeAnyAccessCheck(string method, string pathFormat, HttpStatusCode _, string body)
     {
-        var response = await SendAsync(method, string.Format(System.Globalization.CultureInfo.InvariantCulture, pathFormat, "bad-name"), NewUserId());
+        var response = await SendAsync(method, string.Format(System.Globalization.CultureInfo.InvariantCulture, pathFormat, "bad-name"), NewUserId(), body: body);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ApiErrorCodes.InvalidChannelName, await ReadErrorCodeAsync(response));
         await _factory.ChannelAccess.DidNotReceiveWithAnyArgs()
             .CanManageChannelAsync(default!, default!, default);
         await _factory.ChatLogBackfill.DidNotReceiveWithAnyArgs().GetStatusAsync(default!, default, default);
+        Assert.Empty(_factory.ChatLogImportRemoval.ReceivedCalls());
     }
 
     [Theory]
     [MemberData(nameof(BackfillRoutes))]
-    public async Task BackfillRoutes_Answer403_ForAViewerWhoCannotManage_WithoutConsultingTheWiderCheck(string method, string pathFormat, HttpStatusCode _)
+    public async Task BackfillRoutes_Answer403_ForAViewerWhoCannotManage_WithoutConsultingTheWiderCheck(string method, string pathFormat, HttpStatusCode _, string body)
     {
         // A 7TV editor passes the wider usage-stats check and must still be refused here — and the
         // wider check must not even be asked, or the route would be one refactor away from admitting them.
@@ -214,7 +233,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         _factory.ChannelAccess.CanViewUsageStatsAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
             .Returns(true);
 
-        var response = await SendAsync(method, string.Format(System.Globalization.CultureInfo.InvariantCulture, pathFormat, Channel), NewUserId(), body: "{\"emoteSetId\":\"" + TrackedPreviewSetId + "\",\"months\":3}");
+        var response = await SendAsync(method, string.Format(System.Globalization.CultureInfo.InvariantCulture, pathFormat, Channel), NewUserId(), body: body);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         await _factory.ChannelAccess.DidNotReceive()
@@ -222,11 +241,12 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         await _factory.ChatLogBackfill.DidNotReceiveWithAnyArgs().GetStatusAsync(default!, default, default);
         await _factory.ChatLogBackfill.DidNotReceiveWithAnyArgs().EnqueueAsync(default!, default!, default, default, default!, default);
         await _factory.ChatLogBackfill.DidNotReceiveWithAnyArgs().CancelAsync(default!, default!, default);
+        await _factory.ChatLogImportRemoval.DidNotReceiveWithAnyArgs().RemoveImportedAsync(default!, default!, default!, default);
     }
 
     [Theory]
     [MemberData(nameof(BackfillRoutes))]
-    public async Task BackfillRoutes_AnswerTheSuccessCode_ForAManager_AndNeverAskTheWiderCheck(string method, string pathFormat, HttpStatusCode expected)
+    public async Task BackfillRoutes_AnswerTheSuccessCode_ForAManager_AndNeverAskTheWiderCheck(string method, string pathFormat, HttpStatusCode expected, string body)
     {
         _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Channel, Arg.Any<CancellationToken>())
             .Returns(true);
@@ -237,8 +257,11 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
             .Returns(ChatLogBackfillEnqueueResult.Enqueued(BackfillTestData.Run()));
         _factory.ChatLogBackfill.CancelAsync(Channel, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
             .Returns(ChatLogBackfillCancelResult.Cancelled);
+        _factory.ChatLogImportRemoval.RemoveImportedAsync(
+                Channel, Arg.Any<IReadOnlyList<ExpectedCoverageInterval>>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(ChatLogImportRemovalResult.Removed(10, 3, 0));
 
-        var response = await SendAsync(method, string.Format(System.Globalization.CultureInfo.InvariantCulture, pathFormat, Channel), NewUserId(), body: "{\"emoteSetId\":\"" + TrackedPreviewSetId + "\",\"months\":3}");
+        var response = await SendAsync(method, string.Format(System.Globalization.CultureInfo.InvariantCulture, pathFormat, Channel), NewUserId(), body: body);
 
         Assert.Equal(expected, response.StatusCode);
         await _factory.ChannelAccess.DidNotReceive()

@@ -54,6 +54,14 @@ public static class RetentionPolicy
     /// </summary>
     public static readonly TimeSpan SystemLoadSample = TimeSpan.FromDays(7);
 
+    /// <summary>
+    /// A captured log entry (<c>LogEntry.TimestampUtc</c>) is deleted after seven days; the heartbeat row
+    /// of a process instance (<c>LogCaptureStatus.LastFlushUtc</c>) follows the same period. Saved log
+    /// filters are configuration, not captured data, and are never expired. Application logs are not
+    /// meant to carry personal data; the period is the operational window of the admin log viewer.
+    /// </summary>
+    public static readonly TimeSpan LogEntry = TimeSpan.FromDays(7);
+
     /// <summary>Hourly system-load summaries remain for thirteen calendar months.</summary>
     public const int SystemLoadHourlyMonths = 13;
 }

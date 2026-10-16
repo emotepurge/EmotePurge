@@ -306,6 +306,7 @@
     "title": "Admin area",
     "tabs": {
       "monitoring": "Monitoring",
+      "logs": "Logs",
       "channels": "Channels",
       "users": "Users",
       "auditLog": "Audit log"
@@ -353,6 +354,21 @@
         "lastSuccess": "Last success",
         "lastRowCount": "Rows written last",
         "pending": "Buffered emotes"
+      },
+      "logErrors": {
+        "label": "Errors in the last 24 h",
+        "none": "none",
+        "atLeast": "at least {{count}}",
+        "zeroIncomplete": "0 recorded, incomplete",
+        "unavailable": "not available",
+        "view": "View",
+        "reasons": {
+          "stale": "Log capture {{source}} stalled since {{time}}",
+          "disabled": "Log capture {{source}} switched off",
+          "missing": "Log capture {{source}} no status report",
+          "incomplete": "Capture of {{source}} incomplete since {{time}}",
+          "retentionOverdue": "Log deletion overdue"
+        }
       }
     },
     "rateLimits": {
@@ -801,6 +817,195 @@
           "hourly": "Hourly ranges show stored hourly statistics: per bucket the highest hourly P95 and maximum, not a recomputed percentile. Container values come without a quota share; workload shows summed interval counters, not rates."
         }
       }
+    },
+    "logs": {
+      "title": "Logs",
+      "filter": {
+        "label": "Filter",
+        "placeholder": "e.g. level>=warn cat:TwitchChatManager",
+        "apply": "Apply",
+        "open": "Filters",
+        "dialogTitle": "Filters and time range",
+        "done": "Done",
+        "help": "Help on the filter language"
+      },
+      "help": {
+        "intro": "Terms are combined with AND. OR only exists as a comma list within one key, and a leading minus negates the term. The time range is not part of the filter.",
+        "keysTitle": "Keys",
+        "keys": {
+          "level": "Level: info, warn, error, crit; also >=, <=, >, <",
+          "source": "Source: api or worker",
+          "cat": "Category or its trailing part; * as a pattern",
+          "event": "Event name or id",
+          "instance": "latest or the instance's 8 hex characters",
+          "uptime": "Time since process start, such as uptime<15m",
+          "has": "has:exception: only entries with an exception",
+          "other": "Any other key: a property, such as channel:handofblood",
+          "free": "Without a key: text in the message or exception"
+        },
+        "examplesTitle": "Examples",
+        "examples": {
+          "one": "Warnings and errors of one category",
+          "two": "Worker entries with an exception, without one channel",
+          "three": "Searching for text with a colon: a word with a colon is a key (Fehler: gives empty_value), so put it in quotation marks"
+        }
+      },
+      "filterErrors": {
+        "unterminated_quote": "A quotation mark is never closed.",
+        "empty_term": "A term is missing here (a doubled or trailing minus or space).",
+        "empty_value": "A value is missing after the colon. To search for the text itself, put it in quotation marks.",
+        "invalid_operator": "This operator is not allowed for the key.",
+        "invalid_level": "Invalid level. Use info, warn, error or crit.",
+        "invalid_source": "Invalid source. Use api or worker.",
+        "invalid_instance": "Invalid instance. Use latest or 8 hex characters.",
+        "invalid_duration": "Invalid duration. Use a number with s, m, h or d, such as 15m.",
+        "invalid_value": "This value is not allowed here (for example a pattern with * for level, uptime or has).",
+        "too_long": "The filter is too long (at most 512 characters).",
+        "too_many_terms": "The filter has too many terms (at most 16).",
+        "too_many_values": "A value list has too many values (at most 16)."
+      },
+      "range": {
+        "label": "Time range",
+        "1h": "1 h",
+        "6h": "6 h",
+        "24h": "24 h",
+        "7d": "7 days",
+        "backTo": "Back to {{ range }}",
+        "absolute": "{{ from }} to {{ to }} UTC",
+        "invalid": "The time range in the address is not valid. Pick a time range above.",
+        "extend": "Widen to 7 days"
+      },
+      "newEntries": {
+        "label": "{{ count }} new ↑",
+        "aria": {
+          "one": "{{ count }} new entry, jump to the top and insert it",
+          "other": "{{ count }} new entries, jump to the top and insert them"
+        }
+      },
+      "live": {
+        "open": "Live",
+        "connecting": "Connecting…",
+        "idle": "Live stream idle",
+        "closed": "Live stream disconnected",
+        "paused": "Live paused",
+        "reload": "Reload needed",
+        "absolute": "No live updates for a fixed range",
+        "capture": "Capture incomplete",
+        "pausedNotice": "Live paused after an error",
+        "tooMany": "Too many new entries",
+        "reloadList": "Reload list",
+        "inserted": {
+          "one": "{{ count }} new entry",
+          "other": "{{ count }} new entries"
+        }
+      },
+      "facets": {
+        "title": "Facets",
+        "source": "Source",
+        "level": "Level",
+        "category": "Category",
+        "other": "Other categories: {{ count }}",
+        "include": "Add {{ value }} to the filter",
+        "exclude": "Exclude {{ value }}"
+      },
+      "list": {
+        "label": "Log entries",
+        "loaded": "{{ shown }} of {{ total }} entries loaded",
+        "loadedCount": "{{ shown }} entries loaded",
+        "loadingMore": "Loading more entries …",
+        "end": "End of the time range reached",
+        "limit": "{{ count }} entries loaded — narrow the time range or the filter",
+        "copyVisible": "Copy visible",
+        "copyVisibleDone": "{{ count }} lines copied",
+        "copyVisibleCapped": "The first {{ count }} lines copied",
+        "copyFailed": "Copying is not possible",
+        "levelShort": {
+          "info": "INF",
+          "warn": "WRN",
+          "error": "ERR",
+          "crit": "CRT"
+        },
+        "loadMoreFailed": "More entries could not be loaded."
+      },
+      "row": {
+        "timestamp": "Time (UTC)",
+        "category": "Category",
+        "source": "Source",
+        "event": "Event",
+        "instance": "Instance",
+        "uptime": "{{ value }} after start",
+        "properties": "Properties",
+        "exception": "Exception",
+        "exceptionLoading": "Loading the exception",
+        "exceptionFailed": "The exception could not be loaded.",
+        "truncated": "A field was cut at capture.",
+        "copy": "Copy",
+        "copied": "Copied",
+        "filter": "filter",
+        "exclude": "exclude",
+        "filterProperty": "Add property {{ key }} with value {{ value }} to the filter",
+        "excludeProperty": "Exclude property {{ key }} with value {{ value }}"
+      },
+      "states": {
+        "empty": "No entries for this filter in the time range",
+        "timeout": "Query too expensive — narrow the time range or the filter",
+        "busy": "The log query is busy right now. Try again in a moment.",
+        "stale": "The last successful answer is shown; it is out of date.",
+        "retry": "Try again",
+        "reload": "Reload",
+        "dropsLead": {
+          "one": "In this time range {{ count }} entry was not, or possibly not, stored ({{ reasons }})",
+          "other": "In this time range {{ count }} entries were not, or possibly not, stored ({{ reasons }})"
+        },
+        "dropsShow": "Show",
+        "drops": {
+          "queueFull": "Buffer full: {{ count }}",
+          "budget": "Daily budget: {{ count }}",
+          "writeUnconfirmed": "Write not confirmed: {{ count }}",
+          "captureFailed": "Capture failed: {{ count }}",
+          "reentrant": "Re-entry: {{ count }}",
+          "rejected": "Rejected: {{ count }}"
+        },
+        "coverage": "The capture of {{ source }} was not gapless at {{ time }} UTC — error entries may be missing",
+        "stalled": "Log capture of {{ source }} has written nothing since {{ time }} UTC — newer entries are missing here, `docker logs` has them",
+        "disabled": "Log capture of {{ source }} is switched off — newer entries are missing here, `docker logs` has them",
+        "missing": "Log capture of {{ source }} has never reported — entries are missing here, `docker logs` has them",
+        "overdue": "Log entries older than 7 days are still present (oldest: {{ date }})"
+      },
+      "histogramLabel": "Entries per time interval, stacked by level",
+      "histogram": {
+        "unit": "Entries per interval",
+        "utc": "times in UTC",
+        "empty": "No entries in this period",
+        "cursorHint": "{{ title }} – move with the arrow keys, Enter narrows to the interval",
+        "summary": "{{ total }} entries in {{ buckets }} intervals, at most {{ max }} per interval, {{ warnBuckets }} intervals with warnings, {{ errorBuckets }} with errors.",
+        "partial": "The last interval is still incomplete and may change.",
+        "partialShort": "incomplete",
+        "reading": "Information {{ info }}, Warning {{ warn }}, Error {{ error }}",
+        "processStart": "{{ source }} started {{ time }}",
+        "level": {
+          "info": "Information",
+          "warn": "Warning",
+          "error": "Error / Critical"
+        }
+      },
+      "savedFilters": {
+        "label": "Saved filters",
+        "add": "+ Save filter",
+        "menuFor": "Menu for filter {{name}}",
+        "edit": "Edit",
+        "overwrite": "Overwrite with current filter",
+        "delete": "Delete",
+        "deleteConfirm": "Really delete the saved filter “{{name}}”? It will not come back on its own.",
+        "loadFailed": "The saved filters could not be loaded.",
+        "blockedEmptyFilter": "Enter a filter before saving.",
+        "blockedEmptyName": "Enter a name before saving.",
+        "newTitle": "Save filter",
+        "editTitle": "Edit filter",
+        "nameLabel": "Name",
+        "filterLabel": "Filter",
+        "save": "Save"
+      }
     }
   },
   "audit": {
@@ -825,6 +1030,7 @@
       "tagRemoved": "Tag removed from set",
       "backfillRequest": "Backfill requested",
       "backfillCancel": "Backfill cancelled",
+      "backfillRemoveImported": "Imported data removed",
       "userRevokeSessions": "User sessions revoked",
       "userInvalidateRoleCache": "Role cache cleared",
       "userDelete": "Account deleted"
@@ -858,6 +1064,10 @@
       "backfillMonths": {
         "one": "{{count}} month",
         "other": "{{count}} months"
+      },
+      "backfillRemovedDays": {
+        "one": "{{count}} day",
+        "other": "{{count}} days"
       },
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV trending today",
@@ -2237,6 +2447,14 @@
       "foreign_channel_seventv_unavailable": "7TV is not reachable right now. Please try again shortly.",
       "invalid_leaderboard_sort": "Invalid sort for the 7TV leaderboard.",
       "invalid_dashboard_range": "Invalid range for the dashboard.",
+      "invalid_log_filter": "This log filter is not valid.",
+      "invalid_log_range": "This time range or entry list is not valid.",
+      "invalid_log_filter_name": "A filter name must be 1 to 60 characters.",
+      "log_filter_name_taken": "A saved filter with this name already exists.",
+      "log_filter_limit_reached": "You can save at most 30 filters.",
+      "log_filter_not_found": "This saved filter no longer exists.",
+      "log_entry_not_found": "This log entry no longer exists.",
+      "log_query_timeout": "The log query took too long. Narrow the time range or the filter and try again.",
       "vote_session_not_found": "Voting session not found.",
       "vote_session_ended": "This voting session has already ended.",
       "emote_not_eligible": "This emote can no longer be voted on.",
@@ -2275,7 +2493,9 @@
       "backfill_set_empty": "This emote set has no emotes, so there is nothing to look for.",
       "backfill_set_truncated": "This emote set is too large to read completely, so the backfill cannot be started for it.",
       "backfill_channel_identity_changed": "The channel changed while your request was running. Please reload and try again.",
-      "backfill_slots_unsettled": "The emote slots of this set are not fully matched yet. This usually clears after the next sync. If it persists, an emote in the set has no add date."
+      "backfill_slots_unsettled": "The emote slots of this set are not fully matched yet. This usually clears after the next sync. If it persists, an emote in the set has no add date.",
+      "backfill_remove_run_active": "A backfill is queued or running for this channel. Cancel it first, then you can remove the imported data.",
+      "backfill_remove_scope_changed": "The imported data has changed in the meantime. Check the new state and confirm again."
     }
   },
   "backfill": {
@@ -2358,6 +2578,26 @@
       "completed": "Backfill completed.",
       "failed": "Backfill failed.",
       "cancelled": "Backfill cancelled."
+    },
+    "remove": {
+      "title": "Imported data",
+      "intro": "For these days the numbers come from the chat archive, and the usage page says so:",
+      "interval": "{{ from }} – {{ to }} · {{ set }}",
+      "action": "Remove imported data",
+      "blockedByRun": "Cancel the running backfill first.",
+      "confirm": {
+        "title": "Remove the imported data of this channel?",
+        "lead": "This removes the numbers imported from the chat archive for:",
+        "interval": "· {{ from }} – {{ to }} · {{ set }}",
+        "label": "and with them the “from the chat archive” note on the usage page.",
+        "keeps": "Kept: every number we have counted ourselves since {{ countingSince }}, and the list of past runs.",
+        "irreversible": "This cannot be undone. A new backfill reads the archive again; its numbers may differ."
+      },
+      "announceDone": {
+        "one": "Imported data removed: {{ count }} day.",
+        "other": "Imported data removed: {{ count }} days."
+      },
+      "announceNothingLeft": "The imported data had already been removed."
     }
   }
 }

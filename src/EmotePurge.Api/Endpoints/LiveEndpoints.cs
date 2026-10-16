@@ -217,7 +217,13 @@ public static class LiveEndpoints
             return Task.CompletedTask;
         });
 
-        var lifetime = CancellationTokenSource.CreateLinkedTokenSource(httpContext.RequestAborted);
+        // ApplicationStopping ends the stream the moment the host begins to stop, exactly like the
+        // lifetime cap: a stream never finishes on its own, so without this Kestrel would hold the
+        // whole shutdown budget waiting for it, and the hosted services stopping after the server,
+        // the log capture writer's drain among them, would get no time left (or be killed by the
+        // container runtime first). The browser's EventSource reconnects as after any other close.
+        var applicationStopping = httpContext.RequestServices.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping;
+        var lifetime = CancellationTokenSource.CreateLinkedTokenSource(httpContext.RequestAborted, applicationStopping);
         lifetime.CancelAfter(MaxConnectionLifetime);
 
         // Registered right away, before a single frame is written: DELETE /api/live/connections/{id}

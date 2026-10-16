@@ -33,6 +33,7 @@ import { StatusBadge } from '../../shared/ui/status-badge';
 import { UtilizationTone, utilizationTone } from '../../shared/ui/utilization-tone';
 import { AdminActivitySection } from './admin-activity-section';
 import { AdminLoadSection, TrendAxis } from './admin-load-section';
+import { AdminLogErrorsRow } from './admin-log-errors-row';
 import { openRateLimitDetailsDialog } from './admin-rate-limit-details-dialog';
 import { policyExceptions, providerExceptions, trendSeriesSpecs } from './admin-rate-limit-view';
 import { AdminRosterCard } from './admin-roster-card';
@@ -86,6 +87,7 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
   imports: [
     AdminActivitySection,
     AdminLoadSection,
+    AdminLogErrorsRow,
     AdminRosterCard,
     Button,
     EmptyState,
@@ -122,6 +124,10 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
           </button>
         </div>
       </header>
+
+      <!-- Recorded errors of the last 24 h, as one ruled line under the page header (log viewer spec
+           section 11): the row that says whether something needs looking at before the charts do. -->
+      <app-admin-log-errors-row />
 
       <!-- Load and work first (spec section 10): it owns its own range, probe and polling. -->
       <app-admin-load-section />
@@ -521,6 +527,7 @@ export class AdminMonitoringPage {
   // but the 60 s worker.roster push.
   private readonly rosterCard = viewChild(AdminRosterCard);
   private readonly loadSection = viewChild(AdminLoadSection);
+  private readonly logErrorsRow = viewChild(AdminLogErrorsRow);
 
   // No defaultValue: "no snapshot yet" and "an all-zero snapshot" must not look alike, so the
   // template branches on undefined instead of rendering a fabricated empty one.
@@ -872,5 +879,6 @@ export class AdminMonitoringPage {
     this.rateLimitsResource.reload();
     this.trendResource.reload();
     this.activityResource.reload();
+    this.logErrorsRow()?.reload();
   }
 }

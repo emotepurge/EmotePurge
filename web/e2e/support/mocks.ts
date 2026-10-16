@@ -2969,3 +2969,411 @@ export async function mockBackfillCancel(
   });
   return { requests: () => requests };
 }
+
+export interface MockLogEntry {
+  id: number;
+  timestampUtc: string;
+  level: 'info' | 'warn' | 'error' | 'crit';
+  source: 'api' | 'worker';
+  instanceId: string;
+  category: string;
+  eventId: number | null;
+  eventName: string | null;
+  message: string;
+  hasException: boolean;
+  exceptionType: string | null;
+  properties: Record<string, unknown>;
+  truncated: boolean;
+}
+
+/** One log entry; ids count down from the newest, one second apart, starting at 12:00:00 UTC. */
+export function buildLogEntry(id: number, overrides: Partial<MockLogEntry> = {}): MockLogEntry {
+  const second = Math.max(0, 3599 - id);
+  return {
+    id,
+    timestampUtc: `2026-10-14T11:${String(Math.floor(second / 60)).padStart(2, '0')}:${String(second % 60).padStart(2, '0')}Z`,
+    level: 'info',
+    source: 'worker',
+    instanceId: 'a1b2c3d4',
+    category: 'EmotePurge.Worker.TwitchChatManager',
+    eventId: null,
+    eventName: null,
+    message: `Entry number ${id}`,
+    hasException: false,
+    exceptionType: null,
+    properties: {},
+    truncated: false,
+    ...overrides,
+  };
+}
+
+export interface MockLogSummaryOptions {
+  buckets?: number;
+  total?: number;
+  dropped?: Partial<
+    Record<
+      | 'total'
+      | 'queueFull'
+      | 'budget'
+      | 'writeUnconfirmed'
+      | 'captureFailed'
+      | 'reentrant'
+      | 'rejected',
+      number
+    >
+  >;
+}
+
+/** `GET /api/admin/logs/summary` body: `buckets` 15-minute buckets from 2026-10-13T12:00:00Z. */
+export function buildLogSummary(options: MockLogSummaryOptions = {}): Record<string, unknown> {
+  const buckets = options.buckets ?? 8;
+  const starts = Array.from({ length: buckets }, (_, i) =>
+    new Date(Date.parse('2026-10-13T12:00:00Z') + i * 900_000).toISOString().replace('.000Z', 'Z'),
+  );
+  return {
+    rangeFromUtc: '2026-10-13T12:00:00Z',
+    rangeToUtc: '2026-10-14T12:00:00Z',
+    bucketFromUtc: starts[0],
+    bucketToUtc: '2026-10-14T12:00:00Z',
+    bucketSeconds: 900,
+    bucketStartsUtc: starts,
+    counts: {
+      info: starts.map((_, i) => 3 + i),
+      warn: starts.map((_, i) => (i % 3 === 0 ? 2 : 0)),
+      error: starts.map((_, i) => (i === 2 ? 1 : 0)),
+    },
+    total: options.total ?? 120,
+    facets: {
+      source: [
+        { value: 'worker', count: 100 },
+        { value: 'api', count: 20 },
+      ],
+      level: [
+        { value: 'info', count: 110 },
+        { value: 'warn', count: 8 },
+        { value: 'error', count: 2 },
+      ],
+      category: [
+        { value: 'EmotePurge.Worker.TwitchChatManager', short: 'TwitchChatManager', count: 90 },
+        { value: 'EmotePurge.Api.Startup', short: 'Startup', count: 30 },
+      ],
+      categoryOther: 0,
+    },
+    dropped: {
+      total: 0,
+      queueFull: 0,
+      budget: 0,
+      writeUnconfirmed: 0,
+      captureFailed: 0,
+      reentrant: 0,
+      rejected: 0,
+      ...options.dropped,
+    },
+    processStarts: [
+      { source: 'worker', instanceId: 'a1b2c3d4', startedUtc: '2026-10-13T20:00:00Z' },
+    ],
+  };
+}
+
+/** `GET /api/admin/logs/status` body: both sources healthy and complete unless overridden. */
+export function buildLogStatus(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const healthy = (source: string) => ({
+    source,
+    state: 'healthy',
+    instanceId: 'a1b2c3d4',
+    startedUtc: '2026-10-13T20:00:00Z',
+    lastFlushUtc: '2026-10-14T11:59:30Z',
+  });
+  return {
+    generatedAtUtc: '2026-10-14T12:00:00Z',
+    sources: [healthy('api'), healthy('worker')],
+    coverage24h: { complete: true, recordedErrors: 0, incompleteSince: [] },
+    retention: { oldestEntryUtc: '2026-10-08T12:00:00Z', overdue: false },
+    ...overrides,
+  };
+}
+
+/**
+ * Only `GET /api/admin/logs/status` — what /admin/monitoring reads for its recorded-errors row.
+ * Pages that also need the log list register {@link mockAdminLogs}, which serves the status too.
+ * Returns the request URLs in order.
+ */
+export async function mockAdminLogStatus(
+  page: Page,
+  status: Record<string, unknown> | { status: number } = {},
+): Promise<URL[]> {
+  const calls: URL[] = [];
+  await page.route('**/api/admin/logs/status', (route) => {
+    calls.push(new URL(route.request().url()));
+    if (typeof status.status === 'number') {
+      return fulfillJson(route, status.status, {});
+    }
+    return fulfillJson(route, 200, buildLogStatus(status));
+  });
+  return calls;
+}
+
+export type MockLogReply = { status: number; body?: unknown };
+
+export interface MockSavedLogFilter {
+  id: number;
+  name: string;
+  filter: string;
+  sortOrder: number;
+}
+
+/** The four filters the migration seeds (names and strings as stored). */
+export const SEEDED_LOG_FILTERS: MockSavedLogFilter[] = [
+  { id: 1, name: 'Start nach Deploy', filter: 'instance:latest uptime<15m', sortOrder: 1 },
+  {
+    id: 2,
+    name: 'Twitch-Reconnects',
+    filter:
+      'source:worker cat:TwitchConnectionWatchdog,TwitchChatManager,TwitchLib.* -"angestoßen (Quelle" -" gejoint."',
+    sortOrder: 2,
+  },
+  { id: 3, name: '7TV-Sync/EventAPI', filter: 'source:worker cat:SevenTv*', sortOrder: 3 },
+  { id: 4, name: 'Alle Fehler', filter: 'level>=error', sortOrder: 4 },
+];
+
+export interface MockLogFilterCall {
+  method: string;
+  id: number | null;
+  body: { name?: string; filter?: string } | null;
+}
+
+export interface MockAdminLogsOptions {
+  /** How many entries exist; the list pages through them 100 at a time by opaque `c<offset>` cursors. */
+  totalEntries?: number;
+  /** Rows to serve instead of the generated ones (first page only; no paging). */
+  entries?: MockLogEntry[];
+  /**
+   * The server's rows for live tests: the first page, the reconcile's key query (`keysOnly`, every
+   * row from `from` on) and the id fetch (`ids=`) all read this array, so a test that pushes a row
+   * into it between steps has "stored" a new entry. Served newest first by `(timestampUtc, id)`.
+   */
+  store?: MockLogEntry[];
+  /** Answer the key query with `truncated: true` (more than 2,500 keys). */
+  keysTruncated?: boolean;
+  summary?: MockLogSummaryOptions;
+  status?: Record<string, unknown>;
+  /** Overrides the answer to a page, summary, key or id request; return `undefined` to answer normally. */
+  fail?: (url: URL, endpoint: 'list' | 'summary' | 'keys' | 'ids') => MockLogReply | undefined;
+  /** Exception text served by `GET /api/admin/logs/{id}`. */
+  exception?: string;
+  /** The saved filters the server holds; the four seeds by default. */
+  filters?: MockSavedLogFilter[];
+  /** Overrides the answer to a saved-filter write (`POST`/`PUT`/`DELETE`); `undefined` answers normally. */
+  failFilter?: (call: MockLogFilterCall) => MockLogReply | undefined;
+}
+
+export interface MockAdminLogsCalls {
+  /** Page requests only — the reconcile's key and id requests are counted apart. */
+  list: URL[];
+  /** The reconcile's key queries (`keysOnly=true`). */
+  keys: URL[];
+  /** The reconcile's id fetches (`ids=`). */
+  ids: URL[];
+  summary: URL[];
+  status: URL[];
+  entry: URL[];
+  /** Every saved-filter request, in order. */
+  filters: MockLogFilterCall[];
+}
+
+/**
+ * The admin log viewer: `GET /api/admin/logs`, `/summary`, `/status` and `/{id}`. The returned log
+ * records every request URL per endpoint, in order.
+ */
+export async function mockAdminLogs(
+  page: Page,
+  options: MockAdminLogsOptions = {},
+): Promise<MockAdminLogsCalls> {
+  const calls: MockAdminLogsCalls = {
+    list: [],
+    keys: [],
+    ids: [],
+    summary: [],
+    status: [],
+    entry: [],
+    filters: [],
+  };
+  // Without a store, the key query lists exactly what the list has served: nothing is ever new.
+  const served = new Map<number, MockLogEntry>();
+  const newestFirst = (a: MockLogEntry, b: MockLogEntry) =>
+    a.timestampUtc === b.timestampUtc
+      ? b.id - a.id
+      : Date.parse(b.timestampUtc) - Date.parse(a.timestampUtc);
+  const filters = [...(options.filters ?? SEEDED_LOG_FILTERS)];
+  await page.route(
+    (url) => /^\/api\/admin\/log-filters(\/\d+)?$/.test(url.pathname),
+    (route) => {
+      const request = route.request();
+      const idText = new URL(request.url()).pathname.split('/')[4];
+      const call: MockLogFilterCall = {
+        method: request.method(),
+        id: idText ? Number(idText) : null,
+        body:
+          request.method() === 'GET' || request.method() === 'DELETE'
+            ? null
+            : request.postDataJSON(),
+      };
+      if (call.method !== 'GET') {
+        calls.filters.push(call);
+        const reply = options.failFilter?.(call);
+        if (reply) {
+          return fulfillJson(route, reply.status, reply.body ?? {});
+        }
+      }
+      const clean = (value?: string) => (value ?? '').trim();
+      if (call.method === 'POST') {
+        const created = {
+          id: Math.max(0, ...filters.map((f) => f.id)) + 1,
+          name: clean(call.body?.name),
+          filter: call.body?.filter ?? '',
+          sortOrder: Math.max(0, ...filters.map((f) => f.sortOrder)) + 1,
+        };
+        filters.push(created);
+        return fulfillJson(route, 201, created);
+      }
+      const index = filters.findIndex((f) => f.id === call.id);
+      if (call.method === 'PUT') {
+        if (index < 0) {
+          return fulfillJson(route, 404, { errorCode: 'log_filter_not_found' });
+        }
+        filters[index] = {
+          ...filters[index],
+          name: clean(call.body?.name),
+          filter: call.body?.filter ?? '',
+        };
+        return fulfillJson(route, 200, filters[index]);
+      }
+      if (call.method === 'DELETE') {
+        if (index >= 0) {
+          filters.splice(index, 1);
+        }
+        return route.fulfill({ status: index >= 0 ? 204 : 404 });
+      }
+      return fulfillJson(route, 200, filters);
+    },
+  );
+  const total = options.totalEntries ?? 8;
+  await page.route(
+    (url) => /^\/api\/admin\/logs(\/.*)?$/.test(url.pathname),
+    (route) => {
+      const url = new URL(route.request().url());
+      const path = url.pathname;
+      if (path === '/api/admin/logs/status') {
+        calls.status.push(url);
+        return fulfillJson(route, 200, buildLogStatus(options.status));
+      }
+      if (path === '/api/admin/logs/summary') {
+        calls.summary.push(url);
+        const reply = options.fail?.(url, 'summary');
+        return reply
+          ? fulfillJson(route, reply.status, reply.body ?? {})
+          : fulfillJson(route, 200, buildLogSummary(options.summary));
+      }
+      if (path === '/api/admin/logs' && url.searchParams.has('keysOnly')) {
+        calls.keys.push(url);
+        const reply = options.fail?.(url, 'keys');
+        if (reply) {
+          return fulfillJson(route, reply.status, reply.body ?? {});
+        }
+        const from = Date.parse(url.searchParams.get('from') ?? '');
+        const rows = options.store
+          ? [...options.store].sort(newestFirst).filter((e) => Date.parse(e.timestampUtc) >= from)
+          : [...served.values()];
+        return fulfillJson(route, 200, {
+          entries: rows.map((e) => ({ id: e.id, timestampUtc: e.timestampUtc })),
+          nextCursor: null,
+          rangeFromUtc: url.searchParams.get('from'),
+          rangeToUtc: '2026-10-14T12:00:00Z',
+          truncated: options.keysTruncated ?? false,
+        });
+      }
+      if (path === '/api/admin/logs' && url.searchParams.has('ids')) {
+        calls.ids.push(url);
+        const reply = options.fail?.(url, 'ids');
+        if (reply) {
+          return fulfillJson(route, reply.status, reply.body ?? {});
+        }
+        const wanted = new Set((url.searchParams.get('ids') ?? '').split(',').map(Number));
+        const pool = options.store ?? [...served.values()];
+        return fulfillJson(route, 200, {
+          entries: pool.filter((e) => wanted.has(e.id)).sort(newestFirst),
+          nextCursor: null,
+          rangeFromUtc: null,
+          rangeToUtc: null,
+          truncated: false,
+        });
+      }
+      if (path === '/api/admin/logs') {
+        calls.list.push(url);
+        const reply = options.fail?.(url, 'list');
+        if (reply) {
+          return fulfillJson(route, reply.status, reply.body ?? {});
+        }
+        const before = url.searchParams.get('before');
+        const offset = before ? Number(before.slice(1)) : 0;
+        const rows =
+          (options.store ? [...options.store].sort(newestFirst) : undefined) ??
+          options.entries ??
+          Array.from({ length: Math.max(0, Math.min(100, total - offset)) }, (_, i) =>
+            buildLogEntry(total - offset - i),
+          );
+        rows.forEach((row) => served.set(row.id, row));
+        const more = !options.store && !options.entries && offset + rows.length < total;
+        return fulfillJson(route, 200, {
+          entries: rows,
+          nextCursor: more ? `c${offset + rows.length}` : null,
+          rangeFromUtc: '2026-10-13T12:00:00Z',
+          rangeToUtc: '2026-10-14T12:00:00Z',
+          truncated: false,
+        });
+      }
+      calls.entry.push(url);
+      const id = Number(path.split('/').pop());
+      return fulfillJson(route, 200, {
+        ...buildLogEntry(id, { hasException: true, level: 'error' }),
+        exception: options.exception ?? 'System.InvalidOperationException: nope\n   at Foo.Bar()',
+        processStartedUtc: '2026-10-13T20:00:00Z',
+        uptimeSeconds: 56000,
+      });
+    },
+  );
+  return calls;
+}
+
+/**
+ * POST /api/channels/{channelName}/backfill/imported/remove (#384). Records the JSON bodies the UI
+ * really sent. A `{ status, errorCode }` response answers with that status and `{ errorCode }`;
+ * `'removed'` answers 200 with the given counts (default: 31 coverage days, 1200 usage rows).
+ */
+export async function mockBackfillRemove(
+  page: Page,
+  channelName: string,
+  response:
+    | { status: number; errorCode: string }
+    | { removedUsageRows: number; removedCoverageDays: number }
+    | 'removed' = 'removed',
+  onRemoved?: () => void,
+): Promise<{ bodies: () => unknown[] }> {
+  const bodies: unknown[] = [];
+  await page.route(`**/api/channels/${channelName}/backfill/imported/remove`, (route) => {
+    if (route.request().method() !== 'POST') {
+      return route.fallback();
+    }
+    bodies.push(route.request().postDataJSON());
+    if (typeof response !== 'string' && 'errorCode' in response) {
+      return fulfillJson(route, response.status, { errorCode: response.errorCode });
+    }
+    onRemoved?.();
+    return fulfillJson(
+      route,
+      200,
+      response === 'removed' ? { removedUsageRows: 1200, removedCoverageDays: 31 } : response,
+    );
+  });
+  return { bodies: () => bodies };
+}

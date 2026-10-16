@@ -83,7 +83,14 @@ find "$BACKUP_DIR" -maxdepth 1 -type f -name "${BACKUP_FILE_PREFIX}-*.sql.gz.tmp
 
 log "Starting backup of database '$POSTGRES_DB' from container '$POSTGRES_CONTAINER' to '$tmp_file'..."
 
-if ! docker exec "$POSTGRES_CONTAINER" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=plain | gzip -c > "$tmp_file"; then
+# The captured application logs are diagnostics with a seven-day retention and
+# must not outlive it in the backup chain: the tables' schema stays in the dump,
+# their data does not. Any change to these exclusions needs the same host
+# install-and-verify step as the first one (see docs/Operations.md).
+if ! docker exec "$POSTGRES_CONTAINER" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=plain \
+    --exclude-table-data='public."LogEntries"' \
+    --exclude-table-data='public."LogCaptureStatus"' \
+    | gzip -c > "$tmp_file"; then
   rm -f "$tmp_file"
   fail "pg_dump or gzip failed. No backup archive was left behind."
 fi

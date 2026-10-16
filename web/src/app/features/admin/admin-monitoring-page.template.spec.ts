@@ -17,7 +17,9 @@ import {
   RateLimitTelemetrySnapshot,
   RateLimitTelemetryTrend,
 } from '../../core/admin/admin.model';
+import { AdminLogsService } from '../../core/admin/admin-logs.service';
 import { AdminService } from '../../core/admin/admin.service';
+import { LogStatus } from '../../core/admin/admin-logs.model';
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { AdminMonitoringPage } from './admin-monitoring-page';
 
@@ -156,6 +158,16 @@ const ROSTER: AdminRoster = {
   unknownToDatabaseTotal: 0,
 };
 
+const LOG_STATUS: LogStatus = {
+  generatedAtUtc: '2026-10-11T12:00:00Z',
+  sources: [
+    { source: 'api', state: 'healthy', instanceId: 'a', startedUtc: null, lastFlushUtc: null },
+    { source: 'worker', state: 'healthy', instanceId: 'w', startedUtc: null, lastFlushUtc: null },
+  ],
+  coverage24h: { complete: true, recordedErrors: 0, incompleteSince: [] },
+  retention: { oldestEntryUtc: null, overdue: false },
+};
+
 const LOAD_STARTS = ['2026-10-11T11:55:00Z', '2026-10-11T12:00:00Z'];
 
 /** A two-bucket answer in which only the host CPU is known; every other column is unknown. */
@@ -248,6 +260,7 @@ interface Streams {
   rateLimits?: Observable<RateLimitTelemetrySnapshot>;
   trend?: Observable<RateLimitTelemetryTrend>;
   activity?: Observable<AdminDashboardActivity>;
+  logStatus?: Observable<LogStatus>;
 }
 
 describe('AdminMonitoringPage — real template', () => {
@@ -286,6 +299,9 @@ describe('AdminMonitoringPage — real template', () => {
     vi.spyOn(service, 'getRateLimitTrend').mockReturnValue(streams.trend ?? of(trend()));
     vi.spyOn(service, 'getDashboardActivity').mockReturnValue(streams.activity ?? of(ACTIVITY));
     vi.spyOn(service, 'getRoster').mockReturnValue(of(ROSTER));
+    vi.spyOn(TestBed.inject(AdminLogsService), 'getStatus').mockReturnValue(
+      streams.logStatus ?? of(LOG_STATUS),
+    );
     vi.spyOn(service, 'getDashboardLoad').mockImplementation(
       streams.load ?? ((range) => of({ ...loadFor(range), available: false, bucketStartsUtc: [] })),
     );
@@ -323,6 +339,24 @@ describe('AdminMonitoringPage — real template', () => {
       expect(region(root, 'admin-rate-limits')).not.toBeNull();
       expect(region(root, 'admin-health')).not.toBeNull();
       expect(root.querySelector('app-admin-roster-card')).not.toBeNull();
+    });
+
+    it('puts the recorded-errors row directly under the header, ahead of load and work', () => {
+      const root = render();
+      const row = region(root, 'admin-log-errors') as HTMLElement;
+      const load = region(root, 'admin-load') as HTMLElement;
+
+      expect(row).not.toBeNull();
+      expect(row.compareDocumentPosition(load) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('keeps every other region when the log status request fails', () => {
+      const root = render({ logStatus: throwError(() => new HttpErrorResponse({ status: 500 })) });
+
+      expect(region(root, 'admin-log-errors-unavailable')).not.toBeNull();
+      expect(region(root, 'admin-activity')).not.toBeNull();
+      expect(region(root, 'admin-rate-limits')).not.toBeNull();
+      expect(region(root, 'admin-health')).not.toBeNull();
     });
 
     it('puts load and work first, ahead of the activity history', () => {

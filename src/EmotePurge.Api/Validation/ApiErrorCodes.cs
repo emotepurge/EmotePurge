@@ -197,9 +197,32 @@ internal static class ApiErrorCodes
     // 409 (emote slots spec 5.6, D12): a preview entry cannot be bound to its slot yet (an unsettled seed
     // of the active set, or an undated entry); nothing written, retry later.
     public const string BackfillSlotsUnsettled = "backfill_slots_unsettled";
+    // 409 from POST .../backfill/imported/remove (#384): the channel has a queued, running or paused run;
+    // cancel it first.
+    public const string BackfillRemoveRunActive = "backfill_remove_run_active";
+    // 409 from the same route: the channel's coverage is not the one the confirmation showed.
+    public const string BackfillRemoveScopeChanged = "backfill_remove_scope_changed";
 
     // Admin dashboard (#381).
     // 400 from both dashboard routes: the range query value is present but not one of 30d, 90d, 13mo.
     // A missing or empty range is not an error, it selects the default.
     public const string InvalidDashboardRange = "invalid_dashboard_range";
+
+    // Admin log viewer (#383). The log routes under /api/admin/logs and /api/admin/log-filters.
+    // 400, with reason/position/length (UTF-16 indices into the submitted string): the filter string does not parse.
+    public const string InvalidLogFilter = "invalid_log_filter";
+    // 400: mixed or out-of-bounds range, malformed cursor, or a bad ids list.
+    public const string InvalidLogRange = "invalid_log_range";
+    // 400 from POST/PUT /log-filters: the name is empty or longer than 60 characters.
+    public const string InvalidLogFilterName = "invalid_log_filter_name";
+    // 409: another saved filter already has this name (ignoring case and surrounding whitespace).
+    public const string LogFilterNameTaken = "log_filter_name_taken";
+    // 409: 30 saved filters exist already.
+    public const string LogFilterLimitReached = "log_filter_limit_reached";
+    // 404 from PUT/DELETE /log-filters/{id}.
+    public const string LogFilterNotFound = "log_filter_not_found";
+    // 404 from GET /logs/{id}: the entry never existed or has been deleted by retention.
+    public const string LogEntryNotFound = "log_entry_not_found";
+    // 503: the query exceeded its time limit.
+    public const string LogQueryTimeout = "log_query_timeout";
 }

@@ -36,7 +36,7 @@ Legende: ✅ umgesetzt · 🟡 teilweise · ⬜ offen
 | **A12** Ergebnis-Export | ✅ 2026-08-02 | DECISIONS „Der Export ist eine Client-Serialisierung …" |
 | **A13**–**A15** | ⬜ | — |
 | **A16** Emote-Liste importieren (Nachtrag 2026-08-04) | ✅ 2026-09-06 | DECISIONS „Import-Lauf: dritter Arbiter-Zweig ohne DI-Zirkel, kein Kanal-Reset, Nachlauf ans Laufobjekt gebunden …" (#72, K3) |
-| **A17** Chat-Log-Backfill (Nachtrag 2026-10-08) | ✅ 2026-10-09 | DECISIONS „Chat-log backfill: imported rows are marked, one set owns an imported day, coverage is disclosed unconditionally, the flag ships off (#354)“ (Epic #346); Flag auf Prod bis zum Datenschutztext aus |
+| **A17** Chat-Log-Backfill (Nachtrag 2026-10-08) | ✅ 2026-10-09 | DECISIONS „Chat-log backfill: imported rows are marked, one set owns an imported day, coverage is disclosed unconditionally, the flag ships off (#354)“ (Epic #346); Flag auf Prod bis zum Datenschutztext aus; Entfernen im UI (#384) |
 | **B1** Support-Drilldown | 🟡 2026-08-01 | Audit-Zeilen und Per-Channel-Flush fehlen |
 | **B2** Soll/Ist-Roster | ✅ 2026-08-02 | DECISIONS „Auslastungsbalken bekommen eine Schwellen-Leiter, das Roster-Badge nicht" |
 | **B3**–**B9** | ⬜ | — |
@@ -506,6 +506,10 @@ importierten Bereich samt Link zur Quelle. Die Funktion liegt hinter `ChatLogBac
 `false`); auf Prod geht das Flag erst nach dem Datenschutztext und dem Abnahmelauf an. Details, Rollback und
 Konfiguration: DECISIONS (Sammeleintrag #354 plus die Einträge zu #347/#349) und `docs/Operations.md`
 „Chat-log backfill“; Spec: `docs/superpowers/specs/2026-10-09-chat-log-backfill-spec.md`.
+
+Nachtrag #384: Channel-Manager können die importierten Daten eines Kanals im Settings-Tab wieder entfernen
+(ganzer Kanal, nur ohne aktiven Lauf, mit serverseitig geprüftem Umfang; Läufe und Live-Zahlen bleiben).
+Spec: `docs/superpowers/specs/2026-10-13-remove-imported-backfill-spec.md`.
 
 Ein neu aufgenommener Channel hat am Zählbeginn leere Zahlen, obwohl sein Chat seit Monaten läuft. Die
 Zahlen vergangener Wochen lassen sich aus einem öffentlichen Chat-Archiv nachrechnen — mit klaren Grenzen

@@ -1,10 +1,12 @@
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using EmotePurge.Api.Auth;
+using EmotePurge.Core.Entities;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Core.Twitch;
+using EmotePurge.Infrastructure.Logging;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -230,6 +232,21 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// </summary>
     public IChatLogBackfillService ChatLogBackfill { get; } = Substitute.For<IChatLogBackfillService>();
 
+    /// <summary>
+    /// Substituted for the admin log viewer routes (#383): the real services sit on <c>AppDbContext</c>.
+    /// The route's suppression scope and concurrency gate stay real.
+    /// </summary>
+    public ILogQueryService LogQuery { get; } = Substitute.For<ILogQueryService>();
+
+    /// <summary>Substituted like <see cref="LogQuery"/>; the real reader caches in front of Postgres.</summary>
+    public ILogStatusReader LogStatus { get; } = Substitute.For<ILogStatusReader>();
+
+    /// <summary>Substituted like <see cref="LogQuery"/>.</summary>
+    public ILogFilterService LogFilters { get; } = Substitute.For<ILogFilterService>();
+
+    /// <summary>Substituted for the imported-data removal route (#384) for the same reason as <see cref="ChatLogBackfill"/>.</summary>
+    public IChatLogImportRemovalService ChatLogImportRemoval { get; } = Substitute.For<IChatLogImportRemovalService>();
+
     public ApiFactory()
     {
         LegalContent.GetAvailabilityAsync(Arg.Any<CancellationToken>())
@@ -254,6 +271,10 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("Auth:AdminTwitchLogins", string.Empty);
         builder.UseSetting("Auth:AdminTwitchUserIds", string.Empty);
 
+        // No log rows from tests: the heartbeat-only mode never reaches the (nonexistent) database in a way
+        // that matters, and no provider or writer competes with the console logger configured below.
+        builder.UseSetting("LogCapture:Enabled", "false");
+
         // On, so the filter matrix reaches the backfill handlers; the off variant overrides it.
         builder.UseSetting("ChatLogBackfill:Enabled", "true");
 
@@ -269,6 +290,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 
         builder.ConfigureTestServices(services =>
         {
+            // The heartbeat stays registered (first hosted service) but must not dial Postgres.
+            services.AddSingleton<ILogCaptureStore, NoOpLogCaptureStore>();
             services.AddScoped(_ => ChannelAccess);
             services.AddScoped(_ => VoteEligibility);
             services.AddScoped(_ => Channels);
@@ -298,6 +321,10 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => AdminUserQuery);
             services.AddScoped(_ => AdminDashboardQuery);
             services.AddScoped(_ => ChatLogBackfill);
+            services.AddScoped(_ => LogQuery);
+            services.AddSingleton(_ => LogStatus);
+            services.AddScoped(_ => LogFilters);
+            services.AddScoped(_ => ChatLogImportRemoval);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected
             // services *before* it runs the endpoint filter pipeline. A request the filter is about
@@ -360,4 +387,15 @@ public sealed class TestAuthHandler(
         var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, SchemeName));
         return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, SchemeName)));
     }
+}
+
+/// <summary>Stands in for the Postgres-backed capture store so the heartbeat of the test host never dials a database.</summary>
+internal sealed class NoOpLogCaptureStore : ILogCaptureStore
+{
+    public Task InsertAsync(IReadOnlyList<CapturedLogEntry> batch, CancellationToken ct) => Task.CompletedTask;
+
+    public Task UpsertStatusAsync(LogCaptureStatusWrite status, CancellationToken ct) => Task.CompletedTask;
+
+    public Task<LogCaptureStatusWrite?> ReadLatestOtherInstanceAsync(LogSource source, string ownInstanceId, CancellationToken ct) =>
+        Task.FromResult<LogCaptureStatusWrite?>(null);
 }

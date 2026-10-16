@@ -78,8 +78,9 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
             DROP TRIGGER IF EXISTS retention_test_fail_user ON "Users";
             DROP TRIGGER IF EXISTS retention_test_fail_channel ON "Channels";
             DROP TRIGGER IF EXISTS retention_test_fail_system_load ON "SystemLoadSamples";
+            DROP TRIGGER IF EXISTS retention_test_fail_token_update ON "Users";
             TRUNCATE "Votes", "VoteSessionEmotes", "VoteSessions", "UsageStats", "ChannelLiveDays", "Emotes",
-                "Channels", "Users", "AuditLogEntries", "SystemLoadSamples", "SystemLoadHourly" RESTART IDENTITY CASCADE;
+                "Channels", "Users", "AuditLogEntries", "SystemLoadSamples", "SystemLoadHourly", "LogEntries", "LogCaptureStatus" RESTART IDENTITY CASCADE;
             """);
     }
 
@@ -626,6 +627,106 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Log expiry: its own operation, outside RunAsync
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task ExpireLogs_JustUnderSevenDays_Stays_JustOver_Goes()
+    {
+        var cutoff = _now - RetentionPolicy.LogEntry;
+        await SeedLogEntriesAsync(cutoff.AddSeconds(1), cutoff, cutoff.AddSeconds(-1));
+
+        var summary = await ExpireLogsAsync(enforce: true);
+
+        Assert.True(summary.Enforced);
+        Assert.Equal(_now, summary.ReferenceTimeUtc);
+        Assert.Equal(1, summary.LogEntriesDeleted);
+        await using var db = CreateDbContext();
+        var left = await db.LogEntries.OrderBy(e => e.TimestampUtc).Select(e => e.TimestampUtc).ToListAsync();
+        Assert.Equal([cutoff, cutoff.AddSeconds(1)], left);
+    }
+
+    [Fact]
+    public async Task ExpireLogs_DryRun_CountsOnly()
+    {
+        var cutoff = _now - RetentionPolicy.LogEntry;
+        await SeedLogEntriesAsync(cutoff.AddDays(-1), cutoff.AddHours(-1), _now);
+        await SeedLogCaptureStatusAsync("aaaaaaaa", cutoff.AddMinutes(-1));
+
+        var summary = await ExpireLogsAsync(enforce: false);
+
+        Assert.False(summary.Enforced);
+        Assert.Equal(2, summary.LogEntriesDeleted);
+        Assert.Equal(1, summary.LogCaptureStatusRowsDeleted);
+        await using var db = CreateDbContext();
+        Assert.Equal(3, await db.LogEntries.CountAsync());
+        Assert.Equal(1, await db.LogCaptureStatuses.CountAsync());
+    }
+
+    [Fact]
+    public async Task ExpireLogs_StatusFollowsLastFlush_FiltersStay()
+    {
+        var cutoff = _now - RetentionPolicy.LogEntry;
+        await SeedLogCaptureStatusAsync("stale001", cutoff.AddSeconds(-1));
+        await SeedLogCaptureStatusAsync("edge0001", cutoff);
+        await SeedLogCaptureStatusAsync("fresh001", _now);
+        int filtersBefore;
+        await using (var before = CreateDbContext())
+        {
+            filtersBefore = await before.Database.SqlQueryRaw<int>("""SELECT count(*)::int AS "Value" FROM "LogFilters" """).SingleAsync();
+        }
+
+        var summary = await ExpireLogsAsync(enforce: true);
+
+        Assert.Equal(1, summary.LogCaptureStatusRowsDeleted);
+        await using var db = CreateDbContext();
+        Assert.Equal(["edge0001", "fresh001"], await db.LogCaptureStatuses.OrderBy(s => s.InstanceId).Select(s => s.InstanceId).ToListAsync());
+        Assert.Equal(filtersBefore, await db.Database.SqlQueryRaw<int>("""SELECT count(*)::int AS "Value" FROM "LogFilters" """).SingleAsync());
+        Assert.True(filtersBefore > 0);
+    }
+
+    [Fact]
+    public async Task ExpireLogs_DeletesInBatchesUntilDone()
+    {
+        var old = _now - RetentionPolicy.LogEntry - TimeSpan.FromHours(1);
+        await using (var seed = CreateDbContext())
+        {
+            await seed.Database.ExecuteSqlRawAsync(
+                """
+                INSERT INTO "LogEntries" ("CaptureId", "TimestampUtc", "Source", "InstanceId", "ProcessStartedUtc", "Level", "Category", "Message", "Truncated")
+                SELECT gen_random_uuid(), {0}, 1, 'batch001', {0}, 2, 'Test', 'm', false FROM generate_series(1, 12001)
+                """,
+                old);
+        }
+
+        var summary = await ExpireLogsAsync(enforce: true);
+
+        Assert.Equal(12001, summary.LogEntriesDeleted);
+        await using var db = CreateDbContext();
+        Assert.Equal(0, await db.LogEntries.CountAsync());
+    }
+
+    [Fact]
+    public async Task ExpireLogs_RunsEvenWhenDailyPassThrowsInTokenCategory()
+    {
+        await SeedUserAsync("tok-boom", lastLogin: TokenCutoff.AddSeconds(-1), withTokens: true);
+        await SeedLogEntriesAsync(_now - RetentionPolicy.LogEntry - TimeSpan.FromSeconds(1));
+        await using (var setup = CreateDbContext())
+        {
+            await setup.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TRIGGER retention_test_fail_token_update BEFORE UPDATE ON "Users"
+                FOR EACH ROW EXECUTE FUNCTION retention_test_fail();
+                """);
+        }
+
+        await Assert.ThrowsAnyAsync<Exception>(() => RunAsync(enforce: true));
+        var summary = await ExpireLogsAsync(enforce: true);
+
+        Assert.Equal(1, summary.LogEntriesDeleted);
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Harness
     // ---------------------------------------------------------------------------------------------
 
@@ -706,6 +807,55 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal(0, enforced.Channels.Restamped);
         Assert.Equal(dry with { Enforced = true, Channels = dry.Channels with { Restamped = 0 } }, enforced);
         return (dry, enforced);
+    }
+
+    private async Task<LogRetentionSummary> ExpireLogsAsync(bool enforce)
+    {
+        await using var db = CreateDbContext();
+        var service = new DataRetentionService(
+            db,
+            Substitute.For<IAccountDeletionService>(),
+            Substitute.For<IChannelService>(),
+            new RetentionOptions(),
+            new HandWoundTimeProvider(new DateTimeOffset(_now)),
+            _logs.For<DataRetentionService>());
+        return await service.ExpireLogsAsync(enforce);
+    }
+
+    private async Task SeedLogEntriesAsync(params DateTime[] timestamps)
+    {
+        await using var db = CreateDbContext();
+        foreach (var timestamp in timestamps)
+        {
+            db.LogEntries.Add(new LogEntry
+            {
+                CaptureId = Guid.NewGuid(),
+                TimestampUtc = timestamp,
+                Source = LogSource.Api,
+                InstanceId = "seed0001",
+                ProcessStartedUtc = timestamp,
+                Level = LogEntryLevel.Information,
+                Category = "Test",
+                Message = "seed",
+            });
+        }
+
+        await db.SaveChangesAsync();
+    }
+
+    private async Task SeedLogCaptureStatusAsync(string instanceId, DateTime lastFlushUtc)
+    {
+        await using var db = CreateDbContext();
+        db.LogCaptureStatuses.Add(new LogCaptureStatus
+        {
+            Source = LogSource.Api,
+            InstanceId = instanceId,
+            ProcessStartedUtc = lastFlushUtc,
+            LastFlushUtc = lastFlushUtc,
+            CaptureEnabled = true,
+            LastIncompleteAtUtc = lastFlushUtc,
+        });
+        await db.SaveChangesAsync();
     }
 
     private async Task InstallFailureTriggerAsync(string table, string triggerName, string id)

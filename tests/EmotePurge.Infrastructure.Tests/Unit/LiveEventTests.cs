@@ -73,6 +73,14 @@ public class LiveEventTests
     }
 
     [Fact]
+    public void LogsAppended_IsAdminType_NotChannelType()
+    {
+        Assert.Equal("logs.appended", LiveEvents.LogsAppended);
+        Assert.Contains(LiveEvents.LogsAppended, LiveEvents.AdminTypes);
+        Assert.DoesNotContain(LiveEvents.LogsAppended, LiveEvents.ChannelTypes);
+    }
+
+    [Fact]
     public void TypeSets_CoverTheEventsTheirStreamsAnnounce()
     {
         Assert.Contains(LiveEvents.WorkerHealth, LiveEvents.AdminTypes);
