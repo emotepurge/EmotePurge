@@ -203,6 +203,23 @@ function utcMinute(instant: string): string {
 }
 
 /**
+ * The bounds of an absolute range as its label shows them, in UTC: to the minute, or to the second
+ * when the range is shorter than a minute or a bound falls between two minutes — a narrowed 10 s
+ * bucket would otherwise read "11:59 bis 11:59".
+ */
+export function absoluteRangeLabelBounds(from: string, to: string): { from: string; to: string } {
+  const fromMs = Date.parse(from);
+  const toMs = Date.parse(to);
+  const byMinute = toMs - fromMs >= 60_000 && fromMs % 60_000 === 0 && toMs % 60_000 === 0;
+  const format = (ms: number) =>
+    new Date(ms)
+      .toISOString()
+      .slice(0, byMinute ? 16 : 19)
+      .replace('T', ' ');
+  return { from: format(fromMs), to: format(toMs) };
+}
+
+/**
  * `/admin/logs`: filter bar, time histogram, facets and the log list, with every state the spec names
  * (§9.7). The URL (`?q=&range=` or `?q=&from=&to=`) is the source of truth for query and range; the
  * filter applies on Enter or "Anwenden", facet and bar clicks apply at once.
@@ -530,10 +547,11 @@ function utcMinute(instant: string): string {
             } @else {
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <p class="text-xs text-fg-muted tabular-nums">
-                  {{
-                    'admin.logs.list.loaded'
-                      | transloco: { shown: rows.length, total: summary()?.total ?? rows.length }
-                  }}
+                  @if (loadedTotal(); as total) {
+                    {{ 'admin.logs.list.loaded' | transloco: { shown: rows.length, total: total } }}
+                  } @else {
+                    {{ 'admin.logs.list.loadedCount' | transloco: { shown: rows.length } }}
+                  }
                 </p>
                 <div class="flex items-center gap-2">
                   @if (copyFeedback(); as feedback) {
@@ -655,10 +673,10 @@ export class AdminLogsPage {
       return null;
     }
     this.languageService.lang();
-    return this.transloco.translate('admin.logs.range.absolute', {
-      from: utcMinute(parsed.from),
-      to: utcMinute(parsed.to),
-    });
+    return this.transloco.translate(
+      'admin.logs.range.absolute',
+      absoluteRangeLabelBounds(parsed.from, parsed.to),
+    );
   });
 
   /** The relative preset a bucket click narrowed away from, for "Zurück zu 24 h". */
@@ -785,6 +803,20 @@ export class AdminLogsPage {
   private lastSummaryAtMs = Number.NEGATIVE_INFINITY;
   /** Rows went into the list since the summary last loaded, so its counts are behind. */
   private summaryBehind = false;
+  /** The summary answers the current request (it may be the previous one's, kept as stale). */
+  private readonly summaryCurrent = signal(false);
+  /** Live rows inserted since the summary was counted. */
+  private readonly insertedSinceSummary = signal(0);
+
+  /** "n von total": the summary's total plus what live mode inserted since; `null` when the summary
+   *  shown belongs to an earlier request and its total would describe a different filter. */
+  protected readonly loadedTotal = computed(() => {
+    const summary = this.summary();
+    if (!summary || !this.summaryCurrent()) {
+      return null;
+    }
+    return Math.max(this.entries()?.length ?? 0, summary.total + this.insertedSinceSummary());
+  });
 
   protected readonly clientFilterError = computed<LogFilterApiError | null>(() => {
     const q = this.appliedQ();
@@ -856,7 +888,7 @@ export class AdminLogsPage {
         this.transloco.translate(`admin.logs.states.drops.${reason}`, { count: dropped[reason] }),
       )
       .join(', ');
-    return this.transloco.translate('admin.logs.states.dropsLead', {
+    return this.transloco.translate(pluralKey(dropped.total, 'admin.logs.states.dropsLead'), {
       count: dropped.total,
       reasons,
     });
@@ -1272,6 +1304,7 @@ export class AdminLogsPage {
     this.listLoading.set(true);
     this.summaryLoading.set(true);
     this.summarySettled = false;
+    this.summaryCurrent.set(false);
 
     this.pageSub = this.service.getPage(request.q, request.range).subscribe({
       next: (page) => {
@@ -1286,6 +1319,8 @@ export class AdminLogsPage {
         this.summary.set(summary);
         this.lastSummaryAtMs = Date.now();
         this.summaryBehind = false;
+        this.summaryCurrent.set(true);
+        this.insertedSinceSummary.set(0);
         this.summarySettled = true;
         this.applyPendingPage();
       },
@@ -1420,6 +1455,7 @@ export class AdminLogsPage {
     this.entries.update((current) => mergeLogEntries(current ?? [], rows));
     this.held.set([]);
     this.summaryBehind = true;
+    this.insertedSinceSummary.update((n) => n + rows.length);
     this.announce(
       this.transloco.translate(pluralKey(rows.length, 'admin.logs.live.inserted'), {
         count: rows.length,
@@ -1454,6 +1490,7 @@ export class AdminLogsPage {
         this.summary.set(summary);
         this.lastSummaryAtMs = Date.now();
         this.summaryBehind = false;
+        this.insertedSinceSummary.set(0);
       }),
     );
   }

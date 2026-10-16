@@ -26,7 +26,13 @@ import {
 } from '../../core/admin/admin-logs.model';
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { TimeHistogram } from '../../shared/charts/time-histogram';
-import { AdminLogsPage, LOG_LIST_LIMIT, isLogListAtTop, parseLogRange } from './admin-logs-page';
+import {
+  AdminLogsPage,
+  LOG_LIST_LIMIT,
+  absoluteRangeLabelBounds,
+  isLogListAtTop,
+  parseLogRange,
+} from './admin-logs-page';
 
 function entry(id: number): LogEntry {
   return {
@@ -248,6 +254,32 @@ describe('AdminLogsPage', () => {
     Array.from(root().querySelectorAll('button')).find(
       (b) => b.getAttribute('aria-label') === name || b.textContent?.trim() === name,
     )!;
+
+  describe('absoluteRangeLabelBounds', () => {
+    it('labels a range of whole minutes to the minute', () => {
+      expect(absoluteRangeLabelBounds('2026-10-13T12:15:00Z', '2026-10-13T12:30:00Z')).toEqual({
+        from: '2026-10-13 12:15',
+        to: '2026-10-13 12:30',
+      });
+    });
+
+    it('labels a bucket shorter than a minute, or off the minute, to the second', () => {
+      expect(absoluteRangeLabelBounds('2026-10-14T11:59:20Z', '2026-10-14T11:59:30Z')).toEqual({
+        from: '2026-10-14 11:59:20',
+        to: '2026-10-14 11:59:30',
+      });
+      expect(absoluteRangeLabelBounds('2026-10-14T11:58:30Z', '2026-10-14T12:00:00Z')).toEqual({
+        from: '2026-10-14 11:58:30',
+        to: '2026-10-14 12:00:00',
+      });
+    });
+
+    it('states the bounds in UTC whatever offset the link carries', () => {
+      expect(
+        absoluteRangeLabelBounds('2026-10-14T14:00:00+02:00', '2026-10-14T15:00:00+02:00'),
+      ).toEqual({ from: '2026-10-14 12:00', to: '2026-10-14 13:00' });
+    });
+  });
 
   describe('parseLogRange', () => {
     it('reads the default, a preset and an absolute pair', () => {
@@ -590,6 +622,40 @@ describe('AdminLogsPage', () => {
     expect(text).toContain('Write not confirmed: 3');
     expect(text).toContain('Rejected: 2');
     expect(text).not.toContain('Daily budget');
+  });
+
+  it('words a single dropped entry in the singular', async () => {
+    await openAndLoad('/admin/logs', {
+      summary: summary({
+        dropped: {
+          total: 1,
+          queueFull: 1,
+          budget: 0,
+          writeUnconfirmed: 0,
+          captureFailed: 0,
+          reentrant: 0,
+          rejected: 0,
+        },
+      }),
+    });
+
+    expect(root().textContent).toContain('1 entry was not, or possibly not, stored');
+  });
+
+  it('counts "n of total" against the current summary only', async () => {
+    await openAndLoad('/admin/logs');
+    expect(root().textContent).toContain('4 of 4 entries loaded');
+
+    buttonNamed('7 days').click();
+    await settle();
+    statusRequest().flush(healthyStatus());
+    listRequest().flush(page(3, 3, null));
+    summaryRequest().flush({}, { status: 503, statusText: 'Busy' });
+    await settle();
+
+    // The histogram above still shows the earlier answer; its total belongs to another range.
+    expect(root().textContent).toContain('3 entries loaded');
+    expect(root().textContent).not.toContain('of 4 entries');
   });
 
   it('shows a banner per source that is not healthy, and the overdue retention', async () => {
@@ -984,6 +1050,8 @@ describe('AdminLogsPage', () => {
 
       expect(rowIds()).toEqual([11, 4, 3, 2, 1, 10]);
       expect(announcement()).toBe('2 new entries');
+      // The total follows the inserted rows instead of waiting up to 30 s for the next summary.
+      expect(root().textContent).toContain('6 of 6 entries loaded');
       expect(slotButton().getAttribute('aria-hidden')).toBe('true');
     });
 

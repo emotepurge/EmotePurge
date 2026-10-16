@@ -911,6 +911,7 @@
       "list": {
         "label": "Log entries",
         "loaded": "{{ shown }} of {{ total }} entries loaded",
+        "loadedCount": "{{ shown }} entries loaded",
         "loadingMore": "Loading more entries …",
         "end": "End of the time range reached",
         "limit": "{{ count }} entries loaded — narrow the time range or the filter",
@@ -952,7 +953,10 @@
         "stale": "The last successful answer is shown; it is out of date.",
         "retry": "Try again",
         "reload": "Reload",
-        "dropsLead": "In this time range {{ count }} entries were not, or possibly not, stored ({{ reasons }})",
+        "dropsLead": {
+          "one": "In this time range {{ count }} entry was not, or possibly not, stored ({{ reasons }})",
+          "other": "In this time range {{ count }} entries were not, or possibly not, stored ({{ reasons }})"
+        },
         "dropsShow": "Show",
         "drops": {
           "queueFull": "Buffer full: {{ count }}",

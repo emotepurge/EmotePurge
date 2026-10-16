@@ -911,6 +911,7 @@
       "list": {
         "label": "Log-Einträge",
         "loaded": "{{ shown }} von {{ total }} Einträgen geladen",
+        "loadedCount": "{{ shown }} Einträge geladen",
         "loadingMore": "Lädt weitere Einträge …",
         "end": "Ende des Zeitraums erreicht",
         "limit": "{{ count }} Einträge geladen — Zeitraum oder Filter eingrenzen",
@@ -952,7 +953,10 @@
         "stale": "Angezeigt wird die letzte erfolgreiche Antwort; sie ist veraltet.",
         "retry": "Erneut versuchen",
         "reload": "Neu laden",
-        "dropsLead": "Im Zeitraum wurden {{ count }} Einträge nicht oder möglicherweise nicht gespeichert ({{ reasons }})",
+        "dropsLead": {
+          "one": "Im Zeitraum wurde {{ count }} Eintrag nicht oder möglicherweise nicht gespeichert ({{ reasons }})",
+          "other": "Im Zeitraum wurden {{ count }} Einträge nicht oder möglicherweise nicht gespeichert ({{ reasons }})"
+        },
         "dropsShow": "Anzeigen",
         "drops": {
           "queueFull": "Puffer voll: {{ count }}",
@@ -977,12 +981,12 @@
         "summary": "{{ total }} Einträge in {{ buckets }} Intervallen, höchstens {{ max }} je Intervall, {{ warnBuckets }} Intervalle mit Warnungen, {{ errorBuckets }} mit Fehlern.",
         "partial": "Das letzte Intervall ist noch unvollständig und kann sich ändern.",
         "partialShort": "unvollständig",
-        "reading": "Information {{ info }}, Warnung {{ warn }}, Fehler {{ error }}",
+        "reading": "Information {{ info }}, Warning {{ warn }}, Error {{ error }}",
         "processStart": "{{ source }} gestartet {{ time }}",
         "level": {
           "info": "Information",
-          "warn": "Warnung",
-          "error": "Fehler / Kritisch"
+          "warn": "Warning",
+          "error": "Error / Critical"
         }
       },
       "savedFilters": {

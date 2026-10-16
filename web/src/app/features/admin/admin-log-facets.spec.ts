@@ -3,9 +3,10 @@ import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { firstValueFrom } from 'rxjs';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import de from '../../../../public/i18n/de.json';
 import en from '../../../../public/i18n/en.json';
 import { LogCategoryFacetValue, LogSummary } from '../../core/admin/admin-logs.model';
-import { AdminLogFacets, categoryFilterValue } from './admin-log-facets';
+import { AdminLogFacets, LOG_LEVEL_NAMES, categoryFilterValue } from './admin-log-facets';
 
 function facet(value: string, count = 1): LogCategoryFacetValue {
   return { value, short: value.slice(value.lastIndexOf('.') + 1), count };
@@ -117,5 +118,17 @@ describe('AdminLogFacets', () => {
     const root = render(summaryWith({ category: [facet('A.B')], categoryOther: 12 }));
 
     expect(root.textContent).toContain('Other categories: 12');
+  });
+});
+
+describe('level names', () => {
+  it.each([
+    ['de', de],
+    ['en', en],
+  ])('are the same in the histogram legend as in the facets and the list (%s)', (_, locale) => {
+    const legend = locale.admin.logs.histogram.level;
+    expect(legend.info).toBe(LOG_LEVEL_NAMES.info);
+    expect(legend.warn).toBe(LOG_LEVEL_NAMES.warn);
+    expect(legend.error).toBe(`${LOG_LEVEL_NAMES.error} / ${LOG_LEVEL_NAMES.crit}`);
   });
 });
