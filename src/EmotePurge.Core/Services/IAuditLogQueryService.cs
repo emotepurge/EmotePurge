@@ -101,6 +101,9 @@ public record AuditLogDetail(
         public const string ImportedFromTag = "importedFromTag";
         // backfill.request: Count only (the requested months); the chosen set rides on the target fields.
         public const string BackfillMonths = "backfillMonths";
+        // backfill.removeImported (#384): Count only (the coverage days removed). Days, not rows: the
+        // unit the manager saw in the confirmation and the one the coverage counts.
+        public const string BackfillRemovedDays = "backfillRemovedDays";
     }
 }
 

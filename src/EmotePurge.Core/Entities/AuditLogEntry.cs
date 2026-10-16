@@ -42,9 +42,12 @@ public static class AuditActions
     public const string TagRemoved = "tag.removed";
 
     // Chat-log backfill (#346). The request carries the chosen set as the target and the month count
-    // as its only detail; the cancel carries nothing. Completion is deliberately not audited.
+    // as its only detail; the cancel carries nothing. Completion is deliberately not audited. The
+    // removal of a channel's imported data (#384) carries the removed coverage days as its only
+    // detail, no target: it covers every set and every run of the channel.
     public const string BackfillRequest = "backfill.request";
     public const string BackfillCancel = "backfill.cancel";
+    public const string BackfillRemoveImported = "backfill.removeImported";
 }
 
 /// <summary>

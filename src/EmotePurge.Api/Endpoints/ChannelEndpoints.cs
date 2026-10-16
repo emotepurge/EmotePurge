@@ -11,6 +11,12 @@ namespace EmotePurge.Api.Endpoints;
 
 public static class ChannelEndpoints
 {
+    // The coverage lies in the six months before the counting start (fewer than 190 days), so 400
+    // intervals is far above anything a client has seen; the text bound keeps the comparison from holding
+    // arbitrarily large strings.
+    private const int MaxExpectedCoverageIntervals = 400;
+    private const int MaxExpectedCoverageTextLength = 200;
+
     public static void MapChannelEndpoints(this WebApplication app)
     {
         // The validation filter comes first so a malformed name is a 400 with invalid_channel_name
@@ -402,6 +408,47 @@ public static class ChannelEndpoints
         .AddEndpointFilter<ChannelManagementAuthorizationFilter>()
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
+        // Removal of the imported data (#384): POST because the confirmed coverage travels in the body
+        // (D15) and a DELETE body does not survive every intermediary. Same filter and policy as the
+        // cancel; the flag, the actor and the body are checked in that order, the rest is the service's.
+        group.MapPost("/{channelName}/backfill/imported/remove", async (
+            string channelName,
+            RemoveImportedBackfillRequest? request,
+            HttpContext httpContext,
+            ChatLogBackfillOptions options,
+            IChatLogImportRemovalService removalService,
+            CancellationToken ct) =>
+        {
+            if (!options.Enabled)
+            {
+                return BackfillDisabled();
+            }
+
+            var actor = httpContext.User.TryBuildAuditActor();
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            if (!TryReadExpectedCoverage(request, out var expectedCoverage))
+            {
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidRequestBody });
+            }
+
+            var result = await removalService.RemoveImportedAsync(channelName, expectedCoverage, actor, ct);
+            return result.Status switch
+            {
+                ChatLogImportRemovalStatus.Removed or ChatLogImportRemovalStatus.NothingToRemove =>
+                    Results.Ok(new { removedUsageRows = result.RemovedUsageRows, removedCoverageDays = result.RemovedCoverageDays }),
+                ChatLogImportRemovalStatus.RunActive => Results.Conflict(new { errorCode = ApiErrorCodes.BackfillRemoveRunActive }),
+                ChatLogImportRemovalStatus.ScopeChanged => Results.Conflict(new { errorCode = ApiErrorCodes.BackfillRemoveScopeChanged }),
+                ChatLogImportRemovalStatus.NotFound => Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound }),
+                _ => throw new UnreachableException($"Unexpected {nameof(ChatLogImportRemovalStatus)} value: {result.Status}."),
+            };
+        })
+        .AddEndpointFilter<ChannelManagementAuthorizationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
         group.MapDelete("/{channelName}", async (
             string channelName,
             HttpContext httpContext,
@@ -532,6 +579,41 @@ public static class ChannelEndpoints
     // run row, so a worker that starts after midnight does not shift the window.
     private static DateOnly TodayUtc() => DateOnly.FromDateTime(DateTime.UtcNow);
 
+    /// <summary>
+    /// Reads the confirmed coverage of a removal request. Every shape the service could not interpret is
+    /// refused here: a missing or null list, more than <see cref="MaxExpectedCoverageIntervals"/> entries,
+    /// a null entry, a missing date, an empty or oversized set id or host, an empty interval. The set id
+    /// and the host get no format check on purpose: a wrong value can only end in <c>ScopeChanged</c>,
+    /// never in a deletion.
+    /// </summary>
+    private static bool TryReadExpectedCoverage(
+        RemoveImportedBackfillRequest? request,
+        out IReadOnlyList<ExpectedCoverageInterval> expectedCoverage)
+    {
+        expectedCoverage = [];
+        if (request?.ExpectedCoverage is not { Count: <= MaxExpectedCoverageIntervals } items)
+        {
+            return false;
+        }
+
+        var intervals = new List<ExpectedCoverageInterval>(items.Count);
+        foreach (var item in items)
+        {
+            if (item is not { From: { } from, To: { } to, EmoteSetId: { } setId, ArchiveHost: { } host }
+                || from >= to
+                || string.IsNullOrWhiteSpace(setId) || setId.Length > MaxExpectedCoverageTextLength
+                || string.IsNullOrWhiteSpace(host) || host.Length > MaxExpectedCoverageTextLength)
+            {
+                return false;
+            }
+
+            intervals.Add(new ExpectedCoverageInterval(from, to, setId, host));
+        }
+
+        expectedCoverage = intervals;
+        return true;
+    }
+
     private static IResult BackfillDisabled() =>
         Results.NotFound(new { errorCode = ApiErrorCodes.BackfillDisabled });
 
@@ -650,3 +732,13 @@ internal sealed record ChannelPermissionsDto(
 /// can translate.
 /// </summary>
 internal sealed record StartBackfillRequest(string? EmoteSetId, int? Months);
+
+/// <summary>
+/// Body of <c>POST /api/channels/{channelName}/backfill/imported/remove</c> (#384): the coverage the
+/// confirmation showed, as the status read listed it (<c>to</c> exclusive). Every member is nullable so
+/// that a missing one is a 400 <c>invalid_request_body</c> with a translatable code, not a binding failure.
+/// </summary>
+internal sealed record RemoveImportedBackfillRequest(List<ExpectedCoverageRequestItem?>? ExpectedCoverage);
+
+/// <summary>One interval of <see cref="RemoveImportedBackfillRequest"/>.</summary>
+internal sealed record ExpectedCoverageRequestItem(DateOnly? From, DateOnly? To, string? EmoteSetId, string? ArchiveHost);

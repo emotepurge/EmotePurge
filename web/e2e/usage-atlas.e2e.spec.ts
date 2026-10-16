@@ -1152,6 +1152,29 @@ test.describe('set view (#200, K4)', () => {
     await expect(caption).not.toContainText('Chat-Archiv');
   });
 
+  test('the import caption disappears without a reload once the imported data is removed (#384)', async ({
+    page,
+  }) => {
+    await mockSetViewChannel(page);
+    await mockUsageTotals(page, CHANNEL, []);
+    await mockImportCoverage(page, CHANNEL, {
+      [ACTIVE_SET_ID]: { importedFrom: '2026-04-08', importedTo: '2026-06-12' },
+    });
+
+    await gotoSetView(page);
+    await expect(page.getByRole('link', { name: 'logs.cyex.app' })).toBeVisible();
+
+    // The removal's commit leaves nothing imported; the server announces it as backfill.progress.
+    // Registered later, so it wins over the earlier mock.
+    await mockImportCoverage(page, CHANNEL);
+    await emitLive(page, { type: 'backfill.progress', channel: CHANNEL });
+
+    await expect(page.getByRole('link', { name: 'logs.cyex.app' })).toHaveCount(0);
+    const caption = page.getByText(/Wir zählen für diesen Channel seit dem .*\.$/);
+    await expect(caption).toBeVisible();
+    await expect(caption).not.toContainText('Chat-Archiv');
+  });
+
   test('an emoteSetId in the URL that the set list does not confirm — unknown, or a hidden kind — falls back to the active set and is removed from the URL (spec 8.1, §35)', async ({
     page,
   }) => {

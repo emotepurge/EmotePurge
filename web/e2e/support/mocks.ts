@@ -2969,3 +2969,36 @@ export async function mockBackfillCancel(
   });
   return { requests: () => requests };
 }
+
+/**
+ * POST /api/channels/{channelName}/backfill/imported/remove (#384). Records the JSON bodies the UI
+ * really sent. A `{ status, errorCode }` response answers with that status and `{ errorCode }`;
+ * `'removed'` answers 200 with the given counts (default: 31 coverage days, 1200 usage rows).
+ */
+export async function mockBackfillRemove(
+  page: Page,
+  channelName: string,
+  response:
+    | { status: number; errorCode: string }
+    | { removedUsageRows: number; removedCoverageDays: number }
+    | 'removed' = 'removed',
+  onRemoved?: () => void,
+): Promise<{ bodies: () => unknown[] }> {
+  const bodies: unknown[] = [];
+  await page.route(`**/api/channels/${channelName}/backfill/imported/remove`, (route) => {
+    if (route.request().method() !== 'POST') {
+      return route.fallback();
+    }
+    bodies.push(route.request().postDataJSON());
+    if (typeof response !== 'string' && 'errorCode' in response) {
+      return fulfillJson(route, response.status, { errorCode: response.errorCode });
+    }
+    onRemoved?.();
+    return fulfillJson(
+      route,
+      200,
+      response === 'removed' ? { removedUsageRows: 1200, removedCoverageDays: 31 } : response,
+    );
+  });
+  return { bodies: () => bodies };
+}

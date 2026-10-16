@@ -32,6 +32,7 @@ export type AuditAction =
   | 'tag.removed'
   | 'backfill.request'
   | 'backfill.cancel'
+  | 'backfill.removeImported'
   | 'user.revokeSessions'
   | 'user.invalidateRoleCache'
   | 'user.delete';
@@ -47,7 +48,9 @@ export type AuditDetailKind =
   /** A tag play-in (T-C): count only — the server never sends the tag's name (E30). */
   | 'importedFromTag'
   /** A chat-log backfill request (#346): the number of months asked for; the set rides on the target fields. */
-  | 'backfillMonths';
+  | 'backfillMonths'
+  /** A removal of a channel's imported backfill data (#384): the number of coverage days removed. */
+  | 'backfillRemovedDays';
 
 /**
  * An action's target set (spec 2026-09-20), present on an `AuditLogDetail` whenever the row's
