@@ -133,6 +133,47 @@ describe('AdminLogList', () => {
     expect(fixture.componentInstance.hasExpanded()).toBe(false);
   });
 
+  it('stops counting an unfolded row once it has left the list, and forgets it', () => {
+    const root = render([entry(8), entry(7)]);
+    rowButton(root, 1).click();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.hasExpanded()).toBe(true);
+
+    // A new filter's answer without row 7: nothing visible is unfolded any more.
+    fixture.componentRef.setInput('entries', [entry(8)]);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.hasExpanded()).toBe(false);
+
+    // Coming back later, the row is folded like any other.
+    fixture.componentRef.setInput('entries', [entry(8), entry(7)]);
+    fixture.detectChanges();
+    expect(rowButton(root, 1).getAttribute('aria-expanded')).toBe('false');
+    expect(fixture.componentInstance.hasExpanded()).toBe(false);
+  });
+
+  it('asks again for an exception whose first load failed when the row is reopened', () => {
+    const root = render([entry(9, { hasException: true })]);
+    rowButton(root).click();
+    fixture.detectChanges();
+    httpMock.expectOne('/api/admin/logs/9').flush(null, { status: 503, statusText: 'Busy' });
+    fixture.detectChanges();
+    expect(root.textContent).toContain('The exception could not be loaded.');
+
+    rowButton(root).click();
+    fixture.detectChanges();
+    rowButton(root).click();
+    fixture.detectChanges();
+
+    httpMock.expectOne('/api/admin/logs/9').flush({
+      ...entry(9, { hasException: true }),
+      exception: 'System.TimeoutException: late',
+      processStartedUtc: '2026-10-14T11:00:00Z',
+      uptimeSeconds: 60,
+    } satisfies LogEntryDetail);
+    fixture.detectChanges();
+    expect(root.querySelector('pre')?.textContent).toContain('System.TimeoutException');
+  });
+
   it('asks for no exception when a row without one is opened', () => {
     const root = render([entry(7)]);
     rowButton(root).click();

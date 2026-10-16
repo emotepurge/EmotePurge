@@ -1,4 +1,13 @@
-import { Component, DestroyRef, computed, inject, input, output, signal } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  computed,
+  inject,
+  input,
+  linkedSignal,
+  output,
+  signal,
+} from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslocoPipe } from '@jsverse/transloco';
 
@@ -71,6 +80,18 @@ export function formatUptime(seconds: number): string {
 
 function propertyText(value: LogPropertyValue): string {
   return typeof value === 'string' ? value : JSON.stringify(value);
+}
+
+/** Keeps only the keys of rows still in `entries`; returns `current` itself when nothing went. */
+function keepPresent<V>(
+  current: ReadonlyMap<number, V>,
+  entries: readonly LogEntry[],
+): ReadonlyMap<number, V> {
+  const present = new Set(entries.map((entry) => entry.id));
+  if ([...current.keys()].every((id) => present.has(id))) {
+    return current;
+  }
+  return new Map([...current.entries()].filter(([id]) => present.has(id)));
 }
 
 interface PropertyRow {
@@ -305,10 +326,20 @@ export class AdminLogList {
   /** A complete filter term (`key:value` or `-key:value`) the reader asked to append. */
   readonly termAdded = output<string>();
 
-  protected readonly details = signal<ReadonlyMap<number, DetailState>>(new Map());
+  /** Row-local state follows the rows actually present: a row that a new filter, an exclusion or a
+   *  reload took out of the list is forgotten, so it can neither hold the live mode back nor come back
+   *  unfolded later. */
+  protected readonly details = linkedSignal<readonly LogEntry[], ReadonlyMap<number, DetailState>>({
+    source: () => this.entries(),
+    computation: (entries, previous) => keepPresent(previous?.value ?? new Map(), entries),
+  });
   protected readonly copiedId = signal<number | null>(null);
 
-  private readonly open = signal<ReadonlySet<number>>(new Set());
+  /** The unfolded rows (the value is unused; a map so both row-local states prune alike). */
+  private readonly open = linkedSignal<readonly LogEntry[], ReadonlyMap<number, true>>({
+    source: () => this.entries(),
+    computation: (entries, previous) => keepPresent(previous?.value ?? new Map(), entries),
+  });
   private copiedTimer?: ReturnType<typeof setTimeout>;
 
   /** True while any row is unfolded — the live mode must not insert rows then (spec §9.4). */
@@ -388,11 +419,11 @@ export class AdminLogList {
   }
 
   protected toggle(entry: LogEntry): void {
-    const next = new Set(this.open());
+    const next = new Map(this.open());
     if (next.has(entry.id)) {
       next.delete(entry.id);
     } else {
-      next.add(entry.id);
+      next.set(entry.id, true);
       this.loadDetail(entry);
     }
     this.open.set(next);
@@ -410,7 +441,10 @@ export class AdminLogList {
 
   /** Only a row with an exception needs the single-entry call; the rest of the details are in the list. */
   private loadDetail(entry: LogEntry): void {
-    if (!entry.hasException || this.details().has(entry.id)) {
+    // A failed load is not final: one busy answer from the query gate must not hide the exception
+    // for good, so reopening the row asks again.
+    const status = this.details().get(entry.id)?.status;
+    if (!entry.hasException || status === 'loading' || status === 'loaded') {
       return;
     }
     this.setDetail(entry.id, { status: 'loading' });

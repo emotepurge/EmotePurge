@@ -938,6 +938,35 @@ describe('AdminLogsPage', () => {
       expect(slotButton().getAttribute('aria-hidden')).toBe('true');
     });
 
+    it('inserts at the top again once an unfolded row was filtered out of the list', async () => {
+      await openAndLoad('/admin/logs');
+      root().querySelector<HTMLButtonElement>('[data-log-id="4"] button')!.click();
+      await settle();
+
+      // The reader excludes what the unfolded row showed: the new answer no longer has row 4.
+      input().value = '-channel:noisy';
+      input().dispatchEvent(new Event('input'));
+      root().querySelector('form')!.dispatchEvent(new Event('submit'));
+      await settle();
+      statusRequest().flush(healthyStatus());
+      const remaining = page(3, 3, null);
+      listRequest((r) => r.params.get('q') === '-channel:noisy').flush(remaining);
+      summaryRequest().flush(summary());
+      await settle();
+      expect(rowIds()).toEqual([3, 2, 1]);
+
+      emitLive('logs.appended');
+      await settle();
+      const fresh = at(5, '2026-10-14T12:00:01Z');
+      keysRequest().flush(keyPage([fresh, ...remaining.entries]));
+      idsRequest().flush(idsPage([fresh]));
+      await settle();
+
+      expect(rowIds()).toEqual([5, 3, 2, 1]);
+      expect(announcement()).toBe('1 new entry');
+      expect(slotButton().getAttribute('aria-hidden')).toBe('true');
+    });
+
     it('holds new entries once the first row has scrolled under the sticky filter bar', async () => {
       await openAndLoad('/admin/logs');
       const first = root().querySelector('[data-log-id]')!;
@@ -1155,6 +1184,7 @@ describe('AdminLogsPage', () => {
       document.dispatchEvent(new Event('visibilitychange'));
       await settle();
       await settle();
+      statusRequest().flush(healthyStatus());
       keysRequest().flush(keyPage(loaded()));
     });
 
@@ -1173,14 +1203,71 @@ describe('AdminLogsPage', () => {
       document.dispatchEvent(new Event('visibilitychange'));
       harness.detectChanges();
       await vi.advanceTimersByTimeAsync(0);
+      statusRequest().flush(healthyStatus());
       keysRequest().flush(keyPage(loaded()));
 
       await vi.advanceTimersByTimeAsync(29_000);
       noKeysRequest();
       await vi.advanceTimersByTimeAsync(1_000);
+      statusRequest().flush(healthyStatus());
       keysRequest().flush(keyPage(loaded()));
       await vi.advanceTimersByTimeAsync(30_000);
+      statusRequest().flush(healthyStatus());
       keysRequest().flush(keyPage(loaded()));
+    });
+
+    it('refreshes the capture status on the 30 s tick and stops calling a stalled source live', async () => {
+      let state: DocumentVisibilityState = 'visible';
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+      await openAndLoad('/admin/logs');
+      state = 'hidden';
+      document.dispatchEvent(new Event('visibilitychange'));
+      await settle();
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      state = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+      harness.detectChanges();
+      await vi.advanceTimersByTimeAsync(0);
+      statusRequest().flush(healthyStatus());
+      keysRequest().flush(keyPage(loaded()));
+      FakeEventSource.instances.forEach((source) => source.onopen?.());
+      await vi.advanceTimersByTimeAsync(5_000);
+      keysRequest().flush(keyPage(loaded()));
+      harness.detectChanges();
+      expect(marker()).toBe('Live');
+      expect(root().textContent).not.toContain('has written nothing since');
+
+      // The worker stops writing; the next tick asks for the status once more — no faster timer.
+      await vi.advanceTimersByTimeAsync(24_000);
+      httpMock.expectNone('/api/admin/logs/status');
+      await vi.advanceTimersByTimeAsync(1_000);
+      statusRequest().flush(
+        healthyStatus({
+          sources: [
+            {
+              source: 'api',
+              state: 'healthy',
+              instanceId: 'a1b2c3d4',
+              startedUtc: '2026-10-14T08:00:00Z',
+              lastFlushUtc: '2026-10-14T11:59:30Z',
+            },
+            {
+              source: 'worker',
+              state: 'stale',
+              instanceId: 'a1b2c3d4',
+              startedUtc: '2026-10-14T08:00:00Z',
+              lastFlushUtc: '2026-10-14T11:50:12Z',
+            },
+          ],
+        }),
+      );
+      keysRequest().flush(keyPage(loaded()));
+      harness.detectChanges();
+
+      expect(root().textContent).toContain('capture of worker has written nothing since 11:50 UTC');
+      expect(marker()).toBe('Capture incomplete');
     });
 
     it('refreshes the summary at most once per 30 s, and only after something was inserted', async () => {

@@ -890,6 +890,7 @@
         "paused": "Live paused",
         "reload": "Reload needed",
         "absolute": "No live updates for a fixed range",
+        "capture": "Capture incomplete",
         "pausedNotice": "Live paused after an error",
         "tooMany": "Too many new entries",
         "reloadList": "Reload list",

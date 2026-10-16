@@ -101,8 +101,9 @@ const SUMMARY_MIN_INTERVAL_MS = 30_000;
 /** How long an inserted row stays marked (spec §9.4). */
 const HIGHLIGHT_MS = 2000;
 
-/** What the live status marker in the filter bar says: the stream's own state, or why live is off. */
-type LiveState = LiveStatus | 'paused' | 'reload' | 'absolute';
+/** What the live status marker in the filter bar says: the stream's own state, why live is off, or
+ *  that a source has stopped capturing — then "Live" would claim a completeness the list lacks. */
+type LiveState = LiveStatus | 'paused' | 'reload' | 'absolute' | 'capture';
 
 const LIVE_TONES: Record<LiveState, HealthTone> = {
   idle: 'idle',
@@ -112,6 +113,7 @@ const LIVE_TONES: Record<LiveState, HealthTone> = {
   paused: 'warning',
   reload: 'warning',
   absolute: 'idle',
+  capture: 'warning',
 };
 
 /**
@@ -691,7 +693,14 @@ export class AdminLogsPage {
       return 'paused';
     }
     // No reconcile runs while the hint asks for a reload, so the marker must not claim "Live".
-    return this.tooManyNew() ? 'reload' : this.liveUpdate.status();
+    if (this.tooManyNew()) {
+      return 'reload';
+    }
+    const stream = this.liveUpdate.status();
+    // The stream may be fine while a source writes nothing: its banner explains, the marker must
+    // not say "Live" over it (spec §9.7).
+    const capturing = this.status()?.sources.every((source) => source.state === 'healthy') ?? true;
+    return stream === 'open' && !capturing ? 'capture' : stream;
   });
   protected readonly liveTone = computed(() => LIVE_TONES[this.liveState()]);
   protected readonly liveLabel = computed(() => {
@@ -843,12 +852,17 @@ export class AdminLogsPage {
     // Reconcile triggers (spec §8.3). The 30 s tick runs whatever the stream does — the hint only makes
     // the reconcile sooner, it is never what makes the list correct. pollWhileVisible also ticks once
     // when the tab comes back; its very first tick is skipped because the page is loading anyway.
+    // The same tick refreshes the capture status, so an open page learns that a source stopped
+    // writing; `/logs/status` is cached 30 s on the server, so this tick is its natural pace.
     liveEvents(ADMIN_LIVE_URL, [LIVE_EVENT_TYPES.logsAppended]).subscribe(() =>
       this.requestReconcile(),
     );
     pollWhileVisible(LOG_RECONCILE_INTERVAL_MS, this.visible)
       .pipe(skip(this.visible() ? 1 : 0))
-      .subscribe(() => this.requestReconcile());
+      .subscribe(() => {
+        this.loadStatus();
+        this.requestReconcile();
+      });
     effect(() => {
       if (this.liveUpdate.status() === 'open') {
         untracked(() => this.requestReconcile());

@@ -890,6 +890,7 @@
         "paused": "Live pausiert",
         "reload": "Neu laden nötig",
         "absolute": "Kein Live bei festem Zeitraum",
+        "capture": "Erfassung unvollständig",
         "pausedNotice": "Live pausiert nach Fehler",
         "tooMany": "Zu viele neue Einträge",
         "reloadList": "Liste neu laden",
