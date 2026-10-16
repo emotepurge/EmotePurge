@@ -268,7 +268,7 @@ export function absoluteRangeLabelBounds(from: string, to: string): { from: stri
               #filterInput
               id="admin-log-filter"
               type="text"
-              class="app-input-sm w-full font-mono"
+              class="app-input-sm min-h-11 w-full font-mono lg:min-h-0"
               autocomplete="off"
               spellcheck="false"
               [value]="draft()"
@@ -401,17 +401,24 @@ export function absoluteRangeLabelBounds(from: string, to: string): { from: stri
       </div>
 
       @if (isDesktop()) {
-        <app-admin-log-filter-chips
-          [filters]="savedFilters() ?? []"
-          [currentQ]="appliedQ()"
-          [loadFailed]="savedFiltersFailed()"
-          (selected)="applyQuery({ q: $event.filter })"
-          (saveRequested)="saveCurrentFilter()"
-          (editRequested)="editSavedFilter($event)"
-          (overwriteRequested)="overwriteSavedFilter($event)"
-          (deleteRequested)="deleteSavedFilter($event)"
-          (retryRequested)="loadSavedFilters()"
-        />
+        <!-- The bar renders in one go once the list has answered (or failed): the chips sit before
+             "+ Filter speichern", so showing the button first would shove it sideways. The slot keeps
+             the bar's height meanwhile, so nothing below it moves (no layout jumps). -->
+        <div class="min-h-8.5">
+          @if (savedFilters() !== null || savedFiltersFailed()) {
+            <app-admin-log-filter-chips
+              [filters]="savedFilters() ?? []"
+              [currentQ]="appliedQ()"
+              [loadFailed]="savedFiltersFailed()"
+              (selected)="applyQuery({ q: $event.filter })"
+              (saveRequested)="saveCurrentFilter()"
+              (editRequested)="editSavedFilter($event)"
+              (overwriteRequested)="overwriteSavedFilter($event)"
+              (deleteRequested)="deleteSavedFilter($event)"
+              (retryRequested)="loadSavedFilters()"
+            />
+          }
+        </div>
       }
       @if (savedFilterError(); as key) {
         <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>

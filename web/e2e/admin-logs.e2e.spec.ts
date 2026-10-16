@@ -367,6 +367,38 @@ test.describe('admin log viewer on /admin/logs', () => {
     ).toBeVisible();
   });
 
+  test('the saved-filter bar lands in one go: nothing below it moves and the save button never shifts', async ({
+    page,
+  }) => {
+    await adminLogsPage(page);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    await page.route(
+      (url) => url.pathname === '/api/admin/log-filters',
+      async (route) => {
+        await gate;
+        await route.fallback();
+      },
+    );
+    await page.goto('/admin/logs');
+    await expect(rows(page)).toHaveCount(8);
+    const save = page.getByRole('button', { name: '+ Filter speichern' });
+    await expect(save).toHaveCount(0);
+    const listTop = (await page.locator('section[aria-busy]').boundingBox())!.y;
+
+    release();
+    await expect(save).toBeVisible();
+    const afterX = (await save.boundingBox())!.x;
+    expect(
+      Math.abs((await page.locator('section[aria-busy]').boundingBox())!.y - listTop),
+    ).toBeLessThanOrEqual(1);
+    // It is rendered together with the chips, so it sits after them from its first frame on.
+    const chip = page.getByRole('button', { name: 'Alle Fehler', exact: true });
+    expect((await chip.boundingBox())!.x).toBeLessThan(afterX);
+    await page.waitForTimeout(300);
+    expect((await save.boundingBox())!.x).toBe(afterX);
+  });
+
   test('"save" is locked with a reason while the filter is empty', async ({ page }) => {
     await adminLogsPage(page);
     await page.goto('/admin/logs');
@@ -411,6 +443,13 @@ test.describe('admin log viewer on a phone', () => {
   }) => {
     await adminLogsPage(page, { status: STALE_API_STATUS });
     await expectFirstLoadInPlace(page);
+  });
+
+  test('the filter field is a 44 px target', async ({ page }) => {
+    await adminLogsPage(page);
+    await page.goto('/admin/logs');
+    await expect(rows(page)).toHaveCount(8);
+    expect((await filterField(page).boundingBox())!.height).toBeGreaterThanOrEqual(44);
   });
 
   test('facets sit behind Filter, a row unfolds on a tap and the page does not scroll sideways', async ({
