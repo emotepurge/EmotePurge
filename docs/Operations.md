@@ -406,6 +406,24 @@ instead of "none".
 Neither `stale`, `disabled` nor `missing` is ever shown as "no errors". `/admin/logs` raises a banner per
 affected source and the monitoring row reports an incomplete count.
 
+### Deploys and the clean handover
+
+A container stop ends with the log capture writer's drain: it stores what is still buffered for at
+most 3.2 seconds, then writes a last heartbeat with `CleanShutdownAtUtc`. The next instance of the
+same source takes over the coverage of a clean predecessor that stopped at most 5 minutes before it
+started; without that heartbeat it starts its own coverage at its process start, and the monitoring
+row reads "at least n" or "incomplete" for the next 24 hours.
+
+Two things make sure an ordinary deploy gets there:
+
+- Open SSE streams (channel pages, the overview, the admin area) end as soon as the Api begins to stop,
+  instead of holding the server until the host's 30-second shutdown budget runs out. Browsers reconnect
+  as after any other close.
+- `api` has `stop_grace_period: 45s` and `worker` keeps `60s` in both compose files, so Docker waits
+  for the host's 30 seconds plus the writer's drain before it sends SIGKILL. **The stack definition in
+  Portainer must carry this line**; with Docker's default of 10 seconds a slow request can still cost
+  the clean heartbeat.
+
 ### Live updates
 
 New entries are announced by the admin SSE stream (`GET /api/admin/live`) as `logs.appended`: a hint
@@ -441,7 +459,9 @@ Each stage is a precondition of the next:
 3. Install and verify the current `scripts/backup-postgres.sh` on the host (see "Database backup and
    restore").
 4. Make the privacy policy name the log capture (see "Legal pages").
-5. Only then set `LOG_CAPTURE_ENABLED=true` and recreate the `api` and `worker` containers.
+5. Only then set `LOG_CAPTURE_ENABLED=true` and recreate the `api` and `worker` containers. Update
+   the stack from the current `docker-compose.prod.yml` first, so `api` carries its
+   `stop_grace_period` (see "Deploys and the clean handover").
 
 If stage 3 or 4 is missing, capture stays off.
 

@@ -28,7 +28,8 @@ namespace EmotePurge.Infrastructure.Logging;
 /// <item><b>Heartbeat and coverage:</b> a status row after every stored batch and at least every 60 s, carrying the
 /// in-memory coverage marker. The marker starts at the process start, or at the marker of a clean predecessor
 /// (A37); every failed batch, heartbeat or drop report raises it to now.</item>
-/// <item><b>Shutdown:</b> <see cref="StopAsync"/> drains the buffer for at most 3 s, then writes a last heartbeat with
+/// <item><b>Shutdown:</b> <see cref="StopAsync"/> drains the buffer for at most 3 s, on its own budget rather than what is
+/// left of the host's, then writes a last heartbeat with
 /// <c>CleanShutdownAtUtc</c> only if no Error was lost since the stop began, and names what was not stored once on the
 /// console. It returns within the budget even if Postgres hangs.</item>
 /// </list>
@@ -101,6 +102,13 @@ public sealed class LogCaptureWriter : BackgroundService
     /// Drains for at most <see cref="Timings.DrainBudget"/> and returns by then even if Postgres does not answer:
     /// database I/O is cancelled at the budget minus a reserve for the last heartbeat, and the wait for the loop
     /// is bounded on top, because a cancelled Npgsql command may itself wait for the server.
+    /// <para>
+    /// The host's token is deliberately not linked in. The host hands one shutdown budget to its hosted services
+    /// in turn, and the writer stops last so it can store everyone else's shutdown lines; a slow service ahead of
+    /// it would otherwise leave it an already-cancelled token and no drain at all, and no clean handover (A37).
+    /// The writer's own bound keeps the stop finite, so a stop may run past the host's budget by at most
+    /// <see cref="Timings.DrainBudget"/> plus a 200 ms grace; the container's stop grace period allows for that.
+    /// </para>
     /// </summary>
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
@@ -109,8 +117,7 @@ public sealed class LogCaptureWriter : BackgroundService
         _ioCts.CancelAfter(ioBudget > TimeSpan.Zero ? ioBudget : TimeSpan.Zero);
         _finalCts.CancelAfter(_timings.DrainBudget);
 
-        using var bound = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        bound.CancelAfter(_timings.DrainBudget + StopGrace);
+        using var bound = new CancellationTokenSource(_timings.DrainBudget + StopGrace);
         await base.StopAsync(bound.Token);
         ReportRemainder();
     }

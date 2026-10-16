@@ -371,6 +371,31 @@ public class LogCaptureWriterTests(PostgresFixture fixture) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Shutdown_HostBudgetAlreadySpent_StillDrains()
+    {
+        // The host's stop token is shared by every hosted service in turn. The writer stops last, so a slow
+        // service ahead of it can hand it a token that is already cancelled; the drain keeps its own budget.
+        await using var harness = new Harness(ConnectionString, Fast);
+        var logger = harness.Logger("Test.LateStop");
+        await harness.StartAsync();
+        await WaitForStatusAsync(harness.Identity, _ => true);
+        for (var i = 0; i < 200; i++)
+        {
+            logger.LogInformation("Late stop {Index}", i);
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        await harness.StopAsync(new CancellationToken(canceled: true));
+        stopwatch.Stop();
+
+        Assert.True(harness.Writer.ExecuteTask!.IsCompleted, "the stop returned before the drain finished");
+        Assert.True(stopwatch.Elapsed <= TimeSpan.FromSeconds(3.5), $"stop took {stopwatch.Elapsed}");
+        Assert.Equal(200, (await ReadEntriesAsync()).Count(r => r.Category == "Test.LateStop"));
+        var status = await ReadStatusAsync(harness.Identity);
+        Assert.NotNull(status!.CleanShutdownAtUtc);
+    }
+
+    [Fact]
     public async Task Shutdown_LostErrorInTheDrain_WritesNoCleanShutdown()
     {
         // The error is logged right before the stop; the writer's retry delay keeps its loss inside the drain.
@@ -1049,12 +1074,14 @@ internal sealed class Harness : IAsyncDisposable
         await Writer.StartAsync(CancellationToken.None);
     }
 
-    public async Task StopAsync()
+    public Task StopAsync() => StopAsync(CancellationToken.None);
+
+    public async Task StopAsync(CancellationToken hostToken)
     {
         if (_started && !_stopped)
         {
             _stopped = true;
-            await Writer.StopAsync(CancellationToken.None);
+            await Writer.StopAsync(hostToken);
         }
     }
 

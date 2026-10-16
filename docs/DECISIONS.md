@@ -10,6 +10,20 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-16 — Shutdown contract: SSE streams end on ApplicationStopping, the log writer drains on its own budget, the Api gets a 45 s stop grace (#383)
+
+**Betrifft:** `src/EmotePurge.Api/Endpoints/LiveEndpoints.cs` · `src/EmotePurge.Infrastructure/Logging/LogCaptureWriter.cs` · `docker-compose.yml` · `docker-compose.prod.yml` · `docs/Operations.md` ("Deploys and the clean handover") · `tests/EmotePurge.Api.Tests/LiveStreamShutdownTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Integration/LogCaptureWriterTests.cs`
+
+The log capture's coverage contract (spec §11, A37, AK 25) depends on the writer finishing its shutdown drain and writing `CleanShutdownAtUtc`; a successor adopts the predecessor's coverage only then. On an ordinary Api deploy that did not happen. `WebApplication` registers the server's hosted service last, so the server stops first, and Kestrel waits for open requests until the host's shutdown token fires (`ShutdownTimeout`, the .NET default of 30 s, not configured anywhere in this repo). An SSE stream never finishes on its own, and every open channel page or admin page holds one. Docker's default stop grace of 10 s then killed the process before the writer, which stops last, ever ran. Had Docker waited, the writer would have received the shared host token already cancelled and abandoned the drain anyway. Either way the monitoring row read "incomplete" for 24 h after every Api deploy, the false alarm A37 exists to prevent.
+
+Three rules now hold:
+
+1. **Every SSE stream ends on `IHostApplicationLifetime.ApplicationStopping`.** `LiveEndpoints.OpenAsync` links it into the stream's lifetime next to `RequestAborted` and the 10-minute cap, so the channel, overview and admin streams end the moment the host begins to stop, the same clean end as the lifetime cap. The browser's EventSource reconnects as after any other close. A stream opened after the signal ends at once.
+2. **The writer's drain is bounded by its own budget, not by what is left of the host's.** `LogCaptureWriter.StopAsync` no longer links the host's token: it waits at most `DrainBudget` (3 s) plus 200 ms whatever the token says. The writer stays registered first, so it stops last and stores the other services' shutdown lines (§5.1). Rejected alternatives: `ServicesStopConcurrently` would let it drain while the others still log their shutdown, and those lines would be lost; a larger `ShutdownTimeout` does not give the writer a guaranteed share, because whatever stops before it can use any budget up. The cost is that a stop can overrun the host's budget by at most 3.2 s.
+3. **`stop_grace_period` covers the host's budget plus the drain.** `api` gets `45s` in both compose files: 30 s host budget, 3.2 s drain, and margin for disposal and process exit. `worker` keeps its `60s` (issue #122), which already covers 30 s + 3.2 s. With rule 1 a normal Api stop takes well under a second before the drain; the 45 s only matter when a slow non-streaming request holds the server. The production stack definition must carry the new line (Operations "Rollout", step 5).
+
+Tests: `LiveStreamShutdownTests.ApplicationStopping_EndsAnOpenStream` (channel and overview stream end within 2 s of `StopApplication`; both timed out before the change) and `LogCaptureWriterTests.Shutdown_HostBudgetAlreadySpent_StillDrains` (an already-cancelled host token still drains every entry and writes `CleanShutdownAtUtc`; before the change `StopAsync` returned with the drain unfinished). Spec §5.5 named a 10 s Docker grace as the bound under the 3 s drain; that sentence described the old default and is superseded here.
+
 ### 2026-10-16 — Recorded-errors row on /admin/monitoring: "none" needs completeness (#383)
 
 **Betrifft:** `web/src/app/features/admin/admin-log-errors-row.ts` · `web/src/app/features/admin/admin-monitoring-page.ts` · `web/e2e/support/mocks.ts` (`mockAdminLogStatus`) · `web/e2e/audit/ui-audit.audit.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` · `docs/superpowers/specs/2026-10-14-admin-log-viewer-383-spec.md` (§11, AK 14)
