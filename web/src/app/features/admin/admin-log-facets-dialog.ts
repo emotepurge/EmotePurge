@@ -12,7 +12,8 @@ import { AdminLogFacets } from './admin-log-facets';
 /**
  * Live handles into the page: the dialog edits the page's own state, so a facet click applies at once
  * (spec §9.1) and the counts behind the dialog follow the new filter. Signals and callbacks rather than
- * a snapshot for that reason. The saved-filter chips join this list when they exist.
+ * a snapshot for that reason. The saved-filter chips stay on the page in both layouts: their create and
+ * edit dialogs must not open out of this one (one dialog at a time, design language §7).
  */
 export interface LogFacetsDialogData {
   rangeOptions: SegmentedControlOption[];

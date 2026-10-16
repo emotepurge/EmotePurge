@@ -949,6 +949,23 @@
           "warn": "Warnung",
           "error": "Fehler / Kritisch"
         }
+      },
+      "savedFilters": {
+        "label": "Gespeicherte Filter",
+        "add": "+ Filter speichern",
+        "menuFor": "Menü für Filter {{name}}",
+        "edit": "Bearbeiten",
+        "overwrite": "Mit aktuellem Filter überschreiben",
+        "delete": "Löschen",
+        "deleteConfirm": "Gespeicherten Filter „{{name}}“ wirklich löschen? Er kommt nicht von selbst zurück.",
+        "loadFailed": "Die gespeicherten Filter konnten nicht geladen werden.",
+        "blockedEmptyFilter": "Zum Speichern erst einen Filter eingeben.",
+        "blockedEmptyName": "Zum Speichern einen Namen eingeben.",
+        "newTitle": "Filter speichern",
+        "editTitle": "Filter bearbeiten",
+        "nameLabel": "Name",
+        "filterLabel": "Filter",
+        "save": "Speichern"
       }
     }
   },

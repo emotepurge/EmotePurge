@@ -11,6 +11,9 @@ import { LogFilterApiError } from './admin-logs.model';
  *   and every other backslash is literal; there is no escape for `*` (wildcard) or for a backslash.
  */
 
+/** The server's limit for a saved filter's name (trimmed length). */
+export const LOG_FILTER_NAME_MAX_LENGTH = 60;
+
 /** Anything here makes a bare word mean something else: whitespace or a comma ends it, a quote opens a
  *  quoted value, and `:`/`<`/`>` turn free text into a key term. `\u0085` is whitespace to .NET only. */
 const NEEDS_QUOTES = /[\s\u0085,":<>]/u;

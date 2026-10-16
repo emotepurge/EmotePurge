@@ -3095,6 +3095,33 @@ export function buildLogStatus(overrides: Record<string, unknown> = {}): Record<
 
 export type MockLogReply = { status: number; body?: unknown };
 
+export interface MockSavedLogFilter {
+  id: number;
+  name: string;
+  filter: string;
+  sortOrder: number;
+}
+
+/** The four filters the migration seeds (names and strings as stored). */
+export const SEEDED_LOG_FILTERS: MockSavedLogFilter[] = [
+  { id: 1, name: 'Start nach Deploy', filter: 'instance:latest uptime<15m', sortOrder: 1 },
+  {
+    id: 2,
+    name: 'Twitch-Reconnects',
+    filter:
+      'source:worker cat:TwitchConnectionWatchdog,TwitchChatManager,TwitchLib.* -"angestoßen (Quelle" -" gejoint."',
+    sortOrder: 2,
+  },
+  { id: 3, name: '7TV-Sync/EventAPI', filter: 'source:worker cat:SevenTv*', sortOrder: 3 },
+  { id: 4, name: 'Alle Fehler', filter: 'level>=error', sortOrder: 4 },
+];
+
+export interface MockLogFilterCall {
+  method: string;
+  id: number | null;
+  body: { name?: string; filter?: string } | null;
+}
+
 export interface MockAdminLogsOptions {
   /** How many entries exist; the list pages through them 100 at a time by opaque `c<offset>` cursors. */
   totalEntries?: number;
@@ -3106,6 +3133,10 @@ export interface MockAdminLogsOptions {
   fail?: (url: URL, endpoint: 'list' | 'summary') => MockLogReply | undefined;
   /** Exception text served by `GET /api/admin/logs/{id}`. */
   exception?: string;
+  /** The saved filters the server holds; the four seeds by default. */
+  filters?: MockSavedLogFilter[];
+  /** Overrides the answer to a saved-filter write (`POST`/`PUT`/`DELETE`); `undefined` answers normally. */
+  failFilter?: (call: MockLogFilterCall) => MockLogReply | undefined;
 }
 
 export interface MockAdminLogsCalls {
@@ -3113,6 +3144,8 @@ export interface MockAdminLogsCalls {
   summary: URL[];
   status: URL[];
   entry: URL[];
+  /** Every saved-filter request, in order. */
+  filters: MockLogFilterCall[];
 }
 
 /**
@@ -3123,7 +3156,60 @@ export async function mockAdminLogs(
   page: Page,
   options: MockAdminLogsOptions = {},
 ): Promise<MockAdminLogsCalls> {
-  const calls: MockAdminLogsCalls = { list: [], summary: [], status: [], entry: [] };
+  const calls: MockAdminLogsCalls = { list: [], summary: [], status: [], entry: [], filters: [] };
+  const filters = [...(options.filters ?? SEEDED_LOG_FILTERS)];
+  await page.route(
+    (url) => /^\/api\/admin\/log-filters(\/\d+)?$/.test(url.pathname),
+    (route) => {
+      const request = route.request();
+      const idText = new URL(request.url()).pathname.split('/')[4];
+      const call: MockLogFilterCall = {
+        method: request.method(),
+        id: idText ? Number(idText) : null,
+        body:
+          request.method() === 'GET' || request.method() === 'DELETE'
+            ? null
+            : request.postDataJSON(),
+      };
+      if (call.method !== 'GET') {
+        calls.filters.push(call);
+        const reply = options.failFilter?.(call);
+        if (reply) {
+          return fulfillJson(route, reply.status, reply.body ?? {});
+        }
+      }
+      const clean = (value?: string) => (value ?? '').trim();
+      if (call.method === 'POST') {
+        const created = {
+          id: Math.max(0, ...filters.map((f) => f.id)) + 1,
+          name: clean(call.body?.name),
+          filter: call.body?.filter ?? '',
+          sortOrder: Math.max(0, ...filters.map((f) => f.sortOrder)) + 1,
+        };
+        filters.push(created);
+        return fulfillJson(route, 201, created);
+      }
+      const index = filters.findIndex((f) => f.id === call.id);
+      if (call.method === 'PUT') {
+        if (index < 0) {
+          return fulfillJson(route, 404, { errorCode: 'log_filter_not_found' });
+        }
+        filters[index] = {
+          ...filters[index],
+          name: clean(call.body?.name),
+          filter: call.body?.filter ?? '',
+        };
+        return fulfillJson(route, 200, filters[index]);
+      }
+      if (call.method === 'DELETE') {
+        if (index >= 0) {
+          filters.splice(index, 1);
+        }
+        return route.fulfill({ status: index >= 0 ? 204 : 404 });
+      }
+      return fulfillJson(route, 200, filters);
+    },
+  );
   const total = options.totalEntries ?? 8;
   await page.route(
     (url) => /^\/api\/admin\/logs(\/.*)?$/.test(url.pathname),

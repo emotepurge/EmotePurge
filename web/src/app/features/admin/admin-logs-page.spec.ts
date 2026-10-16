@@ -1,3 +1,4 @@
+import { Dialog } from '@angular/cdk/dialog';
 import { BreakpointObserver } from '@angular/cdk/layout';
 import { provideHttpClient } from '@angular/common/http';
 import {
@@ -16,7 +17,13 @@ import { firstValueFrom, of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import en from '../../../../public/i18n/en.json';
-import { LogEntry, LogPage, LogStatus, LogSummary } from '../../core/admin/admin-logs.model';
+import {
+  LogEntry,
+  LogPage,
+  LogStatus,
+  LogSummary,
+  SavedLogFilter,
+} from '../../core/admin/admin-logs.model';
 import { TimeHistogram } from '../../shared/charts/time-histogram';
 import { AdminLogsPage, LOG_LIST_LIMIT, parseLogRange } from './admin-logs-page';
 
@@ -121,9 +128,13 @@ describe('AdminLogsPage', () => {
   let router: Router;
   let httpMock: HttpTestingController;
   let desktop: boolean;
+  let savedFilters: SavedLogFilter[];
+  let dialogOpen: (component: unknown, config: unknown) => { closed: unknown };
 
   beforeEach(() => {
     desktop = true;
+    savedFilters = [];
+    dialogOpen = () => ({ closed: of(undefined) });
     FakeIntersectionObserver.instances = [];
     vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver);
     TestBed.configureTestingModule({
@@ -138,6 +149,7 @@ describe('AdminLogsPage', () => {
         provideHttpClientTesting(),
         provideRouter([{ path: 'admin/logs', component: AdminLogsPage }]),
         provideLocationMocks(),
+        { provide: Dialog, useValue: { open: (c: unknown, o: unknown) => dialogOpen(c, o) } },
         {
           provide: BreakpointObserver,
           useValue: {
@@ -163,6 +175,7 @@ describe('AdminLogsPage', () => {
     router.setUpLocationChangeListener();
     httpMock = TestBed.inject(HttpTestingController);
     await harness.navigateByUrl(url, AdminLogsPage);
+    httpMock.expectOne('/api/admin/log-filters').flush(savedFilters);
     harness.detectChanges();
   }
 
@@ -564,5 +577,137 @@ describe('AdminLogsPage', () => {
     expect(root().querySelector('[role="radiogroup"]')).toBeNull();
     expect(buttonNamed('Filters')).toBeDefined();
     expect(root().querySelector('[aria-label="Facets"]')).toBeNull();
+  });
+
+  describe('saved filter chips', () => {
+    const SEEDS: SavedLogFilter[] = [
+      { id: 1, name: 'Start nach Deploy', filter: 'instance:latest uptime<15m', sortOrder: 1 },
+      { id: 4, name: 'Alle Fehler', filter: 'level>=error', sortOrder: 4 },
+    ];
+    const chip = (name: string) =>
+      Array.from(root().querySelectorAll<HTMLButtonElement>('button[aria-pressed]')).find(
+        (b) => b.textContent?.trim() === name,
+      )!;
+
+    beforeEach(() => {
+      savedFilters = SEEDS;
+    });
+
+    function fakeDialog(result: unknown): { opened: unknown[] } {
+      const opened: unknown[] = [];
+      dialogOpen = (_component, config) => {
+        opened.push(config);
+        return { closed: of(result) };
+      };
+      return { opened };
+    }
+
+    it('shows the seeds, with "Alle Fehler" active for q=level>=error', async () => {
+      await openAndLoad('/admin/logs?q=level%3E%3Derror');
+
+      expect(chip('Alle Fehler').getAttribute('aria-pressed')).toBe('true');
+      expect(chip('Start nach Deploy').getAttribute('aria-pressed')).toBe('false');
+    });
+
+    it('replaces q on a chip click and keeps the time range', async () => {
+      await openAndLoad('/admin/logs?q=source%3Aapi&range=7d');
+
+      chip('Start nach Deploy').click();
+      await settle();
+      statusRequest().flush(healthyStatus());
+      const list = listRequest((r) => r.params.get('q') === 'instance:latest uptime<15m');
+      expect(list.request.params.get('range')).toBe('7d');
+      list.flush(page(4, 4, null));
+      summaryRequest().flush(summary());
+      await settle();
+
+      expect(router.url).toContain('range=7d');
+      expect(input().value).toBe('instance:latest uptime<15m');
+    });
+
+    it('keeps a stored filter the parser now rejects clickable and shows the filter error', async () => {
+      savedFilters = [{ id: 7, name: 'Alt', filter: 'level:debug', sortOrder: 1 }];
+      await openAndLoad('/admin/logs');
+
+      chip('Alt').click();
+      await settle();
+      statusRequest().flush(healthyStatus());
+      listRequest((r) => r.params.get('q') === 'level:debug').flush(
+        { errorCode: 'invalid_log_filter', reason: 'invalid_level', position: 6, length: 5 },
+        { status: 400, statusText: 'Bad Request' },
+      );
+      expect(summaryRequest().cancelled).toBe(true);
+      await settle();
+
+      expect(input().getAttribute('aria-invalid')).toBe('true');
+      expect(root().textContent).toContain(en.admin.logs.filterErrors.invalid_level);
+    });
+
+    it('overwrites a saved filter with the applied filter under its own name', async () => {
+      await openAndLoad('/admin/logs?q=level%3E%3Dwarn');
+
+      root().querySelector<HTMLButtonElement>('[data-chip-menu="4"]')!.click();
+      harness.detectChanges();
+      buttonNamed('Overwrite with current filter').click();
+      const put = httpMock.expectOne('/api/admin/log-filters/4');
+      expect(put.request.method).toBe('PUT');
+      expect(put.request.body).toEqual({ name: 'Alle Fehler', filter: 'level>=warn' });
+      put.flush({ id: 4, name: 'Alle Fehler', filter: 'level>=warn', sortOrder: 4 });
+      await settle();
+
+      expect(chip('Alle Fehler').getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('shows a refused overwrite as a banner', async () => {
+      await openAndLoad('/admin/logs?q=level%3E%3Dwarn');
+
+      root().querySelector<HTMLButtonElement>('[data-chip-menu="4"]')!.click();
+      harness.detectChanges();
+      buttonNamed('Overwrite with current filter').click();
+      httpMock
+        .expectOne('/api/admin/log-filters/4')
+        .flush({ errorCode: 'log_filter_not_found' }, { status: 404, statusText: 'Not Found' });
+      httpMock.expectOne('/api/admin/log-filters').flush(SEEDS.slice(0, 1));
+      await settle();
+
+      expect(root().textContent).toContain('no longer exists');
+      expect(root().textContent).not.toContain('Alle Fehler');
+    });
+
+    it('deletes only after the confirmation says yes', async () => {
+      fakeDialog(false);
+      await openAndLoad('/admin/logs');
+      root().querySelector<HTMLButtonElement>('[data-chip-menu="4"]')!.click();
+      harness.detectChanges();
+      buttonNamed('Delete').click();
+      await settle();
+      httpMock.expectNone('/api/admin/log-filters/4');
+      expect(chip('Alle Fehler')).toBeDefined();
+    });
+
+    it('removes the chip once the confirmed delete succeeds', async () => {
+      const { opened } = fakeDialog(true);
+      await openAndLoad('/admin/logs');
+      root().querySelector<HTMLButtonElement>('[data-chip-menu="4"]')!.click();
+      harness.detectChanges();
+      buttonNamed('Delete').click();
+      const del = httpMock.expectOne('/api/admin/log-filters/4');
+      expect(del.request.method).toBe('DELETE');
+      del.flush(null, { status: 204, statusText: 'No Content' });
+      await settle();
+
+      expect(JSON.stringify(opened)).toContain('Alle Fehler');
+      expect(chip('Alle Fehler')).toBeUndefined();
+    });
+
+    it('adds a newly saved filter to the bar', async () => {
+      fakeDialog({ id: 9, name: 'Neu', filter: 'source:api', sortOrder: 5 });
+      await openAndLoad('/admin/logs?q=source%3Aapi');
+
+      buttonNamed('+ Save filter').click();
+      await settle();
+
+      expect(chip('Neu').getAttribute('aria-pressed')).toBe('true');
+    });
   });
 });

@@ -949,6 +949,23 @@
           "warn": "Warning",
           "error": "Error / Critical"
         }
+      },
+      "savedFilters": {
+        "label": "Saved filters",
+        "add": "+ Save filter",
+        "menuFor": "Menu for filter {{name}}",
+        "edit": "Edit",
+        "overwrite": "Overwrite with current filter",
+        "delete": "Delete",
+        "deleteConfirm": "Really delete the saved filter “{{name}}”? It will not come back on its own.",
+        "loadFailed": "The saved filters could not be loaded.",
+        "blockedEmptyFilter": "Enter a filter before saving.",
+        "blockedEmptyName": "Enter a name before saving.",
+        "newTitle": "Save filter",
+        "editTitle": "Edit filter",
+        "nameLabel": "Name",
+        "filterLabel": "Filter",
+        "save": "Save"
       }
     }
   },

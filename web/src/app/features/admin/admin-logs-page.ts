@@ -25,6 +25,7 @@ import {
   LogRangeQuery,
   LogStatus,
   LogSummary,
+  SavedLogFilter,
   isLogCaptureComplete,
   isLogFilterApiError,
 } from '../../core/admin/admin-logs.model';
@@ -39,12 +40,15 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { listQueryState } from '../../core/routing/list-query-state';
 import { TimeHistogram } from '../../shared/charts/time-histogram';
 import { Button } from '../../shared/ui/button';
+import { openConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { Popover } from '../../shared/ui/popover';
 import { SegmentedControl, SegmentedControlOption } from '../../shared/ui/segmented-control';
 import { SkeletonRows } from '../../shared/ui/skeleton-rows';
 import { AdminLogFacets } from './admin-log-facets';
+import { AdminLogFilterChips } from './admin-log-filter-chips';
+import { mapLogFilterSaveError, openLogFilterDialog } from './admin-log-filter-dialog';
 import { openLogFacetsDialog } from './admin-log-facets-dialog';
 import { AdminLogList, formatLogLine } from './admin-log-list';
 
@@ -139,6 +143,7 @@ function utcMinute(instant: string): string {
   selector: 'app-admin-logs-page',
   imports: [
     AdminLogFacets,
+    AdminLogFilterChips,
     AdminLogList,
     Button,
     EmptyState,
@@ -263,6 +268,21 @@ function utcMinute(instant: string): string {
           </span>
         </div>
       </div>
+
+      <app-admin-log-filter-chips
+        [filters]="savedFilters() ?? []"
+        [currentQ]="appliedQ()"
+        [loadFailed]="savedFiltersFailed()"
+        (selected)="applyQuery({ q: $event.filter })"
+        (saveRequested)="saveCurrentFilter()"
+        (editRequested)="editSavedFilter($event)"
+        (overwriteRequested)="overwriteSavedFilter($event)"
+        (deleteRequested)="deleteSavedFilter($event)"
+        (retryRequested)="loadSavedFilters()"
+      />
+      @if (savedFilterError(); as key) {
+        <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
+      }
 
       @if (rangeInvalid()) {
         <app-notice-banner variant="error">{{
@@ -510,6 +530,12 @@ export class AdminLogsPage {
   protected readonly queryError = signal<HttpErrorResponse | null>(null);
   private readonly serverFilterError = signal<LogFilterApiError | null>(null);
 
+  /** The saved filters in the server's order; `null` until the first answer. */
+  protected readonly savedFilters = signal<SavedLogFilter[] | null>(null);
+  protected readonly savedFiltersFailed = signal(false);
+  /** Translation key of the last failed overwrite or delete, shown as a banner. */
+  protected readonly savedFilterError = signal<string | null>(null);
+
   /** Entries waiting behind the reserved "n neue" slot; fed by the live mode, zero until then. */
   readonly pendingNew = signal(0);
 
@@ -629,6 +655,7 @@ export class AdminLogsPage {
   });
 
   constructor() {
+    this.loadSavedFilters();
     this.destroyRef.onDestroy(() => {
       this.cancelLoads();
       this.statusSub?.unsubscribe();
@@ -796,6 +823,88 @@ export class AdminLogsPage {
           this.moreError.set(true);
         },
       });
+  }
+
+  // --- Saved filters --------------------------------------------------------------------------
+
+  protected loadSavedFilters(): void {
+    this.savedFiltersFailed.set(false);
+    this.service
+      .listFilters()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (filters) => this.savedFilters.set(filters),
+        error: () => this.savedFiltersFailed.set(true),
+      });
+  }
+
+  protected saveCurrentFilter(): void {
+    this.savedFilterError.set(null);
+    openLogFilterDialog(this.dialog, { filter: null, initialFilter: this.appliedQ() })
+      .closed.pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((saved) => {
+        if (saved) {
+          this.savedFilters.update((list) => [...(list ?? []), saved]);
+        }
+      });
+  }
+
+  protected editSavedFilter(item: SavedLogFilter): void {
+    this.savedFilterError.set(null);
+    openLogFilterDialog(this.dialog, { filter: item, initialFilter: '' })
+      .closed.pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((saved) => {
+        if (saved) {
+          this.replaceSavedFilter(saved);
+        }
+      });
+  }
+
+  protected overwriteSavedFilter(item: SavedLogFilter): void {
+    this.savedFilterError.set(null);
+    this.service.updateFilter(item.id, item.name, this.appliedQ()).subscribe({
+      next: (saved) => this.replaceSavedFilter(saved),
+      error: (error: HttpErrorResponse) => this.failSavedFilterAction(error),
+    });
+  }
+
+  protected deleteSavedFilter(item: SavedLogFilter): void {
+    this.savedFilterError.set(null);
+    openConfirmDialog(this.dialog, {
+      message: this.transloco.translate('admin.logs.savedFilters.deleteConfirm', {
+        name: item.name,
+      }),
+      confirmLabel: this.transloco.translate('admin.logs.savedFilters.delete'),
+    })
+      .closed.pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((confirmed) => {
+        if (!confirmed) {
+          return;
+        }
+        this.service.deleteFilter(item.id).subscribe({
+          next: () =>
+            this.savedFilters.update((list) => (list ?? []).filter((f) => f.id !== item.id)),
+          error: (error: HttpErrorResponse) => this.failSavedFilterAction(error),
+        });
+      });
+  }
+
+  private replaceSavedFilter(saved: SavedLogFilter): void {
+    this.savedFilters.update((list) => (list ?? []).map((f) => (f.id === saved.id ? saved : f)));
+  }
+
+  /** A refused overwrite or delete has no field to sit on, so it becomes a banner; a filter that has
+   *  vanished meanwhile also means the bar is out of date. */
+  private failSavedFilterAction(error: HttpErrorResponse): void {
+    const mapped = mapLogFilterSaveError(error);
+    this.savedFilterError.set(
+      mapped.place === 'filter'
+        ? `admin.logs.filterErrors.${mapped.error.reason}`
+        : mapped.messageKey,
+    );
+    if ((error.error as { errorCode?: string } | null)?.errorCode === 'log_filter_not_found') {
+      this.loadSavedFilters();
+    }
   }
 
   // --- Loading --------------------------------------------------------------------------------

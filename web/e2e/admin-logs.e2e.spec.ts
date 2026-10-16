@@ -203,6 +203,99 @@ test.describe('admin log viewer on /admin/logs', () => {
     await expect(filterField(page)).toHaveValue('channel:handofblood');
   });
 
+  test('a chip click replaces the filter and keeps the time range; the seed is active at level>=error', async ({
+    page,
+  }) => {
+    const calls = await adminLogsPage(page);
+    await page.goto('/admin/logs?range=7d');
+    await expect(rows(page)).toHaveCount(8);
+    const chips = page.getByRole('group', { name: 'Gespeicherte Filter' });
+    await expect(chips.getByRole('button', { name: 'Alle Fehler', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+
+    await chips.getByRole('button', { name: 'Alle Fehler', exact: true }).click();
+
+    await expect(filterField(page)).toHaveValue('level>=error');
+    await expect(chips.getByRole('button', { name: 'Alle Fehler', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await expect(page).toHaveURL(/range=7d/);
+    expect(calls.list.at(-1)?.searchParams.get('q')).toBe('level>=error');
+    expect(calls.list.at(-1)?.searchParams.get('range')).toBe('7d');
+  });
+
+  test('saves, edits and deletes a filter, the delete behind a confirmation', async ({ page }) => {
+    const calls = await adminLogsPage(page);
+    await page.goto('/admin/logs?q=source%3Aapi');
+    await expect(rows(page)).toHaveCount(8);
+
+    await page.getByRole('button', { name: '+ Filter speichern' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByLabel('Filter', { exact: true })).toHaveValue('source:api');
+    await dialog.getByLabel('Name').fill('Nur API');
+    await dialog.getByRole('button', { name: 'Speichern' }).click();
+    await expect(dialog).toHaveCount(0);
+    const chip = page.getByRole('button', { name: 'Nur API', exact: true });
+    await expect(chip).toHaveAttribute('aria-pressed', 'true');
+    expect(calls.filters.at(-1)).toEqual({
+      method: 'POST',
+      id: null,
+      body: { name: 'Nur API', filter: 'source:api' },
+    });
+
+    await page.getByRole('button', { name: 'Menü für Filter Nur API' }).click();
+    await page.getByRole('button', { name: 'Bearbeiten' }).click();
+    await dialog.getByLabel('Name').fill('Nur Api-Quelle');
+    await dialog.getByRole('button', { name: 'Speichern' }).click();
+    await expect(page.getByRole('button', { name: 'Nur Api-Quelle', exact: true })).toBeVisible();
+    expect(calls.filters.at(-1)?.method).toBe('PUT');
+
+    await page.getByRole('button', { name: 'Menü für Filter Nur Api-Quelle' }).click();
+    await page.getByRole('button', { name: 'Löschen' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Abbrechen' }).click();
+    await expect(page.getByRole('button', { name: 'Nur Api-Quelle', exact: true })).toBeVisible();
+    expect(calls.filters.at(-1)?.method).toBe('PUT');
+
+    await page.getByRole('button', { name: 'Menü für Filter Nur Api-Quelle' }).click();
+    await page.getByRole('button', { name: 'Löschen' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Löschen' }).click();
+    await expect(page.getByRole('button', { name: 'Nur Api-Quelle', exact: true })).toHaveCount(0);
+    expect(calls.filters.at(-1)?.method).toBe('DELETE');
+  });
+
+  test('a taken name shows on the name field of the dialog', async ({ page }) => {
+    await adminLogsPage(page, {
+      failFilter: (call) =>
+        call.method === 'POST'
+          ? { status: 409, body: { errorCode: 'log_filter_name_taken' } }
+          : undefined,
+    });
+    await page.goto('/admin/logs?q=source%3Aapi');
+    await expect(rows(page)).toHaveCount(8);
+
+    await page.getByRole('button', { name: '+ Filter speichern' }).click();
+    const dialog = page.getByRole('dialog');
+    await dialog.getByLabel('Name').fill('Alle Fehler');
+    await dialog.getByRole('button', { name: 'Speichern' }).click();
+
+    await expect(dialog.getByLabel('Name')).toHaveAttribute('aria-invalid', 'true');
+    await expect(
+      dialog.getByText('Ein gespeicherter Filter mit diesem Namen existiert bereits.'),
+    ).toBeVisible();
+  });
+
+  test('"save" is locked with a reason while the filter is empty', async ({ page }) => {
+    await adminLogsPage(page);
+    await page.goto('/admin/logs');
+    await expect(rows(page)).toHaveCount(8);
+
+    await expect(page.getByRole('button', { name: '+ Filter speichern' })).toBeDisabled();
+    await expect(page.getByText('Zum Speichern erst einen Filter eingeben.')).toBeVisible();
+  });
+
   test('a malformed deep link shows an error and settles', async ({ page }) => {
     const calls = await adminLogsPage(page);
     await page.clock.install();
