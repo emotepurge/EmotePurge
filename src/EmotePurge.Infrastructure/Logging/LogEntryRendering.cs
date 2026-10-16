@@ -411,7 +411,7 @@ internal static class LogEntryRendering
 
         if (IsFiniteCollection(value))
         {
-            return LimitValue(JoinCollection((IEnumerable)value), ref truncated);
+            return LimitValue(JoinCollection((IEnumerable)value, ref truncated), ref truncated);
         }
 
         return LimitValue("<" + (value.GetType().FullName ?? value.GetType().Name) + ">", ref truncated);
@@ -497,15 +497,17 @@ internal static class LogEntryRendering
         return false;
     }
 
-    private static string JoinCollection(IEnumerable collection)
+    private static string JoinCollection(IEnumerable collection, ref bool truncated)
     {
         // Stop accumulating once the joined text is past the value limit; the caller cuts it anyway.
+        // Reaching an element past either limit means something is left out, so the entry is truncated.
         var builder = new StringBuilder();
         var count = 0;
         foreach (var element in collection)
         {
             if (count++ >= MaxCollectionElements || builder.Length > MaxPropertyValueLength)
             {
+                truncated = true;
                 break;
             }
 

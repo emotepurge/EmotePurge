@@ -336,6 +336,22 @@ public class LogEntryRenderingTests
     }
 
     [Fact]
+    public void RenderProperties_ArrayOf25SmallInts_IsMarkedTruncated()
+    {
+        // The 20 kept elements join to far less than 256 characters, so only the element limit cuts.
+        var rendered = LogEntryRendering.RenderProperties(State(("ids", Enumerable.Range(1, 25).ToArray())), null, null);
+        Assert.True(rendered.Truncated);
+    }
+
+    [Fact]
+    public void RenderProperties_ArrayOfExactly20_IsNotTruncated()
+    {
+        var rendered = LogEntryRendering.RenderProperties(State(("ids", Enumerable.Range(1, 20).ToArray())), null, null);
+        Assert.Equal(string.Join(", ", Enumerable.Range(1, 20)), Parse(rendered).GetProperty("ids").GetString());
+        Assert.False(rendered.Truncated);
+    }
+
+    [Fact]
     public void RenderProperties_ListAndReadOnlyCollection_AreRendered()
     {
         var rendered = LogEntryRendering.RenderProperties(State(("l", new List<string> { "a", "b" }), ("s", new HashSet<int> { 7 })), null, null);
