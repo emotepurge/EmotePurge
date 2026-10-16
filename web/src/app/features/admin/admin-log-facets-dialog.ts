@@ -1,13 +1,15 @@
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { Component, Signal, inject } from '@angular/core';
+import { take } from 'rxjs';
 import { TranslocoPipe } from '@jsverse/transloco';
 
-import { LogSummary } from '../../core/admin/admin-logs.model';
+import { LogSummary, SavedLogFilter } from '../../core/admin/admin-logs.model';
 import { Button } from '../../shared/ui/button';
 import { openAppDialog } from '../../shared/ui/dialog';
 import { DialogShell } from '../../shared/ui/dialog-shell';
 import { SegmentedControl, SegmentedControlOption } from '../../shared/ui/segmented-control';
 import { AdminLogFacets } from './admin-log-facets';
+import { AdminLogFilterChips } from './admin-log-filter-chips';
 
 /**
  * Live handles into the page: the dialog edits the page's own state, so a facet click applies at once
@@ -24,12 +26,30 @@ export interface LogFacetsDialogData {
   setRange(value: string): void;
   goBack(): void;
   addTerm(term: string): void;
+  /** The saved-filter bar lives in this sheet on a phone (spec §9.3). Applying a chip closes the sheet;
+   *  every other action closes it first and runs only afterwards, so dialogs never stack. */
+  savedFilters: Signal<readonly SavedLogFilter[]>;
+  currentQ: Signal<string>;
+  savedFiltersFailed: Signal<boolean>;
+  selectFilter(filter: SavedLogFilter): void;
+  saveCurrent(): void;
+  editFilter(filter: SavedLogFilter): void;
+  overwriteFilter(filter: SavedLogFilter): void;
+  deleteFilter(filter: SavedLogFilter): void;
+  retryFilters(): void;
 }
 
 /** The phone form of the filter bar's secondary controls: time range and facets (spec §9.3). */
 @Component({
   selector: 'app-admin-log-facets-dialog',
-  imports: [AdminLogFacets, Button, DialogShell, SegmentedControl, TranslocoPipe],
+  imports: [
+    AdminLogFacets,
+    AdminLogFilterChips,
+    Button,
+    DialogShell,
+    SegmentedControl,
+    TranslocoPipe,
+  ],
   template: `
     <app-dialog-shell [dialogTitle]="'admin.logs.filter.dialogTitle' | transloco">
       <div class="flex flex-col gap-4">
@@ -47,6 +67,17 @@ export interface LogFacetsDialogData {
             </button>
           }
         </div>
+        <app-admin-log-filter-chips
+          [filters]="data.savedFilters()"
+          [currentQ]="data.currentQ()"
+          [loadFailed]="data.savedFiltersFailed()"
+          (selected)="then(() => data.selectFilter($event))"
+          (saveRequested)="then(() => data.saveCurrent())"
+          (editRequested)="then(() => data.editFilter($event))"
+          (overwriteRequested)="then(() => data.overwriteFilter($event))"
+          (deleteRequested)="then(() => data.deleteFilter($event))"
+          (retryRequested)="data.retryFilters()"
+        />
         @if (data.summary(); as summary) {
           <app-admin-log-facets [summary]="summary" (termAdded)="data.addTerm($event)" />
         }
@@ -66,6 +97,12 @@ export interface LogFacetsDialogData {
 export class AdminLogFacetsDialog {
   protected readonly data = inject<LogFacetsDialogData>(DIALOG_DATA);
   protected readonly ref = inject<DialogRef<void>>(DialogRef);
+
+  /** Closes the sheet, then runs `action` once it is gone — the next dialog must not open over it. */
+  protected then(action: () => void): void {
+    this.ref.closed.pipe(take(1)).subscribe(action);
+    this.ref.close();
+  }
 }
 
 export function openLogFacetsDialog(dialog: Dialog, data: LogFacetsDialogData): DialogRef<void> {

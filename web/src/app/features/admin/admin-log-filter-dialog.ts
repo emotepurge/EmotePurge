@@ -29,6 +29,8 @@ export interface LogFilterDialogData {
   filter: SavedLogFilter | null;
   /** Prefill of the filter field for a new filter (the applied `q`). Ignored when editing. */
   initialFilter: string;
+  /** Called when the server says the edited filter no longer exists, so the host can refresh its bar. */
+  onVanished?: () => void;
 }
 
 /** Where a failed save shows up: on a field, or on the dialog as a whole. */
@@ -226,6 +228,9 @@ export class AdminLogFilterDialog {
             break;
           case 'dialog':
             this.dialogError.set(mapped.messageKey);
+            if (error.error?.errorCode === 'log_filter_not_found') {
+              this.data.onVanished?.();
+            }
             break;
         }
       },

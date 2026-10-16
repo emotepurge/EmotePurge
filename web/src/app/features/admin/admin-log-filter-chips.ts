@@ -45,6 +45,7 @@ export function currentFilterBlockedKey(q: string): string | null {
             type="button"
             appButton="outline"
             [attr.data-chip-menu]="item.id"
+            aria-haspopup="dialog"
             [attr.aria-expanded]="openMenuId() === item.id"
             [attr.aria-label]="'admin.logs.savedFilters.menuFor' | transloco: { name: item.name }"
             (click)="toggleMenu(item.id)"

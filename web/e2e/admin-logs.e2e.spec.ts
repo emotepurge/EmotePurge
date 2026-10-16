@@ -364,4 +364,37 @@ test.describe('admin log viewer on a phone', () => {
     );
     expect(overflow).toBeLessThanOrEqual(0);
   });
+
+  test('saved filters live in the Filter sheet: a chip applies and closes it, "save" opens exactly one dialog', async ({
+    page,
+  }) => {
+    const calls = await adminLogsPage(page);
+    await page.goto('/admin/logs?range=7d');
+    await expect(rows(page)).toHaveCount(8);
+    await expect(page.getByRole('group', { name: 'Gespeicherte Filter' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Filter', exact: true }).click();
+    const sheet = page.getByRole('dialog');
+    await sheet.getByRole('button', { name: 'Alle Fehler', exact: true }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(filterField(page)).toHaveValue('level>=error');
+    await expect(page).toHaveURL(/range=7d/);
+    expect(calls.list.at(-1)?.searchParams.get('q')).toBe('level>=error');
+
+    await page.getByRole('button', { name: 'Filter', exact: true }).click();
+    await expect(
+      page.getByRole('dialog').getByRole('button', { name: 'Alle Fehler', exact: true }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('dialog').getByRole('button', { name: '+ Filter speichern' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    await expect(page.getByRole('dialog').getByLabel('Name')).toBeVisible();
+    await expect(page.getByRole('dialog').getByLabel('Filter', { exact: true })).toHaveValue(
+      'level>=error',
+    );
+
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
 });

@@ -113,6 +113,7 @@ describe('AdminLogFilterChips', () => {
     host.q.set('level>=warn');
     fixture.detectChanges();
     const trigger = named('Menu for filter Alle Fehler');
+    expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
     trigger.click();
     fixture.detectChanges();

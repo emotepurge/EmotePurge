@@ -129,11 +129,13 @@ describe('AdminLogsPage', () => {
   let httpMock: HttpTestingController;
   let desktop: boolean;
   let savedFilters: SavedLogFilter[];
+  let savedFiltersFail: boolean;
   let dialogOpen: (component: unknown, config: unknown) => { closed: unknown };
 
   beforeEach(() => {
     desktop = true;
     savedFilters = [];
+    savedFiltersFail = false;
     dialogOpen = () => ({ closed: of(undefined) });
     FakeIntersectionObserver.instances = [];
     vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver);
@@ -175,7 +177,12 @@ describe('AdminLogsPage', () => {
     router.setUpLocationChangeListener();
     httpMock = TestBed.inject(HttpTestingController);
     await harness.navigateByUrl(url, AdminLogsPage);
-    httpMock.expectOne('/api/admin/log-filters').flush(savedFilters);
+    const filtersRequest = httpMock.expectOne('/api/admin/log-filters');
+    if (savedFiltersFail) {
+      filtersRequest.error(new ProgressEvent('error'));
+    } else {
+      filtersRequest.flush(savedFilters);
+    }
     harness.detectChanges();
   }
 
@@ -708,6 +715,83 @@ describe('AdminLogsPage', () => {
       await settle();
 
       expect(chip('Neu').getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('opens the edit dialog on the chosen filter, applies the result and refreshes after a vanish', async () => {
+      const edited = { id: 4, name: 'Fehler', filter: 'level>=error', sortOrder: 4 };
+      const { opened } = fakeDialog(edited);
+      await openAndLoad('/admin/logs');
+      root().querySelector<HTMLButtonElement>('[data-chip-menu="4"]')!.click();
+      harness.detectChanges();
+      buttonNamed('Edit').click();
+      await settle();
+
+      const data = (opened[0] as { data: { filter: SavedLogFilter; onVanished(): void } }).data;
+      expect(data.filter).toEqual(SEEDS[1]);
+      expect(chip('Fehler')).toBeDefined();
+      expect(chip('Alle Fehler')).toBeUndefined();
+
+      data.onVanished();
+      httpMock.expectOne('/api/admin/log-filters').flush(SEEDS);
+      await settle();
+      expect(chip('Alle Fehler')).toBeDefined();
+    });
+
+    it('reloads the list instead of appending when the first load had failed', async () => {
+      savedFiltersFail = true;
+      fakeDialog({ id: 9, name: 'Neu', filter: 'source:api', sortOrder: 5 });
+      await openAndLoad('/admin/logs?q=source%3Aapi');
+      expect(root().querySelector('[role="alert"]')).not.toBeNull();
+
+      buttonNamed('+ Save filter').click();
+      await settle();
+      httpMock.expectOne('/api/admin/log-filters').flush([...SEEDS]);
+      await settle();
+
+      expect(chip('Alle Fehler')).toBeDefined();
+      expect(chip('Neu')).toBeUndefined();
+    });
+
+    it('sends one PUT for a double activation of "overwrite"', async () => {
+      await openAndLoad('/admin/logs?q=level%3E%3Dwarn');
+      root().querySelector<HTMLButtonElement>('[data-chip-menu="4"]')!.click();
+      harness.detectChanges();
+      const overwrite = buttonNamed('Overwrite with current filter');
+      overwrite.click();
+      root().querySelector<HTMLButtonElement>('[data-chip-menu="4"]')!.click();
+      harness.detectChanges();
+      buttonNamed('Overwrite with current filter').click();
+
+      const put = httpMock.expectOne('/api/admin/log-filters/4');
+      put.flush({ id: 4, name: 'Alle Fehler', filter: 'level>=warn', sortOrder: 4 });
+      await settle();
+    });
+  });
+
+  describe('on a phone', () => {
+    it('keeps the chip bar off the page and hands it to the Filter sheet', async () => {
+      desktop = false;
+      savedFilters = [{ id: 4, name: 'Alle Fehler', filter: 'level>=error', sortOrder: 4 }];
+      const configs: { data: Record<string, unknown> }[] = [];
+      dialogOpen = (_c, config) => {
+        configs.push(config as { data: Record<string, unknown> });
+        return { closed: of(undefined) };
+      };
+      await openAndLoad('/admin/logs');
+
+      expect(root().querySelector('app-admin-log-filter-chips')).toBeNull();
+      buttonNamed('Filters').click();
+      const data = configs[0].data as {
+        savedFilters(): SavedLogFilter[];
+        selectFilter(f: SavedLogFilter): void;
+      };
+      expect(data.savedFilters().map((f) => f.name)).toEqual(['Alle Fehler']);
+
+      data.selectFilter(data.savedFilters()[0]);
+      await settle();
+      statusRequest().flush(healthyStatus());
+      listRequest((r) => r.params.get('q') === 'level>=error').flush(page(4, 4, null));
+      summaryRequest().flush(summary());
     });
   });
 });

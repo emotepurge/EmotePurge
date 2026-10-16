@@ -15,7 +15,7 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
-import { Subscription, map } from 'rxjs';
+import { Subscription, finalize, map } from 'rxjs';
 
 import {
   LogEntry,
@@ -269,17 +269,19 @@ function utcMinute(instant: string): string {
         </div>
       </div>
 
-      <app-admin-log-filter-chips
-        [filters]="savedFilters() ?? []"
-        [currentQ]="appliedQ()"
-        [loadFailed]="savedFiltersFailed()"
-        (selected)="applyQuery({ q: $event.filter })"
-        (saveRequested)="saveCurrentFilter()"
-        (editRequested)="editSavedFilter($event)"
-        (overwriteRequested)="overwriteSavedFilter($event)"
-        (deleteRequested)="deleteSavedFilter($event)"
-        (retryRequested)="loadSavedFilters()"
-      />
+      @if (isDesktop()) {
+        <app-admin-log-filter-chips
+          [filters]="savedFilters() ?? []"
+          [currentQ]="appliedQ()"
+          [loadFailed]="savedFiltersFailed()"
+          (selected)="applyQuery({ q: $event.filter })"
+          (saveRequested)="saveCurrentFilter()"
+          (editRequested)="editSavedFilter($event)"
+          (overwriteRequested)="overwriteSavedFilter($event)"
+          (deleteRequested)="deleteSavedFilter($event)"
+          (retryRequested)="loadSavedFilters()"
+        />
+      }
       @if (savedFilterError(); as key) {
         <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
       }
@@ -547,6 +549,7 @@ export class AdminLogsPage {
   private summarySub?: Subscription;
   private moreSub?: Subscription;
   private statusSub?: Subscription;
+  private overwriting = false;
   private copyTimer?: ReturnType<typeof setTimeout>;
 
   protected readonly clientFilterError = computed<LogFilterApiError | null>(() => {
@@ -772,6 +775,15 @@ export class AdminLogsPage {
       setRange: (value) => this.setRange(value),
       goBack: () => this.goBack(),
       addTerm: (term) => this.addTerm(term),
+      savedFilters: computed(() => this.savedFilters() ?? []),
+      currentQ: this.appliedQ,
+      savedFiltersFailed: this.savedFiltersFailed,
+      selectFilter: (filter) => this.applyQuery({ q: filter.filter }),
+      saveCurrent: () => this.saveCurrentFilter(),
+      editFilter: (filter) => this.editSavedFilter(filter),
+      overwriteFilter: (filter) => this.overwriteSavedFilter(filter),
+      deleteFilter: (filter) => this.deleteSavedFilter(filter),
+      retryFilters: () => this.loadSavedFilters(),
     });
   }
 
@@ -843,7 +855,13 @@ export class AdminLogsPage {
     openLogFilterDialog(this.dialog, { filter: null, initialFilter: this.appliedQ() })
       .closed.pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((saved) => {
-        if (saved) {
+        if (!saved) {
+          return;
+        }
+        // After a failed first load the bar holds nothing to append to: ask the server instead.
+        if (this.savedFilters() === null) {
+          this.loadSavedFilters();
+        } else {
           this.savedFilters.update((list) => [...(list ?? []), saved]);
         }
       });
@@ -851,7 +869,11 @@ export class AdminLogsPage {
 
   protected editSavedFilter(item: SavedLogFilter): void {
     this.savedFilterError.set(null);
-    openLogFilterDialog(this.dialog, { filter: item, initialFilter: '' })
+    openLogFilterDialog(this.dialog, {
+      filter: item,
+      initialFilter: '',
+      onVanished: () => this.loadSavedFilters(),
+    })
       .closed.pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((saved) => {
         if (saved) {
@@ -862,10 +884,20 @@ export class AdminLogsPage {
 
   protected overwriteSavedFilter(item: SavedLogFilter): void {
     this.savedFilterError.set(null);
-    this.service.updateFilter(item.id, item.name, this.appliedQ()).subscribe({
-      next: (saved) => this.replaceSavedFilter(saved),
-      error: (error: HttpErrorResponse) => this.failSavedFilterAction(error),
-    });
+    if (this.overwriting) {
+      return;
+    }
+    this.overwriting = true;
+    this.service
+      .updateFilter(item.id, item.name, this.appliedQ())
+      .pipe(
+        finalize(() => (this.overwriting = false)),
+        takeUntilDestroyed(this.destroyRef),
+      )
+      .subscribe({
+        next: (saved) => this.replaceSavedFilter(saved),
+        error: (error: HttpErrorResponse) => this.failSavedFilterAction(error),
+      });
   }
 
   protected deleteSavedFilter(item: SavedLogFilter): void {
@@ -881,11 +913,14 @@ export class AdminLogsPage {
         if (!confirmed) {
           return;
         }
-        this.service.deleteFilter(item.id).subscribe({
-          next: () =>
-            this.savedFilters.update((list) => (list ?? []).filter((f) => f.id !== item.id)),
-          error: (error: HttpErrorResponse) => this.failSavedFilterAction(error),
-        });
+        this.service
+          .deleteFilter(item.id)
+          .pipe(takeUntilDestroyed(this.destroyRef))
+          .subscribe({
+            next: () =>
+              this.savedFilters.update((list) => (list ?? []).filter((f) => f.id !== item.id)),
+            error: (error: HttpErrorResponse) => this.failSavedFilterAction(error),
+          });
       });
   }
 
