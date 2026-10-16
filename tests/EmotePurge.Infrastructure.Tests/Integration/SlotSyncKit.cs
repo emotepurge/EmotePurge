@@ -12,8 +12,8 @@ using NSubstitute;
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
 /// <summary>
-/// Shared seeding and wiring for the slot-aware sync tests (plan #372, 6.3–6.5): a service with the
-/// flag set explicitly, a 7TV client that answers one set, and rows written straight into the tables
+/// Shared seeding and wiring for the slot-aware sync tests (plan #372, 6.3–6.5): a service, a 7TV
+/// client that answers one set, and rows written straight into the tables
 /// so a test states the before-state of slots, seeds and usage rows exactly.
 /// </summary>
 internal static class SlotSyncKit
@@ -42,7 +42,6 @@ internal static class SlotSyncKit
     public static SevenTvSyncService CreateService(
         AppDbContext db,
         ISevenTvApiClient apiClient,
-        bool slotsEnabled,
         EmoteMatchCache? cache = null,
         ILogger<SevenTvSyncService>? logger = null,
         MatchMapExclusionTracker? exclusions = null,
@@ -53,21 +52,19 @@ internal static class SlotSyncKit
             new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
             logger ?? new RecordingLogger<SevenTvSyncService>(),
-            new SlotReconcileOptions { Enabled = slotsEnabled },
             exclusions);
 
     /// <summary>One sync of <paramref name="channel"/> against <paramref name="emotes"/> as set <paramref name="setId"/>.</summary>
     public static Task<SevenTvSyncResult?> SyncAsync(
         AppDbContext db,
         Channel channel,
-        bool slotsEnabled,
         string setId,
         RecordingLogger<SevenTvSyncService>? logger,
         params SevenTvEmote[] emotes) =>
-        CreateService(db, ApiReturning(channel, setId, emotes), slotsEnabled, logger: logger).SyncChannelAsync(channel.ChannelName);
+        CreateService(db, ApiReturning(channel, setId, emotes), logger: logger).SyncChannelAsync(channel.ChannelName);
 
     public static Task<SevenTvSyncResult?> SyncOnAsync(AppDbContext db, Channel channel, params SevenTvEmote[] emotes) =>
-        SyncAsync(db, channel, slotsEnabled: true, SetA, logger: null, emotes);
+        SyncAsync(db, channel, SetA, logger: null, emotes);
 
     public static async Task<Channel> SeedChannelAsync(AppDbContext db, string name, string activeSetId = SetA)
     {

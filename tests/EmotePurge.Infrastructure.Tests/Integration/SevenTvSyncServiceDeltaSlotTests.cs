@@ -14,10 +14,9 @@ using static EmotePurge.Infrastructure.Tests.Integration.SlotSyncKit;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
-// EventAPI deltas per (id, name) with SevenTv:SlotReconcile:Enabled (plan #374 7.3; spec §7.2, D17,
-// AK 19, AK 20): the nine spec cases (AK 20's in-place rename on one slot, operator decision R4), the
-// counter-examples of the adversarial review end to end — map, flush, REST afterwards — and the flag-off
-// proof that the emote-wide path writes no slot (7.4). The planner's rule table itself is unit-tested
+// EventAPI deltas per (id, name) (plan #374 7.3; spec §7.2, D17, AK 19, AK 20): the nine spec cases (AK
+// 20's in-place rename on one slot, operator decision R4) and the counter-examples of the adversarial
+// review end to end — map, flush, REST afterwards. The planner's rule table itself is unit-tested
 // (EmoteSlotDeltaPlannerTests); here the service's half is pinned: what is read behind the lock, what is
 // written, what stays byte-equal, the leaves and the outcomes.
 [Collection("Postgres")]
@@ -221,8 +220,8 @@ public class SevenTvSyncServiceDeltaSlotTests(PostgresFixture fixture)
     }
 
     // Review 13.10. (P2-2): a malformed dispatch that pulls every active emote is ambiguous because one of
-    // them (c) carries a seed of the active set. The plausibility guard still comes first, as with the
-    // flag off: no leaves for a and b, ImplausibleSkipped.
+    // them (c) carries a seed of the active set. The plausibility guard still comes first: no leaves for a
+    // and b, ImplausibleSkipped.
     [Fact]
     public async Task AmbiguousDispatch_ThatPullsEveryActiveEmote_IsSkippedAsImplausible_WithoutLeaves()
     {
@@ -344,7 +343,7 @@ public class SevenTvSyncServiceDeltaSlotTests(PostgresFixture fixture)
         var logger = new RecordingLogger<SevenTvSyncService>();
         await using var db = fixture.CreateDbContext([hook]);
 
-        var result = await CreateService(db, ApiReturning(channel, SetA), slotsEnabled: true, logger: logger)
+        var result = await CreateService(db, ApiReturning(channel, SetA), logger: logger)
             .ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, Delta(updated: [Rename("x", "A", "C")], pulled: [Pull("y", "Yak")]));
 
         Assert.Equal(SevenTvDeltaOutcome.AmbiguousDelta, result.Outcome);
@@ -447,14 +446,14 @@ public class SevenTvSyncServiceDeltaSlotTests(PostgresFixture fixture)
         var cache = new EmoteMatchCache();
         var logger = new RecordingLogger<SevenTvSyncService>();
 
-        var result = await CreateService(db, ApiReturning(channel, set), slotsEnabled: true, cache, logger)
+        var result = await CreateService(db, ApiReturning(channel, set), cache, logger)
             .ApplyEmoteSetUpdateAsync(channel.ChannelName, set, Delta(pushed: [Push("x", "A")]));
 
         Assert.Equal(SevenTvDeltaOutcome.AmbiguousDelta, result.Outcome);
         Assert.Equal(before, await StateAsync(db, channel));
         AssertAmbiguousLine(logger, SlotDeltaAmbiguity.ArchivedNamesake, "x");
 
-        await CreateService(db, ApiReturning(channel, set, Live("k", "Keeper", T0), Live("x", "A", T3)), slotsEnabled: true, cache)
+        await CreateService(db, ApiReturning(channel, set, Live("k", "Keeper", T0), Live("x", "A", T3)), cache)
             .SyncChannelAsync(channel.ChannelName);
         var resumed = await SlotAsync(db, slot.Id);
         Assert.Equal(("A", (DateTime?)T3, true, false), (resumed.Name, resumed.AddedAt, resumed.AddedAtFromRest, resumed.IsArchived));
@@ -463,8 +462,8 @@ public class SevenTvSyncServiceDeltaSlotTests(PostgresFixture fixture)
         Assert.Equal((2, 5), (await UsageBySlotAsync(db, x.Id, set))[slot.Id]);
     }
 
-    // Case D, plain virtual state (an active emote without any slot, left by a flag-off phase): a push is
-    // ambiguous (E5) — a no-op would leave the emote uncounted, the flag-on map has no virtual entries —
+    // Case D, plain virtual state (an active emote without any slot, left from before the slot work): a push
+    // is ambiguous (E5) — a no-op would leave the emote uncounted, the match map has no virtual entries —
     // and the REST resync creates the slot, which the map then counts.
     [Fact]
     public async Task PushInTheVirtualStateWithoutSlots_IsAmbiguous_AndRestCreatesTheCountedSlot()
@@ -571,8 +570,8 @@ public class SevenTvSyncServiceDeltaSlotTests(PostgresFixture fixture)
         var twoBefore = await StateAsync(db, two);
         var delta = Delta(updated: [Rename("x", "A", "C")]);
 
-        var onTwo = await CreateService(db, ApiReturning(two, SetB), slotsEnabled: true).ApplyEmoteSetUpdateAsync(two.ChannelName, SetB, delta);
-        var onOne = await CreateService(db, ApiReturning(one, SetB), slotsEnabled: true).ApplyEmoteSetUpdateAsync(one.ChannelName, SetB, delta);
+        var onTwo = await CreateService(db, ApiReturning(two, SetB)).ApplyEmoteSetUpdateAsync(two.ChannelName, SetB, delta);
+        var onOne = await CreateService(db, ApiReturning(one, SetB)).ApplyEmoteSetUpdateAsync(one.ChannelName, SetB, delta);
 
         Assert.Equal((SevenTvDeltaOutcome.AmbiguousDelta, SevenTvDeltaOutcome.Applied), (onTwo.Outcome, onOne.Outcome));
         Assert.Equal(twoBefore, await StateAsync(db, two));
@@ -597,7 +596,7 @@ public class SevenTvSyncServiceDeltaSlotTests(PostgresFixture fixture)
     }
 
     // Section 5 / E8 (F5): a pull of an archived emote or of an id without a row writes nothing and
-    // observes the leave, as with the flag off — NoChange.
+    // observes the leave — NoChange.
     [Fact]
     public async Task PullOfAnArchivedEmoteAndOfAnUnknownId_RecordsBothLeaves_AndStaysNoChange()
     {
@@ -613,46 +612,6 @@ public class SevenTvSyncServiceDeltaSlotTests(PostgresFixture fixture)
         Assert.Equal(SevenTvDeltaOutcome.NoChange, result.Outcome);
         Assert.Equal(before, await InventoryAsync(db, channel));
         Assert.Equal((1, 1), (await LeaveRowsAsync(db, channel, "x"), await LeaveRowsAsync(db, channel, "u")));
-    }
-
-    // ------------------------------------------------------------------ flag off (plan 7.4, "Aus, eigen")
-
-    // E1: with the flag off the delta path stays emote-wide — push, rename (also the quirk frame), pull
-    // and two pulls of one id leave every EmoteSlots column as it was, never answer AmbiguousDelta, and
-    // the emote rows follow the dispatch as on main (the name takes value.name).
-    [Fact]
-    public async Task FlagOff_EveryChangeKind_WritesNoSlot_AndNeverAnswersAmbiguous()
-    {
-        await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, "dslot_off");
-        await SeedKeeperAsync(db, channel);
-        var x = await SeedEmoteAsync(db, channel, "x", "probeA", firstSeenAt: T1);
-        await SeedSlotAsync(db, x, "probeA", T1);
-        await SeedSlotAsync(db, x, "probeB", T2);
-        var y = await SeedEmoteAsync(db, channel, "y", "Yak", firstSeenAt: T1);
-        var ySeed = await SeedSeedAsync(db, y);
-        await SeedUsageAsync(db, y, ySeed, SetA, 2);
-        var slotsBefore = await SlotColumnsAsync(db, channel);
-        var service = CreateService(db, ApiReturning(channel, SetA), slotsEnabled: false);
-
-        var outcomes = new List<SevenTvDeltaOutcome>
-        {
-            (await service.ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, Delta(pushed: [Push("n", "Neo")]))).Outcome,
-            (await service.ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, Delta(updated: [Rename("x", "probeB", "probeA")]))).Outcome,
-            (await service.ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, Delta(pushed: [Push("x", "probeC")]))).Outcome,
-            (await service.ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, Delta(pulled: [Pull("y", "Yak")]))).Outcome,
-            (await service.ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, Delta(pulled: [Pull("x", "probeC"), Pull("x", "probeA")]))).Outcome,
-        };
-
-        Assert.Equal(
-            [SevenTvDeltaOutcome.Applied, SevenTvDeltaOutcome.NoChange, SevenTvDeltaOutcome.Applied, SevenTvDeltaOutcome.Applied, SevenTvDeltaOutcome.Applied],
-            outcomes);
-        Assert.Equal(slotsBefore, await SlotColumnsAsync(db, channel));
-        Assert.Empty(await SlotsAsync(db, (await EmoteAsync(db, channel, "n")).Id));
-        var xRow = await EmoteAsync(db, channel, "x");
-        Assert.Equal(("probeC", true), (xRow.Name, xRow.IsArchived));
-        Assert.True((await EmoteAsync(db, channel, "y")).IsArchived);
-        Assert.Equal((1, 1), (await LeaveRowsAsync(db, channel, "x"), await LeaveRowsAsync(db, channel, "y")));
     }
 
     // ------------------------------------------------------------------ helpers
@@ -671,14 +630,14 @@ public class SevenTvSyncServiceDeltaSlotTests(PostgresFixture fixture)
 
     private static Task<SevenTvDeltaResult> ApplyAsync(
         AppDbContext db, Channel channel, EmoteMatchCache? cache, SevenTvEmoteSetDelta delta, RecordingLogger<SevenTvSyncService>? logger = null) =>
-        CreateService(db, ApiReturning(channel, SetA), slotsEnabled: true, cache, logger)
+        CreateService(db, ApiReturning(channel, SetA), cache, logger)
             .ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, delta);
 
     private static async Task SyncAsync(AppDbContext db, Channel channel, EmoteMatchCache? cache, params SevenTvEmote[] live) =>
-        Assert.NotNull(await CreateService(db, ApiReturning(channel, SetA, live), slotsEnabled: true, cache).SyncChannelAsync(channel.ChannelName));
+        Assert.NotNull(await CreateService(db, ApiReturning(channel, SetA, live), cache).SyncChannelAsync(channel.ChannelName));
 
     private static EmoteService ReportService(AppDbContext db) =>
-        new(db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), new SlotReconcileOptions { Enabled = true });
+        new(db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db));
 
     // A second active emote with a slot, so pulling every slot of x is no implausible wipe.
     private static async Task SeedKeeperAsync(AppDbContext db, Channel channel)

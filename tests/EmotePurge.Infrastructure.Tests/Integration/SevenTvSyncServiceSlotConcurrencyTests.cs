@@ -56,7 +56,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         var tag = $"slot_ak27_sync_{oldNameStillListed}".ToLowerInvariant();
         await using var syncDb = fixture.CreateTaggedDbContext(tag);
         SevenTvEmote[] live = oldNameStillListed ? [Live("x", "A", T1), Live("x", "C", T1)] : [Live("x", "C", T1)];
-        var sync = CreateService(syncDb, ApiReturning(channel, SetA, live), slotsEnabled: true).SyncChannelAsync(channel.ChannelName);
+        var sync = CreateService(syncDb, ApiReturning(channel, SetA, live)).SyncChannelAsync(channel.ChannelName);
 
         await fixture.WaitUntilBlockedOnLockAsync(tag, sync);
         await holderTx.CommitAsync();
@@ -123,7 +123,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         const string tag = "slot_coverage_sync";
         var logger = new RecordingLogger<SevenTvSyncService>();
         await using var syncDb = fixture.CreateTaggedDbContext(tag, [hook]);
-        var sync = CreateService(syncDb, ApiReturning(channel, SetA, Live("e", "C", T1)), slotsEnabled: true, logger: logger)
+        var sync = CreateService(syncDb, ApiReturning(channel, SetA, Live("e", "C", T1)), logger: logger)
             .SyncChannelAsync(channel.ChannelName);
 
         await contenderReady.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -172,7 +172,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         var logger = new RecordingLogger<SevenTvSyncService>();
         await using var syncDb = fixture.CreateDbContext([hook]);
 
-        var result = await CreateService(syncDb, ApiReturning(channel, SetA, Live("x", "A", T1)), slotsEnabled: true, logger: logger)
+        var result = await CreateService(syncDb, ApiReturning(channel, SetA, Live("x", "A", T1)), logger: logger)
             .SyncChannelAsync(channel.ChannelName);
 
         Assert.NotNull(result);
@@ -198,7 +198,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         const string tag = "slot_purge_first_sync";
         var cache = new EmoteMatchCache();
         await using var syncDb = fixture.CreateTaggedDbContext(tag);
-        var sync = CreateService(syncDb, ApiReturning(channel, SetA, Live("x", "A", T1)), slotsEnabled: true, cache: cache)
+        var sync = CreateService(syncDb, ApiReturning(channel, SetA, Live("x", "A", T1)), cache: cache)
             .SyncChannelAsync(channel.ChannelName);
 
         await fixture.WaitUntilBlockedOnLockAsync(tag, sync);
@@ -237,7 +237,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
             });
         await using var syncDb = fixture.CreateDbContext([hook]);
 
-        var result = await CreateService(syncDb, ApiReturning(channel, SetA, Live("x", "B", T2)), slotsEnabled: true)
+        var result = await CreateService(syncDb, ApiReturning(channel, SetA, Live("x", "B", T2)))
             .SyncChannelAsync(channel.ChannelName)
             .WaitAsync(TimeSpan.FromSeconds(30));
 
@@ -290,7 +290,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
             });
         var logger = new RecordingLogger<SevenTvSyncService>();
         await using var syncDb = fixture.CreateTaggedDbContext(syncTag, [hook], options: $"-c deadlock_timeout={(syncIsVictim ? 200 : 60000)}");
-        var sync = CreateService(syncDb, ApiReturning(channel, SetA, Live("x", "A", T1)), slotsEnabled: true, logger: logger)
+        var sync = CreateService(syncDb, ApiReturning(channel, SetA, Live("x", "A", T1)), logger: logger)
             .SyncChannelAsync(channel.ChannelName);
         await fixture.WaitUntilBlockedOnLockAsync(syncTag, sync);
 
@@ -318,19 +318,17 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         Assert.False((await SlotAsync(setup, seed.Id)).SeedUnsettled);
     }
 
-    // (8) Limit: a second deadlock in the retry propagates (both flag states, E27). Injected — every
-    // recovery above is a real one.
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task DeadlockInTheRetryAsWell_Propagates(bool slotsEnabled)
+    // (8) Limit: a second deadlock in the retry propagates (E27). Injected — every recovery above is a
+    // real one.
+    [Fact]
+    public async Task DeadlockInTheRetryAsWell_Propagates()
     {
         await using var setup = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(setup, $"slot_c_double_deadlock_{slotsEnabled}".ToLowerInvariant());
+        var channel = await SeedChannelAsync(setup, "slot_c_double_deadlock");
         var hook = new SaveHook((_, _) => throw new PostgresException("deadlock detected", "ERROR", "ERROR", PostgresErrorCodes.DeadlockDetected));
         var logger = new RecordingLogger<SevenTvSyncService>();
         await using var syncDb = fixture.CreateDbContext([hook]);
-        var service = CreateService(syncDb, ApiReturning(channel, SetA, Live("x", "A", T1)), slotsEnabled, logger: logger);
+        var service = CreateService(syncDb, ApiReturning(channel, SetA, Live("x", "A", T1)), logger: logger);
 
         var thrown = await Assert.ThrowsAnyAsync<Exception>(() => service.SyncChannelAsync(channel.ChannelName));
 
@@ -358,7 +356,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         var logger = new RecordingLogger<SevenTvSyncService>();
         await using var syncDb = fixture.CreateDbContext([hook]);
         var service = CreateService(
-            syncDb, ApiReturning(channel, SetA, [.. newcomers.Select(id => Live(id, id, T1))]), slotsEnabled: true, logger: logger);
+            syncDb, ApiReturning(channel, SetA, [.. newcomers.Select(id => Live(id, id, T1))]), logger: logger);
 
         await Assert.ThrowsAnyAsync<InvalidOperationException>(() => service.SyncChannelAsync(channel.ChannelName));
 
@@ -407,7 +405,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         apiClient.GetChannelStateForTwitchUserAsync(b.TwitchChannelId!, Arg.Any<CancellationToken>())
             .Returns(SevenTvChannelStateResult.Ok(new SevenTvChannelState("7tv-b", new SevenTvEmoteSet(SetB, [Live("b1", "Beta", T2)]))));
         await using var tickDb = fixture.CreateDbContext([coverageHook, deadlockHook]);
-        var service = CreateService(tickDb, apiClient, slotsEnabled: true);
+        var service = CreateService(tickDb, apiClient);
 
         await Assert.ThrowsAnyAsync<Exception>(() => service.SyncChannelAsync(a.ChannelName));
         Assert.DoesNotContain(tickDb.ChangeTracker.Entries(), e => e.State != EntityState.Unchanged);
@@ -427,22 +425,19 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         Assert.Equal(("Beta", T2), (betaSlot.Name, betaSlot.AddedAt));
     }
 
-    // Z8, the EventAPI delta's statements by flag: on, the channel row, then the emote rows of the
-    // dispatch, then the leave upsert, then the save; off, exactly the statements of before (no row
-    // lock, the leave upsert first, a transaction only because something is pulled).
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task DeltaLockStatements_FollowTheFlag(bool slotsEnabled)
+    // Z8, the EventAPI delta's statements: the channel row, then the emote rows of the dispatch, then the
+    // leave upsert, then the save.
+    [Fact]
+    public async Task DeltaLockStatements_ChannelThenEmotesThenLeavesThenSave()
     {
         await using var setup = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(setup, $"slot_c_delta_order_{slotsEnabled}".ToLowerInvariant());
+        var channel = await SeedChannelAsync(setup, "slot_c_delta_order");
         await SeedEmoteAsync(setup, channel, "x", "Xenon", firstSeenAt: T1);
         await SeedEmoteAsync(setup, channel, "y", "Yak", firstSeenAt: T1);
         var hook = new CommandHook(_ => false, _ => Task.CompletedTask);
         await using var db = fixture.CreateDbContext([hook]);
 
-        var result = await CreateService(db, ApiReturning(channel, SetA), slotsEnabled)
+        var result = await CreateService(db, ApiReturning(channel, SetA))
             .ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, new SevenTvEmoteSetDelta([Live("z", "Zebra", null)], [], [new SevenTvPulledEntry("x")]));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
@@ -452,13 +447,6 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         var emoteLock = hook.IndexOf(t => t.Contains(EmoteIdLock, StringComparison.Ordinal));
         var leave = hook.IndexOf(t => t.Contains(LeaveUpsert, StringComparison.Ordinal));
         var update = hook.IndexOf(t => t.Contains("UPDATE \"Emotes\"", StringComparison.Ordinal));
-        if (!slotsEnabled)
-        {
-            Assert.Equal(0, hook.Count(t => t.Contains("FOR NO KEY UPDATE", StringComparison.Ordinal)));
-            Assert.True(leave >= 0 && leave < update);
-            return;
-        }
-
         Assert.Equal(2, hook.Count(t => t.Contains("FOR NO KEY UPDATE", StringComparison.Ordinal)));
         Assert.True(channelLock >= 0 && channelLock < emoteLock && emoteLock < leave && leave < update);
         // Plan #374 3.2 step 2: the slots of the dispatch's emotes are read behind the emote lock.
@@ -466,19 +454,16 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         Assert.True(emoteLock < slotRead && slotRead < leave);
     }
 
-    // Z8 recovery, both flag states: a dispatch chosen as a deadlock victim runs once more on a cleared
-    // tracker and a re-read row and applies exactly once; a second deadlock propagates and writes
-    // nothing. Injected — the cycle itself is aligned with the flag on (EmoteServiceInSetConcurrencyTests
-    // 5b) and only reachable in the switch-over window.
+    // Z8 recovery: a dispatch chosen as a deadlock victim runs once more on a cleared tracker and a
+    // re-read row and applies exactly once; a second deadlock propagates and writes nothing. Injected —
+    // the cycle itself is aligned (EmoteServiceInSetConcurrencyTests 5b), the retry stays as a guard.
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
-    public async Task DeltaDeadlockVictim_RetriesOnce_ASecondOnePropagates(bool slotsEnabled, bool twice)
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeltaDeadlockVictim_RetriesOnce_ASecondOnePropagates(bool twice)
     {
         await using var setup = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(setup, $"slot_c_delta_dl_{slotsEnabled}_{twice}".ToLowerInvariant());
+        var channel = await SeedChannelAsync(setup, $"slot_c_delta_dl_{twice}".ToLowerInvariant());
         await SeedEmoteAsync(setup, channel, "x", "Xenon", firstSeenAt: T1);
         await SeedEmoteAsync(setup, channel, "y", "Yak", firstSeenAt: T1);
         var hook = new SaveHook((_, call) => call == 1 || twice
@@ -486,7 +471,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
             : Task.CompletedTask);
         var logger = new RecordingLogger<SevenTvSyncService>();
         await using var db = fixture.CreateDbContext([hook]);
-        var service = CreateService(db, ApiReturning(channel, SetA), slotsEnabled, logger: logger);
+        var service = CreateService(db, ApiReturning(channel, SetA), logger: logger);
         var delta = new SevenTvEmoteSetDelta([Live("z", "Zebra", null)], [], [new SevenTvPulledEntry("x")]);
 
         if (twice)
@@ -533,7 +518,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         var logger = new RecordingLogger<SevenTvSyncService>();
         await using var db = fixture.CreateDbContext([hook]);
 
-        var result = await CreateService(db, ApiReturning(channel, SetA), slotsEnabled: true, logger: logger)
+        var result = await CreateService(db, ApiReturning(channel, SetA), logger: logger)
             .ApplyEmoteSetUpdateAsync(
                 channel.ChannelName, SetA,
                 new SevenTvEmoteSetDelta([Live("n", "Neo", null)], [new SevenTvEmoteRename("r", "Ray", "Ray2", Url("r"))], []));
@@ -573,7 +558,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         var logger = new RecordingLogger<SevenTvSyncService>();
         await using var db = fixture.CreateDbContext([hook]);
 
-        var result = await CreateService(db, ApiReturning(channel, SetA), slotsEnabled: true, logger: logger)
+        var result = await CreateService(db, ApiReturning(channel, SetA), logger: logger)
             .ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, new SevenTvEmoteSetDelta([Live("n", "Neo", null)], [], []));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
@@ -601,7 +586,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
             : new PostgresException("deadlock detected", "ERROR", "ERROR", PostgresErrorCodes.DeadlockDetected)));
         var logger = new RecordingLogger<SevenTvSyncService>();
         await using var db = fixture.CreateDbContext([hook]);
-        var service = CreateService(db, ApiReturning(channel, SetA), slotsEnabled: true, logger: logger);
+        var service = CreateService(db, ApiReturning(channel, SetA), logger: logger);
 
         var thrown = await Assert.ThrowsAnyAsync<Exception>(() => service.ApplyEmoteSetUpdateAsync(
             channel.ChannelName, SetA, new SevenTvEmoteSetDelta([Live("n", "Neo", null)], [], [])));
@@ -637,7 +622,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         var delta = change == "rename"
             ? new SevenTvEmoteSetDelta([], [new SevenTvEmoteRename("r", "Ray", "Ray2", Url("r"))], [])
             : new SevenTvEmoteSetDelta([], [], [new SevenTvPulledEntry("r", "Ray")]);
-        var result = await CreateService(db, ApiReturning(channel, SetA), slotsEnabled: true)
+        var result = await CreateService(db, ApiReturning(channel, SetA))
             .ApplyEmoteSetUpdateAsync(channel.ChannelName, SetA, delta)
             .WaitAsync(TimeSpan.FromSeconds(15));
         await flushTx.CommitAsync();
@@ -650,26 +635,24 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
 
     // (10) E28: renamed while the 7TV call is in flight, with a warm cache under the old login that
     // nobody's LEAVE cleans up — the sync removes it and caches under the new login only. The slot
-    // summary (flag on) names the new login too (review P3-6).
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task RenamedInFlight_WithAWarmCache_CachesUnderTheNewLoginOnly(bool slotsEnabled)
+    // summary names the new login too (review P3-6).
+    [Fact]
+    public async Task RenamedInFlight_WithAWarmCache_CachesUnderTheNewLoginOnly()
     {
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, $"slot_if_old_{slotsEnabled}".ToLowerInvariant());
-        var newName = $"slot_if_new_{slotsEnabled}".ToLowerInvariant();
+        var channel = await SeedChannelAsync(db, "slot_if_old");
+        var newName = "slot_if_new";
         await SeedEmoteAsync(db, channel, "a", "Alpha", firstSeenAt: T1);
         var cache = new EmoteMatchCache();
         var logger = new RecordingLogger<SevenTvSyncService>();
-        var (service, entered, release) = CreateBlockedService(db, cache, channel, slotsEnabled, logger);
+        var (service, entered, release) = CreateBlockedService(db, cache, channel, logger);
 
         var sync = service.SyncChannelAsync(channel.ChannelName);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        // The warm start built a cache entry under the old login. With the flag on the emote has no own
-        // slot yet and the map has no virtual entries (plan #373, E7), so the name is still missing.
+        // The warm start built a cache entry under the old login. The emote has no own slot yet and the
+        // map has no virtual entries (plan #373, E7), so the name is still missing.
         Assert.Contains(channel.ChannelName, cache.GetCachedChannelNames());
-        Assert.Equal(!slotsEnabled, cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.ContainsKey("Alpha"));
+        Assert.False(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.ContainsKey("Alpha"));
         await RenameAsync(channel, newName);
         release.SetResult();
         var result = await sync.WaitAsync(TimeSpan.FromSeconds(30));
@@ -677,22 +660,20 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         Assert.Equal(newName, result!.ChannelName);
         Assert.Contains("Alpha", cache.GetChannelSnapshot(newName).NameToSlotId.Keys);
         Assert.DoesNotContain(channel.ChannelName, cache.GetCachedChannelNames());
-        Assert.Equal(slotsEnabled ? [$"{newName}: slot reconcile created 1"] : [], Lines(logger, "slot reconcile created").Select(l => l[..l.IndexOf(" and", StringComparison.Ordinal)]));
+        Assert.Equal([$"{newName}: slot reconcile created 1"], Lines(logger, "slot reconcile created").Select(l => l[..l.IndexOf(" and", StringComparison.Ordinal)]));
     }
 
-    // (10) The other in-flight writers of SevenTvSyncServiceInFlightWriterTests, over both flag states.
+    // (10) The other in-flight writers of SevenTvSyncServiceInFlightWriterTests on the slot-aware sync.
     [Theory]
-    [InlineData(false, "deactivated")]
-    [InlineData(true, "deactivated")]
-    [InlineData(false, "deleted")]
-    [InlineData(true, "deleted")]
-    public async Task DeactivatedOrDeletedInFlight_ReturnsNull_AndLeavesNoCacheEntry(bool slotsEnabled, string writer)
+    [InlineData("deactivated")]
+    [InlineData("deleted")]
+    public async Task DeactivatedOrDeletedInFlight_ReturnsNull_AndLeavesNoCacheEntry(string writer)
     {
         await using var db = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(db, $"slot_if_{writer}_{slotsEnabled}".ToLowerInvariant());
+        var channel = await SeedChannelAsync(db, $"slot_if_{writer}");
         await SeedEmoteAsync(db, channel, "a", "Alpha", firstSeenAt: T1);
         var cache = new EmoteMatchCache();
-        var (service, entered, release) = CreateBlockedService(db, cache, channel, slotsEnabled);
+        var (service, entered, release) = CreateBlockedService(db, cache, channel);
 
         var sync = service.SyncChannelAsync(channel.ChannelName);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
@@ -715,20 +696,18 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
         Assert.DoesNotContain(channel.ChannelName, cache.GetCachedChannelNames());
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task OldLoginNowCarriedByAnotherActiveRow_LeavesThatRowsCacheEntryAlone(bool slotsEnabled)
+    [Fact]
+    public async Task OldLoginNowCarriedByAnotherActiveRow_LeavesThatRowsCacheEntryAlone()
     {
         await using var db = fixture.CreateDbContext();
-        var oldName = $"slot_if_swap_a_{slotsEnabled}".ToLowerInvariant();
+        var oldName = "slot_if_swap_a";
         var channel = await SeedChannelAsync(db, oldName);
         var cache = new EmoteMatchCache();
-        var (service, entered, release) = CreateBlockedService(db, cache, channel, slotsEnabled);
+        var (service, entered, release) = CreateBlockedService(db, cache, channel);
 
         var sync = service.SyncChannelAsync(oldName);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        await RenameAsync(channel, $"slot_if_swap_b_{slotsEnabled}".ToLowerInvariant());
+        await RenameAsync(channel, "slot_if_swap_b");
         await using (var other = fixture.CreateDbContext())
         {
             other.Channels.Add(new Channel { ChannelName = oldName, TwitchChannelId = $"tw_other_{oldName}", ActiveEmoteSetId = SetA, IsBotActive = true });
@@ -744,29 +723,27 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
 
     // (10) E17 + E28: renamed in flight, then the first save is a deadlock victim; after the retry's
     // re-read the cleanup still removes the entry under the old login.
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task RenamedInFlightThenDeadlockRetry_StillCleansUpTheOldLogin(bool slotsEnabled)
+    [Fact]
+    public async Task RenamedInFlightThenDeadlockRetry_StillCleansUpTheOldLogin()
     {
         var hook = new SaveHook((_, call) => call == 1
             ? throw new PostgresException("deadlock detected", "ERROR", "ERROR", PostgresErrorCodes.DeadlockDetected)
             : Task.CompletedTask);
         await using var setup = fixture.CreateDbContext();
-        var channel = await SeedChannelAsync(setup, $"slot_if_retry_old_{slotsEnabled}".ToLowerInvariant());
-        var newName = $"slot_if_retry_new_{slotsEnabled}".ToLowerInvariant();
+        var channel = await SeedChannelAsync(setup, "slot_if_retry_old");
+        var newName = "slot_if_retry_new";
         await SeedEmoteAsync(setup, channel, "a", "Alpha", firstSeenAt: T1);
         await using var db = fixture.CreateDbContext([hook]);
         var cache = new EmoteMatchCache();
         var logger = new RecordingLogger<SevenTvSyncService>();
-        var (service, entered, release) = CreateBlockedService(db, cache, channel, slotsEnabled, logger);
+        var (service, entered, release) = CreateBlockedService(db, cache, channel, logger);
 
         var sync = service.SyncChannelAsync(channel.ChannelName);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        // The warm start built a cache entry under the old login. With the flag on the emote has no own
-        // slot yet and the map has no virtual entries (plan #373, E7), so the name is still missing.
+        // The warm start built a cache entry under the old login. The emote has no own slot yet and the
+        // map has no virtual entries (plan #373, E7), so the name is still missing.
         Assert.Contains(channel.ChannelName, cache.GetCachedChannelNames());
-        Assert.Equal(!slotsEnabled, cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.ContainsKey("Alpha"));
+        Assert.False(cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId.ContainsKey("Alpha"));
         await RenameAsync(channel, newName);
         release.SetResult();
         var result = await sync.WaitAsync(TimeSpan.FromSeconds(30));
@@ -808,7 +785,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
     }
 
     private static (SevenTvSyncService Service, TaskCompletionSource Entered, TaskCompletionSource Release) CreateBlockedService(
-        AppDbContext db, EmoteMatchCache cache, Channel channel, bool slotsEnabled, RecordingLogger<SevenTvSyncService>? logger = null)
+        AppDbContext db, EmoteMatchCache cache, Channel channel, RecordingLogger<SevenTvSyncService>? logger = null)
     {
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -821,7 +798,7 @@ public class SevenTvSyncServiceSlotConcurrencyTests(PostgresFixture fixture)
                 await release.Task;
                 return state;
             });
-        return (CreateService(db, apiClient, slotsEnabled, cache, logger), entered, release);
+        return (CreateService(db, apiClient, cache, logger), entered, release);
     }
 
     /// <summary>A transaction a hook opens inside the sync's flow and the test commits later.</summary>

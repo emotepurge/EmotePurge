@@ -118,9 +118,9 @@ public record SevenTvEmoteSetDelta(
 {
     public bool IsEmpty => Pushed.Count == 0 && Updated.Count == 0 && Pulled.Count == 0;
 
-    // The pulled emote ids, ordinal distinct and in order of first appearance: the emote-wide view the
-    // flag-off path works on (one archive and one leave observation per id, however many slots left).
-    // Computed on each access; callers that need it more than once keep it in a local.
+    // The pulled emote ids, ordinal distinct and in order of first appearance: the emote-wide view of the
+    // pulls (one entry per id, however many slots left), which the delta's plausibility guard simulates
+    // the wipe with. Computed on each access; callers that need it more than once keep it in a local.
     public IReadOnlyList<string> PulledIds => Pulled.Select(p => p.Id).Distinct(StringComparer.Ordinal).ToList();
 }
 
@@ -141,8 +141,7 @@ public enum SevenTvDeltaOutcome
 
     // The dispatch cannot be told apart per slot from what is stored (plan #374), so nothing of the
     // inventory was written and the caller must run the REST resync, outside the call like for the two
-    // outcomes above. Only the slot-aware path (SevenTv:SlotReconcile:Enabled) produces it; with the
-    // flag off it never occurs. Reachable only after the row was read, so it carries the login.
+    // outcomes above. Reachable only after the row was read, so it carries the login.
     AmbiguousDelta
 }
 

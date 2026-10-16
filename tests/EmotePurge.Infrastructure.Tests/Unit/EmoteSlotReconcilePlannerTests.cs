@@ -653,8 +653,8 @@ public class EmoteSlotReconcilePlannerTests
     [Fact]
     public void UnarchivedSlotReplacingTheVirtualSlot_IsNoChange()
     {
-        // On → off → on: the emote came back while the flag was off (no slot written), its own slot is
-        // still archived; the first pass with the flag on brings exactly the virtual slot back.
+        // The emote came back without a slot being written (before the slot work), its own slot is still
+        // archived; the first reconcile brings exactly the virtual slot back.
         var slots = new[] { Archived("s1", "A", Day(1), archivedAt: Day(2)) };
 
         var plan = Plan([Live("A", Day(1))], slots, emoteName: "A");

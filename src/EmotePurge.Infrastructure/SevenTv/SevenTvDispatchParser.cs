@@ -155,8 +155,7 @@ public static class SevenTvDispatchParser
             }
 
             // A missing or empty name is null here, never a throw; a missing old_value gives a null
-            // OldName. The flag-off path takes the new name through NewName ?? string.Empty, which is
-            // the empty name the DTO yielded before the pair existed.
+            // OldName.
             var oldName = change.TryGetProperty("old_value", out var oldValue) ? GetNonEmptyString(oldValue, "name") : null;
             into.Add(new SevenTvEmoteRename(
                 dto.Id, oldName, dto.Name.Length > 0 ? dto.Name : null, SevenTvEmoteJsonMapper.MapDto(dto).ImageUrl));

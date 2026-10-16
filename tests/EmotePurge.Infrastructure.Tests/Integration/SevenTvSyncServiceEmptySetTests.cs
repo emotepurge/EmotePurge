@@ -46,7 +46,8 @@ public class SevenTvSyncServiceEmptySetTests(PostgresFixture fixture)
             ObservedFromUtc = DateTime.UtcNow.AddDays(-3),
         });
         db.UsageStats.Add(new UsageStat { EmoteId = emote.Id, Date = Today, UseCount = 7, EmoteSetId = OldSetId });
-        await db.AssignUsageSlotsAsync();
+        // Settled, not the default unsettled seed: the slot-aware match map holds settled slots only.
+        await db.AssignUsageSlotsAsync(UsageSlotKind.Settled);
         await db.SaveChangesAsync();
 
         var tracker = new EmptySetConfirmationTracker(new EmptySetConfirmationOptions { EmptySetConfirmations = confirmations }, _clock);

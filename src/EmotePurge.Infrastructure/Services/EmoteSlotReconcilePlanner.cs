@@ -24,8 +24,8 @@ namespace EmotePurge.Infrastructure.Services;
 /// seed's active-set usage rows onto another slot (only rows with <c>EmoteSetId</c> = active set);
 /// <see cref="SlotReconcilePlan.Derivation"/> is the D13 value for <c>Emote.Name</c>/<c>FirstSeenAt</c>
 /// (<c>null</c> = leave both as they are). The emote row itself (step 1: create, un-archive, image,
-/// <c>LastEnteredSetAtUtc</c>, <c>IsPlaceholder</c>, leave detection) stays with the service; with the
-/// flag on, step 1 must not rename the emote — the name is derived here.
+/// <c>LastEnteredSetAtUtc</c>, <c>IsPlaceholder</c>, leave detection) stays with the service; step 1 must
+/// not rename the emote — the name is derived here.
 /// </para>
 /// <para>
 /// Name equality is ordinal and case-sensitive (U14); dates compare by ticks. A name tie in an "oldest alias"
@@ -427,8 +427,8 @@ internal static partial class EmoteSlotReconcilePlanner
     /// since slots under an archived emote are not shown. Not counted: date authorization, marker
     /// removal, usage rebinding, an emptied seed. And not the one slot that exactly replaces the virtual
     /// slot (E14: an active emote without an active own slot shows one slot under <c>Emote.Name</c>) —
-    /// generalized from "created" to any slot becoming visible under that name, so the first pass after
-    /// switching the flag on (also after on → off → on) does not fire <c>channel.synced</c> per channel.
+    /// generalized from "created" to any slot becoming visible under that name, so the first pass over
+    /// an emote that so far showed only its virtual slot does not fire <c>channel.synced</c> per channel.
     /// The derived name change is added by the caller of this helper.
     /// </summary>
     private static bool InventoryChanged(

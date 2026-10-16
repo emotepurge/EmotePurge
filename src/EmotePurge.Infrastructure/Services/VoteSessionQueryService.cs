@@ -7,14 +7,8 @@ namespace EmotePurge.Infrastructure.Services;
 
 public class VoteSessionQueryService(
     AppDbContext db,
-    IUsageStatQueryService usageStatQueryService,
-    SlotReconcileOptions? slotReconcile = null) : IVoteSessionQueryService
+    IUsageStatQueryService usageStatQueryService) : IVoteSessionQueryService
 {
-    // Read once at construction; null (the unit-test constructor) is off, like the flag's default. It only
-    // decides the extra aliases of a null-session row (plan #376 R1); a set-session's frozen aliases are
-    // data, not a mode, and are read either way.
-    private readonly bool slotReconcileEnabled = slotReconcile?.Enabled ?? false;
-
     public async Task<IReadOnlyList<VoteSessionSummaryDto>> ListSessionsAsync(string channelName, CancellationToken cancellationToken = default)
     {
         var normalized = ChannelName.Normalize(channelName);
@@ -246,7 +240,7 @@ public class VoteSessionQueryService(
     /// <c>emoteNames</c> (plan #376 2.7, spec D26): never empty, first element is the row's <c>emoteName</c>.
     /// A set-session row lists its frozen aliases (<c>NamesAtCreation</c>); a row frozen before the column
     /// existed has only <c>NameAtCreation</c>, which is <c>emote.Name</c> already. A null-session row lists
-    /// the live emote name first, then the aliases of its active slots (flag on, empty otherwise).
+    /// the live emote name first, then the aliases of its active own slots.
     /// </summary>
     private static IReadOnlyList<string> ListAliases(CandidateEmote emote, IReadOnlyDictionary<string, IReadOnlyList<string>> slotAliases)
     {
@@ -266,13 +260,13 @@ public class VoteSessionQueryService(
 
     /// <summary>
     /// The names of the active own slots of the ballot's emotes in D2 order, one query for all of them
-    /// (null-session rows with the flag on only; seeds do not count, E7). Empty otherwise: a set-session
-    /// carries its aliases frozen, and with the flag off slots are not maintained (R1).
+    /// (null-session rows only; seeds do not count, E7). Empty for a set-session, which carries its aliases
+    /// frozen.
     /// </summary>
     private async Task<IReadOnlyDictionary<string, IReadOnlyList<string>>> LoadSlotAliasesAsync(
         IReadOnlyList<CandidateEmote> candidates, bool isSetSession, CancellationToken cancellationToken)
     {
-        if (!slotReconcileEnabled || isSetSession || candidates.Count == 0)
+        if (isSetSession || candidates.Count == 0)
         {
             return new Dictionary<string, IReadOnlyList<string>>();
         }

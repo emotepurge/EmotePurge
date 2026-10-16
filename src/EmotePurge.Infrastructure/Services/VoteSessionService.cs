@@ -122,9 +122,9 @@ public class VoteSessionService(
             // Not ToDictionary: 7TV's own sets routinely list the same emote id twice under two
             // aliases (measured on real sets — every one examined so far had at least one such pair),
             // and ToDictionary throws on the second occurrence. Per id the entries are taken in the D2
-            // order (spec D26, regardless of SevenTv:SlotReconcile:Enabled, plan #376 R5): the oldest
-            // alias is the representative that seeds a never-active Emotes row and the frozen
-            // NameAtCreation/ImageUrlAtCreation, and all aliases are frozen in NamesAtCreation.
+            // order (spec D26, plan #376 R5): the oldest alias is the representative that seeds a
+            // never-active Emotes row and the frozen NameAtCreation/ImageUrlAtCreation, and all aliases
+            // are frozen in NamesAtCreation.
             var liveMembersById = new Dictionary<string, ForeignEmoteRow>(StringComparer.Ordinal);
             aliasesById = new Dictionary<string, string[]>(StringComparer.Ordinal);
             foreach (var group in BaseSlotRule.OldestAliasFirst(lookup.EmoteSet!.Emotes)

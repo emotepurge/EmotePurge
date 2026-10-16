@@ -24,7 +24,6 @@ public class SevenTvSyncService(
     TwitchIdResolutionBackoff resolutionBackoff,
     IEmptySetConfirmationTracker emptySetConfirmations,
     ILogger<SevenTvSyncService> logger,
-    SlotReconcileOptions? slotReconcile = null,
     MatchMapExclusionTracker? matchMapExclusions = null)
     : ISevenTvSyncService
 {
@@ -49,11 +48,7 @@ public class SevenTvSyncService(
     // delete report are always credible and never consult it.
     private static readonly TimeSpan TagLeaveCredibilityWindow = TimeSpan.FromMinutes(30);
 
-    // Plan #372 E26: read once from the singleton options; absent (tests, older call sites) means off,
-    // which is the emote-wide reconcile exactly as before the slot work.
-    private readonly bool slotReconcileEnabled = slotReconcile?.Enabled ?? false;
-
-    // Plan #373, E7: the process-wide memory of the flag-on map's left-out count per channel, so its
+    // Plan #373, E7: the process-wide memory of the match map's left-out count per channel, so its
     // information line is written on change only. Absent (tests) means a private one.
     private readonly MatchMapExclusionTracker exclusionTracker = matchMapExclusions ?? new MatchMapExclusionTracker();
 
@@ -230,13 +225,10 @@ public class SevenTvSyncService(
             .Where(c => c.Id == channel.Id)
             .Select(c => new { c.ChannelName, c.IsBotActive })
             .FirstOrDefaultAsync(cancellationToken);
-        if (slotSummary is { } summary)
-        {
-            // After the commit, so a retried save logs once (E19), and under the login the row carries
-            // now: the tracked instance keeps the login it was loaded with when a rename committed while
-            // the 7TV call was in flight (E28 deliberately does not reload it).
-            LogSlotSummary(current?.ChannelName ?? channel.ChannelName, summary);
-        }
+        // After the commit, so a retried save logs once (E19), and under the login the row carries now:
+        // the tracked instance keeps the login it was loaded with when a rename committed while the 7TV
+        // call was in flight (E28 deliberately does not reload it).
+        LogSlotSummary(current?.ChannelName ?? channel.ChannelName, slotSummary);
 
         if (current is null || !current.IsBotActive)
         {
@@ -298,19 +290,15 @@ public class SevenTvSyncService(
         }
 
         // One retry of the whole attempt when Postgres picks this dispatch as a deadlock victim (plan
-        // #372 cycle Z8, both flag states). With the flag on the attempt takes the slot work's lock
-        // order and meets the sync and the in-set report at the channel row; the retry covers the
-        // switch-over window, in which a worker with the flag off (leave rows first) and an api with
-        // the flag on (channel, emote, then leave rows) can still meet in a cycle. Before the slot
-        // work no writer of this path took another order, so with the flag off everywhere the retry
-        // never fires. It is result-neutral: the victim's transaction has rolled back as a whole, and
-        // the retry starts on a cleared change tracker and a re-read row, as a fresh dispatch would. A
-        // second failure propagates as before.
+        // #372 cycle Z8). The attempt takes the slot work's lock order (channel, emote, then leave rows)
+        // and meets the sync and the in-set report at the channel row; the retry stays as a guard against
+        // any writer that meets it in a cycle anyway. It is result-neutral: the victim's transaction has
+        // rolled back as a whole, and the retry starts on a cleared change tracker and a re-read row, as a
+        // fresh dispatch would. A second failure propagates as before.
         //
-        // With the flag on the same single retry also covers (plan #374 E9) a lock coverage miss (E2: an
-        // emote row of a dispatch id appeared between the id read and the lock) and a concurrent insert
-        // of the same emote row at save time (IX_Emotes_ChannelId_SevenTvEmoteId). One retry for all
-        // three causes together; with the flag off it stays limited to deadlocks.
+        // The same single retry also covers (plan #374 E9) a lock coverage miss (E2: an emote row of a
+        // dispatch id appeared between the id read and the lock) and a concurrent insert of the same emote
+        // row at save time (IX_Emotes_ChannelId_SevenTvEmoteId). One retry for all three causes together.
         var retried = false;
         while (true)
         {
@@ -332,7 +320,7 @@ public class SevenTvSyncService(
                     "ApplyEmoteSetUpdateAsync: an emote row of the dispatch for {Channel} ({ChannelId}) appeared between its row lock and its read — retrying once.",
                     normalized, channel.Id);
             }
-            catch (DbUpdateException ex) when (!retried && slotReconcileEnabled && IsEmoteKeyConflict(ex))
+            catch (DbUpdateException ex) when (!retried && IsEmoteKeyConflict(ex))
             {
                 retried = true;
                 logger.LogWarning(
@@ -395,121 +383,12 @@ public class SevenTvSyncService(
             return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.SetNotActive, currentName);
         }
 
-        // Flag on (plan #374 3.2): the slot path, per (id, name), in the slot work's lock order. Flag
-        // off: everything below is the emote-wide path exactly as before the slot work (E1) — no row
-        // lock, and a transaction only when something is pulled.
-        if (slotReconcileEnabled)
-        {
-            return await ApplySlotDeltaAttemptAsync(channel, normalized, emoteSetId, delta, currentName, afterSlotKeyConflict: false, cancellationToken);
-        }
-
-        var existing = await db.Emotes
-            .Where(e => e.ChannelId == channel.Id)
-            .ToDictionaryAsync(e => e.SevenTvEmoteId, cancellationToken);
-
-        // Same asymmetry as the empty-set guard in SyncChannelAsync: one malformed or malicious
-        // delta that would archive the channel's entire active set kills chat matching until the
-        // next resync. Simulated first, and skipped when the result would be a wipe — the caller
-        // reacts with a full resync, which re-checks against 7TV's authoritative state.
-        var activeBefore = existing.Values.Count(e => !e.IsArchived);
-        var activeAfter = existing.Values
-            .Where(e => !e.IsArchived)
-            .Select(e => e.SevenTvEmoteId)
-            .ToHashSet();
-        foreach (var emote in delta.Pushed)
-        {
-            activeAfter.Add(emote.Id);
-        }
-        foreach (var rename in delta.Updated)
-        {
-            activeAfter.Add(rename.Id);
-        }
-        // The emote-wide view of the pulls: one entry per id, however many slots of it left.
-        var pulledIds = delta.PulledIds;
-        activeAfter.ExceptWith(pulledIds);
-
-        if (activeBefore > 0 && activeAfter.Count == 0)
-        {
-            logger.LogWarning(
-                "7TV-Dispatch würde alle {Count} aktiven Emotes von {Channel} entfernen — als unplausibel übersprungen.",
-                activeBefore, normalized);
-            return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.ImplausibleSkipped, currentName);
-        }
-
-        // A dispatch that adds or changes an emote is live evidence that the set is not empty, so a
-        // zero streak built from earlier resyncs is stale. Placed after the plausibility return and
-        // regardless of Applied vs NoChange; pull-only dispatches prove nothing of the sort.
-        if (delta.Pushed.Count > 0 || delta.Updated.Count > 0)
-        {
-            emptySetConfirmations.Reset(channel.ChannelName);
-        }
-
-        foreach (var emote in delta.Pushed)
-        {
-            // A push IS the moment the emote enters the set, so "now" is the true added-at — the
-            // one place in the delta path where the date is known without asking v4.
-            UpsertEmote(channel.Id, existing, emote with { AddedToSetAt = DateTime.UtcNow }, fromDispatch: true);
-        }
-
-        foreach (var rename in delta.Updated)
-        {
-            // Emote-wide: the row takes the dispatch's new name, a missing one as the empty string.
-            UpsertEmote(channel.Id, existing, new SevenTvEmote(rename.Id, rename.NewName ?? string.Empty, rename.ImageUrl), fromDispatch: true);
-        }
-
-        foreach (var pulledId in pulledIds)
-        {
-            if (existing.TryGetValue(pulledId, out var emote) && !emote.IsArchived)
-            {
-                emote.IsArchived = true;
-                emote.ArchivedAt = DateTime.UtcNow;
-                emote.LastSyncedAt = DateTime.UtcNow;
-                // D37: the row was active, so it is no placeholder, whatever a stale marker says.
-                emote.IsPlaceholder = false;
-            }
-        }
-
-        // A dispatch's REMOVE is always a credible leave (spec E34), so every pulled id is recorded —
-        // whether its row exists, is archived already or is being archived just now. Recording only the
-        // rows the loop above flips would lose exactly the case that matters: a REMOVE for a row a stale
-        // REST resync archived minutes earlier without an observation (inside the window). That case
-        // stages no change, so this runs before the NoChange guard, and the outcome stays NoChange (no
-        // match-cache refresh, no live event). One explicit transaction per call that pulled anything, so
-        // the observation and the archive commit together: the raw upsert does not join SaveChangesAsync's
-        // implicit one. A dispatch without pulls has nothing to record and keeps the implicit transaction.
-        // Observation rows first, then the emote rows — the order of the sync and the set-centric delete
-        // report with the flag off, and the sync takes no tag table, so no lock cycle among them (spec
-        // 5.5 rule 6). A channel purged meanwhile fails the upsert with 23503 and propagates, like the
-        // save's FK failure always has. A dispatch that met a writer of the flag-on order anyway (Z8 in
-        // the switch-over window) is retried by the caller.
-        await using var transaction = pulledIds.Count > 0
-            ? await db.Database.BeginTransactionAsync(cancellationToken)
-            : null;
-        if (pulledIds.Count > 0)
-        {
-            await EmoteSetLeaveObservations.RecordAsync(
-                db, channel.Id, emoteSetId, pulledIds, DateTime.UtcNow, cancellationToken);
-        }
-
-        if (!db.ChangeTracker.HasChanges())
-        {
-            await CommitIfOpenAsync(transaction, cancellationToken);
-            return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.NoChange, currentName);
-        }
-
-        await db.SaveChangesAsync(cancellationToken);
-        await CommitIfOpenAsync(transaction, cancellationToken);
-        await RefreshMatchCacheAsync(channel, cancellationToken);
-
-        logger.LogInformation(
-            "7TV-Dispatch auf {Channel} angewendet: {Pushed} hinzugefügt, {Updated} aktualisiert, {Pulled} entfernt.",
-            normalized, delta.Pushed.Count, delta.Updated.Count, delta.Pulled.Count);
-        return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.Applied, currentName);
+        // The slot path (plan #374 3.2): per (id, name), in the slot work's lock order.
+        return await ApplySlotDeltaAttemptAsync(channel, normalized, emoteSetId, delta, currentName, afterSlotKeyConflict: false, cancellationToken);
     }
 
     /// <summary>
-    /// One attempt of a dispatch with the slot reconcile flag on (plan #374 3.2; spec §7.2, D17), in one
-    /// transaction:
+    /// One attempt of a dispatch (plan #374 3.2; spec §7.2, D17), in one transaction:
     /// <list type="number">
     /// <item>locks (plan #372 Z8): the channel row, then the existing emote rows of the dispatch ids in
     /// one sorted statement — the sync's and the in-set report's order;</item>
@@ -591,13 +470,13 @@ public class SevenTvSyncService(
             now);
 
         // A dispatch that adds or renames is live evidence that the set is not empty — also when it is
-        // ambiguous per slot; not after the plausibility return (as with the flag off).
+        // ambiguous per slot; not after the plausibility return.
         var provesNonEmpty = delta.Pushed.Count > 0 || delta.Updated.Count > 0;
         if (plan.IsAmbiguous || afterSlotKeyConflict)
         {
-            // The plausibility guard stands ahead of the leaves of an ambiguous dispatch too: the same
-            // emote-wide wipe simulation as with the flag off (every pulled id counts as gone), so a
-            // malformed dispatch writes no leaves — the worker resyncs on ImplausibleSkipped.
+            // The plausibility guard stands ahead of the leaves of an ambiguous dispatch too, as an
+            // emote-wide wipe simulation (every pulled id counts as gone), so a malformed dispatch
+            // writes no leaves — the worker resyncs on ImplausibleSkipped.
             var simulatedActive = new HashSet<string>(activeIdsBefore, StringComparer.Ordinal);
             simulatedActive.UnionWith(delta.Pushed.Select(e => e.Id));
             simulatedActive.UnionWith(delta.Updated.Select(e => e.Id));
@@ -650,7 +529,7 @@ public class SevenTvSyncService(
 
         if (!plan.HasInventoryChanges)
         {
-            // A leave alone is no inventory change (as with the flag off): no map refresh, no live event.
+            // A leave alone is no inventory change: no map refresh, no live event.
             await transaction.CommitAsync(cancellationToken);
             return SevenTvDeltaResult.ForChannel(SevenTvDeltaOutcome.NoChange, currentName);
         }
@@ -683,7 +562,7 @@ public class SevenTvSyncService(
 
         await transaction.CommitAsync(cancellationToken);
 
-        // Plan #373 E7: the flag-on map counts per slot, so a push slot counts from this refresh on.
+        // Plan #373 E7: the map counts per slot, so a push slot counts from this refresh on.
         await RefreshMatchCacheAsync(channel, cancellationToken);
 
         logger.LogInformation(
@@ -729,8 +608,8 @@ public class SevenTvSyncService(
 
     /// <summary>
     /// Applies one unambiguous emote plan of a dispatch to the tracked rows (plan #374 3.3): the emote
-    /// action (create, un-archive, archive — the entry stamp and the placeholder marker as with the flag
-    /// off), the image, the planned slot updates and new slots, and <c>Emote.Name</c>/<c>FirstSeenAt</c>
+    /// action (create, un-archive, archive — with the entry stamp, E34, and the placeholder marker,
+    /// D37), the image, the planned slot updates and new slots, and <c>Emote.Name</c>/<c>FirstSeenAt</c>
     /// strictly from the D13 derivation. The dispatch never renames the emote row itself.
     /// </summary>
     private void ApplySlotDeltaEmotePlan(string channelId, Dictionary<string, Emote> byId, SlotDeltaEmotePlan plan, DateTime now)
@@ -762,7 +641,7 @@ public class SevenTvSyncService(
             switch (plan.EmoteAction)
             {
                 case SlotDeltaEmoteAction.Unarchive:
-                    // E34 and D37 exactly as in UpsertEmote: a fresh entry, observed in the active set.
+                    // E34 and D37: a fresh entry, observed in the active set.
                     emote.IsArchived = false;
                     emote.ArchivedAt = null;
                     emote.LastEnteredSetAtUtc = now;
@@ -820,7 +699,7 @@ public class SevenTvSyncService(
     }
 
     /// <summary>
-    /// The locks of a dispatch with the flag on (Z8): the channel row through the pure channel entry,
+    /// The locks of a dispatch (Z8): the channel row through the pure channel entry,
     /// then the existing emote rows of the channel whose 7TV ids the dispatch pushes, updates or pulls,
     /// in one sorted statement. A pushed id without a row becomes an insert and needs no lock. Returns
     /// the locked emote row ids, or null when the channel row is gone.
@@ -845,24 +724,24 @@ public class SevenTvSyncService(
     /// <summary>
     /// Runs <see cref="ApplyAndSaveAsync"/> with the sync's recoveries around it and returns the row the
     /// save finally wrote (a retry re-reads it), whether the visible inventory changed and the slot
-    /// summary (flag on), or null when the row is gone — in which case nothing is left behind and the
+    /// summary, or null when the row is gone — in which case nothing is left behind and the
     /// caller must return null as well. Every error that propagates leaves a cleared change tracker.
     /// <list type="bullet">
     /// <item><b>One retry of the whole save</b> (plan #372 E17), shared by three causes: a concurrent
-    /// emote-row insert (spec E10), a concurrent authoritative slot with the same key (flag on only),
-    /// and a deadlock (40P01, both flag states, E27). The retry starts from step 1 — the whole
+    /// emote-row insert (spec E10), a concurrent authoritative slot with the same key, and a deadlock
+    /// (40P01, E27). The retry starts from step 1 — the whole
     /// <see cref="ApplyAndSaveAsync"/> on a cleared change tracker and a re-read row — because the
     /// observation interval of a first sync is tracked only and would be lost otherwise. A second
     /// failure propagates.</item>
     /// <item><b>Up to <see cref="MaxLockCoverageRestarts"/> restarts</b> when the lock coverage check
-    /// fails (flag on, E24), counted separately and the same way from step 1. One more miss
+    /// fails (E24), counted separately and the same way from step 1. One more miss
     /// propagates like a second failure; the next tick tries again.</item>
     /// <item><b>Row vanished</b>: a purge or merge while the 7TV call was in flight ends the sync
     /// without leaving anything behind.</item>
     /// </list>
     /// Every cache cleanup on the way reads <paramref name="cacheIdentity"/> (E28).
     /// </summary>
-    private async Task<(Channel Channel, bool InventoryChanged, SlotReconcileSummary? SlotSummary)?> SaveSyncAsync(
+    private async Task<(Channel Channel, bool InventoryChanged, SlotReconcileSummary SlotSummary)?> SaveSyncAsync(
         Channel channel,
         ChannelCacheIdentity cacheIdentity,
         string normalized,
@@ -891,14 +770,14 @@ public class SevenTvSyncService(
                 catch (DbUpdateException ex) when (!retried && IsEmoteKeyConflict(ex))
                 {
                     // Spec E10: the Api's vote-session upsert (INSERT … ON CONFLICT DO NOTHING) inserted
-                    // one of this set's members between ReconcileAsync's read and the save. The retry
-                    // reads the Api's row and adopts it instead of inserting.
+                    // one of this set's members between ReconcileSlotsAsync's read and the save. The
+                    // retry reads the Api's row and adopts it instead of inserting.
                     retried = true;
                     logger.LogWarning(
                         "SyncChannelAsync: an emote row of {Channel} ({ChannelId}) was inserted concurrently during the sync — retrying once.",
                         normalized, channel.Id);
                 }
-                catch (DbUpdateException ex) when (!retried && slotReconcileEnabled && EmoteSlotKeys.IsSlotKeyConflict(ex))
+                catch (DbUpdateException ex) when (!retried && EmoteSlotKeys.IsSlotKeyConflict(ex))
                 {
                     // A writer that does not take the emote lock (or one that committed before it)
                     // inserted the same authoritative slot. The retry reads it and binds to it by date.
@@ -909,8 +788,8 @@ public class SevenTvSyncService(
                 }
                 catch (Exception ex) when (!retried && DatabaseErrors.IsDeadlock(ex))
                 {
-                    // Plan #372 2.2a: the cycles left over (switch-over window Z2, backfill block Z4,
-                    // flush Z5) are recovered by the side Postgres picks as the victim.
+                    // Plan #372 2.2a: the cycles left over (backfill block Z4, flush Z5) are recovered by
+                    // the side Postgres picks as the victim.
                     retried = true;
                     logger.LogWarning(
                         "SyncChannelAsync: the save of {Channel} ({ChannelId}) was chosen as a deadlock victim — retrying once.",
@@ -966,10 +845,10 @@ public class SevenTvSyncService(
     /// channel row, reconciles the emote rows and saves it all in one call. Split out so every
     /// recovery in <see cref="SaveSyncAsync"/> can run the exact same sequence again — the
     /// observation call included, because the row it may have staged is tracked only and a cleared
-    /// change tracker would otherwise drop it. Returns whether the visible inventory changed and, with
-    /// the flag on, the slot summary the caller logs once the save is through (E19).
+    /// change tracker would otherwise drop it. Returns whether the visible inventory changed and the slot
+    /// summary the caller logs once the save is through (E19).
     /// </summary>
-    private async Task<(bool InventoryChanged, SlotReconcileSummary? SlotSummary)> ApplyAndSaveAsync(
+    private async Task<(bool InventoryChanged, SlotReconcileSummary SlotSummary)> ApplyAndSaveAsync(
         Channel channel, string twitchUserId, SevenTvEmoteSet emoteSet, CancellationToken cancellationToken)
     {
         // The observation log's own decision, independent of SyncChannelAsync's ActiveEmoteSetId check:
@@ -1005,45 +884,31 @@ public class SevenTvSyncService(
         channel.LastSyncFailureReason = null;
 
         // One explicit transaction per save attempt, so the leave observations the reconcile upserts
-        // (raw SQL, outside SaveChangesAsync's implicit transaction) and, with the flag on, the usage
-        // rebinds of the settle commit together with the archive and the channel row. Opened only
-        // here, after RecordObservedSetAsync: that call commits a set switch in a transaction of its
-        // own, and EF cannot nest them. The assignments above are in-memory and ride the same save. A
-        // failed attempt rolls back on dispose, and SaveSyncAsync runs this method again with a new
-        // transaction — every statement in it is idempotent.
+        // (raw SQL, outside SaveChangesAsync's implicit transaction) and the usage rebinds of the settle
+        // commit together with the archive and the channel row. Opened only here, after
+        // RecordObservedSetAsync: that call commits a set switch in a transaction of its own, and EF
+        // cannot nest them. The assignments above are in-memory and ride the same save. A failed attempt
+        // rolls back on dispose, and SaveSyncAsync runs this method again with a new transaction — every
+        // statement in it is idempotent.
         //
-        // Lock order, flag off (as before the slot work): observation rows, then the save's emote rows
-        // and the channel UPDATE. The sync writes no tag table and a tag report only reads observations
-        // with a plain SELECT, so the report never waits on an observation row (spec 5.5 rule 6).
-        //
-        // Lock order, flag on (plan #372 E4, E23): the channel row first, then the emote rows the
-        // reconcile can write (sorted), then the usage rows of the settle and the backfill snapshot rows
-        // it rebinds (plan #373 E10, E11a), then the observation rows, then the save (slots, emotes ⊆
-        // locked ∪ new, the channel row already held). Purge, merge, join, identity reconcile, tag
-        // report and backfill enqueue all take Channels before Emotes as well, so none of them forms a
-        // cycle with the sync; the cycles that remain (2.2a) end in the deadlock retry of SaveSyncAsync.
+        // Lock order (plan #372 E4, E23): the channel row first, then the emote rows the reconcile can
+        // write (sorted), then the usage rows of the settle and the backfill snapshot rows it rebinds
+        // (plan #373 E10, E11a), then the observation rows, then the save (slots, emotes ⊆ locked ∪ new,
+        // the channel row already held). Purge, merge, join, identity reconcile, tag report and backfill
+        // enqueue all take Channels before Emotes as well, so none of them forms a cycle with the sync;
+        // the cycles that remain (2.2a) end in the deadlock retry of SaveSyncAsync.
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        bool inventoryChanged;
-        SlotReconcileSummary? slotSummary = null;
-        if (slotReconcileEnabled)
-        {
-            // E23: a pure lock statement that loads no Channel and reloads nothing — the tracked row
-            // was changed above, and its login must stay what the cache identity says (E28). A row
-            // committed as deleted meanwhile is not returned.
-            var lockedChannels = await db.LockChannelsByIdsAsync([channel.Id], cancellationToken);
-            if (lockedChannels.Count == 0)
-            {
-                throw new ChannelRowVanishedException();
-            }
 
-            var reconciled = await ReconcileSlotsAsync(channel.Id, emoteSet.Id, emoteSet.Emotes, cancellationToken);
-            inventoryChanged = reconciled.Changed;
-            slotSummary = reconciled.Summary;
-        }
-        else
+        // E23: a pure lock statement that loads no Channel and reloads nothing — the tracked row was
+        // changed above, and its login must stay what the cache identity says (E28). A row committed as
+        // deleted meanwhile is not returned.
+        var lockedChannels = await db.LockChannelsByIdsAsync([channel.Id], cancellationToken);
+        if (lockedChannels.Count == 0)
         {
-            inventoryChanged = await ReconcileAsync(channel.Id, emoteSet.Id, emoteSet.Emotes, cancellationToken);
+            throw new ChannelRowVanishedException();
         }
+
+        var (inventoryChanged, slotSummary) = await ReconcileSlotsAsync(channel.Id, emoteSet.Id, emoteSet.Emotes, cancellationToken);
 
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -1282,8 +1147,8 @@ public class SevenTvSyncService(
 
     /// <summary>
     /// A successful response with an empty emote list is indistinguishable from a real set wipe, but
-    /// the consequences are wildly asymmetric: ReconcileAsync would archive every emote of the channel
-    /// and RefreshMatchCacheAsync would install an empty dictionary, so chat matching stops entirely
+    /// the consequences are wildly asymmetric: ReconcileSlotsAsync would archive every emote of the
+    /// channel and RefreshMatchCacheAsync would install an empty dictionary, so chat matching stops entirely
     /// until a later sync fills the set again (thousands of lost matches at HandOfBlood's message
     /// rate). Known triggers: a set change in progress, a partial 7TV outage, an owner emptying the
     /// set. A zero is therefore held back, but not forever — a set that really is empty would
@@ -1418,12 +1283,10 @@ public class SevenTvSyncService(
 
     private async Task RefreshMatchCacheAsync(Channel channel, string channelName, CancellationToken cancellationToken)
     {
-        // Plan #373 §3.2: the map's values are slot keys in both flag states, but who gets an entry
-        // and under which name depends on the flag. Nothing here writes: a slot is only ever created
-        // by the flush (E4) or by a reconcile.
-        var (nameToSlotKey, duplicateNames) = slotReconcileEnabled
-            ? await BuildSlotMatchMapAsync(channel, channelName, cancellationToken)
-            : await BuildEmoteMatchMapAsync(channel, cancellationToken);
+        // Plan #373 §3.2: one entry per settled slot, with the slot id as value. Nothing here writes: the
+        // map only reads the slots the writers (the reconcile, the delta, the backfill enqueue and the
+        // set-centric report) have committed.
+        var (nameToSlotKey, duplicateNames) = await BuildSlotMatchMapAsync(channel, channelName, cancellationToken);
 
         if (duplicateNameTracker.Update(channelName, duplicateNames))
         {
@@ -1470,41 +1333,7 @@ public class SevenTvSyncService(
     }
 
     /// <summary>
-    /// Flag off (plan #373, E8): today's semantics — every active emote under <c>Emote.Name</c>,
-    /// collisions coalesced onto the first loaded (the load order has no <c>OrderBy</c>, so "first" is
-    /// whatever Postgres returns), the emote-wide collision report. Only the value changed: the base
-    /// slot of (emote, active set) by rule (a) when the pair already has one, else the pending key the
-    /// flush resolves (E4). Read-only.
-    /// </summary>
-    private async Task<(Dictionary<string, string> NameToSlotKey, IReadOnlySet<string> DuplicateNames)> BuildEmoteMatchMapAsync(
-        Channel channel, CancellationToken cancellationToken)
-    {
-        var activeEmotes = await db.Emotes
-            .Where(e => e.ChannelId == channel.Id && !e.IsArchived)
-            .Select(e => new { e.Name, e.Id })
-            .ToListAsync(cancellationToken);
-
-        var baseSlots = await BaseSlotRule.FindAsync(
-            db,
-            [.. activeEmotes.Select(e => new BaseSlotPair(e.Id, channel.ActiveEmoteSetId))],
-            cancellationToken);
-
-        // 7TV active sets can legitimately contain two emotes sharing the same chat alias (observed
-        // live) — ToDictionary would throw, so duplicates are coalesced instead. Logged only when the
-        // collision set changes: this method runs on every resync tick, and a static collision would
-        // spam the log otherwise. The full current state is served by EmoteSetStatusService's
-        // DuplicateNames field instead.
-        var map = EmoteNameMatching.Coalesce(
-            activeEmotes.Select(e => new KeyValuePair<string, string>(
-                e.Name,
-                baseSlots.TryGetValue(new BaseSlotPair(e.Id, channel.ActiveEmoteSetId), out var slotId)
-                    ? slotId
-                    : PendingSlotKey.For(e.Id))));
-        return (map.NameToId, map.AmbiguousNames);
-    }
-
-    /// <summary>
-    /// Flag on (plan #373, E7; D15, AK 15, AK 17): one entry per active, settled slot (not archived,
+    /// Plan #373, E7 (D15, AK 15, AK 17): one entry per active, settled slot (not archived,
     /// not an unsettled seed) of an active emote, under the slot's name, with the slot id as value —
     /// except for every emote that still has an unsettled seed of the active set, which is left out
     /// with all of its slots, settled ones included, until a dated reconcile settles it (a deferred
@@ -1556,60 +1385,7 @@ public class SevenTvSyncService(
     }
 
     /// <summary>
-    /// Returns true when at least one emote row was added, archived or altered.
-    /// <para>
-    /// Also records the credible leaves from <paramref name="activeEmoteSetId"/> (spec 5.5 rule 5,
-    /// E34) — immediately, as a raw upsert, so the caller must hold a transaction around this call and
-    /// its save. A row missing from the live set is a credible leave only outside
-    /// <see cref="TagLeaveCredibilityWindow"/> after it last entered the set (or when that is unknown).
-    /// Recording is independent of the archive transition, because the archive loop skips rows that are
-    /// archived already: (b1) a row archived now is observed when credible; (b2) a row archived
-    /// earlier — typically inside the window, without an observation — is observed by the post-check
-    /// once the window is over, but only when no observation from after its last entry exists yet, so
-    /// it is written once and not on every resync while the stale cache still shows the row missing
-    /// (counter-example 8). Observations are not inventory changes and never set the return value.
-    /// </para>
-    /// <para>
-    /// (b2) skips placeholder rows (<see cref="IsNeverActivePlaceholder"/>, D37): they were created
-    /// archived for an emote never observed in the active set, so their absence from it is no leave.
-    /// Only (b2): a row that was active when this pass began was in the set, whatever its marker says,
-    /// and (b1) records its leave as before and drops the marker.
-    /// </para>
-    /// </summary>
-    private async Task<bool> ReconcileAsync(
-        string channelId, string activeEmoteSetId, IReadOnlyList<SevenTvEmote> liveEmotes, CancellationToken cancellationToken)
-    {
-        var existing = await db.Emotes
-            .Where(e => e.ChannelId == channelId)
-            .ToDictionaryAsync(e => e.SevenTvEmoteId, cancellationToken);
-
-        // 7TV can list one emote id twice in a set under two alias names, but the unique index
-        // (ChannelId, SevenTvEmoteId) allows one row, so both entries hit it and the second would
-        // rewrite the name back on every pass: the channel would report a change (and fire
-        // channel.synced) on every resync. The LAST entry wins because that is the name the old
-        // per-entry loop left stored and counted, so the deploy renames nothing and no usage series
-        // switches to a different word. The other alias is not countable. Reversing twice keeps
-        // the remaining entries in their original order. (Flag off only: with the flag on, every
-        // entry is its own slot — ReconcileSlotsAsync.)
-        liveEmotes = liveEmotes.Reverse().DistinctBy(e => e.Id).Reverse().ToList();
-        var liveIds = liveEmotes.Select(e => e.Id).ToHashSet();
-        var changed = false;
-        var now = DateTime.UtcNow;
-
-        foreach (var emote in liveEmotes)
-        {
-            changed |= UpsertEmote(channelId, existing, emote);
-        }
-
-        var (absentChanged, leaves) = await ArchiveAbsentEmotesAsync(channelId, activeEmoteSetId, existing, liveIds, now, cancellationToken);
-        changed |= absentChanged;
-
-        await EmoteSetLeaveObservations.RecordAsync(db, channelId, activeEmoteSetId, leaves, now, cancellationToken);
-        return changed;
-    }
-
-    /// <summary>
-    /// The slot-aware REST reconcile (flag on; spec §6.2–6.5, plan #372 2.2–2.7). Runs inside the
+    /// The slot-aware REST reconcile (spec §6.2–6.5, plan #372 2.2–2.7). Runs inside the
     /// save's transaction, after <see cref="ApplyAndSaveAsync"/> has locked the channel row (E23):
     /// <list type="number">
     /// <item>locks every emote row this pass can write (E3, one sorted statement);</item>
@@ -1623,7 +1399,7 @@ public class SevenTvSyncService(
     /// rename), then <see cref="EmoteSlotReconcilePlanner.PlanLiveGroup"/> and its application
     /// (slots, D13 name and date);</item>
     /// <item>per emote without live entry: its active own slots are archived, then the emote-level
-    /// archive, leave detection and measurement log exactly as with the flag off;</item>
+    /// archive, leave detection and measurement log (<see cref="ArchiveAbsentEmotesAsync"/>);</item>
     /// <item>moves the active-set usage rows of every seed settled onto an existing target, as a merge
     /// (plan #373 E10), and the backfill snapshot rows pointing at it (E11a), then upserts the
     /// leaves.</item>
@@ -1750,9 +1526,9 @@ public class SevenTvSyncService(
     }
 
     /// <summary>
-    /// Step 1 of spec §6.2 with the flag on: find, create or un-archive the emote row, image from the
-    /// group's first entry, entry stamp and placeholder marker as with the flag off — but never a
-    /// rename and never a date: both are derived from the slots afterwards (D13). Returns the row and
+    /// Step 1 of spec §6.2: find, create or un-archive the emote row, image from the group's first
+    /// entry, entry stamp (E34) and placeholder marker (D37) — but never a rename and never a date:
+    /// both are derived from the slots afterwards (D13). Returns the row and
     /// whether this step changed it visibly (created, un-archived, image).
     /// </summary>
     private (Emote Emote, bool Changed) UpsertEmoteRowForSlots(
@@ -1760,7 +1536,7 @@ public class SevenTvSyncService(
     {
         if (existing.TryGetValue(first.Id, out var emote))
         {
-            // Listed in the active set means observed there (D37), as in UpsertEmote. Not a change.
+            // Listed in the active set means observed there (D37). Not a change.
             if (emote.IsPlaceholder && !emote.IsArchived)
             {
                 emote.IsPlaceholder = false;
@@ -1773,7 +1549,8 @@ public class SevenTvSyncService(
 
             if (emote.IsArchived)
             {
-                // E34 and D37 exactly as in UpsertEmote: an un-archive is a fresh entry into the set.
+                // E34 and D37: an un-archive is a fresh entry into the set, which opens the credibility
+                // window for the next REST leave, and the emote is no placeholder any more.
                 emote.LastEnteredSetAtUtc = now;
                 emote.IsPlaceholder = false;
             }
@@ -1867,7 +1644,7 @@ public class SevenTvSyncService(
     /// <summary>
     /// Plan #372 E24, second half: every emote row the save will change is locked or new in this
     /// attempt, and so is the owner of every slot it will write. This is what keeps the sync out of
-    /// lock cycle Z1 (and the flag-on delta path, plan #374 3.2 step 3); a violation is a programming
+    /// lock cycle Z1 (and the delta path, plan #374 3.2 step 3); a violation is a programming
     /// error (no retry).
     /// </summary>
     private void AssertWritesAreLocked(string channelId, IReadOnlySet<string> locked)
@@ -1927,10 +1704,10 @@ public class SevenTvSyncService(
     }
 
     /// <summary>
-    /// The emote-level half of spec §6.2 "after all groups", shared by both flag states and unchanged
-    /// by the slot work: archives every active row without a live entry and decides the credible
-    /// leaves. Returns whether a row was archived and the 7TV ids to record as leaves; the caller
-    /// upserts them (with the flag on, after the settle's usage rebinds — lock order E4).
+    /// The emote-level half of spec §6.2 "after all groups", unchanged by the slot work: archives every
+    /// active row without a live entry and decides the credible leaves. Returns whether a row was
+    /// archived and the 7TV ids to record as leaves; the caller upserts them after the settle's usage
+    /// rebinds (lock order E4).
     /// </summary>
     private async Task<(bool Changed, List<string> Leaves)> ArchiveAbsentEmotesAsync(
         string channelId,
@@ -2002,96 +1779,6 @@ public class SevenTvSyncService(
     }
 
     /// <summary>
-    /// Returns true when the row was created or actually modified.
-    /// <para>
-    /// <paramref name="fromDispatch"/> marks the EventAPI delta path, whose payloads are less
-    /// complete and less trusted than a REST answer. Two behaviours hang off it, both about not
-    /// letting a thin payload destroy known state.
-    /// </para>
-    /// </summary>
-    private bool UpsertEmote(string channelId, Dictionary<string, Emote> existing, SevenTvEmote live, bool fromDispatch = false)
-    {
-        if (existing.TryGetValue(live.Id, out var emote))
-        {
-            // Correction, not write-once backfill: the column was originally filled from the v3
-            // payload's timestamp, which turned out to be the emote's upload date rather than the
-            // set-entry date — so a known value may be known-wrong, and the v4-sourced answer must
-            // win. It also moves a re-added emote's date forward to its latest set entry. Kept
-            // outside the change detection below: learning *when* an emote joined the set is not an
-            // inventory change; counted as one, the first resync after a deploy would fire
-            // channel.synced for every channel at once and make every open page refetch.
-            //
-            // REST only, because ApplyEmoteSetUpdateAsync decides NoChange vs Applied by asking the
-            // ChangeTracker — a correction there would turn a no-op dispatch into a live event. The
-            // periodic resync fills the same gap within a tick, so nothing is lost by waiting.
-            // Null never overwrites: losing a known date to a failed v4 lookup would reopen the gap.
-            if (!fromDispatch && live.AddedToSetAt is not null && emote.FirstSeenAt != live.AddedToSetAt)
-            {
-                emote.FirstSeenAt = live.AddedToSetAt;
-            }
-
-            // An active row still marked as a placeholder can only be left over from an image older
-            // than the marker, which un-archives without clearing it: the old worker's sync or the old
-            // Api's set-centric restore report, in the window between a manual migration and the
-            // redeploy. Listed in the active set means observed there, so the
-            // marker goes. REST only and outside the change detection, for the same reasons as the
-            // FirstSeenAt correction above; an archived placeholder is cleared by the un-archive below.
-            if (!fromDispatch && emote.IsPlaceholder && !emote.IsArchived)
-            {
-                emote.IsPlaceholder = false;
-            }
-
-            // Dispatch payloads have not been proven to always carry the image-host block, so the
-            // delta path never overwrites a known image URL with an empty one (the REST path keeps
-            // its verbatim behaviour — there an empty URL is 7TV's authoritative answer).
-            var imageUrl = fromDispatch && live.ImageUrl.Length == 0 && emote.ImageUrl.Length > 0
-                ? emote.ImageUrl
-                : live.ImageUrl;
-
-            if (emote.Name != live.Name || emote.ImageUrl != imageUrl || emote.IsArchived)
-            {
-                if (emote.IsArchived)
-                {
-                    // E34: an un-archive is a fresh entry into the active set, which opens the
-                    // credibility window for the next REST leave. Read before the flag flips below; a
-                    // rename of an active row is no entry and keeps its stamp.
-                    emote.LastEnteredSetAtUtc = DateTime.UtcNow;
-                    // D37: the emote has now been observed in the active set, so a placeholder is
-                    // one no longer — its next absence from the set is an ordinary leave. Never set
-                    // back to true.
-                    emote.IsPlaceholder = false;
-                }
-
-                emote.Name = live.Name;
-                emote.ImageUrl = imageUrl;
-                emote.IsArchived = false;
-                // Inside the change block, not part of the condition: clearing an archive date is
-                // only meaningful on a real un-archive, and putting it into the condition would turn
-                // no-op rows into inventory changes that fire channel.synced for every open page.
-                emote.ArchivedAt = null;
-                emote.LastSyncedAt = DateTime.UtcNow;
-                return true;
-            }
-
-            return false;
-        }
-
-        emote = new Emote
-        {
-            ChannelId = channelId,
-            SevenTvEmoteId = live.Id,
-            Name = live.Name,
-            ImageUrl = live.ImageUrl,
-            FirstSeenAt = live.AddedToSetAt,
-            // E34: a new row is an entry into the active set (see the un-archive branch above).
-            LastEnteredSetAtUtc = DateTime.UtcNow
-        };
-        db.Emotes.Add(emote);
-        existing[live.Id] = emote;
-        return true;
-    }
-
-    /// <summary>
     /// True only for a unique violation on the (ChannelId, SevenTvEmoteId) index — the one conflict
     /// a concurrent vote-session upsert can cause. Every other failure propagates unchanged.
     /// </summary>
@@ -2125,9 +1812,6 @@ public class SevenTvSyncService(
             SqlState: PostgresErrorCodes.ForeignKeyViolation,
             TableName: "EmoteSetLeaveObservations",
         };
-
-    private static Task CommitIfOpenAsync(IDbContextTransaction? transaction, CancellationToken cancellationToken) =>
-        transaction?.CommitAsync(cancellationToken) ?? Task.CompletedTask;
 
     // Removes the cache entry under the login the warm-up filled it under (the snapshot, E28) — unless
     // another active row carries that login now (login swap, double rename): that row's live entry

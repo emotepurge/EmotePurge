@@ -3,8 +3,8 @@ using EmotePurge.Core.SevenTv;
 namespace EmotePurge.Infrastructure.Services;
 
 /// <summary>
-/// The pure decision half of an EventAPI <c>emote_set.update</c> dispatch with the slot reconcile flag on
-/// (spec §7.2, D17; plan #374 section 4). <see cref="SevenTvSyncService"/> takes the snapshot behind its
+/// The pure decision half of an EventAPI <c>emote_set.update</c> dispatch (spec §7.2, D17; plan #374
+/// section 4). <see cref="SevenTvSyncService"/> takes the snapshot behind its
 /// row locks, asks this class for a <see cref="SlotDeltaPlan"/> and applies it to its tracked entities.
 /// No I/O, no clock, no DbContext — everything the rules read is a parameter.
 /// <para>
@@ -127,8 +127,8 @@ internal static class EmoteSlotDeltaPlanner
                 return context.Applied(SlotDeltaEmoteAction.Create, [], NewPushSlots(names, context.Now), observeLeave: false);
 
             case EmoteState.Archived:
-                // E4: active own slots under an archived emote are a stale state (flag-off phase, sync
-                // error) — REST has to sort it out, nothing is guessed on top of it.
+                // E4: active own slots under an archived emote are a stale state (left from before the
+                // slot work, or a sync error) — REST has to sort it out, nothing is guessed on top of it.
                 if (context.ActiveOwn.Count > 0)
                 {
                     return context.Ambiguous(SlotDeltaAmbiguity.StaleSlotsUnderArchivedEmote);

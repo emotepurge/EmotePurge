@@ -432,7 +432,7 @@ public class VoteSessionServiceTests(PostgresFixture fixture)
         // Real 7TV sets routinely list the same emote id twice under two aliases (issue #74) — a
         // ToDictionary over the live members would throw on the second occurrence. Spec D26: the oldest
         // alias (D2 order) is NameAtCreation, all aliases are frozen in NamesAtCreation — whatever order
-        // the live list had and whatever the SlotReconcile flag says (plan #376 R5, AK 33). The request
+        // the live list had (plan #376 R5, AK 33). The request
         // also names the id twice (A5): still one ballot row.
         await using var db = fixture.CreateDbContext();
         var channel = await SeedChannelAsync(db, "setballot5", twitchChannelId: "setballot5-twitch");

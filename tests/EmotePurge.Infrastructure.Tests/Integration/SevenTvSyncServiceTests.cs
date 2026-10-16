@@ -136,14 +136,18 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         db.Channels.Add(channel);
         foreach (var (sevenTvId, emoteName, archived) in emotes)
         {
-            db.Emotes.Add(new Emote
+            var emote = new Emote
             {
                 ChannelId = channel.Id,
                 SevenTvEmoteId = sevenTvId,
                 Name = emoteName,
                 ImageUrl = SeededImageUrl(sevenTvId),
                 IsArchived = archived
-            });
+            };
+            db.Emotes.Add(emote);
+            // The match map is built from settled slots, so a seeded emote needs its base slot to be
+            // matched at all (an emote row alone is invisible to the map).
+            db.EmoteSlots.Add(new EmoteSlot { Emote = emote, Name = emoteName, IsArchived = archived });
         }
 
         await db.SaveChangesAsync();
@@ -234,8 +238,10 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync(db, "wstest_rename", ("e1", "oldname", false));
         var service = CreateService(db, cache);
 
+        // The rename names its old alias: with one active slot under that name it is renamed in place
+        // (a rename without the old name is ambiguous per slot and covered by the slot delta tests).
         var result = await service.ApplyEmoteSetUpdateAsync(
-            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", null, "newname", "https://cdn/e1.webp")]));
+            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", "oldname", "newname", "https://cdn/e1.webp")]));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1");
@@ -338,7 +344,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var service = CreateService(db, cache);
 
         var result = await service.ApplyEmoteSetUpdateAsync(
-            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", null, "pic_renamed", "")]));
+            channel.ChannelName, SetId, Delta(updated: [new SevenTvEmoteRename("e1", "pic", "pic_renamed", "")]));
 
         Assert.Equal(SevenTvDeltaOutcome.Applied, result.Outcome);
         var row = await db.Emotes.SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1");
@@ -450,8 +456,11 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         Assert.Null(reloadedChannel.LastSyncFailureReason);
         Assert.True(await verifyDb.ChannelEmoteSetObservations.AnyAsync(
             o => o.ChannelId == channel.Id && o.SevenTvEmoteSetId == SetId && o.ObservedToUtc == null));
-        // Flag off and no usage row yet: the map hands out the pending key of the emote (plan #373, E8).
-        Assert.Equal(PendingSlotKey.For(row.Id), cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId["RaceX"]);
+        // The dated entry settled one slot on the adopted row, and the map counts under that slot (plan
+        // #373, E7).
+        var slot = await verifyDb.EmoteSlots.SingleAsync(s => s.EmoteId == row.Id);
+        Assert.Equal(addedAt, slot.AddedAt);
+        Assert.Equal(slot.Id, cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId["RaceX"]);
         Assert.Single(logger.Entries, e => e.Level == LogLevel.Warning);
     }
 
@@ -739,8 +748,12 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var cache = new EmoteMatchCache();
         var channel = await SeedChannelAsync(db, "wstest_firstseen_keep", ("e1", "stable", false));
         var known = new DateTime(2026, 1, 9, 6, 0, 0, DateTimeKind.Utc);
+        // FirstSeenAt is derived from the emote's oldest dated slot (D13), so the known date sits on the
+        // slot as well as on the row; a live entry without a date must leave both alone.
         await db.Emotes.Where(e => e.ChannelId == channel.Id)
             .ExecuteUpdateAsync(s => s.SetProperty(e => e.FirstSeenAt, known));
+        await db.EmoteSlots.Where(s => s.Emote.ChannelId == channel.Id)
+            .ExecuteUpdateAsync(s => s.SetProperty(x => x.AddedAt, known).SetProperty(x => x.AddedAtFromRest, true));
         var service = CreateRestService(db, cache, channel, SetId, LiveEmote("e1", "stable"));
 
         await service.SyncChannelAsync(channel.ChannelName);
@@ -813,7 +826,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         var result = await service.ApplyEmoteSetUpdateAsync(
             channel.ChannelName,
             SetId,
-            Delta(updated: [new SevenTvEmoteRename("e1", null, "stable", SeededImageUrl("e1"))]));
+            Delta(updated: [new SevenTvEmoteRename("e1", "stable", "stable", SeededImageUrl("e1"))]));
 
         Assert.Equal(SevenTvDeltaOutcome.NoChange, result.Outcome);
         Assert.Null(await db.Emotes
@@ -1575,12 +1588,11 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "combo"); // during
         CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "combo"); // after
 
-        var emoteId = await db.Emotes.Where(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "e1")
-            .Select(e => e.Id).SingleAsync();
+        var slotId = await SingleSlotIdAsync(db, channel, "e1");
         Assert.Equal(2, counts.Count);
-        // Flag off, no usage rows: the key is the emote's pending key in both sets (plan #373, E8).
-        Assert.Equal(1, counts[new UsageCounterKey(PendingSlotKey.For(emoteId), SetId)]);
-        Assert.Equal(2, counts[new UsageCounterKey(PendingSlotKey.For(emoteId), SwitchedSetId)]);
+        // The slot is the same in both sets (a slot is per emote and name, not per set); the set id splits.
+        Assert.Equal(1, counts[new UsageCounterKey(slotId, SetId)]);
+        Assert.Equal(2, counts[new UsageCounterKey(slotId, SwitchedSetId)]);
     }
 
     [Fact]
@@ -1604,18 +1616,23 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
         CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "Stare"); // row B, after
         CountHit(counts, cache.GetChannelSnapshot(channel.ChannelName), "Stare"); // row B, after
 
-        var rowAId = await db.Emotes.Where(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "stare-a")
-            .Select(e => e.Id).SingleAsync();
-        var rowBId = await db.Emotes.Where(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "stare-b")
-            .Select(e => e.Id).SingleAsync();
-        Assert.NotEqual(rowAId, rowBId);
+        var slotAId = await SingleSlotIdAsync(db, channel, "stare-a");
+        var slotBId = await SingleSlotIdAsync(db, channel, "stare-b");
+        Assert.NotEqual(slotAId, slotBId);
         Assert.Equal(2, counts.Count);
-        Assert.Equal(1, counts[new UsageCounterKey(PendingSlotKey.For(rowAId), SetId)]);
-        Assert.Equal(2, counts[new UsageCounterKey(PendingSlotKey.For(rowBId), SwitchedSetId)]);
+        Assert.Equal(1, counts[new UsageCounterKey(slotAId, SetId)]);
+        Assert.Equal(2, counts[new UsageCounterKey(slotBId, SwitchedSetId)]);
         // Never counted on both: neither row's key appears combined with the other switch state.
-        Assert.False(counts.ContainsKey(new UsageCounterKey(PendingSlotKey.For(rowAId), SwitchedSetId)));
-        Assert.False(counts.ContainsKey(new UsageCounterKey(PendingSlotKey.For(rowBId), SetId)));
+        Assert.False(counts.ContainsKey(new UsageCounterKey(slotAId, SwitchedSetId)));
+        Assert.False(counts.ContainsKey(new UsageCounterKey(slotBId, SetId)));
     }
+
+    // The one slot of a 7TV emote of the channel — the key the map counts it under.
+    private static Task<string> SingleSlotIdAsync(Persistence.AppDbContext db, Channel channel, string sevenTvId) =>
+        db.EmoteSlots
+            .Where(s => s.Emote.ChannelId == channel.Id && s.Emote.SevenTvEmoteId == sevenTvId)
+            .Select(s => s.Id)
+            .SingleAsync();
 
     // A switch line is the only one that has to name both sets at once, which identifies it without
     // pinning its prose.
@@ -1625,7 +1642,7 @@ public class SevenTvSyncServiceTests(PostgresFixture fixture)
             && e.Message.Contains(SwitchedSetId, StringComparison.Ordinal))];
 
     // The forced interleaving for AK 78. Fires inside the worker context's SavingChangesAsync — after
-    // ReconcileAsync has read the rows and staged its inserts, before any INSERT is sent — and, for
+    // ReconcileSlotsAsync has read the rows and staged its inserts, before any INSERT is sent — and, for
     // the first maxInsertions saves that stage an Emote insert, commits one of those same keys from
     // a second AppDbContext first. The SQL mirrors VoteSessionService.UpsertSetSessionEmotesAsync:
     // an archived row with no archive date, inserted ON CONFLICT DO NOTHING.

@@ -6,9 +6,9 @@ namespace EmotePurge.Api.Tests;
 
 /// <summary>
 /// The wire shape of one <c>/usage-stats/totals</c> row (<see cref="EmoteUsageContextDto"/>), pinned for the
-/// emote-mode row — the only kind production serves while <c>SevenTv:SlotReconcile:Enabled</c> is off
-/// (plan #376 R1). The fields the frontend reads before slots keep their names, values and relative order;
-/// the fields of the slot read API are added with their off values: <c>slotId</c> present and
+/// emote-mode row (plan #376 R1/R2: an emote with an unsettled seed of the set, or without an active own
+/// slot in the active view). The fields the frontend reads before slots keep their names, values and
+/// relative order; the fields of the slot read API are added with their emote-mode values: <c>slotId</c> present and
 /// <c>null</c>, <c>firstSeenAtFromRest</c> <c>false</c>, <c>siblingNames</c> an empty array, and last
 /// <c>firstSeenAtShared</c> <c>false</c> (plan #377 2.12).
 /// </summary>

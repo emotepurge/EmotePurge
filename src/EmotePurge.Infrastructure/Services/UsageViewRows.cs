@@ -14,8 +14,7 @@ namespace EmotePurge.Infrastructure.Services;
 /// seeds of X (<c>SetSeeds.SeedsOfSet</c>, plan 2.1). <c>slotIdsWithRowsInSet</c>: the ids of the slots that
 /// carry at least one <c>UsageStats</c> row with <c>EmoteSetId = X</c>, without a date bound and whatever
 /// the row's <c>UseCount</c> — the per-slot form of today's "has at least one count under this set" test
-/// (spec E16). <c>isActiveView</c>: X is the channel's active set. <c>slotReconcileEnabled</c>: the
-/// <c>SevenTv:SlotReconcile:Enabled</c> flag.
+/// (spec E16). <c>isActiveView</c>: X is the channel's active set.
 /// </para>
 /// <para>
 /// <b>Output contract.</b> Rows grouped by emote, emotes in ordinal <c>Id</c> order, the rows of one emote in
@@ -39,8 +38,7 @@ internal static class UsageViewRows
         IReadOnlyList<UsageViewSlot> slots,
         IReadOnlySet<string> seedIdsOfSet,
         IReadOnlySet<string> slotIdsWithRowsInSet,
-        bool isActiveView,
-        bool slotReconcileEnabled)
+        bool isActiveView)
     {
         var slotsByEmote = slots
             .GroupBy(s => s.EmoteId, StringComparer.Ordinal)
@@ -66,7 +64,7 @@ internal static class UsageViewRows
                 continue;
             }
 
-            if (!slotReconcileEnabled || IsEmoteMode(emoteSlots, seedIdsOfSet, isActiveView))
+            if (IsEmoteMode(emoteSlots, seedIdsOfSet, isActiveView))
             {
                 rows.Add(EmoteModeRow(emote, slotsWithRows));
                 continue;
@@ -113,10 +111,10 @@ internal static class UsageViewRows
     }
 
     /// <summary>
-    /// Plan 2.1 "Modus je Emote", flag on (R2): emote mode when the emote has a seed of X — its rows in X are
-    /// not settled onto a slot yet (E7: a seed does not count; its name may be stale, its date is null) — or,
-    /// in the active view only, when it has no active own slot (E14: the virtual slot, read exactly as with
-    /// the flag off). A seed of another set and a row-less seed are not seeds of X and decide nothing.
+    /// Plan 2.1 "Modus je Emote" (R2): emote mode when the emote has a seed of X — its rows in X are not
+    /// settled onto a slot yet (E7: a seed does not count; its name may be stale, its date is null) — or, in
+    /// the active view only, when it has no active own slot (E14: the virtual slot, read as the emote-wide
+    /// row from before slots). A seed of another set and a row-less seed are not seeds of X and decide nothing.
     /// </summary>
     private static bool IsEmoteMode(List<UsageViewSlot> emoteSlots, IReadOnlySet<string> seedIdsOfSet, bool isActiveView)
     {
@@ -143,10 +141,10 @@ internal static class UsageViewRows
                                && o.AddedAt == slot.AddedAt);
 
     /// <summary>
-    /// R1/R2: exactly today's row — no slot id, the emote's name and <c>FirstSeenAt</c>, never "from REST",
-    /// no siblings, <c>IsArchived</c> from the emote (always false in the active view, whose base set is
-    /// unarchived) — carrying every slot of the emote with rows in X, so its numbers are the emote's whole
-    /// count in X.
+    /// R1/R2: exactly the emote-wide row from before slots — no slot id, the emote's name and
+    /// <c>FirstSeenAt</c>, never "from REST", no siblings, <c>IsArchived</c> from the emote (always false
+    /// in the active view, whose base set is unarchived) — carrying every slot of the emote with rows in
+    /// X, so its numbers are the emote's whole count in X.
     /// </summary>
     private static UsageViewRow EmoteModeRow(UsageViewEmote emote, List<string> slotsWithRows) =>
         new(emote.Id, null, emote.Name, emote.FirstSeenAt, false, emote.IsArchived, [], slotsWithRows, false);

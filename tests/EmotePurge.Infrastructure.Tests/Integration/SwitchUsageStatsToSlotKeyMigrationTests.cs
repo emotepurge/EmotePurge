@@ -1,8 +1,6 @@
 using System.Text;
 using EmotePurge.Core.Entities;
-using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
-using EmotePurge.Infrastructure.ChatLogArchive;
 using EmotePurge.Infrastructure.Migrations;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
@@ -12,7 +10,6 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
-using NSubstitute;
 using Xunit;
 using static EmotePurge.Infrastructure.Tests.Integration.SlotSyncKit;
 
@@ -260,10 +257,9 @@ public class SwitchUsageStatsToSlotKeyMigrationTests(PostgresFixture fixture)
     // ------------------------------------------------------------------ 5: hand-off fixture (#371/#372)
 
     // M1 → the old writer (raw inserts without a slot) → the child-2 settle through SyncChannelAsync with
-    // a faked 7TV client and the flag on → M2: the sums per (emote, set) survive, the existing pair's
-    // late rows land on the settled slot, a pair the settle could not see gets its own seed next to the
-    // REST slot, and the next sync settles that seed onto the REST slot ("target exists"). Replaces plan
-    // 372 slot test 21.
+    // a faked 7TV client → M2: the sums per (emote, set) survive, the existing pair's late rows land on the
+    // settled slot, a pair the settle could not see gets its own seed next to the REST slot, and the next
+    // sync settles that seed onto the REST slot ("target exists"). Replaces plan 372 slot test 21.
     [Fact]
     public async Task HandOff_M1_OldWriter_Child2Settle_M2_KeepsSums_AndTheNextSyncSettlesTheNewSeedOntoTheRestSlot()
     {
@@ -294,7 +290,7 @@ public class SwitchUsageStatsToSlotKeyMigrationTests(PostgresFixture fixture)
                    ('ey', '{SetA}', '2026-08-02', 4, 0, 2);
             """);
 
-        // Child 2 with the flag on: ex's seed of the active set settles in place, ey gets a REST slot.
+        // Child 2: ex's seed of the active set settles in place, ey gets a REST slot.
         var channel = await db.Channels.AsNoTracking().SingleAsync(c => c.Id == "c1");
         Assert.NotNull(await SyncOnAsync(db, channel, Live("x", "A", T1), Live("y", "B", T1)));
         var settledX = await SlotAsync(db, seedXA);
@@ -391,85 +387,6 @@ public class SwitchUsageStatsToSlotKeyMigrationTests(PostgresFixture fixture)
         Assert.Equal("5", await OneAsync(db, """SELECT count(*)::text AS "Value" FROM "UsageStats";"""));
     }
 
-    // ------------------------------------------------------------------ 8: the flag-off world
-
-    // With the flag off at most one slot per pair carries rows (E6a), so M2's Down is lossless — including
-    // the interleaving from the review (Sol P2-3): a pair whose only row is an import row of a run that
-    // retention deleted; a block of a run of another set deletes it through its channel-wide delete; the
-    // next map refresh hands out a pending key while a buffered count still carries the old slot; one
-    // flush with both keys. Phase 1 writes the old key first, phase 2 finds it: one slot.
-    [Fact]
-    public async Task FlagOffWorld_FlushesWithPendingAndSlotKeys_AndTheReviewInterleaving_LeaveOneSlotPerPair_SoDownIsLossless()
-    {
-        var (databaseName, ids) = await CreateDatabaseAsync(m => m.M2);
-        await using var db = fixture.CreateDbContext(databaseName);
-        var channel = await SeedChannelAsync(db, "m2_flag_off");
-        var x = await SeedEmoteAsync(db, channel, "x", "X");
-        var y = await SeedEmoteAsync(db, channel, "y", "Y");
-        // y's only row: an import of a run that is gone (retention deleted run and snapshot).
-        var importSeed = await SeedSeedAsync(db, y);
-        db.UsageStats.Add(new UsageStat
-        {
-            EmoteId = y.Id,
-            SlotId = importSeed.Id,
-            EmoteSetId = SetA,
-            Date = new DateOnly(2026, 8, 2),
-            UseCount = 9,
-            Source = UsageStatSource.ChatLogArchive
-        });
-        await db.SaveChangesAsync();
-        var cache = new EmoteMatchCache();
-
-        // (i) The flag-off pipeline: map → flush (pending key, creating x's seed) → map → flush (slot key).
-        var map = await RefreshAsync(db, cache, channel, x, y);
-        Assert.Equal(PendingSlotKey.For(x.Id), map["X"]);
-        var oldYKey = map["Y"];
-        Assert.Equal(importSeed.Id, oldYKey);
-        await FlushAsync(db, (map["X"], 2));
-        map = await RefreshAsync(db, cache, channel, x, y);
-        var seedX = map["X"];
-        Assert.False(PendingSlotKey.IsPending(seedX));
-        await FlushAsync(db, (seedX, 3));
-
-        // (ii) A running run of another set replaces the block holding y's import day.
-        var run = await BackfillRunSeed.AddRunAsync(db, channel.Id, ChatLogBackfillRunStatus.Running);
-        Assert.NotEqual(SetA, run.EmoteSetId);
-        Assert.IsType<ChatLogBackfillBlockResult.Committed>(await CreateBackfillService(db).ReplaceBlockAsync(
-            run.Id, new DateOnly(2026, 8, 1), new DateOnly(2026, 8, 8), [], 0, 0, isLastBlock: false));
-        Assert.False(await db.UsageStats.AnyAsync(u => u.EmoteId == y.Id));
-        map = await RefreshAsync(db, cache, channel, x, y);
-        Assert.Equal(PendingSlotKey.For(y.Id), map["Y"]);
-
-        // One batch with the buffered old key and the new pending key of the same pair.
-        await FlushAsync(db, (oldYKey, 4), (map["Y"], 1));
-
-        Assert.Equal([importSeed.Id], await db.UsageStats.Where(u => u.EmoteId == y.Id).Select(u => u.SlotId).Distinct().ToListAsync());
-        Assert.Equal(5, await db.UsageStats.Where(u => u.EmoteId == y.Id).SumAsync(u => u.UseCount));
-        Assert.Equal(1, await db.EmoteSlots.CountAsync(s => s.EmoteId == y.Id));
-        Assert.Equal([seedX], await db.UsageStats.Where(u => u.EmoteId == x.Id).Select(u => u.SlotId).Distinct().ToListAsync());
-        Assert.Equal(5, await db.UsageStats.Where(u => u.EmoteId == x.Id).SumAsync(u => u.UseCount));
-        Assert.Equal(
-            "0",
-            await OneAsync(
-                db,
-                """
-                SELECT count(*)::text AS "Value" FROM (
-                    SELECT 1 FROM "UsageStats" GROUP BY "EmoteId", "EmoteSetId" HAVING count(DISTINCT "SlotId") > 1) p;
-                """));
-
-        var pairSums = await OneAsync(db, PairSumsSql);
-        var assignment = await OneAsync(db, SlotAssignmentDigestSql);
-
-        await MigrateAsync(db, ids.M1);
-
-        Assert.Equal(pairSums, await OneAsync(db, PairSumsSql));
-        Assert.Contains("UNIQUE", await IndexDefinitionAsync(db, EmoteIndex));
-
-        await MigrateAsync(db, ids.M2);
-
-        Assert.Equal(assignment, await OneAsync(db, SlotAssignmentDigestSql));
-    }
-
     // ------------------------------------------------------------------ 9: volume
 
     // Up-Down-Up with thousands of pairs and with statistics that predate the old writer's NULL rows (the
@@ -554,35 +471,6 @@ public class SwitchUsageStatsToSlotKeyMigrationTests(PostgresFixture fixture)
         Assert.Contains("Nothing was applied.", failure, StringComparison.Ordinal);
         return failure;
     }
-
-    // One flag-off refresh of the match map through the real sync (the 7TV client answers x and y), and
-    // its result.
-    private static async Task<IReadOnlyDictionary<string, string>> RefreshAsync(
-        AppDbContext db, EmoteMatchCache cache, Channel channel, Emote x, Emote y)
-    {
-        var service = CreateService(db, ApiReturning(channel, SetA, Live(x.SevenTvEmoteId, x.Name, null), Live(y.SevenTvEmoteId, y.Name, null)), slotsEnabled: false, cache);
-        Assert.NotNull(await service.SyncChannelAsync(channel.ChannelName));
-        return cache.GetChannelSnapshot(channel.ChannelName).NameToSlotId;
-    }
-
-    private static async Task FlushAsync(AppDbContext db, params (string SlotKey, int Uses)[] counts)
-    {
-        var result = await new UsageStatFlushService(db, NullLogger<UsageStatFlushService>.Instance).FlushAsync(
-            counts.ToDictionary(c => new UsageCounterKey(c.SlotKey, SetA), c => new EmoteUsageCounts(c.Uses, 0, 0)));
-        Assert.Empty(result.Requeued);
-    }
-
-    private static ChatLogBackfillService CreateBackfillService(AppDbContext db) =>
-        new(
-            db,
-            Substitute.For<IRedisPublisher>(),
-            Substitute.For<IExcludedChannelFilter>(),
-            Substitute.For<ITrackedEmoteSetMembershipService>(),
-            Substitute.For<IForeignEmoteSetService>(),
-            new ChatLogBackfillOptions(),
-            new ChatLogArchiveOptions { BaseUrl = "https://logs.cyex.app/" },
-            TimeProvider.System,
-            NullLogger<ChatLogBackfillService>.Instance);
 
     private static string CellSql(string date) =>
         $"""

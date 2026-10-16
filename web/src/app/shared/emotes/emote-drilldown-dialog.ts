@@ -40,7 +40,7 @@ export interface EmoteDrilldownData {
   from: string;
   to: string;
   emoteId: string;
-  /** Set on a slot card (flag on): the chart then asks the slot's series instead of the emote's. */
+  /** Set on a slot card: the chart then asks the slot's series instead of the emote's. */
   slotId?: string | null;
   /** The 7TV object id, for the link to the emote's page on 7TV. */
   sevenTvEmoteId: string;

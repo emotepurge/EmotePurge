@@ -545,7 +545,7 @@ export class SevenTvDeleteService {
     // updating a run the lifecycle does not know about yet, which would then never close.
     this.lifecycle.open(started);
     const queue = toDeleteQueue(emotes);
-    // A run of id rows only (every run with the flag off) gets no hook at all — the operation, its
+    // A run of id rows only (every run in emote mode) gets no hook at all — the operation, its
     // requests and its reads are byte for byte what they were (Plan-378 1).
     const context = createEntryRunContext(queue);
     const engineStarted = this.engine.start(

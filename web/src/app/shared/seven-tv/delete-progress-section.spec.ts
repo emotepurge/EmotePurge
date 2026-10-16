@@ -1628,7 +1628,7 @@ describe("DeleteProgressSection — a slot run's skipped rows", () => {
     expect(text()).toContain('hob44 was renamed to hob45 — not deleted.');
   });
 
-  // Flag off: a run of id rows never has a skipped row, so its dock counts as it always did.
+  // Emote mode: a run of id rows never has a skipped row, so its dock counts as it always did.
   it("keeps a user's cancel a cancellation: no reason line, not finished, counted as cancelled", async () => {
     const idRow = (key: string, status: RunQueueItem['status']): RunQueueItem => ({
       key,

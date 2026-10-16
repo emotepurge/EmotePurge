@@ -69,7 +69,7 @@ public class UsageViewRowsTests
     [Fact]
     public void ActiveView_EmoteWithoutActiveOwnSlot_IsOneEmoteModeRow_CarryingItsArchivedSlotsRows()
     {
-        // E14, the virtual slot: an active emote whose only own slot is archived reads as with the flag off.
+        // E14, the virtual slot: an active emote whose only own slot is archived reads as the emote-wide row.
         var rows = Build(
             [Active],
             [Slot("s-old", "old", T1, archived: true)],
@@ -209,44 +209,6 @@ public class UsageViewRowsTests
         Assert.Empty(rows);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void FlagOff_EveryEmoteIsInEmoteMode_WithTodaysBaseSet(bool isActiveView)
-    {
-        // R1: two settled slots from an earlier on-phase change nothing; one row per emote, today's fields.
-        UsageViewEmote other = new("e-2", "other", null, IsArchived: true);
-        var rows = Build(
-            [other, Active],
-            [
-                Slot("s-ome", "ome44", T1, fromRest: true),
-                Slot("s-hob", "hob44", T2, fromRest: true),
-                Slot("s-other", "other", null, seed: true, emoteId: "e-2"),
-            ],
-            rowsInSet: ["s-ome", "s-hob", "s-other"],
-            seedsOfSet: ["s-other"],
-            isActiveView: isActiveView,
-            flag: false);
-
-        // Active view: the archived e-2 drops out; non-active: both have rows in X and stay, e-1 first.
-        var expectedEmotes = isActiveView ? new[] { "e-1" } : ["e-1", "e-2"];
-        Assert.Equal(expectedEmotes, rows.Select(r => r.EmoteId));
-        Assert.All(rows, r =>
-        {
-            Assert.Null(r.SlotId);
-            Assert.False(r.FirstSeenAtFromRest);
-            Assert.Empty(r.SiblingNames);
-        });
-        Assert.Equal(("emoteName", EmoteDate), (rows[0].Name, rows[0].FirstSeenAt));
-        Assert.Equal(["s-ome", "s-hob"], rows[0].AggregateSlotIds);
-        if (!isActiveView)
-        {
-            Assert.True(rows[1].IsArchived);
-        }
-
-        AssertInvariant(rows);
-    }
-
     [Fact]
     public void SiblingNames_AreDistinct_AndNeverTheRowsOwnName()
     {
@@ -364,7 +326,7 @@ public class UsageViewRowsTests
     }
 
     [Fact]
-    public void FirstSeenAtShared_IsFalse_ForEmoteModeProvisionalAndFlagOffRows()
+    public void FirstSeenAtShared_IsFalse_ForEmoteModeAndProvisionalRows()
     {
         var emoteMode = Build(
             [Active],
@@ -375,14 +337,9 @@ public class UsageViewRowsTests
             [Active],
             [Slot("s-a", "a", T1, fromRest: false), Slot("s-b", "b", T1, fromRest: false)],
             rowsInSet: ["s-a", "s-b"]);
-        var flagOff = Build(
-            [Active],
-            [Slot("s-a", "a", T1, fromRest: true), Slot("s-b", "b", T1, fromRest: true)],
-            rowsInSet: ["s-a", "s-b"],
-            flag: false);
 
         Assert.Null(Assert.Single(emoteMode).SlotId);
-        Assert.All(emoteMode.Concat(provisional).Concat(flagOff), r => Assert.False(r.FirstSeenAtShared));
+        Assert.All(emoteMode.Concat(provisional), r => Assert.False(r.FirstSeenAtShared));
     }
 
     [Fact]
@@ -401,15 +358,13 @@ public class UsageViewRowsTests
         UsageViewSlot[] slots,
         string[] rowsInSet,
         string[]? seedsOfSet = null,
-        bool isActiveView = true,
-        bool flag = true) =>
+        bool isActiveView = true) =>
         UsageViewRows.Build(
             emotes,
             slots,
             new HashSet<string>(seedsOfSet ?? [], StringComparer.Ordinal),
             new HashSet<string>(rowsInSet, StringComparer.Ordinal),
-            isActiveView,
-            flag);
+            isActiveView);
 
     private static UsageViewSlot Slot(
         string id, string name, DateTime? addedAt, bool fromRest = false, bool archived = false, bool seed = false, string emoteId = "e-1") =>

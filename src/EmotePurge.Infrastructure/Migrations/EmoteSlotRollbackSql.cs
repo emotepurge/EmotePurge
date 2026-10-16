@@ -1,11 +1,13 @@
 namespace EmotePurge.Infrastructure.Migrations;
 
 /// <summary>
-/// The collapse statements of the emote-slot rollback procedure (spec section 12.2). They run before
-/// the M2-Down / M3-Down migrations and make the old unique keys valid again: (EmoteId, EmoteSetId,
-/// Date) on UsageStats and (RunId, EmoteId) on ChatLogBackfillRunEmotes. docs/Operations.md shows
-/// the identical text. The ordering (AddedAt ascending with NULL last, then Name ordinal, then the
-/// slot id) is the D2 order of <c>EmoteSlotSeedSql</c> (E17) and must stay in sync with it.
+/// The collapse statements of the emote-slot rollback procedure (spec section 12.2), plus the one-off
+/// sweep of row-less unsettled seeds after the removal of the slot flag (#379, part B). The collapse
+/// statements run before the M2-Down / M3-Down migrations and make the old unique keys valid again:
+/// (EmoteId, EmoteSetId, Date) on UsageStats and (RunId, EmoteId) on ChatLogBackfillRunEmotes.
+/// docs/Operations.md shows the identical text. The ordering (AddedAt ascending with NULL last, then
+/// Name ordinal, then the slot id) is the D2 order of <c>EmoteSlotSeedSql</c> (E17) and must stay
+/// in sync with it.
 /// <para>
 /// A row whose SlotId is NULL or points at no slot sorts as if its slot had no AddedAt and no Name,
 /// that is after every real slot. Each constant is one statement, needs no parameters, and a second
@@ -99,5 +101,42 @@ public static class EmoteSlotRollbackSql
         WHERE s."IsArchived" AND s."ArchivedAt" IS NULL
           AND EXISTS (SELECT 1 FROM "ChatLogBackfillRunEmotes" r WHERE r."SlotId" = s."Id" AND r."CreatedSlot")
           AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id" AND u."Source" = 0);
+        """;
+
+    /// <summary>
+    /// One-off sweep after the removal of the slot flag (#379, part B), docs/Operations.md "Sweeping
+    /// row-less unsettled seeds": the number of slots <see cref="SweepRowlessUnsettledSeedsSql"/> deletes.
+    /// The operator runs it before and after the sweep, in the same transaction. Same predicate, no
+    /// parameters.
+    /// </summary>
+    public const string CountRowlessUnsettledSeedsSql =
+        """
+        SELECT count(*) FROM "EmoteSlots" s
+        WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id")
+          AND NOT EXISTS (
+              SELECT 1 FROM "ChatLogBackfillRunEmotes" re JOIN "ChatLogBackfillRuns" r ON r."Id" = re."RunId"
+              WHERE re."SlotId" = s."Id" AND r."Status" IN ('queued', 'running', 'paused'));
+        """;
+
+    /// <summary>
+    /// One-off sweep after the removal of the slot flag (#379, part B): deletes the unsettled seeds that
+    /// never received a usage row (the flag-off path created them, nothing follows them any more), in
+    /// every set and for every <c>Source</c>. Unsettled seeds with rows and settled empty seeds stay, and so does
+    /// a seed that the snapshot of an active (queued, running or paused) backfill run points at: an overlooked run
+    /// that a flag-off image enqueued must keep failing closed (<c>worker_error</c> via the pair check) instead of
+    /// silently dropping counts once its seed is gone. The admission order leaves no active run anyway, so on a
+    /// correctly prepared database the conjunct changes nothing.
+    /// The only foreign key on EmoteSlots is <c>UsageStats.SlotId</c>, so nothing cascades; a snapshot
+    /// row of a finished backfill run may keep pointing at a deleted slot, which is harmless (the
+    /// column has no foreign key and is read only for active runs). One statement, no parameters,
+    /// a second run changes nothing.
+    /// </summary>
+    public const string SweepRowlessUnsettledSeedsSql =
+        """
+        DELETE FROM "EmoteSlots" s
+        WHERE s."SeedUnsettled" AND NOT EXISTS (SELECT 1 FROM "UsageStats" u WHERE u."SlotId" = s."Id")
+          AND NOT EXISTS (
+              SELECT 1 FROM "ChatLogBackfillRunEmotes" re JOIN "ChatLogBackfillRuns" r ON r."Id" = re."RunId"
+              WHERE re."SlotId" = s."Id" AND r."Status" IN ('queued', 'running', 'paused'));
         """;
 }

@@ -1,9 +1,9 @@
 namespace EmotePurge.Infrastructure.Services;
 
 /// <summary>
-/// The pure binding half of the backfill enqueue with the slot flag on (plan #375 2.2–2.4, D28): which
-/// slot each preview entry of one emote binds to, built from the REST reconcile's own steps so both
-/// paths keep one notion of slot identity. No I/O, no clock, no DbContext.
+/// The pure binding half of the backfill enqueue (plan #375 2.2–2.4, D28): which slot each preview
+/// entry of one emote binds to, built from the REST reconcile's own steps so both paths keep one notion
+/// of slot identity. No I/O, no clock, no DbContext.
 /// <para>
 /// <b>Input contract.</b> Per <c>SevenTvEmoteId</c> group <i>G</i> of the previewed set X: the preview
 /// entries in v3 order (name + v4 overlay date, <c>null</c> = undated; a duplicate name counts once, the

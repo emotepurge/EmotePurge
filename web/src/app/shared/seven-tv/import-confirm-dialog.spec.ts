@@ -743,7 +743,7 @@ describe('ImportConfirmDialog', () => {
       });
     });
 
-    it('does not close on a click when every row is already in the set and the flag is off', () => {
+    it('does not close on a click when every row is already in the set in emote mode (no slot entries)', () => {
       const dialog = render({
         source: channelSource([row('existing-1', 'PogU')]),
         target: readyTarget({

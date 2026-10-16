@@ -103,7 +103,7 @@ public partial class ChatLogBackfillServiceTests
         var first = CreateService(dbA).EnqueueAsync(channel.ChannelName, SetB, 6, Today, Actor);
         var second = CreateService(dbB).EnqueueAsync(channel.ChannelName, SetB, 3, Today, Actor);
         await bothEntered.Task;
-        release.SetResult(PreviewOf(SetB, Member("n1", "BNew1", null), Member("n2", "BNew2", null)));
+        release.SetResult(PreviewOf(SetB, Member("n1", "BNew1", EntryT1), Member("n2", "BNew2", EntryT1)));
 
         var outcomes = (await Task.WhenAll(first, second)).Select(r => r.Status).OrderBy(s => s).ToArray();
         Assert.Equal([ChatLogBackfillEnqueueStatus.Enqueued, ChatLogBackfillEnqueueStatus.AlreadyActive], outcomes);
@@ -201,7 +201,7 @@ public partial class ChatLogBackfillServiceTests
     {
         var channel = await SeedChannelAsync("bfraceuserlate");
         await SeedUserAsync();
-        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));
+        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", EntryT1));
 
         var atUpsert = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var proceed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -235,7 +235,7 @@ public partial class ChatLogBackfillServiceTests
     {
         var channel = await SeedChannelAsync("bflockleave");
         await SeedUserAsync();
-        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));
+        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", EntryT1));
 
         await using var holder = CreateDbContext();
         await using var holderTx = await HoldUserRowAsync(holder);
@@ -258,18 +258,18 @@ public partial class ChatLogBackfillServiceTests
         Assert.Equal((ChatLogBackfillRunStatus.Cancelled, "channel_left"), (run.Status, run.ErrorCode));
     }
 
-    // The enqueue's lock must not block foreign-key inserts on the channel. A 7TV dispatch pushes an emote
-    // the chosen set also lists, while the enqueue holds the channel: the dispatch completes, and the
-    // enqueue's ON CONFLICT DO NOTHING then adopts the dispatch's row instead of creating one.
-    // Mutation probe: LockChannelByIdAsync with FOR UPDATE — the dispatch's FK check (KEY SHARE) waits for
-    // the enqueue while the enqueue's insert waits for the dispatch's uncommitted key: 40P01.
+    // A 7TV dispatch pushes an emote the chosen set also lists while the enqueue holds the channel. The
+    // dispatch takes the channel row first (plan #374 Z8, the slot work's lock order), so it waits at the
+    // enqueue's FOR NO KEY UPDATE on the channel instead of meeting it in a cycle: the enqueue creates the
+    // archived placeholder row (CreatedRow), and the dispatch then pushes onto it and un-archives it. No
+    // 40P01 on either side.
     [Fact]
-    public async Task LockRace_DispatchInsertingTheSameEmoteWhileTheEnqueueHoldsTheChannel_DoesNotDeadlock()
+    public async Task LockRace_DispatchWaitsAtTheChannelTheEnqueueHolds_ThenPushesOntoTheEnqueuesRow()
     {
         var channel = await SeedChannelAsync("bflockdispatch");
         await SeedUserAsync();
         await SeedEmoteAsync(channel, "a1", "A1");
-        PreviewReturns(SetB, "Set B", Member("x1", "XInB", null), Member("n1", "BNew1", null));
+        PreviewReturns(SetB, "Set B", Member("x1", "XInB", EntryT1), Member("n1", "BNew1", EntryT1));
 
         await using var holder = CreateDbContext();
         await using var holderTx = await HoldUserRowAsync(holder);
@@ -291,7 +291,7 @@ public partial class ChatLogBackfillServiceTests
         var x1 = await verify.Emotes.AsNoTracking().SingleAsync(e => e.ChannelId == channel.Id && e.SevenTvEmoteId == "x1");
         Assert.Equal(("XLive", false, false), (x1.Name, x1.IsArchived, x1.IsPlaceholder));
         var snapshot = await verify.ChatLogBackfillRunEmotes.AsNoTracking().ToDictionaryAsync(e => e.SevenTvEmoteId);
-        Assert.Equal((x1.Id, "XInB", false), (snapshot["x1"].EmoteId, snapshot["x1"].Name, snapshot["x1"].CreatedRow));
+        Assert.Equal((x1.Id, "XInB", true), (snapshot["x1"].EmoteId, snapshot["x1"].Name, snapshot["x1"].CreatedRow));
         Assert.True(snapshot["n1"].CreatedRow);
     }
 
@@ -305,7 +305,7 @@ public partial class ChatLogBackfillServiceTests
         var channel = await SeedChannelAsync("bflocksync");
         await SeedUserAsync();
         await SeedEmoteAsync(channel, "a1", "A1");
-        PreviewReturns(SetB, "Set B", Member("x1", "XInB", null));
+        PreviewReturns(SetB, "Set B", Member("x1", "XInB", EntryT1));
 
         await using var holder = CreateDbContext();
         await using var holderTx = await HoldUserRowAsync(holder);
@@ -340,7 +340,7 @@ public partial class ChatLogBackfillServiceTests
     {
         var channel = await SeedChannelAsync("bflockdeadlock");
         await SeedUserAsync();
-        PreviewReturns(SetB, "Set B", Member("a", "AliasA", null), Member("z", "AliasZ", null));
+        PreviewReturns(SetB, "Set B", Member("a", "AliasA", EntryT1), Member("z", "AliasZ", EntryT1));
         var logger = new RecordingLogger<ChatLogBackfillService>();
 
         await using var other = fixture.CreateTaggedDbContext("bflockdeadlock-other", DatabaseName);
@@ -374,7 +374,7 @@ public partial class ChatLogBackfillServiceTests
     {
         var channel = await SeedChannelAsync("bflockindex");
         await SeedUserAsync();
-        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", null));
+        PreviewReturns(SetB, "Set B", Member("n1", "BNew1", EntryT1));
 
         await using var holder = CreateDbContext();
         await using var holderTx = await HoldUserRowAsync(holder);
