@@ -892,6 +892,7 @@
     "usageLabel": "uses",
     "sortByUsage": "Usage",
     "sortByLastUsed": "Last used",
+    "sortByAdded": "Recently added",
     "sortKeyLabel": "Sort by",
     "sortDirectionLabel": "Order",
     "sortDescending": "Descending",
@@ -944,6 +945,12 @@
       "myVoteKeep": "Your vote: keep",
       "myVoteDelete": "Your vote: delete",
       "myVoteNone": "You have not voted yet."
+    },
+    "addedGroup": {
+      "today": "Today · {{date}}",
+      "yesterday": "Yesterday · {{date}}",
+      "day": "{{date}}",
+      "unknown": "Date unknown"
     },
     "atlas": {
       "label": "Emote sheet",

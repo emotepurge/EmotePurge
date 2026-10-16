@@ -892,6 +892,7 @@
     "usageLabel": "Nutzung",
     "sortByUsage": "Nutzung",
     "sortByLastUsed": "Zuletzt benutzt",
+    "sortByAdded": "Zuletzt hinzugefügt",
     "sortKeyLabel": "Sortieren nach",
     "sortDirectionLabel": "Reihenfolge",
     "sortDescending": "Absteigend",
@@ -944,6 +945,12 @@
       "myVoteKeep": "Deine Stimme: Behalten",
       "myVoteDelete": "Deine Stimme: Löschen",
       "myVoteNone": "Du hast noch nicht abgestimmt."
+    },
+    "addedGroup": {
+      "today": "Heute · {{date}}",
+      "yesterday": "Gestern · {{date}}",
+      "day": "{{date}}",
+      "unknown": "Datum unbekannt"
     },
     "atlas": {
       "label": "Emote-Bogen",
