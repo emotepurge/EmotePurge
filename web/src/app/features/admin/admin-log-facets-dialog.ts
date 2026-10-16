@@ -86,11 +86,11 @@ export interface LogFacetsDialogData {
           [filters]="data.savedFilters()"
           [currentQ]="data.currentQ()"
           [loadFailed]="data.savedFiltersFailed()"
-          (selected)="then(() => data.selectFilter($event))"
-          (saveRequested)="then(() => data.saveCurrent())"
-          (editRequested)="then(() => data.editFilter($event))"
-          (overwriteRequested)="then(() => data.overwriteFilter($event))"
-          (deleteRequested)="then(() => data.deleteFilter($event))"
+          (selected)="closeThen(() => data.selectFilter($event))"
+          (saveRequested)="closeThen(() => data.saveCurrent())"
+          (editRequested)="closeThen(() => data.editFilter($event))"
+          (overwriteRequested)="closeThen(() => data.overwriteFilter($event))"
+          (deleteRequested)="closeThen(() => data.deleteFilter($event))"
           (retryRequested)="data.retryFilters()"
         />
         @if (data.summary(); as summary) {
@@ -141,7 +141,7 @@ export class AdminLogFacetsDialog {
   }
 
   /** Closes the sheet, then runs `action` once it is gone — the next dialog must not open over it. */
-  protected then(action: () => void): void {
+  protected closeThen(action: () => void): void {
     this.ref.closed.pipe(take(1)).subscribe(action);
     this.ref.close();
   }
