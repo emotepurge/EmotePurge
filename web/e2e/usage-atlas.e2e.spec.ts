@@ -274,11 +274,14 @@ test.describe('emote atlas', () => {
       /Datum unbekannt/,
     ]);
 
-    await page
-      .getByRole('heading', { name: /Gestern · 15\.10\.2026/ })
-      .locator('..')
-      .getByRole('button', { name: 'alle markieren' })
-      .click();
+    // Every day's mark-all is told apart by the day it acts on, not three buttons named alike.
+    const atlas = page.getByRole('group', { name: 'Emote-Bogen' });
+    await expect(atlas.getByRole('button', { name: /^alle markieren: / })).toHaveCount(3);
+    await expect(atlas.getByRole('button', { name: /^alle markieren: Heute/ })).toBeVisible();
+    await expect(
+      atlas.getByRole('button', { name: /^alle markieren: .*12\.10\.2026/ }),
+    ).toBeVisible();
+    await atlas.getByRole('button', { name: /^alle markieren: Gestern/ }).click();
 
     // Exactly yesterday's two emotes, nothing from the other days.
     await expect(page.getByRole('button', { name: 'Löschen (2)' })).toBeVisible();

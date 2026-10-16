@@ -724,16 +724,19 @@
           <div *cdkVirtualFor="let row of rows(); trackBy: trackRow" [style.height.px]="rowHeight">
             @if (row.kind === 'band') {
               <div class="flex h-full items-end gap-3 pb-2">
+                @let title = groupTitle(row.band);
+                @let titleText = title.key | transloco: title.params;
                 <!-- Purely decorative: the band is named in words right next to it, so the swatch
                      carries no information of its own. It exists to tie the header to its stretch
                      of the distribution strip above. -->
-                <span
-                  [class]="'mb-1 size-2 shrink-0 rounded-xs ' + bandFill(row.band)"
-                  aria-hidden="true"
-                ></span>
+                @if (!addedMode()) {
+                  <span
+                    [class]="'mb-1 size-2 shrink-0 rounded-xs ' + bandFill(row.band)"
+                    aria-hidden="true"
+                  ></span>
+                }
                 <h3 class="text-[11px] font-semibold tracking-[0.13em] text-fg-secondary uppercase">
-                  @let title = groupTitle(row.band);
-                  {{ title.key | transloco: title.params }}
+                  {{ titleText }}
                 </h3>
                 <!-- Two unbreakable phrases that wrap as wholes: where the column is too narrow for
                      one line (German at 360 px), the heading breaks between the two numbers instead
@@ -778,6 +781,9 @@
                   <button
                     type="button"
                     class="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium text-accent-fg transition hover:bg-surface-inset"
+                    [attr.aria-label]="
+                      'usageStats.bands.selectAllIn' | transloco: { group: titleText }
+                    "
                     (click)="selectBand(row.band)"
                   >
                     {{ 'usageStats.bands.selectAll' | transloco }}

@@ -974,6 +974,7 @@
       "count": "{{count}} emotes",
       "countOne": "1 emote",
       "selectAll": "mark all",
+      "selectAllIn": "mark all: {{group}}",
       "uncounted": {
         "title": "No counts",
         "hint": "under this set"

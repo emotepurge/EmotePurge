@@ -112,8 +112,8 @@ import { EmoteSprite } from '../../shared/emotes/emote-sprite';
 import { EmoteSpriteAnimated } from '../../shared/emotes/emote-sprite-animated';
 import {
   addedDayKeyOf,
+  addedDayKind,
   groupByAddedDay,
-  localDayKey,
   UNKNOWN_ADDED_DAY,
 } from '../../shared/emotes/added-day-groups';
 import { EmoteUsageFilter } from '../../shared/emotes/emote-usage-filter';
@@ -1527,7 +1527,8 @@ export class UsageStatsPage {
   /**
    * Every displayed row — counted or not, since a freshly added emote may have no counts yet and is
    * exactly what this sort is for — in local-day groups, newest first unless the direction is
-   * ascending. `'left'` rows are not in `emotes()` to begin with.
+   * ascending. `'left'` rows are treated as in the other modes: `emotes()` drops them unless the
+   * live member list is truncated, and then they show up here exactly as they show up in the bands.
    */
   private readonly addedGroups = computed(() =>
     groupByAddedDay(this.filteredEmotes(), this.sortDirection(), (emote) => emote.emoteName).map(
@@ -1869,7 +1870,8 @@ export class UsageStatsPage {
 
   protected readonly inspectedRank = computed(() => {
     const emote = this.inspected();
-    return emote ? (this.usageRank().get(emote.slotKey) ?? null) : null;
+    // The rank is a position in the usage ranking, which the "Recently added" mode does not show.
+    return emote && !this.addedMode() ? (this.usageRank().get(emote.slotKey) ?? null) : null;
   });
 
   protected readonly inspectedBand = computed<AtlasGroupKey>(() => {
@@ -3343,14 +3345,7 @@ export class UsageStatsPage {
       return { key: `usageStats.bands.${key}.title`, params: {} };
     }
     const day = key.slice(4);
-    const now = new Date();
-    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-    const kind =
-      day === localDayKey(now.getTime())
-        ? 'today'
-        : day === localDayKey(yesterday.getTime())
-          ? 'yesterday'
-          : 'day';
+    const kind = addedDayKind(day, new Date());
     return { key: `usageStats.addedGroup.${kind}`, params: { date: this.formatDate(day) } };
   }
 

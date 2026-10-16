@@ -974,6 +974,7 @@
       "count": "{{count}} Emotes",
       "countOne": "1 Emote",
       "selectAll": "alle markieren",
+      "selectAllIn": "alle markieren: {{group}}",
       "uncounted": {
         "title": "Keine Zählungen",
         "hint": "unter diesem Set"
