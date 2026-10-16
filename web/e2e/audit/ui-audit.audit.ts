@@ -438,7 +438,7 @@ interface Scenario {
   /** Also runs at the `mobile-mouse` viewport (360 px, fine pointer). */
   includeMouseAt360?: boolean;
   /**
-   * Fails the case on any axe finding tagged WCAG 2.0/2.1 A or AA — the full rule set, not only
+   * Fails the case on any axe finding tagged WCAG 2.0/2.1 A or AA or WCAG 2.2 AA (`target-size`, 24 px) — the full rule set, not only
    * `color-contrast`. For pages whose spec demands an AA-clean audit (the admin log viewer, §9.8).
    */
   wcagAA?: boolean;
@@ -2246,14 +2246,16 @@ for (const theme of THEMES) {
         const metrics = await collectMetrics(page);
         const contrastViolations = await collectContrastViolations(page);
         if (sc.wcagAA) {
+          // axe ships `target-size` (WCAG 2.2 AA, 2.5.8) disabled; the tag alone does not run it.
           const axe = await new AxeBuilder({ page })
-            .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+            .options({ rules: { 'target-size': { enabled: true } } })
+            .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'])
             .analyze();
           expect(
             axe.violations.map(
               (v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`,
             ),
-            'axe WCAG 2.1 A/AA',
+            'axe WCAG 2.0/2.1 A/AA + 2.2 AA',
           ).toEqual([]);
           expect(contrastViolations, 'contrast').toEqual([]);
         }

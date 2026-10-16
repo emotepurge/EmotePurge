@@ -190,10 +190,10 @@ type DetailState =
                             {{ prop.text }}
                           </dd>
                           @if (prop.include && prop.exclude) {
-                            <dd class="flex gap-2">
+                            <dd class="flex gap-1">
                               <button
                                 type="button"
-                                class="text-accent-fg underline-offset-2 hover:underline"
+                                class="inline-flex min-h-11 items-center px-1 text-accent-fg underline-offset-2 hover:underline lg:min-h-6"
                                 [attr.aria-label]="
                                   'admin.logs.row.filterProperty'
                                     | transloco: { key: prop.key, value: prop.text }
@@ -204,7 +204,7 @@ type DetailState =
                               </button>
                               <button
                                 type="button"
-                                class="text-accent-fg underline-offset-2 hover:underline"
+                                class="inline-flex min-h-11 items-center px-1 text-accent-fg underline-offset-2 hover:underline lg:min-h-6"
                                 [attr.aria-label]="
                                   'admin.logs.row.excludeProperty'
                                     | transloco: { key: prop.key, value: prop.text }
@@ -253,7 +253,7 @@ type DetailState =
               <div class="flex items-center gap-3">
                 <button
                   type="button"
-                  class="min-h-9 rounded border border-border-strong px-3 text-xs text-fg-body hover:bg-surface"
+                  class="min-h-11 rounded border border-border-strong px-3 text-xs text-fg-body hover:bg-surface lg:min-h-9"
                   (click)="copy(row.entry)"
                 >
                   {{ 'admin.logs.row.copy' | transloco }}
