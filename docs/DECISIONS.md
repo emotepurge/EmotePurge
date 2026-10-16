@@ -10,9 +10,9 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
-### 2026-10-16 — Admin log viewer live mode: client rules (#383)
+### 2026-10-16 — Admin log viewer live mode: client rules and audit gate (#383)
 
-**Betrifft:** `web/src/app/features/admin/admin-logs-page.ts` · `web/src/app/features/admin/admin-log-list.ts` · `web/src/app/core/admin/log-reconcile.ts` · `web/e2e/support/mocks.ts` · `docs/superpowers/specs/2026-10-14-admin-log-viewer-383-spec.md` (§8.3, §9.4)
+**Betrifft:** `web/src/app/features/admin/admin-logs-page.ts` · `web/src/app/features/admin/admin-log-list.ts` · `web/src/app/core/admin/log-reconcile.ts` · `web/e2e/support/mocks.ts` · `web/e2e/audit/ui-audit.audit.ts` · `docs/superpowers/specs/2026-10-14-admin-log-viewer-383-spec.md` (§8.3, §9.4, §9.8)
 
 `/admin/logs` stays live only on a relative range. Four triggers ask `LogReconcileScheduler` for a reconcile: a `logs.appended` hint on the admin stream, the tab becoming visible again, the stream (re)opening, and a 30 s tick. All of them require a visible tab, a loaded list, no load in flight and no pause. The 30 s tick runs whatever state the stream is in. "No polling fallback" (§9.4) means only that nothing replaces the stream's hints. A closed stream shows in the live marker (the `HealthMarker` of the monitoring page) with a "Neu laden" button, while the periodic reconcile keeps the list correct.
 
@@ -21,6 +21,8 @@ Each reconcile asks `preflightReconcile` first and calls `getKeys` only on `requ
 "At the top" is decided on every reconcile: the first row's top lies between the sticky filter bar's bottom edge and the viewport bottom, and no row is unfolded. At the top, new rows are merged at their `(timestampUtc, id)` place, carry an accent wash for 2 s (a fixed mark under reduced motion) and produce one polite announcement for the whole batch. Otherwise they wait behind "n neue ↑" and count as known, so they are not fetched again. A later reconcile that finds the reader back at the top inserts them, and so does a click on the slot, which also scrolls up and moves focus to the first row. The summary is reloaded at most once per 30 s, and only after rows were inserted. "Load more" now merges instead of appending, because a live insert can already sit at the old end of the list.
 
 The E2E mock answers `keysOnly` and `ids=` requests separately and counts them in `calls.keys` and `calls.ids`, so `calls.list` holds only page requests. Its optional `store` acts as the server's rows for live tests. Without a store, the key query lists exactly what the list has served, so nothing is new.
+
+The UI audit harness covers `/admin/logs` as loaded, with the facet sheet open (below `lg`; from `lg` on the facets are the left column) and with one row unfolded (§9.8). Two scenario flags are new. `wcagAA` runs the full axe rule set tagged WCAG 2.0/2.1 A and AA, not only `color-contrast`, and fails the case on any finding. `lightEverywhere` runs the light theme at every viewport instead of only at `desktop`. Both are opt-in, so the rest of the matrix keeps its earlier trade-offs.
 
 ### 2026-10-15 — Second chart primitive: stacked time histogram (#383)
 
