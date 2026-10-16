@@ -192,6 +192,7 @@ describe('AdminLogsPage', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    Reflect.deleteProperty(document, 'visibilityState');
     vi.unstubAllGlobals();
     httpMock?.verify();
   });
@@ -933,7 +934,7 @@ describe('AdminLogsPage', () => {
 
       expect(scrollTo).toHaveBeenCalled();
       expect(rowIds()).toEqual([5, 4, 3, 2, 1]);
-      expect(announcement()).toBe('1 new entries');
+      expect(announcement()).toBe('1 new entry');
       expect(slotButton().getAttribute('aria-hidden')).toBe('true');
     });
 
@@ -1008,7 +1009,8 @@ describe('AdminLogsPage', () => {
       await settle();
 
       expect(root().textContent).toContain('Too many new entries');
-      expect(marker()).not.toBe('Live paused');
+      // No reconcile runs any more, so the marker must not say "Live" either.
+      expect(marker()).toBe('Reload needed');
 
       buttonNamed('Reload list').click();
       await settle();
@@ -1082,6 +1084,103 @@ describe('AdminLogsPage', () => {
       statusRequest().flush(healthyStatus());
       listRequest().flush(page(4, 4, null));
       summaryRequest().flush(summary());
+    });
+
+    it('announces every insert, also two in a row with the same count', async () => {
+      startFakeDate('2026-10-14T12:00:05Z');
+      await openAndLoad('/admin/logs');
+      const region = root().querySelector('[data-testid="log-live-announcement"]')!;
+      const heard: string[] = [];
+      const observer = new MutationObserver(() => heard.push(region.textContent?.trim() ?? ''));
+      observer.observe(region, { childList: true, characterData: true, subtree: true });
+      const first = at(5, '2026-10-14T12:00:01Z');
+      const second = at(6, '2026-10-14T12:00:02Z');
+
+      advanceDate(6000);
+      await reconcile([first]);
+      await settle();
+      advanceDate(6000);
+      emitLive('logs.appended');
+      await settle();
+      keysRequest().flush(keyPage([second, first, ...loaded()]));
+      idsRequest().flush(idsPage([second]));
+      await settle();
+      await settle();
+      await Promise.resolve();
+      observer.disconnect();
+
+      expect(rowIds()).toEqual([6, 5, 4, 3, 2, 1]);
+      expect(heard.filter((text) => text !== '')).toEqual(['1 new entry', '1 new entry']);
+    });
+
+    it('takes the focus off "n new" when the held rows go in on their own', async () => {
+      startFakeDate('2026-10-14T12:00:05Z');
+      await openAndLoad('/admin/logs');
+      const firstRowButton = () => root().querySelector<HTMLButtonElement>('[data-log-id] button')!;
+      firstRowButton().click();
+      await settle();
+      await reconcile([at(5, '2026-10-14T12:00:01Z')]);
+      expect(slotButton().textContent?.trim()).toBe('1 new ↑');
+
+      // The reader folds the row again and tabs to the slot; the next reconcile finds the top.
+      firstRowButton().click();
+      await settle();
+      slotButton().focus();
+      expect(document.activeElement).toBe(slotButton());
+      advanceDate(6000);
+      emitLive('logs.appended');
+      await settle();
+      keysRequest().flush(keyPage([at(5, '2026-10-14T12:00:01Z'), ...loaded()]));
+      await settle();
+      await settle();
+
+      expect(rowIds()).toEqual([5, 4, 3, 2, 1]);
+      expect(slotButton().getAttribute('aria-hidden')).toBe('true');
+      expect(document.activeElement).toBe(firstRowButton());
+    });
+
+    it('reconciles when the tab comes back, and not while it is hidden', async () => {
+      let state: DocumentVisibilityState = 'visible';
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+      await openAndLoad('/admin/logs');
+
+      state = 'hidden';
+      document.dispatchEvent(new Event('visibilitychange'));
+      await settle();
+      emitLive('logs.appended');
+      await settle();
+      noKeysRequest();
+
+      state = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+      await settle();
+      await settle();
+      keysRequest().flush(keyPage(loaded()));
+    });
+
+    it('reconciles every 30 s without any hint', async () => {
+      let state: DocumentVisibilityState = 'visible';
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+      await openAndLoad('/admin/logs');
+      // Restart the visibility-driven timer under fake timers: away and back.
+      state = 'hidden';
+      document.dispatchEvent(new Event('visibilitychange'));
+      await settle();
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      });
+      state = 'visible';
+      document.dispatchEvent(new Event('visibilitychange'));
+      harness.detectChanges();
+      await vi.advanceTimersByTimeAsync(0);
+      keysRequest().flush(keyPage(loaded()));
+
+      await vi.advanceTimersByTimeAsync(29_000);
+      noKeysRequest();
+      await vi.advanceTimersByTimeAsync(1_000);
+      keysRequest().flush(keyPage(loaded()));
+      await vi.advanceTimersByTimeAsync(30_000);
+      keysRequest().flush(keyPage(loaded()));
     });
 
     it('refreshes the summary at most once per 30 s, and only after something was inserted', async () => {

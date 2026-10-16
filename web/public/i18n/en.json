@@ -862,7 +862,10 @@
       },
       "newEntries": {
         "label": "{{ count }} new ↑",
-        "aria": "{{ count }} new entries, jump to the top and insert them"
+        "aria": {
+          "one": "{{ count }} new entry, jump to the top and insert it",
+          "other": "{{ count }} new entries, jump to the top and insert them"
+        }
       },
       "live": {
         "open": "Live",
@@ -870,11 +873,15 @@
         "idle": "Live stream idle",
         "closed": "Live stream disconnected",
         "paused": "Live paused",
+        "reload": "Reload needed",
         "absolute": "No live updates for a fixed range",
         "pausedNotice": "Live paused after an error",
         "tooMany": "Too many new entries",
         "reloadList": "Reload list",
-        "inserted": "{{ count }} new entries"
+        "inserted": {
+          "one": "{{ count }} new entry",
+          "other": "{{ count }} new entries"
+        }
       },
       "facets": {
         "title": "Facets",

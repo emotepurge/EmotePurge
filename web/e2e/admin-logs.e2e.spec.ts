@@ -430,11 +430,19 @@ test.describe('admin log viewer live mode', () => {
     await expect(rows(page)).toHaveCount(5);
 
     store.push(at(6, '2026-10-14T12:00:05Z'));
+    // Stop the clock, so real time cannot run the 2 s mark out before it is looked at; then step it
+    // in small slices until the insert and its announcement have rendered.
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
     await emitLive(page, hint);
+    await expect(async () => {
+      await page.clock.runFor(50);
+      await expect(page.getByTestId('log-live-announcement')).toHaveText('1 neuer Eintrag', {
+        timeout: 100,
+      });
+    }).toPass();
 
     await expect(rows(page).first()).toHaveAttribute('data-log-id', '6');
     await expect(rows(page).first()).toHaveAttribute('data-log-new', '');
-    await expect(page.getByTestId('log-live-announcement')).toHaveText('1 neue Einträge');
     await page.clock.runFor(2500);
     await expect(rows(page).first()).not.toHaveAttribute('data-log-new');
   });
@@ -549,6 +557,10 @@ test.describe('admin log viewer live mode', () => {
     await emitLive(page, hint);
     await emitLive(page, hint);
     await page.clock.runFor(65_000);
+    // Sync point: a request sent now has reached the mock, so one sent before it would have too.
+    const statusCalls = calls.status.length;
+    await page.evaluate(() => fetch('/api/admin/logs/status').then((r) => r.status));
+    expect(calls.status.length).toBe(statusCalls + 1);
     expect(sent()).toBe(before);
     await expect(rows(page)).toHaveCount(5);
 
@@ -583,5 +595,63 @@ test.describe('admin log viewer live mode', () => {
     store.push(at(6, '2026-10-14T12:00:05Z'));
     await page.clock.runFor(30_000);
     await expect(rows(page).first()).toHaveAttribute('data-log-id', '6');
+  });
+});
+
+test.describe('admin log viewer live mode on a phone', () => {
+  test.use({ viewport: { width: 360, height: 800 } });
+
+  test('live states never change the height of the sticky filter bar', async ({ page }) => {
+    const NOW = new Date('2026-10-14T12:00:10Z');
+    let failKeys: 'none' | 'range' | 'error' = 'none';
+    await adminLogsPage(page, {
+      store: [buildLogEntry(1, { timestampUtc: '2026-10-14T11:59:50Z' })],
+      fail: (_url, endpoint) => {
+        if (endpoint !== 'keys' || failKeys === 'none') {
+          return undefined;
+        }
+        return failKeys === 'range'
+          ? { status: 400, body: { errorCode: 'invalid_log_range' } }
+          : { status: 500, body: {} };
+      },
+    });
+    await mockLiveQuota(page, {
+      openConnections: 0,
+      maxPerSubscriber: 3,
+      perSubscriberLimitReached: false,
+    });
+    await page.clock.install({ time: NOW });
+    await page.goto('/admin/logs');
+    await expect(rows(page)).toHaveCount(1);
+    const bar = page.locator('app-admin-logs-page .app-sticky-bar');
+    const height = async () => (await bar.boundingBox())?.height;
+    const connecting = await height();
+    await expect(page.getByText('Verbindet…')).toBeVisible();
+
+    failKeys = 'range';
+    await emitLive(page, { type: 'logs.appended' });
+    await expect(page.getByText('Neu laden nötig')).toBeVisible();
+    expect(await height()).toBe(connecting);
+
+    failKeys = 'error';
+    await page.getByRole('button', { name: 'Liste neu laden' }).click();
+    await expect(page.getByText('Zu viele neue Einträge')).toHaveCount(0);
+    await page.clock.runFor(6000);
+    await emitLive(page, { type: 'logs.appended' });
+    await expect(page.getByText('Live pausiert', { exact: true })).toBeVisible();
+    expect(await height()).toBe(connecting);
+
+    failKeys = 'none';
+    await page.getByRole('button', { name: 'Erneut versuchen' }).click();
+    await expect(page.getByText('Live pausiert nach Fehler')).toHaveCount(0);
+    await failLive(page);
+    await expect(page.getByText('Live-Stream getrennt')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Neu laden', exact: true })).toBeVisible();
+    expect(await height()).toBe(connecting);
+
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
   });
 });

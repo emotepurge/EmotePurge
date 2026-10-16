@@ -59,6 +59,7 @@ import {
 } from '../../core/admin/log-reconcile';
 import { apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { LanguageService } from '../../core/i18n/language.service';
+import { pluralKey } from '../../core/i18n/plural';
 import { ADMIN_LIVE_URL, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { liveEvents } from '../../core/live/live-reload';
 import { LiveStatus, LiveUpdateService } from '../../core/live/live-update.service';
@@ -101,7 +102,7 @@ const SUMMARY_MIN_INTERVAL_MS = 30_000;
 const HIGHLIGHT_MS = 2000;
 
 /** What the live status marker in the filter bar says: the stream's own state, or why live is off. */
-type LiveState = LiveStatus | 'paused' | 'absolute';
+type LiveState = LiveStatus | 'paused' | 'reload' | 'absolute';
 
 const LIVE_TONES: Record<LiveState, HealthTone> = {
   idle: 'idle',
@@ -109,6 +110,7 @@ const LIVE_TONES: Record<LiveState, HealthTone> = {
   open: 'ok',
   closed: 'danger',
   paused: 'warning',
+  reload: 'warning',
   absolute: 'idle',
 };
 
@@ -304,6 +306,11 @@ function utcMinute(instant: string): string {
               </app-popover>
             }
           </div>
+          @if (!isDesktop()) {
+            <button type="button" appButton="outline" (click)="openFilterDialog()">
+              {{ 'admin.logs.filter.open' | transloco }}
+            </button>
+          }
         </form>
         @if (filterError(); as error) {
           <p id="admin-log-filter-error" class="text-sm text-danger-fg">
@@ -319,10 +326,6 @@ function utcMinute(instant: string): string {
               (valueChange)="setRange($event)"
               [ariaLabel]="'admin.logs.range.label' | transloco"
             />
-          } @else {
-            <button type="button" appButton="outline" (click)="openFilterDialog()">
-              {{ 'admin.logs.filter.open' | transloco }}
-            </button>
           }
           @if (absoluteText(); as text) {
             <span class="text-xs text-fg-muted tabular-nums">{{ text }}</span>
@@ -332,32 +335,37 @@ function utcMinute(instant: string): string {
               {{ 'admin.logs.range.backTo' | transloco: { range: range } }}
             </button>
           }
-          <div class="ml-auto flex flex-wrap items-center justify-end gap-3">
-            <app-health-marker
-              [tone]="liveTone()"
-              [label]="'admin.logs.live.' + liveState() | transloco"
-            />
-            <!-- No polling replaces a closed stream for hints (spec §9.4); the 30 s reconcile keeps
-                 running, and this is the way to ask now. -->
-            @if (liveState() === 'closed') {
-              <button type="button" appButton="outline" (click)="reload()">
-                {{ 'admin.logs.states.reload' | transloco }}
-              </button>
-            }
-            <!-- Reserved even at zero (invisible), so the bar never jumps when "n neue" appears. -->
-            <span class="min-w-24 text-right" data-testid="log-new-slot">
+          <!-- The live line never wraps and never changes size with the live state: the marker may
+               truncate, and the one action slot is reserved at a fixed width. Below lg it is a line of
+               its own (the Filter button sits in the form row), so nothing else can push it over. -->
+          <div
+            class="flex min-w-0 basis-full flex-nowrap items-center justify-between gap-3 lg:ml-auto lg:basis-auto lg:justify-end"
+            data-testid="log-live-line"
+          >
+            <div class="min-w-0 overflow-hidden whitespace-nowrap" [title]="liveLabel()">
+              <app-health-marker [tone]="liveTone()" [label]="liveLabel()" />
+            </div>
+            <!-- One slot for "n neue ↑" and, while the stream is closed, "Neu laden" (spec §9.4); held
+                 rows win, since inserting them is a fresh look as well. Reserved even when empty. -->
+            <span class="w-28 shrink-0 text-right" data-testid="log-new-slot">
               <button
                 type="button"
-                class="inline-flex min-h-11 items-center px-2 text-sm text-accent-fg underline-offset-2 hover:underline sm:min-h-8"
-                [class.invisible]="pendingNew() === 0"
-                [attr.aria-hidden]="pendingNew() === 0 ? 'true' : null"
-                [tabindex]="pendingNew() === 0 ? -1 : 0"
+                class="inline-flex min-h-11 items-center px-2 text-sm text-accent-fg underline-offset-2 hover:underline lg:min-h-8"
+                [class.invisible]="slotAction() === null"
+                [attr.aria-hidden]="slotAction() === null ? 'true' : null"
+                [tabindex]="slotAction() === null ? -1 : 0"
                 [attr.aria-label]="
-                  'admin.logs.newEntries.aria' | transloco: { count: pendingNew() }
+                  slotAction() === 'reload'
+                    ? null
+                    : (pendingAriaKey() | transloco: { count: pendingNew() })
                 "
-                (click)="showPending()"
+                (click)="onSlot()"
               >
-                {{ 'admin.logs.newEntries.label' | transloco: { count: pendingNew() } }}
+                @if (slotAction() === 'reload') {
+                  {{ 'admin.logs.states.reload' | transloco }}
+                } @else {
+                  {{ 'admin.logs.newEntries.label' | transloco: { count: pendingNew() } }}
+                }
               </button>
             </span>
           </div>
@@ -673,19 +681,33 @@ export class AdminLogsPage {
     () => Date.now(),
     () => this.reconcile(),
   );
-  private reconcileSub?: Subscription;
-  private lastSummaryAtMs = Number.NEGATIVE_INFINITY;
-  /** Rows went into the list since the summary last loaded, so its counts are behind. */
-  private summaryBehind = false;
   private readonly highlightTimers = new Set<ReturnType<typeof setTimeout>>();
 
   protected readonly liveState = computed<LiveState>(() => {
     if (this.parsedRange().kind === 'absolute') {
       return 'absolute';
     }
-    return this.paused() ? 'paused' : this.liveUpdate.status();
+    if (this.paused()) {
+      return 'paused';
+    }
+    // No reconcile runs while the hint asks for a reload, so the marker must not claim "Live".
+    return this.tooManyNew() ? 'reload' : this.liveUpdate.status();
   });
   protected readonly liveTone = computed(() => LIVE_TONES[this.liveState()]);
+  protected readonly liveLabel = computed(() => {
+    this.languageService.lang();
+    return this.transloco.translate(`admin.logs.live.${this.liveState()}`);
+  });
+  /** What the one reserved slot offers: held rows first, else "Neu laden" for a closed stream. */
+  protected readonly slotAction = computed<'pending' | 'reload' | null>(() => {
+    if (this.pendingNew() > 0) {
+      return 'pending';
+    }
+    return this.liveState() === 'closed' ? 'reload' : null;
+  });
+  protected readonly pendingAriaKey = computed(() =>
+    pluralKey(this.pendingNew(), 'admin.logs.newEntries.aria'),
+  );
 
   protected readonly copyFeedback = signal<string | null>(null);
   protected readonly helpOpen = signal(false);
@@ -697,6 +719,10 @@ export class AdminLogsPage {
   private statusSub?: Subscription;
   private overwriting = false;
   private copyTimer?: ReturnType<typeof setTimeout>;
+  private reconcileSub?: Subscription;
+  private lastSummaryAtMs = Number.NEGATIVE_INFINITY;
+  /** Rows went into the list since the summary last loaded, so its counts are behind. */
+  private summaryBehind = false;
 
   protected readonly clientFilterError = computed<LogFilterApiError | null>(() => {
     const q = this.appliedQ();
@@ -926,6 +952,14 @@ export class AdminLogsPage {
     }
   }
 
+  protected onSlot(): void {
+    if (this.slotAction() === 'reload') {
+      this.reload();
+    } else {
+      this.showPending();
+    }
+  }
+
   /** "n neue ↑": back to the top, then in with what waited. Focus moves to the first row, since the
    *  slot itself turns inert. */
   protected showPending(): void {
@@ -934,11 +968,7 @@ export class AdminLogsPage {
       return;
     }
     this.document.defaultView?.scrollTo({ top: 0 });
-    this.insert(rows);
-    afterNextRender(
-      () => this.host.nativeElement.querySelector<HTMLElement>('[data-log-id] button')?.focus(),
-      { injector: this.injector },
-    );
+    this.insert(rows, true);
   }
 
   protected openFilterDialog(): void {
@@ -1258,19 +1288,28 @@ export class AdminLogsPage {
       return;
     }
     if (this.atTop()) {
-      this.insert(rows);
+      // The reader may still sit on "n neue ↑", which turns inert now: take the focus along.
+      this.insert(rows, this.slotHasFocus());
     } else {
       this.held.set(rows);
     }
   }
 
-  private insert(rows: LogEntry[]): void {
+  private insert(rows: LogEntry[], moveFocus: boolean): void {
     this.entries.update((current) => mergeLogEntries(current ?? [], rows));
     this.held.set([]);
     this.summaryBehind = true;
-    this.announcement.set(
-      this.transloco.translate('admin.logs.live.inserted', { count: rows.length }),
+    this.announce(
+      this.transloco.translate(pluralKey(rows.length, 'admin.logs.live.inserted'), {
+        count: rows.length,
+      }),
     );
+    if (moveFocus) {
+      afterNextRender(
+        () => this.host.nativeElement.querySelector<HTMLElement>('[data-log-id] button')?.focus(),
+        { injector: this.injector },
+      );
+    }
     const ids = rows.map((row) => row.id);
     this.highlighted.update((current) => new Set([...current, ...ids]));
     const timer = setTimeout(() => {
@@ -1301,6 +1340,24 @@ export class AdminLogsPage {
   private pause(): void {
     this.paused.set(true);
     this.scheduler.pause();
+  }
+
+  /**
+   * One polite message per insert, also when two inserts read the same ("1 neuer Eintrag" twice):
+   * a live region only speaks on a change, so it is emptied first and refilled after that render.
+   */
+  private announce(text: string): void {
+    this.announcement.set('');
+    afterNextRender(() => this.announcement.set(text), { injector: this.injector });
+  }
+
+  private slotHasFocus(): boolean {
+    const active = this.document.activeElement;
+    return (
+      active !== null &&
+      (this.host.nativeElement.querySelector('[data-testid="log-new-slot"]')?.contains(active) ??
+        false)
+    );
   }
 
   private atTop(): boolean {
