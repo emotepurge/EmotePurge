@@ -234,6 +234,29 @@ public class LogEntryRenderingTests
         Assert.DoesNotContain("TTTT", rendered.Json);
     }
 
+    // 234 + " Bearer " puts the token start at index 242: the 257 element cut would leave 15 token
+    // characters, one short of the scrubber's 16-character minimum.
+    private static string BearerStraddlingElementCut() => new string('a', 234) + " Bearer " + new string('T', 32);
+
+    [Fact]
+    public void RenderProperties_CollectionElementBearerStraddlingElementCut_LeavesNoTokenCharacters()
+    {
+        var rendered = LogEntryRendering.RenderProperties(State(("c", new[] { BearerStraddlingElementCut() })), null, null);
+        var value = Parse(rendered).GetProperty("c").GetString();
+        Assert.Contains("Bearer [redacted]", value);
+        Assert.DoesNotContain("TT", value);
+    }
+
+    [Fact]
+    public void RenderProperties_SecondCollectionElementBearerStraddlingElementCut_LeavesNoTokenCharacters()
+    {
+        var rendered = LogEntryRendering.RenderProperties(State(("c", new[] { "x", BearerStraddlingElementCut() })), null, null);
+        var value = Parse(rendered).GetProperty("c").GetString();
+        Assert.StartsWith("x, ", value);
+        Assert.Contains("Bearer [redacted]", value);
+        Assert.DoesNotContain("TT", value);
+    }
+
     [Fact]
     public void RenderProperties_HugeStringElementsInCollection_AreBounded()
     {
