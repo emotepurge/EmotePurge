@@ -10,6 +10,16 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-17 — Popover: the panel is pulled back inside the viewport after it opens
+
+**Betrifft:** `web/src/app/shared/ui/popover.ts` · `web/src/app/shared/ui/popover.spec.ts` · `web/e2e/admin-logs.e2e.spec.ts`
+
+The log viewer's filter-help popover is end-aligned (`right-0`, `w-96`), but once the toolbar wraps on a phone its trigger sits at the left edge, so the panel ran about 170 px past the left side of the viewport. `align` only describes the edge the panel lines up with; nothing checked the result. After the first render `<app-popover>` now measures the panel and applies a `translateX` (pure `viewportShift`, 16 px margin, the start edge wins when the panel is wider than the room). Panels that already fit are untouched, so every existing user (account menu, shell disclosure, range, date-range and emote-set menus, chip menu) behaves as before. Rejected: a CDK overlay with flexible positions, which would leave the sticky toolbar's stacking context (design doc §8.5). The shift is computed once at open; a resize while open is not tracked.
+
+Tests: four cases for `viewportShift` and the E2E case "the filter help popover stays inside the viewport" at 360 px and 545 px.
+
+---
+
 ### 2026-10-16 — Usage page: a "Recently added" sort that replaces the usage bands
 
 **Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/shared/emotes/added-day-groups.ts` · `docs/UI-Designsprache.md`
