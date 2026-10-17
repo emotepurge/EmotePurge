@@ -2,7 +2,7 @@ import { Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { Popover } from './popover';
+import { Popover, viewportShift } from './popover';
 
 /**
  * Realistic host: the `data-popover-anchor` wrapper sits around both the trigger and the popover,
@@ -371,5 +371,23 @@ describe('Popover', () => {
 
       expect(panel.hasAttribute('aria-modal')).toBe(false);
     });
+  });
+});
+
+describe('viewportShift', () => {
+  it('leaves a panel that already fits alone', () => {
+    expect(viewportShift(20, 300, 360)).toBe(0);
+  });
+
+  it('pulls a panel that runs off the left edge back to the margin', () => {
+    expect(viewportShift(-168, 216, 360)).toBe(184);
+  });
+
+  it('pulls a panel that runs off the right edge back to the margin', () => {
+    expect(viewportShift(100, 400, 360)).toBe(-56);
+  });
+
+  it('keeps the start visible when the panel is wider than the room', () => {
+    expect(viewportShift(-50, 450, 360)).toBe(66);
   });
 });

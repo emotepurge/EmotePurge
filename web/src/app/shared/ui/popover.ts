@@ -8,6 +8,7 @@ import {
   inject,
   input,
   output,
+  viewChild,
 } from '@angular/core';
 
 /**
@@ -16,6 +17,25 @@ import {
  * very click that opened the panel from closing it again in the same dispatch.
  */
 export const POPOVER_ANCHOR_ATTRIBUTE = 'data-popover-anchor';
+
+/** Gap kept between a panel and the viewport edge when it has to be pulled back inside. */
+export const POPOVER_VIEWPORT_MARGIN = 16;
+
+/**
+ * Horizontal shift (px) that brings a panel spanning `left`..`right` inside `margin`..`viewportWidth - margin`.
+ * Left wins when the panel is wider than the room, so the start of the text is never the part cut off.
+ */
+export function viewportShift(
+  left: number,
+  right: number,
+  viewportWidth: number,
+  margin: number = POPOVER_VIEWPORT_MARGIN,
+): number {
+  const overflowRight = right - (viewportWidth - margin);
+  const shifted = overflowRight > 0 ? -overflowRight : 0;
+  const underflowLeft = margin - (left + shifted);
+  return underflowLeft > 0 ? shifted + underflowLeft : shifted;
+}
 
 /**
  * Non-modal dropdown panel. The one place the "relative wrapper + absolute panel + document-click +
@@ -46,7 +66,7 @@ export const POPOVER_ANCHOR_ATTRIBUTE = 'data-popover-anchor';
     '(document:keydown.escape)': 'onEscape()',
   },
   template: `
-    <div role="dialog" [attr.aria-label]="ariaLabel()" [class]="panelClass()">
+    <div #panel role="dialog" [attr.aria-label]="ariaLabel()" [class]="panelClass()">
       <ng-content />
     </div>
   `,
@@ -59,6 +79,7 @@ export class Popover {
 
   readonly closed = output<void>();
 
+  private readonly panel = viewChild.required<ElementRef<HTMLElement>>('panel');
   private readonly elementRef = inject(ElementRef<HTMLElement>);
   private readonly renderer = inject(Renderer2);
   private readonly destroyRef = inject(DestroyRef);
@@ -86,6 +107,14 @@ export class Popover {
   constructor() {
     // The anchor is only known once the panel sits in the DOM (an @if inserts it after creation).
     afterNextRender(() => {
+      // The panel aligns to its anchor, and the anchor can sit anywhere once a toolbar wraps: an
+      // end-aligned panel on a trigger at the left edge ran off-screen. Pull it back inside.
+      const panel = this.panel().nativeElement;
+      const rect = panel.getBoundingClientRect();
+      const shift = viewportShift(rect.left, rect.right, document.documentElement.clientWidth);
+      if (shift !== 0) {
+        this.renderer.setStyle(panel, 'transform', `translateX(${shift}px)`);
+      }
       const stop = this.renderer.listen(this.anchor(), 'keydown', (event: KeyboardEvent) => {
         if (event.key === 'Escape') {
           event.stopPropagation();

@@ -841,4 +841,27 @@ test.describe('admin log viewer live mode on a phone', () => {
     );
     expect(overflow).toBeLessThanOrEqual(0);
   });
+
+  for (const viewport of [
+    { name: 'phone', width: 360, height: 800 },
+    { name: '545 px desktop', width: 545, height: 900 },
+  ]) {
+    test(`the filter help popover stays inside the viewport at ${viewport.name} width`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await adminLogsPage(page);
+      await page.goto('/admin/logs');
+      await expect(rows(page)).toHaveCount(8);
+
+      await page.getByRole('button', { name: 'Hilfe zur Filtersprache' }).first().click();
+      const panel = page.getByRole('dialog', { name: 'Hilfe zur Filtersprache' });
+      await expect(panel).toBeVisible();
+      await expect(panel.getByRole('heading').first()).toBeVisible();
+
+      const box = (await panel.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+    });
+  }
 });
