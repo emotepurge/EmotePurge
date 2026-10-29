@@ -1,8 +1,10 @@
 /**
- * One active (non-archived) emote of a channel's current 7TV set, reduced to what the import
- * dialog needs to answer "already in the target set?" and "name collision?" — no usage numbers,
- * no time range, no internal `Emote.Id` (channel-scoped, meaningless across channels).
- * Served by `GET /api/channels/{channel}/emotes`.
+ * One entry of a channel's current 7TV set, reduced to what the import dialog needs to answer
+ * "already in the target set?" and "name collision?" — no usage numbers, no time range, no
+ * internal `Emote.Id` (channel-scoped, meaningless across channels). One per entry (slot), not per
+ * emote (#444): an emote under two aliases is two items with the same `sevenTvEmoteId`, and every
+ * consumer groups by id itself. Served by `GET /api/channels/{channel}/emotes` and built from the
+ * live set read for a non-active or untracked target (`import-target-loader.ts`).
  */
 export interface EmoteListItem {
   sevenTvEmoteId: string;

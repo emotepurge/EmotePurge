@@ -585,6 +585,34 @@ describe('buildImportPreview', () => {
   });
 });
 
+describe('buildImportPreview — a tracked target listed per slot (#444)', () => {
+  const row = (id: string, name: string): ImportRow => ({
+    sevenTvEmoteId: id,
+    name,
+    imageUrl: null,
+  });
+  const target = (id: string, name: string): EmoteListItem => ({
+    sevenTvEmoteId: id,
+    name,
+    imageUrl: TARGET_IMAGE_URL,
+  });
+
+  it('reads a tracked target listing one emote under two aliases as two entries: a source alias it holds is present, not a mismatch', () => {
+    // The Postgres-backed `trackedActive` list carries one row per slot since #444.
+    const tracked = [target('e1', 'A'), target('e1', 'B'), target('e2', 'C')];
+
+    const result = buildImportPreview(source([row('e1', 'B'), row('e3', 'A')]), tracked);
+
+    expect(result.alreadyPresent).toBe(1);
+    expect(result.aliasMismatchRows).toEqual([]);
+    expect(result.toAdd).toEqual([]);
+    // The second alias is a name the target holds, so another emote under it collides.
+    expect(result.nameCollisionRows.map((each) => [each.row, each.targetAliases])).toEqual([
+      [row('e3', 'A'), ['A', 'B']],
+    ]);
+  });
+});
+
 describe('overlayPreview', () => {
   const built = buildImportPreview(
     source([

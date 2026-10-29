@@ -10,6 +10,16 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-29 — Import target list: one row per active slot (#444)
+
+**Betrifft:** `src/EmotePurge.Infrastructure/Services/EmoteListQueryService.cs` · `src/EmotePurge.Core/Services/IEmoteListQueryService.cs` · `src/EmotePurge.Api/Endpoints/EmoteEndpoints.cs` · `web/src/app/core/emotes/emote-list-item.model.ts` · `web/src/app/shared/seven-tv/import-preview.ts`
+
+`GET /api/channels/{channel}/emotes` — the import confirmation's picture of a tracked channel's active set (`trackedActive`) — listed one row per `Emote`, so an emote under two aliases showed only one of them. Once the copy flow goes per entry (#444, entry "Copy flow: a source row is a set entry"), that hides an alias the target already holds: a source row under the hidden alias would be planned as an add (wrong title, inflated slot projection, a token prompt for a plan the re-check then empties) and a name collision with it would go unseen. `EmoteListQueryService.ListActiveAsync` now reads the same entry view the occupied-slot count and the duplicate-name report use (`ActiveNameEntries.ForChannel`): one row per active own slot of an active emote, unsettled seeds left out, plus one row under `Emote.Name` for an active emote that has no active slot yet; archived slots — chat-log backfill slots ("was never in") included — and the slots of an archived emote never appear. Row shape, route and ordinal name sort are unchanged; an id now simply occurs once per alias, as it already does on the live path for a non-active or untracked target. The only consumer is the import target loader, whose preview groups by id; a replace there now sees both aliases of its target (correct removal count, `adoptBlocked: 'duplicateTarget'` like on the live path). No migration.
+
+Deviation from the review's suggestion (slots joined to emotes, `!slot.IsArchived && !emote.IsArchived`): the shared entry view also drops unsettled seeds, whose name is only the emote's name at migration time, and keeps an active emote without an active slot visible instead of hiding it.
+
+---
+
 ### 2026-10-29 — Import run: a row is keyed by its set entry, the reports stay per 7TV id (#444)
 
 **Betrifft:** `web/src/app/core/seven-tv/import-source.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts` · `web/src/app/core/seven-tv/seven-tv-run-engine.ts` · `web/src/app/shared/seven-tv/conflict-resolution.ts` · `web/src/app/shared/seven-tv/already-present-filter.ts` · `web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/shared/seven-tv/import-preview.ts` · `web/src/app/shared/seven-tv/import-confirm-dialog.ts` · `web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` · `web/src/app/shared/seven-tv/foreign-emote-grid.ts`

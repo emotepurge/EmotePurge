@@ -109,14 +109,14 @@ export interface ImportPreview {
    * exactly like an untracked one:
    *
    * - **The Postgres-backed path — `trackedActive` only** (`EmoteAdminService.listEmotes` → our own
-   *   `Emote` table, `import-target-loader.ts:135-136`). Postgres enforces `HasIndex(e => new {
-   *   e.ChannelId, e.SevenTvEmoteId }).IsUnique()` (`AppDbContext.cs:31`), so this path can never
-   *   yield two rows sharing one `sevenTvEmoteId` for a channel — **a #74 duplicate is structurally
-   *   impossible here**, whatever 7TV itself holds: `targetAliases` has at most one entry and
-   *   `targetHasAliaslessEntry` is `false` on this path, unless that one entry's own name is falsy.
-   *   That remaining, *aliasless* half is not protected by the index (a single row can still carry a
-   *   falsy name) and was not traced with the same confidence as the live path below: `Emote.Name`
-   *   is filled by the worker's REST-compat sync (`SevenTvSyncService.cs:595`, `emote.Name =
+   *   tables). Since #444 it lists one row per active slot (`EmoteListQueryService`, the same entry
+   *   view as the occupied-slot count), so an emote under two aliases arrives as two rows sharing
+   *   one `sevenTvEmoteId`, exactly as the live path below delivers it: `targetAliases` can have two
+   *   entries here too. Before #444 it listed one row per `Emote` (unique per channel and id), which
+   *   hid every alias but one. An emote without an active slot yet is listed once under
+   *   `Emote.Name`; `targetHasAliaslessEntry` stays `false` on this path unless a name is falsy.
+   *   Whether a falsy name can occur here was not traced with the same confidence as the live
+   *   path below: `Emote.Name` (and a slot's name) is filled by the worker's REST-compat sync (`SevenTvSyncService.cs:595`, `emote.Name =
    *   live.Name`), a *different* 7TV endpoint (`SevenTvEmoteJsonDto.Name`, `SevenTvApiDtos.cs:173`,
    *   "the v4 compat layer") whose behavior for an aliasless set entry is not verified live —
    *   and `Emote.Name` is a `NOT NULL` Postgres column (`Emote.cs`), so if that endpoint ever

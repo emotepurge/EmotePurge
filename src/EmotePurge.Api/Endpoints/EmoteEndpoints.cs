@@ -29,9 +29,10 @@ public static class EmoteEndpoints
             .AddEndpointFilter<UsageStatsAccessAuthorizationFilter>()
             .RequireRateLimiting(RateLimitPolicyNames.InteractiveRead);
 
-        // The group root: a slim, unpaginated list of the channel's currently active emotes (7TV id
-        // and name only — no usage numbers, no time range, no Emote.Id, which is channel-scoped and
-        // meaningless across channels). The import dialog uses it to answer "already in the target
+        // The group root: a slim, unpaginated list of the entries of the channel's active set, one
+        // per slot (#444) — an emote under two aliases is two items with the same 7TV id (7TV id,
+        // name and image only — no usage numbers, no time range, no Emote.Id, which is channel-scoped
+        // and meaningless across channels). The import dialog uses it to answer "already in the target
         // set?" and "name collision?" against a source channel or file; both questions are cheap
         // enough over the whole set (~900 emotes at most) that a page of results would only get in
         // the way. Stays on the group's InteractiveRead policy: this is an ordinary navigation read,
