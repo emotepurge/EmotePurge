@@ -138,6 +138,7 @@ const VIOLATION_KEYS: Record<ViolationRule, string> = {
   duplicateReplaceTarget: 'import.resolve.violation.duplicateReplaceTarget',
   targetTouchedByReplaceAndAdopt: 'import.resolve.violation.targetTouchedByReplaceAndAdopt',
   adoptBlocked: 'import.resolve.violation.adoptBlocked',
+  replaceRemovesPlannedSource: 'import.resolve.violation.replaceRemovesPlannedSource',
 };
 
 /** The field error a rename row shows under its text field, most specific first. */

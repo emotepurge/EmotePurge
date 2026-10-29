@@ -44,7 +44,7 @@ export type RowDecision =
 export type ResolutionDecisions = ReadonlyMap<string, RowDecision>;
 
 /**
- * The six rule names `validateResolution` can report — see that function's doc for what each one
+ * The seven rule names `validateResolution` can report — see that function's doc for what each one
  * checks. A `string` union, not an enum: these are also read by the confirm dialog to pick a
  * disabled-reason / inline-error text, so the literal values are the wire vocabulary between the
  * two. Used to carry a seventh member for the replace lock on an untracked target, dropped with
@@ -58,7 +58,8 @@ export type ViolationRule =
   | 'invalidTypedAlias'
   | 'duplicateReplaceTarget'
   | 'targetTouchedByReplaceAndAdopt'
-  | 'adoptBlocked';
+  | 'adoptBlocked'
+  | 'replaceRemovesPlannedSource';
 
 /** One rule violation, naming the rule and every source row (`importRowKey`) it involves — never
  *  empty. `rowKeys`' order is not a contract callers should rely on (rule checks below build sets,
@@ -105,7 +106,7 @@ export interface TransferPlanSummary {
  * itself, so a caller cannot reach a decision that fails one of the rules below by skipping straight
  * to `buildTransferPlan`.
  *
- * Six rules, each producing zero or more {@link Violation}s (a single call to this function can
+ * Seven rules, each producing zero or more {@link Violation}s (a single call to this function can
  * report several, from different rules or the same one):
  *
  * 1. **`duplicateGeneratedAlias`** — no two rows may write the same alias in an ADD, whether that
@@ -151,6 +152,15 @@ export interface TransferPlanSummary {
  *    first.
  * 6. **`adoptBlocked`** — an `adoptSourceName` decision is only valid where `adoptBlocked === null`;
  *    this module does not trust the UI to have withheld the option.
+ * 7. **`replaceRemovesPlannedSource`** — no `replace` row may target an id that another `replace`
+ *    row of the same plan adds as its source (#444). A replace's `REMOVE` takes *every* entry of its
+ *    target id, so once a multi-alias source can collide with the target under a further alias,
+ *    one replace could remove what another one has just added (source X:B replacing W, then Y:C
+ *    replacing X — the second `REMOVE` takes X:B along, both rows end `done` and no file can bring
+ *    X:B back). Both rows are named, so the rule is symmetric and also catches a cycle (X replacing
+ *    W, W replacing X). Replace against replace only: `add`/`renameSource` rows run after every
+ *    `REMOVE` (`TransferPlan`'s grouped order), and an adopt is rule 5's business. The way out is to
+ *    skip or rename one of the two rows.
  */
 export function validateResolution(
   preview: ImportPreview,
@@ -165,7 +175,7 @@ export function validateResolution(
  * Derives the one {@link TransferPlan} a preview and a set of decisions resolve to — throwing
  * instead of silently building a broken plan whenever the decisions fail validation.
  *
- * Runs `validateResolution` itself before deriving anything, so all six rules are checked here: a
+ * Runs `validateResolution` itself before deriving anything, so all seven rules are checked here: a
  * caller cannot reach a decision that fails one of them by calling `buildTransferPlan` directly
  * instead of `validateResolution` first — this function gives the same guarantee on its own.
  * Calling `validateResolution` separately is only needed when a caller wants to *display*
@@ -403,7 +413,7 @@ function deriveTransferRows(preview: ImportPreview, decisions: ResolutionDecisio
   return [...replaceRows, ...adoptRows, ...addRows, ...renameRows];
 }
 
-/** Runs all six rules and concatenates their findings. */
+/** Runs all seven rules and concatenates their findings. */
 function collectViolations(
   preview: ImportPreview,
   decisions: ResolutionDecisions,
@@ -416,6 +426,7 @@ function collectViolations(
     ...ruleDuplicateReplaceTarget(rows),
     ...ruleTargetTouchedByReplaceAndAdopt(rows),
     ...ruleAdoptBlocked(preview, decisions),
+    ...ruleReplaceRemovesPlannedSource(rows),
   ];
 }
 
@@ -585,6 +596,27 @@ function ruleAdoptBlocked(preview: ImportPreview, decisions: ResolutionDecisions
     const decision = decisionFor(decisions, importRowKey(mismatch.row));
     if (decision.kind === 'adoptSourceName' && mismatch.adoptBlocked !== null) {
       violations.push({ rule: 'adoptBlocked', rowKeys: [importRowKey(mismatch.row)] });
+    }
+  }
+  return violations;
+}
+
+/** Rule 7 — see `validateResolution`'s doc, point 7. One violation per (removing, removed) pair of
+ *  rows; a row whose own source id is its target is not this rule's case (its `REMOVE` frees the
+ *  entry its own `ADD` then writes). */
+function ruleReplaceRemovesPlannedSource(rows: TransferRow[]): Violation[] {
+  const replaceRows = rows.filter(
+    (row): row is ReplaceOrAdoptTransferRow => row.action === 'replace',
+  );
+  const violations: Violation[] = [];
+  for (const remover of replaceRows) {
+    for (const added of replaceRows) {
+      if (added !== remover && added.source.sevenTvEmoteId === remover.target.sevenTvEmoteId) {
+        violations.push({
+          rule: 'replaceRemovesPlannedSource',
+          rowKeys: [importRowKey(remover.source), importRowKey(added.source)],
+        });
+      }
     }
   }
   return violations;

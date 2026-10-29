@@ -195,6 +195,20 @@ describe('ImportConflictResolutionStep', () => {
     ]);
   });
 
+  it("names both rows of a replace that would remove another row's source (#444)", () => {
+    const names = new Map([
+      ['X#B', 'B'],
+      ['Y#C', 'C'],
+    ]);
+
+    expect(
+      violationMessages(
+        [{ rule: 'replaceRemovesPlannedSource', rowKeys: ['Y#C', 'X#B'] }],
+        (key) => names.get(key) ?? key,
+      ),
+    ).toEqual([{ key: 'import.resolve.violation.replaceRemovesPlannedSource', rows: 'C, B' }]);
+  });
+
   describe('rowConsequence (issue #268, AK 2)', () => {
     it('names the target as kept for skip', () => {
       expect(rowConsequence({ kind: 'skip' }, 'Kappa')).toEqual({

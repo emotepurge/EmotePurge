@@ -208,6 +208,8 @@ const DE_TRANSLATIONS = {
         duplicateReplaceTarget: 'Dasselbe Ziel wird mehrfach ersetzt: {{ rows }}.',
         targetTouchedByReplaceAndAdopt: 'Dasselbe Ziel wird ersetzt und umbenannt: {{ rows }}.',
         adoptBlocked: 'Namen übernehmen ist hier nicht möglich: {{ rows }}.',
+        replaceRemovesPlannedSource:
+          'Ein Ersetzen entfernt ein Emote, das eine andere Zeile gerade hinzufügt — eine der beiden überspringen oder umbenennen: {{ rows }}.',
       },
       back: 'Zurück',
       apply: 'Übernehmen',

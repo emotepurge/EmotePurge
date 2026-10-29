@@ -1933,7 +1933,8 @@
         "invalidTypedAlias": "Name 7TV does not accept: {{ rows }}.",
         "duplicateReplaceTarget": "The same target is replaced more than once: {{ rows }}.",
         "targetTouchedByReplaceAndAdopt": "The same target is replaced and renamed: {{ rows }}.",
-        "adoptBlocked": "Adopting the name is not possible here: {{ rows }}."
+        "adoptBlocked": "Adopting the name is not possible here: {{ rows }}.",
+        "replaceRemovesPlannedSource": "A replace would remove an emote another row adds — skip or rename one of the two: {{ rows }}."
       },
       "back": "Back",
       "apply": "Apply"

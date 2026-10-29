@@ -547,6 +547,91 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
   });
 });
 
+describe("validateResolution — rule 7, a replace never removes another replace row's source (#444)", () => {
+  // Source X:A, X:B, Y:C against a target X:C, Z:A, W:B: X:A is the mismatch row, X:B collides
+  // with W, Y:C collides with X.
+  const xb = importRow('X', 'B');
+  const yc = importRow('Y', 'C');
+  const collisions = [
+    collisionRow(xb, emoteListItem('W', 'B'), ['B']),
+    collisionRow(yc, emoteListItem('X', 'C'), ['C']),
+  ];
+
+  it('flags a replace whose REMOVE would take the entry another replace row adds', () => {
+    const p = preview({
+      nameCollisionRows: collisions,
+      aliasMismatchRows: [mismatchRow(importRow('X', 'A'), ['C'])],
+      targetNames: new Set(['C', 'A', 'B']),
+    });
+    const d = decisions([
+      ['X#B', { kind: 'replaceTarget' }],
+      ['Y#C', { kind: 'replaceTarget' }],
+    ]);
+
+    expectViolation(validateResolution(p, d), 'replaceRemovesPlannedSource', ['Y#C', 'X#B']);
+    expect(() => buildTransferPlan(p, d)).toThrow(/replaceRemovesPlannedSource/);
+  });
+
+  it('flags both directions of a cycle', () => {
+    const wc = importRow('W', 'C');
+    const p = preview({
+      nameCollisionRows: [
+        collisionRow(xb, emoteListItem('W', 'B'), ['B']),
+        collisionRow(wc, emoteListItem('X', 'C'), ['C']),
+      ],
+      targetNames: new Set(['B', 'C']),
+    });
+    const d = decisions([
+      ['X#B', { kind: 'replaceTarget' }],
+      ['W#C', { kind: 'replaceTarget' }],
+    ]);
+
+    const result = validateResolution(p, d);
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+    const rule7 = result.violations.filter((v) => v.rule === 'replaceRemovesPlannedSource');
+    expect(rule7.map((v) => v.rowKeys)).toEqual([
+      ['X#B', 'W#C'],
+      ['W#C', 'X#B'],
+    ]);
+  });
+
+  it('lets one of the two rows go once the other is skipped or renamed', () => {
+    const p = preview({ nameCollisionRows: collisions, targetNames: new Set(['B', 'C']) });
+
+    expect(
+      validateResolution(
+        p,
+        decisions([
+          ['X#B', { kind: 'renameSource', alias: 'B2' }],
+          ['Y#C', { kind: 'replaceTarget' }],
+        ]),
+      ),
+    ).toEqual({ ok: true });
+    expect(validateResolution(p, decisions([['Y#C', { kind: 'replaceTarget' }]]))).toEqual({
+      ok: true,
+    });
+  });
+
+  it('allows adding X next to replacing X: adds run after every REMOVE', () => {
+    const xd = importRow('X', 'D');
+    const p = preview({
+      toAdd: [xd],
+      nameCollisionRows: [collisionRow(yc, emoteListItem('X', 'C'), ['C'])],
+      targetNames: new Set(['C']),
+    });
+
+    const plan = buildTransferPlan(p, decisions([['Y#C', { kind: 'replaceTarget' }]]));
+
+    expect(plan.rows.map((row) => [row.action, row.source.sevenTvEmoteId])).toEqual([
+      ['replace', 'Y'],
+      ['add', 'X'],
+    ]);
+  });
+});
+
 describe('buildTransferPlan — two aliases of one source id (#444)', () => {
   it('keys each alias of one id on its own, so each row takes its own decision', () => {
     const ome = importRow('e1', 'ome44');
