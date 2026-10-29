@@ -1671,6 +1671,31 @@ describe('SevenTvImportService', () => {
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
+    it('settles an unknown REMOVE as a gap when a later row of the run added the target id back under another alias (#444)', () => {
+      // A multi-alias source: the replace frees "Kappa" from tgt-x, a further row adds tgt-x
+      // under "Other". The re-read finds the id — but not under the alias the REMOVE took.
+      const tgtUnderOther: ImportRow = { sevenTvEmoteId: 'tgt-x', name: 'Other', imageUrl: null };
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(tgtUnderOther)],
+      });
+      httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 503, statusText: 'Unavailable' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      answerNext();
+
+      httpMock.expectOne(GQL_ENDPOINT).flush(setEntriesPage([{ id: 'tgt-x', alias: 'Other' }]));
+
+      const [replace] = service.run()?.result?.items ?? [];
+      expect(replace).toMatchObject({ status: 'failed', completedSteps: 1, failedStep: 1 });
+      expect(replace.errorMessage).toBe('Entfernt, aber nicht hinzugefügt.');
+      expect(service.run()?.removedCount).toBe(1);
+
+      expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      const removalReq = httpMock.expectOne(SYNC_DELETED_B);
+      expect(removalReq.request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      removalReq.flush(deletedAnswer());
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
     it('settles an unknown REMOVE whose target is still there as not applied, and reports no removal', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, {
         rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(SOURCE_Y)],

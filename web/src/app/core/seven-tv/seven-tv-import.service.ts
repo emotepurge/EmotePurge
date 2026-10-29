@@ -45,7 +45,7 @@ import {
   isChannelMismatch,
 } from './sync-report-outcome';
 import { ImportTagContext } from './tag-run-settlement';
-import { TransferPlan, TransferRow } from './transfer-plan';
+import { TransferPlan, TransferRow, TransferRowTarget } from './transfer-plan';
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startImport`
 // call that had something to report. Same 4000 ms convention as every other transient status in
@@ -1360,9 +1360,12 @@ function withFailureReason(
  *   (`failed` — with the gap reason for a replace, the generic unknown-outcome reason otherwise);
  *   the source id in the set under some other name cannot be told apart from a third party's
  *   entry and stays `unknown`;
- * - an unanswered REMOVE (a replace's first step): the target id still in the set means nothing
- *   happened (`failed` at step 0); gone means the REMOVE was applied and the ADD never sent —
- *   `failed` with the gap reason, and the REMOVE counts as confirmed (`completedSteps` 1);
+ * - an unanswered REMOVE (a replace's first step): the target still holding one of the entries the
+ *   row replaces (a confirmed alias, or its aliasless entry) means nothing happened (`failed` at
+ *   step 0); none of them left means the REMOVE was applied and the ADD never sent — `failed` with
+ *   the gap reason, and the REMOVE counts as confirmed (`completedSteps` 1). Compared per entry, not
+ *   per id (#444): a later row of the same run can have added the target's id again under another
+ *   alias, which says nothing about this REMOVE;
  * - an unanswered alias UPDATE: the target id under the source name means `done`, under its old
  *   alias `failed`; anything else cannot be told apart and stays `unknown`.
  * A third party who added the same source id under the plan alias meanwhile is indistinguishable
@@ -1396,7 +1399,7 @@ function settleUnknownRow(
       return settleAdd(1, unknownOutcome);
     case 'replace':
       if (item.failedStep === 0) {
-        if (entries.aliasesById.has(row.target.sevenTvEmoteId)) {
+        if (stillHoldsReplacedEntry(row.target, entries)) {
           return unknownOutcome();
         }
         return withReason(
@@ -1415,6 +1418,16 @@ function settleUnknownRow(
     default:
       return assertUnreachableTransferRow(row);
   }
+}
+
+/** Whether the set still holds one of the entries a replace row's REMOVE takes — a confirmed alias
+ *  of the target, or its aliasless entry when the row knew of one. */
+function stillHoldsReplacedEntry(target: TransferRowTarget, entries: SevenTvSetEntries): boolean {
+  const liveAliases = entries.aliasesById.get(target.sevenTvEmoteId) ?? [];
+  return (
+    target.aliases.some((alias) => liveAliases.includes(alias)) ||
+    (target.hasAliaslessEntry && entries.aliaslessIds.has(target.sevenTvEmoteId))
+  );
 }
 
 function asDone(item: ImportRunItem, completedSteps: number): ImportRunItem {
