@@ -2607,9 +2607,10 @@ export class UsageStatsPage {
    * the target that the source set no longer holds. Same rule as `selectedForDelete` and
    * `voteBallotSevenTvEmoteIds`; the dialog's counts and the copied rows read this one source.
    *
-   * Deduplicated per 7TV id **before** the capture (plan 377, 2.5, A6): two slot cards of one emote
-   * are one emote to copy, and the dialog has to count what the run will copy — the run's own
-   * dedupe (`startImportFromChoice`) only comes after the dialog. The first card's name wins.
+   * Deduplicated per set entry (`dedupeImportRows`) **before** the capture, so the dialog counts
+   * exactly what the run will copy. Two slot cards of one emote are two entries under two aliases
+   * and both are copied (#444, reversing plan 377 A6, which kept one per 7TV id): the copy
+   * reproduces the source set entry by entry.
    */
   private readonly importableSelection = computed(
     () =>

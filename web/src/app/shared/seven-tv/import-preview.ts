@@ -157,7 +157,9 @@ export interface ImportPreview {
   /** Rows whose `sevenTvEmoteId` already exists in the target, but under a different alias —
    *  pulled out of `toAdd` for the same reason as `nameCollisions` (spec 8.6): 7TV already has
    *  this emote in the set, an ADD under a second alias is not what "already present" should mean
-   *  here, and this preview never silently renames anything. */
+   *  here, and this preview never silently renames anything. At most one row per id (#444): a
+   *  source that carries the id under further names adds those as entries of their own — see
+   *  {@link buildImportPreview}. */
   aliasMismatches: AliasMismatch[];
   /** One {@link AliasMismatchRow} per entry in `aliasMismatches` (same length, same order) — the
    *  resolvable counterpart to it, adding `targetAliases` and `adoptBlocked` for a resolution step. */
@@ -205,6 +207,18 @@ export type TargetOverlay = { aliases: string[]; hasAliaslessEntry: boolean } | 
  * object ids, not display text); every name comparison is exact (`===`, case-sensitive) string
  * equality, matching how 7TV itself treats emote names/aliases.
  *
+ * **A source id under several aliases (#444).** A source row is one set entry, `(id, name)`, so
+ * one id can arrive under several names, and 7TV's `addEmote` takes the same id again under a new
+ * alias. Per row, against the target's entries of that id:
+ * - the target holds the id under this exact name → `alreadyPresent`;
+ * - otherwise, if the target holds the id under none of the source's names for it, the **first**
+ *   such row of the id (source order) is the one `aliasMismatchRow` — exactly the single-alias
+ *   behaviour, so a lone alias is still offered as a rename and never silently doubled;
+ * - every other row of that id (a further name next to a mismatch row, or any name next to an exact
+ *   match) is an additional entry and goes through the ordinary name-collision / `toAdd` split.
+ * Adopting the mismatch row renames the one existing entry and the further names are added next to
+ * it, so the copy ends up entry for entry like the source.
+ *
  * `targetEmotes` is grouped by id first (not deduplicated) precisely because the target set can
  * itself carry a #74 duplicate — two rows sharing one `sevenTvEmoteId` under different aliases,
  * 7TV's own set-merge defect. A source row matching that id is `alreadyPresent` the moment *any*
@@ -246,6 +260,16 @@ export function buildImportPreview(
     }
   }
 
+  // Which source ids already have an exact entry in the target, and which ids have used up their
+  // one alias-mismatch row (#444) — see this function's doc for the multi-alias rule.
+  const idsMatchedInTarget = new Set<string>();
+  for (const row of source.rows) {
+    if (targetById.get(row.sevenTvEmoteId)?.some((target) => target.name === row.name)) {
+      idsMatchedInTarget.add(row.sevenTvEmoteId);
+    }
+  }
+  const idsWithMismatchRow = new Set<string>();
+
   const toAdd: ImportRow[] = [];
   const nameCollisions = new Set<string>();
   let nameCollisionRowCount = 0;
@@ -260,15 +284,23 @@ export function buildImportPreview(
     if (targetGroup) {
       if (targetGroup.some((target) => target.name === row.name)) {
         alreadyPresent++;
-      } else {
+        continue;
+      }
+      if (
+        !idsMatchedInTarget.has(row.sevenTvEmoteId) &&
+        !idsWithMismatchRow.has(row.sevenTvEmoteId)
+      ) {
+        idsWithMismatchRow.add(row.sevenTvEmoteId);
         aliasMismatches.push({ sourceName: row.name, targetAlias: targetGroup[0].name });
         aliasMismatchRows.push({
           row,
           targetAliases: namedAliasesOf(targetGroup),
           adoptBlocked: adoptBlockedFor(row.name, row.sevenTvEmoteId, targetGroup, targetByName),
         });
+        continue;
       }
-      continue;
+      // A further alias of an id the target already holds (#444): an additional entry, added
+      // like any new row — through the name-collision check below, never as a rename offer.
     }
     if (targetNames.has(row.name)) {
       // Deduplicated set for display, but every row still leaves the run — two different source

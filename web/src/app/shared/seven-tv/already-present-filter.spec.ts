@@ -117,6 +117,36 @@ describe('filterAlreadyPresent', () => {
     });
   });
 
+  it('checks a row with an entryAlias per entry: only the same alias makes it present (#444)', async () => {
+    const rows = [
+      { sevenTvEmoteId: '7tv-1', entryAlias: 'ome44' },
+      { sevenTvEmoteId: '7tv-1', entryAlias: 'hob44' },
+      { sevenTvEmoteId: '7tv-2' },
+    ];
+
+    const result$ = firstValueFrom(filterAlreadyPresent(httpClient, 'target-set', rows));
+    httpMock.expectOne(GQL_ENDPOINT).flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 2,
+              pageCount: 1,
+              items: [
+                { alias: 'hob44', emote: { id: '7tv-1' } },
+                { alias: 'Other', emote: { id: '7tv-2' } },
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    // 'ome44' is a further alias of an id the set holds: an entry of its own, so it stays. The id
+    // row without an entryAlias keeps the id check and drops although its alias differs.
+    expect((await result$).rows).toEqual([rows[0]]);
+  });
+
   it('drops every row when all are already present, without erroring on the empty result', async () => {
     const rows: Row[] = [
       { sevenTvEmoteId: '7tv-1', name: 'PogU' },

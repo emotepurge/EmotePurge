@@ -9,7 +9,7 @@ import {
   ImportTargetSelection,
   loadImportTarget,
 } from '../../core/emotes/import-target-loader';
-import { ImportSource, importRowKey } from '../../core/seven-tv/import-source';
+import { ImportRow, ImportSource, importRowKey } from '../../core/seven-tv/import-source';
 import { OwnerHint } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
@@ -272,7 +272,8 @@ function toOwnerHint(target: ImportFlowTarget): OwnerHint {
 export interface TransferPlanRecheck {
   /** The plan minus every row the fresh read dropped, in the plan's own order. */
   plan: TransferPlan;
-  /** Rows dropped because their source id is already in the target set. */
+  /** Rows dropped because their source id — or, for a multi-alias id (#444), their entry — is
+   *  already in the target set. */
   skippedDuplicates: number;
   /** Whether the read succeeded — `false` means the duplicate check could not run. */
   duplicateCheckAvailable: boolean;
@@ -287,7 +288,11 @@ export interface TransferPlanRecheck {
  *
  * - `add`, `renameSource` and `replace` rows whose *source* id is already in the set drop out —
  *   the duplicate filter, failing open on a failed read like it always did. A `replace` row drops
- *   out whole: no REMOVE without its ADD.
+ *   out whole: no REMOVE without its ADD. A row whose source id is in `multiAliasIds` (the source
+ *   carries that id under several aliases, #444) is checked per entry instead: it drops out only
+ *   when the set holds the id under the very alias the row writes, so a further alias of an id the
+ *   set already has is still added. A single-alias id keeps the id check: an entry that appeared
+ *   under another alias since the preview is still not doubled behind the user's back.
  * - `adoptSourceName` rows never go through the duplicate filter: the source id is in the set by
  *   definition, that is the entry the row renames.
  * - `replace` rows are verified a second time against the confirmed target (`verifyReplaceTargets`);
@@ -304,10 +309,15 @@ export function recheckTransferPlan(
   httpClient: HttpClient,
   targetSetId: string,
   plan: TransferPlan,
+  multiAliasIds: ReadonlySet<string> = new Set(),
 ): Observable<TransferPlanRecheck> {
   const checked = plan.rows
     .filter((row) => row.action !== 'adoptSourceName')
-    .map((row) => ({ sevenTvEmoteId: row.source.sevenTvEmoteId, row }));
+    .map((row) => ({
+      sevenTvEmoteId: row.source.sevenTvEmoteId,
+      ...(multiAliasIds.has(row.source.sevenTvEmoteId) ? { entryAlias: row.alias } : {}),
+      row,
+    }));
   return filterAlreadyPresent(httpClient, targetSetId, checked).pipe(
     timeout(LIVE_READ_TIMEOUT_MS),
     // A timeout lands outside `filterAlreadyPresent`'s own `catchError`, so its failed-read shape is
@@ -554,7 +564,12 @@ export function startImportFlow(
     // once it has settled — after the start below, which then holds the triggers through the
     // arbiter.
     deps.importService.startCheckPending.set(true);
-    recheckTransferPlan(deps.httpClient, outcome.targetSetId, outcome.plan)
+    recheckTransferPlan(
+      deps.httpClient,
+      outcome.targetSetId,
+      outcome.plan,
+      multiAliasIdsOf(source.rows),
+    )
       .pipe(finalize(() => deps.importService.startCheckPending.set(false)))
       .subscribe(({ plan, skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift }) => {
         // #149 P2 review fix: the arbiter check above ran *before* this fetch, which the mutual
@@ -672,4 +687,19 @@ export function startImportFlow(
       }
     });
   });
+}
+
+/** The 7TV ids `rows` carries under more than one name — the ids `recheckTransferPlan` checks per
+ *  entry (#444). `rows` is already deduplicated per entry (`dedupeImportRows`), so two rows of one
+ *  id always differ in name. */
+export function multiAliasIdsOf(rows: readonly ImportRow[]): Set<string> {
+  const seen = new Set<string>();
+  const multi = new Set<string>();
+  for (const row of rows) {
+    if (seen.has(row.sevenTvEmoteId)) {
+      multi.add(row.sevenTvEmoteId);
+    }
+    seen.add(row.sevenTvEmoteId);
+  }
+  return multi;
 }

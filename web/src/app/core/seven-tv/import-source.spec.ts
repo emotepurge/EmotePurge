@@ -9,7 +9,23 @@ import {
 } from './import-source';
 
 describe('dedupeImportRows', () => {
-  it('collapses a duplicate sevenTvEmoteId and keeps the first occurrence', () => {
+  it('collapses an exact repeat of id and name and keeps the first occurrence', () => {
+    const rows: ImportRow[] = [
+      { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: 'first' },
+      { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
+      { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: 'second' },
+    ];
+
+    const result = dedupeImportRows(rows);
+
+    expect(result.duplicatesCollapsed).toBe(1);
+    expect(result.rows).toEqual([
+      { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: 'first' },
+      { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
+    ]);
+  });
+
+  it('keeps one id under two names as two entries (#444)', () => {
     const rows: ImportRow[] = [
       { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: null },
       { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
@@ -18,11 +34,17 @@ describe('dedupeImportRows', () => {
 
     const result = dedupeImportRows(rows);
 
-    expect(result.duplicatesCollapsed).toBe(1);
-    expect(result.rows).toEqual([
+    expect(result.duplicatesCollapsed).toBe(0);
+    expect(result.rows).toEqual(rows);
+  });
+
+  it('compares the name case-sensitively, as 7TV does', () => {
+    const rows: ImportRow[] = [
+      { sevenTvEmoteId: 'a1', name: 'pogu', imageUrl: null },
       { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: null },
-      { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
-    ]);
+    ];
+
+    expect(dedupeImportRows(rows).rows).toEqual(rows);
   });
 
   it('reports zero collapsed and preserves order when there are no duplicates', () => {

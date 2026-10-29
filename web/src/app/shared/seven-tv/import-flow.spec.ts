@@ -19,6 +19,7 @@ import { ImportConfirmDialogData, ImportConfirmOutcome } from './import-confirm-
 import {
   ImportFlowDeps,
   ImportFlowTagHook,
+  multiAliasIdsOf,
   recheckTransferPlan,
   startImportFlow,
 } from './import-flow';
@@ -1710,6 +1711,37 @@ describe('recheckTransferPlan', () => {
   function httpAnswering(response: Observable<unknown>): HttpClient {
     return { post: vi.fn(() => response) } as unknown as HttpClient;
   }
+
+  it('checks a multi-alias source id per entry: a further alias still goes, the held one drops (#444)', async () => {
+    const ome: ImportRow = { sevenTvEmoteId: 'src-x', name: 'ome44', imageUrl: null };
+    const hob: ImportRow = { sevenTvEmoteId: 'src-x', name: 'hob44', imageUrl: null };
+    const addOme: TransferRow = { action: 'add', source: ome, alias: 'ome44' };
+    const addHob: TransferRow = { action: 'add', source: hob, alias: 'hob44' };
+    const http = httpAnswering(of(aliasedSetPage([{ id: 'src-x', alias: 'hob44' }])));
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(
+        http,
+        'set-1',
+        { rows: [addOme, addHob, addPog] },
+        multiAliasIdsOf([ome, hob, pog]),
+      ),
+    );
+
+    expect(result.plan).toEqual({ rows: [addOme, addPog] });
+    expect(result.skippedDuplicates).toBe(1);
+  });
+
+  it('keeps the id check for a single-alias source id that turned up under another alias', async () => {
+    const http = httpAnswering(of(aliasedSetPage([{ id: 'src-p', alias: 'PogOther' }])));
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(http, 'set-1', { rows: [addPog] }, multiAliasIdsOf([pog])),
+    );
+
+    expect(result.plan).toEqual({ rows: [] });
+    expect(result.skippedDuplicates).toBe(1);
+  });
 
   it('keeps an adopt row even though its source id is in the target set by definition', async () => {
     const adoptKappa: TransferRow = {

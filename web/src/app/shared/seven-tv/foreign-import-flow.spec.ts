@@ -148,11 +148,11 @@ describe('buildForeignImportSource', () => {
     expect(source.origin).toEqual({ kind: 'seventv-channel', channelName: 'HandOfBlood' });
   });
 
-  it('deduplicates by 7TV id and discards nothing', () => {
+  it('deduplicates exact repeats only and discards nothing', () => {
     // Nothing here can be invalid the way a parsed file's rows can: these rows came out of our own
     // endpoint already parsed. Dedup still runs, because the run engine never deduplicates.
     const source = buildForeignImportSource(
-      picked([foreignRow('e1', 'Kappa'), foreignRow('e1', 'KappaAgain'), foreignRow('e2', 'PogU')]),
+      picked([foreignRow('e1', 'Kappa'), foreignRow('e1', 'Kappa'), foreignRow('e2', 'PogU')]),
     );
 
     expect(source.rows).toEqual([
@@ -161,6 +161,18 @@ describe('buildForeignImportSource', () => {
     ]);
     expect(source.duplicatesCollapsed).toBe(1);
     expect(source.discardedRows).toBe(0);
+  });
+
+  it('keeps an emote the source set holds under two aliases as two rows (#444)', () => {
+    const source = buildForeignImportSource(
+      picked([foreignRow('e1', 'Kappa'), foreignRow('e1', 'KappaAgain')]),
+    );
+
+    expect(source.rows.map((row) => [row.sevenTvEmoteId, row.name])).toEqual([
+      ['e1', 'Kappa'],
+      ['e1', 'KappaAgain'],
+    ]);
+    expect(source.duplicatesCollapsed).toBe(0);
   });
 });
 
