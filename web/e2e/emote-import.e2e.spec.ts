@@ -605,6 +605,110 @@ test.describe('push flow: picker to confirmation dialog', () => {
 });
 
 /**
+ * #444: a copy reproduces the source set entry by entry. An emote the source set holds under two
+ * aliases is two slot cards on the usage page and must land in the target under both names — the
+ * id-keyed dedupe this replaced kept only the first one and lost the second silently.
+ */
+test.describe('push flow: a multi-alias emote (#444)', () => {
+  const MULTI_ALIAS_EMOTES: MockEmoteUsage[] = [
+    {
+      emoteId: 'e-ome',
+      emoteName: 'ome44',
+      sevenTvEmoteId: '7tv-ome',
+      imageUrl: 'https://cdn.7tv.app/emote/ome/2x.webp',
+      totalUseCount: 50,
+      slotId: 'slot-ome',
+      firstSeenAtFromRest: true,
+      siblingNames: ['hob44'],
+    },
+    {
+      emoteId: 'e-ome',
+      emoteName: 'hob44',
+      sevenTvEmoteId: '7tv-ome',
+      imageUrl: 'https://cdn.7tv.app/emote/ome/2x.webp',
+      totalUseCount: 20,
+      slotId: 'slot-hob',
+      firstSeenAtFromRest: true,
+      siblingNames: ['ome44'],
+    },
+    {
+      emoteId: 'e-plain',
+      emoteName: 'plainOne',
+      sevenTvEmoteId: '7tv-plain',
+      imageUrl: 'https://cdn.7tv.app/emote/plain/2x.webp',
+      totalUseCount: 5,
+    },
+  ];
+
+  test('copy a set with a multi-alias emote: both aliases are added, and the report names the id once', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, MULTI_ALIAS_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 0,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockEmoteList(page, TARGET_CHANNEL, []);
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+    let syncImportedBody: { sevenTvEmoteIds?: unknown } | null = null;
+    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-imported`, (route) => {
+      syncImportedBody = route.request().postDataJSON();
+      return route.fulfill({ status: 204 });
+    });
+
+    const added: [unknown, unknown][] = [];
+    await mockSevenTvGql(page, (request) => {
+      if (sevenTvGqlRequestKind(request) === 'setRead') {
+        // The re-check right before the run: the target set is still empty.
+        return {
+          data: { emoteSets: { emoteSet: { emotes: { totalCount: 0, pageCount: 1, items: [] } } } },
+        };
+      }
+      added.push([request.variables['emoteId'], request.variables['alias']]);
+      return {
+        data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+      };
+    });
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await cell(page, 'ome44').click();
+    await cell(page, 'plainOne').click({ modifiers: ['Shift'] });
+    await expect(dockCopyButton(page, 3)).toBeEnabled();
+    await dockCopyButton(page, 3).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    // Three entries, not two: the second alias of 7tv-ome is counted like any other row.
+    const confirm = page.getByRole('dialog');
+    await expect(confirm.locator('#app-dialog-title')).toHaveText(
+      '3 Emotes nach aatrociity kopieren?',
+    );
+    await confirm.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(2000);
+    await expect(page.getByText('3 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+
+    expect(added).toEqual([
+      ['7tv-ome', 'ome44'],
+      ['7tv-ome', 'hob44'],
+      ['7tv-plain', 'plainOne'],
+    ]);
+    // The audit stays per 7TV id (spec D3): the emote is named once, not once per alias.
+    await expect.poll(() => syncImportedBody?.sevenTvEmoteIds).toEqual(['7tv-ome', '7tv-plain']);
+  });
+});
+
+/**
  * T2.6/spec 8.6: the two K2 target-picker paths the earlier "picker to confirmation dialog" block
  * does not already cover — a *non-active* set of a still-tracked channel (AK 43), and an untracked
  * account's set, which needs its own confirmation before the picker may close with it at all
