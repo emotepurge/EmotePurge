@@ -148,6 +148,19 @@ export interface ImportSource {
 }
 
 /**
+ * The identity of one import row: its 7TV id **and** its name, the alias the ADD writes (#444).
+ * Since the set entry is the counting unit (#365), one emote can sit in a source set under two
+ * aliases, and 7TV's `addEmote` takes the same id again under a different alias — so the id alone
+ * no longer names a row. This key is what the conflict decisions, the drift overlays and the run
+ * queue match rows by. The id comes first and never contains `#` (a 7TV ObjectID), so
+ * the first `#` always separates the two halves, even for an alias that contains one. Votes, tags
+ * and the audit report stay per id (spec D3) and never read this key.
+ */
+export function importRowKey(row: Pick<ImportRow, 'sevenTvEmoteId' | 'name'>): string {
+  return `${row.sevenTvEmoteId}#${row.name}`;
+}
+
+/**
  * The one deduplication both origins go through — first occurrence of a `sevenTvEmoteId` wins,
  * order of the surviving rows follows their first occurrence. Ordinal comparison on the id (plain
  * string equality): these are 7TV object ids, not display text, so there is nothing to localize.

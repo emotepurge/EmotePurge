@@ -5,6 +5,7 @@ import {
   dedupeImportRows,
   importOriginLeaderboardSort,
   importOriginSourceChannelName,
+  importRowKey,
 } from './import-source';
 
 describe('dedupeImportRows', () => {
@@ -42,6 +43,15 @@ describe('dedupeImportRows', () => {
 
     expect(result.rows).toEqual([]);
     expect(result.duplicatesCollapsed).toBe(0);
+  });
+});
+
+describe('importRowKey', () => {
+  it('joins the id and the name, so two aliases of one id are two keys', () => {
+    expect(importRowKey({ sevenTvEmoteId: 'a1', name: 'PogU' })).toBe('a1#PogU');
+    expect(importRowKey({ sevenTvEmoteId: 'a1', name: 'PogU' })).not.toBe(
+      importRowKey({ sevenTvEmoteId: 'a1', name: 'Pog' }),
+    );
   });
 });
 

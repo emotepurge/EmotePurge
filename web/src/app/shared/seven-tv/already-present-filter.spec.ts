@@ -1244,7 +1244,7 @@ describe('verifyReplaceTargets', () => {
       available: true,
       drifted: [
         {
-          key: 'src-1',
+          key: 'src-1#Kappa',
           reason: 'aliasesChanged',
           live: { aliases: ['Kappa', 'KappaNew'], hasAliaslessEntry: false },
         },
@@ -1262,7 +1262,7 @@ describe('verifyReplaceTargets', () => {
       available: true,
       drifted: [
         {
-          key: 'src-1',
+          key: 'src-1#Kappa',
           reason: 'nameHeldElsewhere',
           live: { aliases: ['KappaRenamed'], hasAliaslessEntry: false },
         },
@@ -1286,7 +1286,7 @@ describe('verifyReplaceTargets', () => {
       available: true,
       drifted: [
         {
-          key: 'src-1',
+          key: 'src-1#Kappa',
           reason: 'aliaslessEntryChanged',
           live: { aliases: ['Kappa'], hasAliaslessEntry: true },
         },
@@ -1297,7 +1297,7 @@ describe('verifyReplaceTargets', () => {
       available: true,
       drifted: [
         {
-          key: 'src-1',
+          key: 'src-1#Kappa',
           reason: 'aliaslessEntryChanged',
           live: { aliases: ['Kappa'], hasAliaslessEntry: false },
         },
@@ -1312,7 +1312,7 @@ describe('verifyReplaceTargets', () => {
     expect(verifyReplaceTargets(incomplete, replacePlan(['Kappa']))).toEqual({ available: false });
     expect(verifyReplaceTargets(gone, replacePlan(['Kappa']))).toEqual({
       available: true,
-      drifted: [{ key: 'src-1', reason: 'targetGone', live: null }],
+      drifted: [{ key: 'src-1#Kappa', reason: 'targetGone', live: null }],
     });
   });
 });

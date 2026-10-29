@@ -1,5 +1,5 @@
 import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
-import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
+import { ImportRow, ImportSource, importRowKey } from '../../core/seven-tv/import-source';
 
 /** One `toAdd` row 7TV would refuse to add under its source alias because the target already has
  *  *some other* alias under the same `sevenTvEmoteId` — spec 8.6: "N sind vorhanden, heißen dort
@@ -413,7 +413,7 @@ const SEVEN_TV_REJECTED_ALIAS_CHARS = new Set([
   '^',
 ]);
 
-/** `preview` with each name-collision row keyed in `overlays` (by its source id) pointing at the
+/** `preview` with each name-collision row keyed in `overlays` (by its `importRowKey`) pointing at the
  *  live counterpart of its target instead of the one the preview was built from — a gone target
  *  keeps no alias and no aliasless entry. Every other field is left as it is: the overlay only
  *  changes what a replace of that row would remove. */
@@ -427,7 +427,7 @@ export function overlayPreview(
   return {
     ...preview,
     nameCollisionRows: preview.nameCollisionRows.map((collision) => {
-      const key = collision.row.sevenTvEmoteId;
+      const key = importRowKey(collision.row);
       if (!overlays.has(key)) {
         return collision;
       }

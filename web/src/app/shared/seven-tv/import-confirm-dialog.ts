@@ -25,6 +25,7 @@ import {
   ImportOrigin,
   ImportSource,
   importOriginSourceChannelName,
+  importRowKey,
 } from '../../core/seven-tv/import-source';
 import { LEADERBOARD_SORT_LABEL_KEYS } from '../../core/seven-tv/leaderboard.model';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
@@ -746,7 +747,7 @@ export class ImportConfirmDialog {
   });
 
   /** The live counterpart of every replace target the last live read found drifted, keyed by the
-   *  row's source id. Reset whenever the preview is rebuilt — a reload already shows the live set. */
+   *  row's `importRowKey`. Reset whenever the preview is rebuilt — a reload already shows the live set. */
   private readonly targetOverlays = linkedSignal<ImportPreview | null, Map<string, TargetOverlay>>({
     source: this.preview,
     computation: () => new Map(),
@@ -779,8 +780,8 @@ export class ImportConfirmDialog {
       return new Map();
     }
     const conflictKeys = new Set([
-      ...preview.nameCollisionRows.map((each) => each.row.sevenTvEmoteId),
-      ...preview.aliasMismatchRows.map((each) => each.row.sevenTvEmoteId),
+      ...preview.nameCollisionRows.map((each) => importRowKey(each.row)),
+      ...preview.aliasMismatchRows.map((each) => importRowKey(each.row)),
     ]);
     const onConflicts = new Map(
       [...this.appliedDecisions()].filter(([key]) => conflictKeys.has(key)),
@@ -801,7 +802,7 @@ export class ImportConfirmDialog {
     if (dropped.length === 0) {
       return null;
     }
-    const names = new Map(this.data.source.rows.map((row) => [row.sevenTvEmoteId, row.name]));
+    const names = new Map(this.data.source.rows.map((row) => [importRowKey(row), row.name]));
     return dropped.map((key) => names.get(key) ?? key).join(', ');
   });
 
@@ -839,7 +840,7 @@ export class ImportConfirmDialog {
     if (notice?.kind !== 'drifted') {
       return notice;
     }
-    const names = new Map(this.data.source.rows.map((row) => [row.sevenTvEmoteId, row.name]));
+    const names = new Map(this.data.source.rows.map((row) => [importRowKey(row), row.name]));
     return {
       kind: 'drifted',
       rows: notice.drifted.map((drift) => names.get(drift.key) ?? drift.key).join(', '),
@@ -873,10 +874,10 @@ export class ImportConfirmDialog {
       keys.filter((key) => (decisions.get(key)?.kind ?? 'skip') !== 'skip').length;
     return {
       nameCollision: resolved(
-        preview?.nameCollisionRows.map((each) => each.row.sevenTvEmoteId) ?? [],
+        preview?.nameCollisionRows.map((each) => importRowKey(each.row)) ?? [],
       ),
       aliasMismatch: resolved(
-        preview?.aliasMismatchRows.map((each) => each.row.sevenTvEmoteId) ?? [],
+        preview?.aliasMismatchRows.map((each) => importRowKey(each.row)) ?? [],
       ),
     };
   });
@@ -1220,7 +1221,7 @@ export class ImportConfirmDialog {
   /** The apply button's lock reason, naming rows by source name (AK 10, 11). Translated in the
    *  template, so a language switch re-translates it. */
   protected readonly applyReasons = computed(() => {
-    const names = new Map(this.data.source.rows.map((row) => [row.sevenTvEmoteId, row.name]));
+    const names = new Map(this.data.source.rows.map((row) => [importRowKey(row), row.name]));
     return violationMessages(this.stepViolations(), (key) => names.get(key) ?? key);
   });
 

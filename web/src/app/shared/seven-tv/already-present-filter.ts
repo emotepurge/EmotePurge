@@ -1,6 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Observable, catchError, map, of } from 'rxjs';
 
+import { importRowKey } from '../../core/seven-tv/import-source';
 import { SevenTvEntryGeneration } from '../../core/seven-tv/seven-tv-entry-target';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { ReplaceOrAdoptTransferRow, TransferPlan } from '../../core/seven-tv/transfer-plan';
@@ -530,8 +531,8 @@ export type ReplaceTargetDriftReason =
 
 /** One replace row whose target drifted, with what the set holds for that target id right now. */
 export interface ReplaceTargetDrift {
-  /** The row's key: its source `sevenTvEmoteId`, the same key the decisions map and the run queue
-   *  use. */
+  /** The row's key: the `importRowKey` of its source row (7TV id and name, #444), the same key the
+   *  decisions map and the run queue use. */
   key: string;
   reason: ReplaceTargetDriftReason;
   /** The target id's live entries, taken from the same read — in the shape of
@@ -582,7 +583,7 @@ export function verifyReplaceTargets(
     const targetId = row.target.sevenTvEmoteId;
     const liveAliases = entries.aliasesById.get(targetId);
     drifted.push({
-      key: row.source.sevenTvEmoteId,
+      key: importRowKey(row.source),
       reason,
       live:
         liveAliases === undefined

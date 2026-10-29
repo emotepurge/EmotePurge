@@ -10,6 +10,16 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-10-29 — Import run: a row is keyed by its set entry, the reports stay per 7TV id (#444)
+
+**Betrifft:** `web/src/app/core/seven-tv/import-source.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts` · `web/src/app/core/seven-tv/seven-tv-run-engine.ts` · `web/src/app/shared/seven-tv/conflict-resolution.ts` · `web/src/app/shared/seven-tv/already-present-filter.ts` · `web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/shared/seven-tv/import-preview.ts` · `web/src/app/shared/seven-tv/import-confirm-dialog.ts` · `web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` · `web/src/app/shared/seven-tv/foreign-emote-grid.ts`
+
+Reverses K2's "the import queue stays per id" (slot spec D25, Out of Scope). An import row is identified by its 7TV id **and** its name, `importRowKey` = `${id}#${name}` (7TV ids never contain `#`, so the first one splits the key), compared ordinally. The conflict decisions, `Violation.rowKeys`, the drift overlays (`ReplaceTargetDrift.key`), the run queue key and the plan index all use it, so one plan can carry two aliases of one emote as two rows, each with its own decision, progress, retry, cancel, settle and result. The conflict step builds its element ids from the row's position (`domKey`) instead of the key, because an alias from a file can contain whitespace, which would split an `aria-describedby` list. The foreign-channel grid keys its cells, its selection and its `@for` tracking per entry as well.
+
+What stays per 7TV id (spec D3): `sync-imported` and the tag placement report name each imported id once, however many of its aliases a run added; votes and tags are untouched. This change alone does not alter what is copied — the source is still deduplicated by id until the entry below.
+
+---
+
 ### 2026-10-17 — Popover: the panel is pulled back inside the viewport after it opens
 
 **Betrifft:** `web/src/app/shared/ui/popover.ts` · `web/src/app/shared/ui/popover.spec.ts` · `web/e2e/admin-logs.e2e.spec.ts`

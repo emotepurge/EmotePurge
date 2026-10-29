@@ -9,7 +9,7 @@ import {
   ImportTargetSelection,
   loadImportTarget,
 } from '../../core/emotes/import-target-loader';
-import { ImportSource } from '../../core/seven-tv/import-source';
+import { ImportSource, importRowKey } from '../../core/seven-tv/import-source';
 import { OwnerHint } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { SevenTvImportService } from '../../core/seven-tv/seven-tv-import.service';
@@ -330,7 +330,7 @@ export function recheckTransferPlan(
         if (row.action !== 'replace') {
           return true;
         }
-        const passes = verification?.available === true && !drifted.has(row.source.sevenTvEmoteId);
+        const passes = verification?.available === true && !drifted.has(importRowKey(row.source));
         if (!passes) {
           replaceSkippedDrift++;
         }

@@ -604,7 +604,7 @@ describe('overlayPreview', () => {
   it('points an overlaid collision row at its live counterpart and leaves every other row alone', () => {
     const overlaid = overlayPreview(
       built,
-      new Map([['src-1', { aliases: ['Kappa', 'KappaToo'], hasAliaslessEntry: true }]]),
+      new Map([['src-1#Kappa', { aliases: ['Kappa', 'KappaToo'], hasAliaslessEntry: true }]]),
     );
 
     expect(overlaid.nameCollisionRows[0]).toEqual({
@@ -618,7 +618,7 @@ describe('overlayPreview', () => {
   });
 
   it('leaves a gone target with no alias and no aliasless entry', () => {
-    const overlaid = overlayPreview(built, new Map([['src-2', null]]));
+    const overlaid = overlayPreview(built, new Map([['src-2#Pog', null]]));
 
     expect(overlaid.nameCollisionRows[1]).toMatchObject({
       targetAliases: [],

@@ -1,3 +1,4 @@
+import { importRowKey } from '../../core/seven-tv/import-source';
 import {
   AddOrRenameTransferRow,
   ReplaceOrAdoptTransferRow,
@@ -9,7 +10,7 @@ import { ImportPreview, isNameRejectedBySevenTv } from './import-preview';
 
 /**
  * One user decision for a name-collision row (`NameCollisionRow`) or an alias-mismatch row
- * (`AliasMismatchRow`) — never both, since a source row's `sevenTvEmoteId` can only ever land in
+ * (`AliasMismatchRow`) — never both, since a source row can only ever land in
  * one of the two lists (`buildImportPreview` puts every row in exactly one group). `'skip'` is both
  * an explicit member and the implicit default for a row absent from a {@link ResolutionDecisions}
  * map — see {@link decisionFor}, the one place that default is applied.
@@ -22,7 +23,7 @@ import { ImportPreview, isNameRejectedBySevenTv } from './import-preview';
  * types share this one union) — `deriveTransferRows` is the single place that interprets a decision
  * in the context of the row it was made for: `renameSource`/`replaceTarget` only take effect on a
  * `NameCollisionRow`, `adoptSourceName` only on an `AliasMismatchRow`. A decision that does not fit
- * the row it is keyed to — including one keyed to a `sevenTvEmoteId` neither list carries at all —
+ * the row it is keyed to — including one keyed to a row neither list carries at all —
  * is treated the same as an absent one: silently ignored, contributing no row and no violation. The
  * confirm dialog never offers the action for a row it doesn't apply to, so this module does not add
  * an eighth rule for a case its own contract already rules out.
@@ -34,8 +35,9 @@ export type RowDecision =
   | { kind: 'adoptSourceName' };
 
 /**
- * Per-row decisions for one resolution run, keyed by the *source* row's `sevenTvEmoteId` — the same
- * key `NameCollisionRow.row.sevenTvEmoteId` / `AliasMismatchRow.row.sevenTvEmoteId` carry. A row
+ * Per-row decisions for one resolution run, keyed by the *source* row's `importRowKey` (7TV id and
+ * name, #444 — one id can be two source rows under two aliases), computed from
+ * `NameCollisionRow.row` / `AliasMismatchRow.row`. A row
  * whose key is absent from the map is `'skip'` by default (see {@link decisionFor}), so an empty map
  * is always a valid, no-op resolution.
  */
@@ -58,7 +60,7 @@ export type ViolationRule =
   | 'targetTouchedByReplaceAndAdopt'
   | 'adoptBlocked';
 
-/** One rule violation, naming the rule and every source row (`sevenTvEmoteId`) it involves — never
+/** One rule violation, naming the rule and every source row (`importRowKey`) it involves — never
  *  empty. `rowKeys`' order is not a contract callers should rely on (rule checks below build sets,
  *  not sequences, to stay order-independent — see the "order independence" note on
  *  `validateResolution`); it names whichever rows a rule happened to visit first, nothing more. */
@@ -344,7 +346,7 @@ function deriveTransferRows(preview: ImportPreview, decisions: ResolutionDecisio
   }
 
   for (const collision of preview.nameCollisionRows) {
-    const decision = decisionFor(decisions, collision.row.sevenTvEmoteId);
+    const decision = decisionFor(decisions, importRowKey(collision.row));
     switch (decision.kind) {
       case 'skip':
       case 'adoptSourceName':
@@ -372,7 +374,7 @@ function deriveTransferRows(preview: ImportPreview, decisions: ResolutionDecisio
   }
 
   for (const mismatch of preview.aliasMismatchRows) {
-    const decision = decisionFor(decisions, mismatch.row.sevenTvEmoteId);
+    const decision = decisionFor(decisions, importRowKey(mismatch.row));
     switch (decision.kind) {
       case 'skip':
       case 'renameSource':
@@ -440,13 +442,13 @@ function ruleDuplicateGeneratedAlias(rows: TransferRow[]): Violation[] {
     }
     violations.push({
       rule: 'duplicateGeneratedAlias',
-      rowKeys: group.map((row) => row.source.sevenTvEmoteId),
+      rowKeys: group.map((row) => importRowKey(row.source)),
     });
   }
   return violations;
 }
 
-/** `sevenTvEmoteId` of every `NameCollisionRow`/`AliasMismatchRow` whose `targetAliases` includes a
+/** `importRowKey` of every `NameCollisionRow`/`AliasMismatchRow` whose `targetAliases` includes a
  *  given alias — normally one row, but a #74 duplicate target can be reached by two different
  *  `NameCollisionRow`s (one per alias) at once. Used only to enrich a rule-2 violation's `rowKeys`
  *  with the row(s) that happen to *expose* a held name through a conflict — the check itself runs
@@ -464,12 +466,12 @@ function aliasExposedByRows(preview: ImportPreview): Map<string, string[]> {
 
   for (const collision of preview.nameCollisionRows) {
     for (const alias of collision.targetAliases) {
-      record(alias, collision.row.sevenTvEmoteId);
+      record(alias, importRowKey(collision.row));
     }
   }
   for (const mismatch of preview.aliasMismatchRows) {
     for (const alias of mismatch.targetAliases) {
-      record(alias, mismatch.row.sevenTvEmoteId);
+      record(alias, importRowKey(mismatch.row));
     }
   }
   return exposedBy;
@@ -490,7 +492,7 @@ function ruleAliasHeldByTarget(preview: ImportPreview, rows: TransferRow[]): Vio
     if (isOwnReplace) {
       continue;
     }
-    const rowKeys = [row.source.sevenTvEmoteId];
+    const rowKeys = [importRowKey(row.source)];
     for (const exposerKey of exposedBy.get(row.alias) ?? []) {
       if (!rowKeys.includes(exposerKey)) {
         rowKeys.push(exposerKey);
@@ -508,9 +510,9 @@ function ruleInvalidTypedAlias(
 ): Violation[] {
   const violations: Violation[] = [];
   for (const collision of preview.nameCollisionRows) {
-    const decision = decisionFor(decisions, collision.row.sevenTvEmoteId);
+    const decision = decisionFor(decisions, importRowKey(collision.row));
     if (decision.kind === 'renameSource' && isNameRejectedBySevenTv(decision.alias)) {
-      violations.push({ rule: 'invalidTypedAlias', rowKeys: [collision.row.sevenTvEmoteId] });
+      violations.push({ rule: 'invalidTypedAlias', rowKeys: [importRowKey(collision.row)] });
     }
   }
   return violations;
@@ -538,7 +540,7 @@ function ruleDuplicateReplaceTarget(rows: TransferRow[]): Violation[] {
     }
     violations.push({
       rule: 'duplicateReplaceTarget',
-      rowKeys: group.map((row) => row.source.sevenTvEmoteId),
+      rowKeys: group.map((row) => importRowKey(row.source)),
     });
   }
   return violations;
@@ -570,7 +572,7 @@ function ruleTargetTouchedByReplaceAndAdopt(rows: TransferRow[]): Violation[] {
     }
     violations.push({
       rule: 'targetTouchedByReplaceAndAdopt',
-      rowKeys: [...replaceRows, ...adoptRows].map((row) => row.source.sevenTvEmoteId),
+      rowKeys: [...replaceRows, ...adoptRows].map((row) => importRowKey(row.source)),
     });
   }
   return violations;
@@ -580,9 +582,9 @@ function ruleTargetTouchedByReplaceAndAdopt(rows: TransferRow[]): Violation[] {
 function ruleAdoptBlocked(preview: ImportPreview, decisions: ResolutionDecisions): Violation[] {
   const violations: Violation[] = [];
   for (const mismatch of preview.aliasMismatchRows) {
-    const decision = decisionFor(decisions, mismatch.row.sevenTvEmoteId);
+    const decision = decisionFor(decisions, importRowKey(mismatch.row));
     if (decision.kind === 'adoptSourceName' && mismatch.adoptBlocked !== null) {
-      violations.push({ rule: 'adoptBlocked', rowKeys: [mismatch.row.sevenTvEmoteId] });
+      violations.push({ rule: 'adoptBlocked', rowKeys: [importRowKey(mismatch.row)] });
     }
   }
   return violations;

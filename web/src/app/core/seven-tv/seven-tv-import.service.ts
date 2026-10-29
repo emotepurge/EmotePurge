@@ -11,6 +11,7 @@ import {
   ImportRow,
   importOriginLeaderboardSort,
   importOriginSourceChannelName,
+  importRowKey,
 } from './import-source';
 import {
   MAX_AUTOMATIC_SYNC_RETRIES,
@@ -208,7 +209,8 @@ export interface ImportRunInfo extends RunRecordBase {
    *  `startImport` from `target.tag`; `null` for every other import. */
   tag: ImportTagContext | null;
   origin: ImportOrigin;
-  /** The plan this run executes, one queue row per plan row, keyed by the source 7TV id. */
+  /** The plan this run executes, one queue row per plan row, keyed by the source row's
+   *  `importRowKey`. */
   plan: TransferPlan;
   /** See `ImportSettlement`. `result` is the engine's snapshot while `'pending'` — with every
    *  `failed` row already carrying its final reason (Plan-284 Festlegung 9), `unknown` rows as the
@@ -485,7 +487,7 @@ export class SevenTvImportService {
     });
   }
 
-  /** `plan` is expected to come from `buildTransferPlan` — deduplicated per source id, validated —
+  /** `plan` is expected to come from `buildTransferPlan` — deduplicated per source entry, validated —
    *  and already re-checked against the live target set right before this call (`import-flow.ts`);
    *  this method does no filtering of its own. `target.channelName` is `null` for an untracked
    *  target (T2.6, spec 8.6) — see `ImportRunInfo.targetChannelName` for what that changes
@@ -545,11 +547,13 @@ export class SevenTvImportService {
     this.showDuplicateNotice(
       skippedDuplicates > 0 || !duplicateCheckAvailable || replaceSkippedDrift > 0,
     );
-    // The 7TV id is the only identity an imported row has — the emote does not exist in our
-    // database yet, so there is no internal `emoteId` to mirror the key from. Unique per run: the
-    // preview deduplicates by id, and no action makes two rows of one source id.
+    // The source row's `importRowKey` (7TV id and name) is the identity an imported row has — the
+    // emote does not exist in our database yet, so there is no internal `emoteId` to mirror the key
+    // from, and the id alone is not enough since one id can be two source rows under two aliases
+    // (#444). Unique per run: the source is deduplicated per entry, and no action makes two plan
+    // rows of one source row.
     const queueEmotes: RunQueueEmote[] = plan.rows.map((row) => ({
-      key: row.source.sevenTvEmoteId,
+      key: importRowKey(row.source),
       sevenTvEmoteId: row.source.sevenTvEmoteId,
       name: row.source.name,
     }));
@@ -676,7 +680,7 @@ export class SevenTvImportService {
       current === null ||
       current.syncReport === 'pending' ||
       current.settlement !== 'settled' ||
-      importedKeys(current).length === 0
+      importedIds(current).length === 0
     ) {
       return;
     }
@@ -841,7 +845,7 @@ export class SevenTvImportService {
   ): void {
     const translate = (key: string): string => this.translocoService.translate(key);
     const result = settleRunResult(snapshot, context, entries, translate);
-    const reportsImported = importedKeysOf(result).length > 0;
+    const reportsImported = importedIdsOf(result).length > 0;
     const reportsRemoved = removedTargetIdsOf(result).length > 0;
     const settled = this.lifecycle.update(runId, (run) => ({
       ...run,
@@ -867,7 +871,7 @@ export class SevenTvImportService {
    *  every replace row whose REMOVE 7TV confirmed, whatever the row ended as; an adopt row reports
    *  nothing. */
   private sendFollowUp(run: ImportRunInfo): void {
-    const imported = importedKeys(run);
+    const imported = importedIds(run);
     const removed = removedTargetIds(run);
 
     // The report is the audit trail for exactly these ids, always sent — this call is never gated
@@ -941,7 +945,7 @@ export class SevenTvImportService {
     // names one, and every non-leaderboard origin sends `null` for the sort — both rules live in
     // the helpers, not here.
     const bodyBase = {
-      sevenTvEmoteIds: importedKeys(run),
+      sevenTvEmoteIds: importedIds(run),
       sourceChannelName: importOriginSourceChannelName(run.origin),
       sourceKind: run.origin.kind,
       leaderboardSort: importOriginLeaderboardSort(run.origin),
@@ -973,7 +977,7 @@ export class SevenTvImportService {
   /**
    * The placement report of a tag play-in (#201 T-C, spec 7.1/8): `POST …/tags/{tagId}/placements`
    * with the registered `operationId`, the run's own set (the one the operation was registered for)
-   * and owner, and every `done` row that added an emote — the same keys `sync-imported` names, empty
+   * and owner, and every `done` row that added an emote — the same ids `sync-imported` names, empty
    * after a cancel before the first row. Same transport rules as the other reports: one
    * `timeoutReportAttempt` per attempt, automatic retries for anything but a 401/403, and an end
    * state on every path.
@@ -1007,7 +1011,7 @@ export class SevenTvImportService {
         operationId: run.tag.operationId,
         emoteSetId: run.targetSetId,
         targetOwnerTwitchId: run.targetOwnerTwitchId,
-        sevenTvEmoteIds: importedKeys(run),
+        sevenTvEmoteIds: importedIds(run),
       })
       .pipe(
         timeoutReportAttempt(),
@@ -1203,7 +1207,7 @@ function retryTransientSyncFailures<T>() {
 }
 
 function indexPlanRows(plan: TransferPlan | null): ReadonlyMap<string, TransferRow> {
-  return new Map((plan?.rows ?? []).map((row) => [row.source.sevenTvEmoteId, row]));
+  return new Map((plan?.rows ?? []).map((row) => [importRowKey(row.source), row]));
 }
 
 function transferRowOf(rowsByKey: ReadonlyMap<string, TransferRow>, key: string): TransferRow {
@@ -1251,15 +1255,18 @@ function addRequest(setId: string, emoteId: string, alias: string): RunRequest {
   return { mutation: ADD_EMOTE_MUTATION, variables: { setId, emoteId, alias } };
 }
 
-/** Source ids of every `done` row of `run` that added an emote — what `sync-imported` names. */
-function importedKeys(run: ImportRunInfo): string[] {
-  return importedKeysOf(run.result);
+/** Source ids of every `done` row of `run` that added an emote — what `sync-imported` and the tag
+ *  placement report name. Once per id: two aliases of one emote are two rows of the run, but the
+ *  audit and the placement stay per 7TV id (spec D3, #444). */
+function importedIds(run: ImportRunInfo): string[] {
+  return importedIdsOf(run.result);
 }
 
-function importedKeysOf(result: ImportRunResult | null): string[] {
-  return (result?.items ?? [])
+function importedIdsOf(result: ImportRunResult | null): string[] {
+  const ids = (result?.items ?? [])
     .filter((item) => item.status === 'done' && item.transfer.action !== 'adoptSourceName')
-    .map((item) => item.key);
+    .map((item) => item.transfer.source.sevenTvEmoteId);
+  return [...new Set(ids)];
 }
 
 /** Target ids of every replace row of `run` whose REMOVE 7TV confirmed, whatever the row ended as

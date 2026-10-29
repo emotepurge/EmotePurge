@@ -18,6 +18,7 @@ import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { LanguageService } from '../../core/i18n/language.service';
 import { pluralKey } from '../../core/i18n/plural';
+import { importRowKey } from '../../core/seven-tv/import-source';
 import { EmoteSprite } from '../emotes/emote-sprite';
 import { EmoteSpriteAnimated } from '../emotes/emote-sprite-animated';
 import { Button } from '../ui/button';
@@ -46,8 +47,12 @@ export interface ResolutionActionOption {
 /** One row of the step, already shaped for display — see {@link collisionStepRows} and
  *  {@link mismatchStepRows} for how each conflict kind maps onto it. */
 export interface ConflictStepRow {
-  /** The source row's `sevenTvEmoteId` — the key the decision map uses. */
+  /** The source row's `importRowKey` (7TV id and name, #444) — the key the decision map uses. */
   key: string;
+  /** The token the row's element ids are built from — its position in the group. Not `key`: that
+   *  carries an alias, and a file row's alias may hold whitespace, which would split an
+   *  `aria-describedby` id list. */
+  domKey: string;
   sourceName: string;
   /** `null` draws the empty sprite plate, never a URL derived from the id (AK 4). */
   sourceImageUrl: string | null;
@@ -197,14 +202,14 @@ export function rowConsequence(
  * no longer holds it, so a replace would remove an entry the collision is not about — never for an
  * untracked target any more (#253, spec 4.5 point 15/6.6: the replace lock for an untracked target
  * is gone). `overlays` carries the live counterpart of every replace row whose target drifted, keyed
- * by the row's source id.
+ * by the row's `importRowKey`.
  */
 export function collisionStepRows(
   rows: readonly NameCollisionRow[],
   overlays: ReadonlyMap<string, TargetOverlay>,
 ): ConflictStepRow[] {
-  return rows.map((collision) => {
-    const key = collision.row.sevenTvEmoteId;
+  return rows.map((collision, index) => {
+    const key = importRowKey(collision.row);
     const overlaid = overlays.has(key);
     const live = overlays.get(key) ?? null;
     const targetGone = overlaid && live === null;
@@ -214,6 +219,7 @@ export function collisionStepRows(
       : null;
     return {
       key,
+      domKey: String(index),
       sourceName: collision.row.name,
       sourceImageUrl: collision.row.imageUrl,
       targetImageUrl: targetGone ? null : collision.target.imageUrl,
@@ -241,8 +247,9 @@ export function mismatchStepRows(
   rows: readonly AliasMismatchRow[],
   targetImageUrlById: ReadonlyMap<string, string>,
 ): ConflictStepRow[] {
-  return rows.map((mismatch) => ({
-    key: mismatch.row.sevenTvEmoteId,
+  return rows.map((mismatch, index) => ({
+    key: importRowKey(mismatch.row),
+    domKey: String(index),
     sourceName: mismatch.row.name,
     sourceImageUrl: mismatch.row.imageUrl,
     targetImageUrl: targetImageUrlById.get(mismatch.row.sevenTvEmoteId) ?? mismatch.row.imageUrl,
@@ -485,7 +492,7 @@ export function violationMessages(
                      worth of height regardless of content — a blockified, content-less span has
                      no line box of its own to derive it from. -->
                 <span
-                  [id]="'resolve-consequence-' + row.key + '-source'"
+                  [id]="'resolve-consequence-' + row.domKey + '-source'"
                   class="block min-h-[1lh] truncate text-xs text-fg-muted"
                 >
                   @if (sourceConsequenceOf(row); as consequence) {
@@ -555,7 +562,7 @@ export function violationMessages(
                 }
                 <!-- Reserved even when empty — see the source cell's own consequence line above. -->
                 <span
-                  [id]="'resolve-consequence-' + row.key + '-target'"
+                  [id]="'resolve-consequence-' + row.domKey + '-target'"
                   class="block min-h-[1lh] truncate text-xs"
                   [class.text-danger-fg]="targetConsequenceOf(row)?.kind === 'removed'"
                   [class.text-fg-muted]="targetConsequenceOf(row)?.kind !== 'removed'"
@@ -578,9 +585,9 @@ export function violationMessages(
                 "
                 [attr.aria-describedby]="
                   'resolve-consequence-' +
-                  row.key +
+                  row.domKey +
                   '-source resolve-consequence-' +
-                  row.key +
+                  row.domKey +
                   '-target'
                 "
               >
@@ -598,7 +605,7 @@ export function violationMessages(
                     <input
                       type="radio"
                       class="h-4 w-4 accent-accent-solid"
-                      [name]="'resolve-action-' + row.key"
+                      [name]="'resolve-action-' + row.domKey"
                       [value]="option.kind"
                       [disabled]="option.disabledReasonKey !== null"
                       [checked]="decisionOf(row.key).kind === option.kind"
@@ -616,18 +623,21 @@ export function violationMessages(
 
               @if (renameAlias(row.key); as alias) {
                 <div class="flex min-w-0 items-center gap-2">
-                  <label class="shrink-0 text-xs text-fg-muted" [for]="'resolve-alias-' + row.key">
+                  <label
+                    class="shrink-0 text-xs text-fg-muted"
+                    [for]="'resolve-alias-' + row.domKey"
+                  >
                     {{ 'import.resolve.renameLabel' | transloco }}
                   </label>
                   <input
                     type="text"
                     class="app-input-sm min-w-0 w-full flex-1"
-                    [id]="'resolve-alias-' + row.key"
+                    [id]="'resolve-alias-' + row.domKey"
                     [value]="alias.value"
                     [attr.aria-invalid]="visibleFieldErrorKey(row.key) !== null ? 'true' : null"
                     [attr.aria-describedby]="
                       visibleFieldErrorKey(row.key) !== null
-                        ? 'resolve-alias-' + row.key + '-error'
+                        ? 'resolve-alias-' + row.domKey + '-error'
                         : null
                     "
                     (input)="rename(row.key, $event)"
@@ -636,7 +646,7 @@ export function violationMessages(
                 </div>
                 @if (visibleFieldErrorKey(row.key); as errorKey) {
                   <p
-                    [id]="'resolve-alias-' + row.key + '-error'"
+                    [id]="'resolve-alias-' + row.domKey + '-error'"
                     class="text-sm text-danger-fg break-words"
                   >
                     {{ errorKey | transloco }}
