@@ -54,7 +54,7 @@ export interface RunQueueEmote {
    *  by `sevenTvEmoteId` for an id row (one row per set-view cell, a #74 duplicate included — one
    *  `REMOVE` takes every entry) and by `${sevenTvEmoteId}#${cardKey}` for an entry row (one row
    *  per set entry, `entry` set), a restore run by `${sevenTvEmoteId}#${alias}` (one `ADD` per alias), an import
-   *  run by its source row's `importRowKey`, `${sevenTvEmoteId}#${name}` (one row per source entry,
+   *  run by its source row's `importRowKey`, the id and the name (one row per source entry,
    *  #444). Must be unique within a run; the engine never deduplicates (the calling service does). */
   key: string;
   /** Internal `Emote.Id`, carried through for the purge protocol only — nothing in the run or its

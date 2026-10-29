@@ -221,7 +221,7 @@ describe('SevenTvImportService', () => {
   it('keys every queue row by its source entry (id and name) and carries no internal emoteId', () => {
     service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
 
-    expect(service.queue().map((item) => item.key)).toEqual(['7tv-1#PogU', '7tv-2#KEKW']);
+    expect(service.queue().map((item) => item.key)).toEqual(['5:7tv-1#PogU', '5:7tv-2#KEKW']);
     expect(Object.hasOwn(service.queue()[0], 'emoteId')).toBe(false);
 
     const req = httpMock.expectOne(GQL_ENDPOINT);
@@ -271,7 +271,7 @@ describe('SevenTvImportService', () => {
     const hob: ImportRow = { sevenTvEmoteId: '7tv-1', name: 'hob44', imageUrl: null };
     service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([ome, hob]));
 
-    expect(service.queue().map((item) => item.key)).toEqual(['7tv-1#ome44', '7tv-1#hob44']);
+    expect(service.queue().map((item) => item.key)).toEqual(['5:7tv-1#ome44', '5:7tv-1#hob44']);
     const first = httpMock.expectOne(GQL_ENDPOINT);
     expect(first.request.body.variables).toEqual({
       setId: 'set-b',
@@ -295,7 +295,7 @@ describe('SevenTvImportService', () => {
     httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
 
     const result = service.run()?.result;
-    expect(result?.doneKeys).toEqual(['7tv-1#ome44', '7tv-1#hob44']);
+    expect(result?.doneKeys).toEqual(['5:7tv-1#ome44', '5:7tv-1#hob44']);
     expect(result?.items.map((item) => [item.status, item.transfer.alias])).toEqual([
       ['done', 'ome44'],
       ['done', 'hob44'],
@@ -324,7 +324,7 @@ describe('SevenTvImportService', () => {
 
     expect(service.resyncTrigger()).toBe('succeeded');
     httpMock.expectNone(RESYNC_B);
-    expect(service.run()?.result?.doneKeys).toEqual(['7tv-1#PogU', '7tv-2#KEKW']);
+    expect(service.run()?.result?.doneKeys).toEqual(['5:7tv-1#PogU', '5:7tv-2#KEKW']);
   });
 
   it('reports a foreign-channel import with both its kind and its source channel', () => {
@@ -829,7 +829,7 @@ describe('SevenTvImportService', () => {
     expect(service.syncReport()).toBe('succeeded');
     expect(service.resyncTrigger()).toBe('succeeded');
     expect(service.run()?.targetChannelName).toBe('kanal_c');
-    expect(service.run()?.result?.doneKeys).toEqual(['7tv-9#Clueless']);
+    expect(service.run()?.result?.doneKeys).toEqual(['5:7tv-9#Clueless']);
     // Run 1 closed on its failed report; with run 2 on screen it is not shown again — its failure
     // stays on its record and in the console.
     expect(service.isSettling()).toBe(false);
@@ -1382,7 +1382,7 @@ describe('SevenTvImportService', () => {
       const row = service.run()?.result?.items[1];
       expect(row).toMatchObject({ status: 'done', completedSteps: 1, failedStep: null });
       expect(service.run()?.unknownCount).toBe(0);
-      expect(service.run()?.result?.doneKeys).toEqual(['src-x#Kappa', 'src-y#Pog']);
+      expect(service.run()?.result?.doneKeys).toEqual(['5:src-x#Kappa', '5:src-y#Pog']);
 
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual([
         'src-x',
@@ -1488,7 +1488,7 @@ describe('SevenTvImportService', () => {
       const secondPlan = addPlan([SOURCE_Z]);
       service.startImport(TARGET_C, FILE_ORIGIN, secondPlan);
       const second = service.run();
-      expect(service.items().map((item) => item.key)).toEqual(['src-z#Sadge']);
+      expect(service.items().map((item) => item.key)).toEqual(['5:src-z#Sadge']);
 
       read.flush(
         setEntriesPage([
@@ -1506,7 +1506,7 @@ describe('SevenTvImportService', () => {
       httpMock.expectNone(RESYNC_B);
       // …but run 1 is never shown again, and none of its report states lands on run 2.
       expect(service.run()).toBe(second);
-      expect(service.items().map((item) => item.key)).toEqual(['src-z#Sadge']);
+      expect(service.items().map((item) => item.key)).toEqual(['5:src-z#Sadge']);
       expect(service.syncReport()).toBe('idle');
       expect(service.removalReport()).toBe('idle');
       expect(service.resyncTrigger()).toBe('idle');
@@ -1558,7 +1558,7 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [adoptRow(SOURCE_X, 'KappaOld')] });
 
       expect(service.items()).toEqual([
-        expect.objectContaining({ key: 'src-x#Kappa', status: 'in-progress' }),
+        expect.objectContaining({ key: '5:src-x#Kappa', status: 'in-progress' }),
       ]);
       expect(service.items()[0].transfer.action).toBe('adoptSourceName');
       expect(service.destructiveOpen()).toBe(false);
@@ -2431,7 +2431,7 @@ describe('SevenTvImportService', () => {
       expect(service.run()?.phase).toBe('closed');
       expect(service.syncReport()).toBe('failed');
       // What keeps the dock mounted (`import-progress-section`, `dockVisible`).
-      expect(service.queue().map((item) => item.key)).toEqual(['src-x#Kappa']);
+      expect(service.queue().map((item) => item.key)).toEqual(['5:src-x#Kappa']);
       expect(service.items().map((item) => item.status)).toEqual(['done']);
 
       service.retrySyncReport();

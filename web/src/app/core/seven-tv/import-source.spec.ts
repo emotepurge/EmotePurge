@@ -38,6 +38,18 @@ describe('dedupeImportRows', () => {
     expect(result.rows).toEqual(rows);
   });
 
+  it('keeps two rows whose id and name only join to the same text apart (unvalidated file ids)', () => {
+    const rows: ImportRow[] = [
+      { sevenTvEmoteId: 'a1#foo', name: 'bar', imageUrl: null },
+      { sevenTvEmoteId: 'a1', name: 'foo#bar', imageUrl: null },
+    ];
+
+    const result = dedupeImportRows(rows);
+
+    expect(result.rows).toEqual(rows);
+    expect(result.duplicatesCollapsed).toBe(0);
+  });
+
   it('compares the name case-sensitively, as 7TV does', () => {
     const rows: ImportRow[] = [
       { sevenTvEmoteId: 'a1', name: 'pogu', imageUrl: null },
@@ -69,8 +81,14 @@ describe('dedupeImportRows', () => {
 });
 
 describe('importRowKey', () => {
+  it('keeps an id ending in # apart from a name containing one', () => {
+    expect(importRowKey({ sevenTvEmoteId: 'a1#foo', name: 'bar' })).not.toBe(
+      importRowKey({ sevenTvEmoteId: 'a1', name: 'foo#bar' }),
+    );
+  });
+
   it('joins the id and the name, so two aliases of one id are two keys', () => {
-    expect(importRowKey({ sevenTvEmoteId: 'a1', name: 'PogU' })).toBe('a1#PogU');
+    expect(importRowKey({ sevenTvEmoteId: 'a1', name: 'PogU' })).toBe('2:a1#PogU');
     expect(importRowKey({ sevenTvEmoteId: 'a1', name: 'PogU' })).not.toBe(
       importRowKey({ sevenTvEmoteId: 'a1', name: 'Pog' }),
     );

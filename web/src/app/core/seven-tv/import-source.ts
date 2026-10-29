@@ -153,12 +153,13 @@ export interface ImportSource {
  * Since the set entry is the counting unit (#365), one emote can sit in a source set under two
  * aliases, and 7TV's `addEmote` takes the same id again under a different alias — so the id alone
  * no longer names a row. This key is what the dedupe, the conflict decisions, the drift overlays
- * and the run queue match rows by. The id comes first and never contains `#` (a 7TV ObjectID), so
- * the first `#` always separates the two halves, even for an alias that contains one. Votes, tags
- * and the audit report stay per id (spec D3) and never read this key.
+ * and the run queue match rows by. The id is prefixed with its length, so the key is injective
+ * whatever either half contains: a file's id is not validated (`import-source-parser.ts` takes any
+ * non-empty string), so neither half can be assumed free of `#`. Votes, tags and the audit report
+ * stay per id (spec D3) and never read this key.
  */
 export function importRowKey(row: Pick<ImportRow, 'sevenTvEmoteId' | 'name'>): string {
-  return `${row.sevenTvEmoteId}#${row.name}`;
+  return `${row.sevenTvEmoteId.length}:${row.sevenTvEmoteId}#${row.name}`;
 }
 
 /**
