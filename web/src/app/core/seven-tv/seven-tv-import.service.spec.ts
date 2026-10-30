@@ -218,10 +218,10 @@ describe('SevenTvImportService', () => {
     vi.advanceTimersByTime(RUN_DELAY_MS);
   }
 
-  it('keys every queue row by its 7TV id and carries no internal emoteId', () => {
+  it('keys every queue row by its source entry (id and name) and carries no internal emoteId', () => {
     service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
 
-    expect(service.queue().map((item) => item.key)).toEqual(['7tv-1', '7tv-2']);
+    expect(service.queue().map((item) => item.key)).toEqual(['5:7tv-1#PogU', '5:7tv-2#KEKW']);
     expect(Object.hasOwn(service.queue()[0], 'emoteId')).toBe(false);
 
     const req = httpMock.expectOne(GQL_ENDPOINT);
@@ -266,6 +266,42 @@ describe('SevenTvImportService', () => {
     httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
   });
 
+  it('adds both aliases of one emote as two rows and reports the id once (#444)', () => {
+    const ome: ImportRow = { sevenTvEmoteId: '7tv-1', name: 'ome44', imageUrl: null };
+    const hob: ImportRow = { sevenTvEmoteId: '7tv-1', name: 'hob44', imageUrl: null };
+    service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([ome, hob]));
+
+    expect(service.queue().map((item) => item.key)).toEqual(['5:7tv-1#ome44', '5:7tv-1#hob44']);
+    const first = httpMock.expectOne(GQL_ENDPOINT);
+    expect(first.request.body.variables).toEqual({
+      setId: 'set-b',
+      emoteId: '7tv-1',
+      alias: 'ome44',
+    });
+    flushApplied(first);
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+    const second = httpMock.expectOne(GQL_ENDPOINT);
+    expect(second.request.body.variables).toEqual({
+      setId: 'set-b',
+      emoteId: '7tv-1',
+      alias: 'hob44',
+    });
+    flushApplied(second);
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    const reportReq = httpMock.expectOne(SYNC_IMPORTED_B);
+    expect(reportReq.request.body.sevenTvEmoteIds).toEqual(['7tv-1']);
+    reportReq.flush(null, { status: 204, statusText: 'No Content' });
+    httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+
+    const result = service.run()?.result;
+    expect(result?.doneKeys).toEqual(['5:7tv-1#ome44', '5:7tv-1#hob44']);
+    expect(result?.items.map((item) => [item.status, item.transfer.alias])).toEqual([
+      ['done', 'ome44'],
+      ['done', 'hob44'],
+    ]);
+  });
+
   it('reports a channel import with its source channel and triggers exactly one resync', () => {
     service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
     runTwoRowsToDone();
@@ -288,7 +324,7 @@ describe('SevenTvImportService', () => {
 
     expect(service.resyncTrigger()).toBe('succeeded');
     httpMock.expectNone(RESYNC_B);
-    expect(service.run()?.result?.doneKeys).toEqual(['7tv-1', '7tv-2']);
+    expect(service.run()?.result?.doneKeys).toEqual(['5:7tv-1#PogU', '5:7tv-2#KEKW']);
   });
 
   it('reports a foreign-channel import with both its kind and its source channel', () => {
@@ -793,7 +829,7 @@ describe('SevenTvImportService', () => {
     expect(service.syncReport()).toBe('succeeded');
     expect(service.resyncTrigger()).toBe('succeeded');
     expect(service.run()?.targetChannelName).toBe('kanal_c');
-    expect(service.run()?.result?.doneKeys).toEqual(['7tv-9']);
+    expect(service.run()?.result?.doneKeys).toEqual(['5:7tv-9#Clueless']);
     // Run 1 closed on its failed report; with run 2 on screen it is not shown again — its failure
     // stays on its record and in the console.
     expect(service.isSettling()).toBe(false);
@@ -947,6 +983,67 @@ describe('SevenTvImportService', () => {
       httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       expect(service.destructiveOpen()).toBe(false);
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    describe('a removed target the same run added back (#444)', () => {
+      // Source X:A, X:B, Y:C against a target X:C: the replace of Y:C removes X, a further row adds
+      // X:B back. `sync-deleted` without entries would archive X with the new X:B.
+      const tgtUnderB: ImportRow = { sevenTvEmoteId: 'tgt-x', name: 'B', imageUrl: null };
+
+      it('leaves the re-added id out of sync-deleted and still counts the REMOVE', () => {
+        service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+          rows: [replaceRow(SOURCE_X, 'tgt-x'), replaceRow(SOURCE_Z, 'tgt-z'), addRow(tgtUnderB)],
+        });
+        for (let step = 0; step < 5; step++) {
+          answerNext();
+        }
+
+        expect(service.run()?.removedCount).toBe(2);
+        expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual([
+          'src-x',
+          'src-z',
+          'tgt-x',
+        ]);
+        const removalReq = httpMock.expectOne(SYNC_DELETED_B);
+        expect(removalReq.request.body.sevenTvEmoteIds).toEqual(['tgt-z']);
+        removalReq.flush(deletedAnswer());
+        httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+      });
+
+      it('still reports the id when its re-add failed', () => {
+        service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+          rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(tgtUnderB)],
+        });
+        answerNext();
+        answerNext();
+        answerNext(gqlRejection('BAD_REQUEST something else', 400));
+
+        expect(service.run()?.result?.items[1].status).toBe('failed');
+        const removalReq = httpMock.expectOne(SYNC_DELETED_B);
+        expect(removalReq.request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+        httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
+        removalReq.flush(deletedAnswer());
+        httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+      });
+
+      it('sends no sync-deleted when the only removed id was added back, resyncs directly and closes', () => {
+        service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+          rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(tgtUnderB)],
+        });
+        answerNext();
+        answerNext();
+        answerNext();
+
+        expect(service.run()?.removalReport).toBe('idle');
+        httpMock.expectNone(SYNC_DELETED_B);
+        httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
+        httpMock.expectOne(RESYNC_B).flush(null, { status: 429, statusText: 'Too Many Requests' });
+
+        expect(service.resyncTrigger()).toBe('cooldown');
+        expect(service.run()?.phase).toBe('closed');
+        expect(service.destructiveOpen()).toBe(false);
+        expect(service.run()?.removedCount).toBe(1);
+      });
     });
 
     it('sends an adopt row as one updateEmoteAlias, old alias in the id and source name as argument, and no addEmote', () => {
@@ -1346,7 +1443,7 @@ describe('SevenTvImportService', () => {
       const row = service.run()?.result?.items[1];
       expect(row).toMatchObject({ status: 'done', completedSteps: 1, failedStep: null });
       expect(service.run()?.unknownCount).toBe(0);
-      expect(service.run()?.result?.doneKeys).toEqual(['src-x', 'src-y']);
+      expect(service.run()?.result?.doneKeys).toEqual(['5:src-x#Kappa', '5:src-y#Pog']);
 
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual([
         'src-x',
@@ -1452,7 +1549,7 @@ describe('SevenTvImportService', () => {
       const secondPlan = addPlan([SOURCE_Z]);
       service.startImport(TARGET_C, FILE_ORIGIN, secondPlan);
       const second = service.run();
-      expect(service.items().map((item) => item.key)).toEqual(['src-z']);
+      expect(service.items().map((item) => item.key)).toEqual(['5:src-z#Sadge']);
 
       read.flush(
         setEntriesPage([
@@ -1470,7 +1567,7 @@ describe('SevenTvImportService', () => {
       httpMock.expectNone(RESYNC_B);
       // …but run 1 is never shown again, and none of its report states lands on run 2.
       expect(service.run()).toBe(second);
-      expect(service.items().map((item) => item.key)).toEqual(['src-z']);
+      expect(service.items().map((item) => item.key)).toEqual(['5:src-z#Sadge']);
       expect(service.syncReport()).toBe('idle');
       expect(service.removalReport()).toBe('idle');
       expect(service.resyncTrigger()).toBe('idle');
@@ -1522,7 +1619,7 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [adoptRow(SOURCE_X, 'KappaOld')] });
 
       expect(service.items()).toEqual([
-        expect.objectContaining({ key: 'src-x', status: 'in-progress' }),
+        expect.objectContaining({ key: '5:src-x#Kappa', status: 'in-progress' }),
       ]);
       expect(service.items()[0].transfer.action).toBe('adoptSourceName');
       expect(service.destructiveOpen()).toBe(false);
@@ -1632,6 +1729,30 @@ describe('SevenTvImportService', () => {
       expect(service.run()?.unknownRemovalCount).toBe(0);
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
       httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('settles an unknown REMOVE as a gap when a later row of the run added the target id back under another alias (#444)', () => {
+      // A multi-alias source: the replace frees "Kappa" from tgt-x, a further row adds tgt-x
+      // under "Other". The re-read finds the id — but not under the alias the REMOVE took.
+      const tgtUnderOther: ImportRow = { sevenTvEmoteId: 'tgt-x', name: 'Other', imageUrl: null };
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(tgtUnderOther)],
+      });
+      httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 503, statusText: 'Unavailable' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      answerNext();
+
+      httpMock.expectOne(GQL_ENDPOINT).flush(setEntriesPage([{ id: 'tgt-x', alias: 'Other' }]));
+
+      const [replace] = service.run()?.result?.items ?? [];
+      expect(replace).toMatchObject({ status: 'failed', completedSteps: 1, failedStep: 1 });
+      expect(replace.errorMessage).toBe('Entfernt, aber nicht hinzugefügt.');
+      expect(service.run()?.removedCount).toBe(1);
+
+      expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      // The run added tgt-x back, so the removal report leaves it out (see the cases below).
+      httpMock.expectNone(SYNC_DELETED_B);
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -2370,7 +2491,7 @@ describe('SevenTvImportService', () => {
       expect(service.run()?.phase).toBe('closed');
       expect(service.syncReport()).toBe('failed');
       // What keeps the dock mounted (`import-progress-section`, `dockVisible`).
-      expect(service.queue().map((item) => item.key)).toEqual(['src-x']);
+      expect(service.queue().map((item) => item.key)).toEqual(['5:src-x#Kappa']);
       expect(service.items().map((item) => item.status)).toEqual(['done']);
 
       service.retrySyncReport();

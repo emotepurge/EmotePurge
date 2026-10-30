@@ -8758,7 +8758,7 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     expect(component['isUnderObservation'](resumed!)).toBe(true);
   });
 
-  // --- 7TV ids, once each (plan 377, 2.5/2.6) ----------------------------------------------------
+  // --- 7TV ids, once each (plan 377, 2.5/2.6) — except the copy, which goes per entry (#444) ------
 
   it('puts an emote on a null-session ballot once when both its slot cards are marked, and counts it once', () => {
     mount([ome(), hob(), other()]);
@@ -8769,18 +8769,23 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     expect(component['voteBallotSize']()).toBe(1);
   });
 
-  it('captures an emote once for the copy flow, so the dialog counts what the run copies (A6)', () => {
+  it('captures both slot cards of an emote for the copy flow, one row per alias (#444)', () => {
     mount([ome(), hob(), other()]);
     click('slot-ome');
     click('slot-hob');
 
-    expect(component['importShortcutSelectionCount']()).toBe(1);
+    expect(component['importShortcutSelectionCount']()).toBe(2);
     expect(component['importableSelection']().map((row) => [row.sevenTvEmoteId, row.name])).toEqual(
-      [['7tv-x', 'ome44']],
+      [
+        ['7tv-x', 'ome44'],
+        ['7tv-x', 'hob44'],
+      ],
     );
-    expect(component['importableVisible']().map((row) => row.sevenTvEmoteId)).toEqual([
-      '7tv-x',
-      '7tv-y',
+    // Grid order: the visible scope copies every card, each under its own alias.
+    expect(component['importableVisible']().map((row) => [row.sevenTvEmoteId, row.name])).toEqual([
+      ['7tv-x', 'ome44'],
+      ['7tv-y', 'Other'],
+      ['7tv-x', 'hob44'],
     ]);
   });
 

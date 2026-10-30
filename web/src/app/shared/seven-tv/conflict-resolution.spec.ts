@@ -96,11 +96,14 @@ describe('validateResolution', () => {
         ],
       });
       const d = decisions([
-        ['c-1', { kind: 'renameSource', alias: 'Shared' }],
-        ['c-2', { kind: 'renameSource', alias: 'Shared' }],
+        ['3:c-1#Old1', { kind: 'renameSource', alias: 'Shared' }],
+        ['3:c-2#Old2', { kind: 'renameSource', alias: 'Shared' }],
       ]);
 
-      expectViolation(validateResolution(p, d), 'duplicateGeneratedAlias', ['c-1', 'c-2']);
+      expectViolation(validateResolution(p, d), 'duplicateGeneratedAlias', [
+        '3:c-1#Old1',
+        '3:c-2#Old2',
+      ]);
     });
 
     it('flags a rename onto the name of an untouched toAdd row', () => {
@@ -110,9 +113,12 @@ describe('validateResolution', () => {
           collisionRow(importRow('c-1', 'Other'), emoteListItem('t-1', 'Other'), ['Other']),
         ],
       });
-      const d = decisions([['c-1', { kind: 'renameSource', alias: 'Shared' }]]);
+      const d = decisions([['3:c-1#Other', { kind: 'renameSource', alias: 'Shared' }]]);
 
-      expectViolation(validateResolution(p, d), 'duplicateGeneratedAlias', ['add-1', 'c-1']);
+      expectViolation(validateResolution(p, d), 'duplicateGeneratedAlias', [
+        '5:add-1#Shared',
+        '3:c-1#Other',
+      ]);
     });
 
     it('does not flag two untouched toAdd rows sharing a name (plan stays as today)', () => {
@@ -138,7 +144,7 @@ describe('validateResolution', () => {
         nameCollisionRows: [collisionRow(importRow('c-1', 'Name1'), target, ['Name1'])],
         targetNames: new Set(['Name1']),
       });
-      const d = decisions([['c-1', { kind: 'replaceTarget' }]]);
+      const d = decisions([['3:c-1#Name1', { kind: 'replaceTarget' }]]);
 
       expect(validateResolution(p, d)).toEqual({ ok: true });
       const plan = buildTransferPlan(p, d);
@@ -163,8 +169,8 @@ describe('validateResolution', () => {
       const rowFreesA = collisionRow(importRow('c-free', 'A'), targetA, ['A']);
       const rowRenamesToA = collisionRow(importRow('c-rename', 'B'), targetB, ['B']);
       const d = decisions([
-        ['c-free', { kind: 'replaceTarget' }],
-        ['c-rename', { kind: 'renameSource', alias: 'A' }],
+        ['6:c-free#A', { kind: 'replaceTarget' }],
+        ['8:c-rename#B', { kind: 'renameSource', alias: 'A' }],
       ]);
       const targetNames = new Set(['A', 'B']);
 
@@ -177,8 +183,8 @@ describe('validateResolution', () => {
         d,
       );
 
-      expectViolation(forward, 'aliasHeldByTarget', ['c-rename', 'c-free']);
-      expectViolation(backward, 'aliasHeldByTarget', ['c-rename', 'c-free']);
+      expectViolation(forward, 'aliasHeldByTarget', ['8:c-rename#B', '6:c-free#A']);
+      expectViolation(backward, 'aliasHeldByTarget', ['8:c-rename#B', '6:c-free#A']);
     });
 
     it('flags a rename onto a name an adopt row would take over (an adopt renames in place, it never frees the name)', () => {
@@ -192,11 +198,14 @@ describe('validateResolution', () => {
         targetNames: new Set(['Unrelated', 'OldAlias']),
       });
       const d = decisions([
-        ['m-1', { kind: 'adoptSourceName' }],
-        ['c-1', { kind: 'renameSource', alias: 'OldAlias' }],
+        ['3:m-1#NewAlias', { kind: 'adoptSourceName' }],
+        ['3:c-1#Unrelated', { kind: 'renameSource', alias: 'OldAlias' }],
       ]);
 
-      expectViolation(validateResolution(p, d), 'aliasHeldByTarget', ['c-1', 'm-1']);
+      expectViolation(validateResolution(p, d), 'aliasHeldByTarget', [
+        '3:c-1#Unrelated',
+        '3:m-1#NewAlias',
+      ]);
     });
 
     it('flags a rename onto one alias of a #74 duplicate target that a different replace takes', () => {
@@ -215,11 +224,14 @@ describe('validateResolution', () => {
         targetNames: new Set(['Alias1', 'Alias2', 'Unrelated']),
       });
       const d = decisions([
-        ['c-own', { kind: 'replaceTarget' }],
-        ['c-other', { kind: 'renameSource', alias: 'Alias2' }],
+        ['5:c-own#Alias1', { kind: 'replaceTarget' }],
+        ['7:c-other#Unrelated', { kind: 'renameSource', alias: 'Alias2' }],
       ]);
 
-      expectViolation(validateResolution(p, d), 'aliasHeldByTarget', ['c-other', 'c-own']);
+      expectViolation(validateResolution(p, d), 'aliasHeldByTarget', [
+        '7:c-other#Unrelated',
+        '5:c-own#Alias1',
+      ]);
     });
 
     it('flags a rename onto a target name that no conflict row exposes at all', () => {
@@ -233,9 +245,9 @@ describe('validateResolution', () => {
         ],
         targetNames: new Set(['Old', 'UntouchedName']),
       });
-      const d = decisions([['c-1', { kind: 'renameSource', alias: 'UntouchedName' }]]);
+      const d = decisions([['3:c-1#Old', { kind: 'renameSource', alias: 'UntouchedName' }]]);
 
-      expectViolation(validateResolution(p, d), 'aliasHeldByTarget', ['c-1']);
+      expectViolation(validateResolution(p, d), 'aliasHeldByTarget', ['3:c-1#Old']);
     });
   });
 
@@ -246,9 +258,9 @@ describe('validateResolution', () => {
           collisionRow(importRow('c-1', 'Old'), emoteListItem('t-1', 'Old'), ['Old']),
         ],
       });
-      const d = decisions([['c-1', { kind: 'renameSource', alias: 'has space' }]]);
+      const d = decisions([['3:c-1#Old', { kind: 'renameSource', alias: 'has space' }]]);
 
-      expectViolation(validateResolution(p, d), 'invalidTypedAlias', ['c-1']);
+      expectViolation(validateResolution(p, d), 'invalidTypedAlias', ['3:c-1#Old']);
     });
 
     it('flags a rename alias over 100 characters', () => {
@@ -257,9 +269,9 @@ describe('validateResolution', () => {
           collisionRow(importRow('c-1', 'Old'), emoteListItem('t-1', 'Old'), ['Old']),
         ],
       });
-      const d = decisions([['c-1', { kind: 'renameSource', alias: 'a'.repeat(101) }]]);
+      const d = decisions([['3:c-1#Old', { kind: 'renameSource', alias: 'a'.repeat(101) }]]);
 
-      expectViolation(validateResolution(p, d), 'invalidTypedAlias', ['c-1']);
+      expectViolation(validateResolution(p, d), 'invalidTypedAlias', ['3:c-1#Old']);
     });
 
     it('flags an empty rename alias', () => {
@@ -268,9 +280,9 @@ describe('validateResolution', () => {
           collisionRow(importRow('c-1', 'Old'), emoteListItem('t-1', 'Old'), ['Old']),
         ],
       });
-      const d = decisions([['c-1', { kind: 'renameSource', alias: '' }]]);
+      const d = decisions([['3:c-1#Old', { kind: 'renameSource', alias: '' }]]);
 
-      expectViolation(validateResolution(p, d), 'invalidTypedAlias', ['c-1']);
+      expectViolation(validateResolution(p, d), 'invalidTypedAlias', ['3:c-1#Old']);
     });
   });
 
@@ -287,11 +299,14 @@ describe('validateResolution', () => {
       ]);
       const p = preview({ nameCollisionRows: [rowOnAlias1, rowOnAlias2] });
       const d = decisions([
-        ['c-1', { kind: 'replaceTarget' }],
-        ['c-2', { kind: 'replaceTarget' }],
+        ['3:c-1#Alias1', { kind: 'replaceTarget' }],
+        ['3:c-2#Alias2', { kind: 'replaceTarget' }],
       ]);
 
-      expectViolation(validateResolution(p, d), 'duplicateReplaceTarget', ['c-1', 'c-2']);
+      expectViolation(validateResolution(p, d), 'duplicateReplaceTarget', [
+        '3:c-1#Alias1',
+        '3:c-2#Alias2',
+      ]);
     });
   });
 
@@ -309,13 +324,13 @@ describe('validateResolution', () => {
         aliasMismatchRows: [mismatchRow(importRow('shared-id', 'NewAlias'), ['OldAlias'])],
       });
       const d = decisions([
-        ['c-1', { kind: 'replaceTarget' }],
-        ['shared-id', { kind: 'adoptSourceName' }],
+        ['3:c-1#OldAlias', { kind: 'replaceTarget' }],
+        ['9:shared-id#NewAlias', { kind: 'adoptSourceName' }],
       ]);
 
       expectViolation(validateResolution(p, d), 'targetTouchedByReplaceAndAdopt', [
-        'c-1',
-        'shared-id',
+        '3:c-1#OldAlias',
+        '9:shared-id#NewAlias',
       ]);
     });
   });
@@ -325,9 +340,9 @@ describe('validateResolution', () => {
       const p = preview({
         aliasMismatchRows: [mismatchRow(importRow('m-1', 'NewAlias'), ['OldAlias'], 'nameTaken')],
       });
-      const d = decisions([['m-1', { kind: 'adoptSourceName' }]]);
+      const d = decisions([['3:m-1#NewAlias', { kind: 'adoptSourceName' }]]);
 
-      expectViolation(validateResolution(p, d), 'adoptBlocked', ['m-1']);
+      expectViolation(validateResolution(p, d), 'adoptBlocked', ['3:m-1#NewAlias']);
     });
   });
 
@@ -342,7 +357,7 @@ describe('validateResolution', () => {
           collisionRow(importRow('c-1', 'Name1'), emoteListItem('t-1', 'Name1'), ['Name1']),
         ],
       });
-      const d = decisions([['c-1', { kind: 'replaceTarget' }]]);
+      const d = decisions([['3:c-1#Name1', { kind: 'replaceTarget' }]]);
 
       expect(validateResolution(p, d)).toEqual({ ok: true });
       expect(buildTransferPlan(p, d).rows).toEqual([
@@ -370,8 +385,8 @@ describe('validateResolution', () => {
         aliasMismatchRows: [mismatchRow(importRow('m-1', 'NewAlias'), ['OldAlias'])],
       });
       const d = decisions([
-        ['c-1', { kind: 'adoptSourceName' }], // wrong kind for a name-collision row
-        ['m-1', { kind: 'replaceTarget' }], // wrong kind for an alias-mismatch row
+        ['3:c-1#Name1', { kind: 'adoptSourceName' }], // wrong kind for a name-collision row
+        ['3:m-1#NewAlias', { kind: 'replaceTarget' }], // wrong kind for an alias-mismatch row
         ['unknown-id', { kind: 'replaceTarget' }], // no row carries this key at all
       ]);
 
@@ -416,8 +431,8 @@ describe('buildTransferPlan', () => {
       ],
     });
     const d = decisions([
-      ['c-1', { kind: 'renameSource', alias: 'Shared' }],
-      ['c-2', { kind: 'renameSource', alias: 'Shared' }],
+      ['3:c-1#Old1', { kind: 'renameSource', alias: 'Shared' }],
+      ['3:c-2#Old2', { kind: 'renameSource', alias: 'Shared' }],
     ]);
 
     expect(() => buildTransferPlan(p, d)).toThrow();
@@ -436,9 +451,9 @@ describe('buildTransferPlan', () => {
         aliasMismatchRows: [mismatchRow(importRow('m-1', 'NewAlias'), ['OldAlias'])],
       });
       const d = decisions([
-        ['c-rename', { kind: 'renameSource', alias: 'Renamed' }],
-        ['c-replace', { kind: 'replaceTarget' }],
-        ['m-1', { kind: 'adoptSourceName' }],
+        ['8:c-rename#Old', { kind: 'renameSource', alias: 'Renamed' }],
+        ['9:c-replace#Name2', { kind: 'replaceTarget' }],
+        ['3:m-1#NewAlias', { kind: 'adoptSourceName' }],
       ]);
 
       const plan = buildTransferPlan(p, d);
@@ -460,7 +475,7 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
         collisionRow(importRow('c-1', 'Old'), emoteListItem('t-1', 'Old'), ['Old']),
       ],
     });
-    const d = decisions([['c-1', { kind: 'renameSource', alias: 'Renamed' }]]);
+    const d = decisions([['3:c-1#Old', { kind: 'renameSource', alias: 'Renamed' }]]);
 
     const summary = summarizeTransferPlan(buildTransferPlan(p, d));
 
@@ -472,7 +487,7 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
     const p = preview({
       nameCollisionRows: [collisionRow(importRow('c-1', 'Name1'), target, ['Name1'])],
     });
-    const d = decisions([['c-1', { kind: 'replaceTarget' }]]);
+    const d = decisions([['3:c-1#Name1', { kind: 'replaceTarget' }]]);
 
     const summary = summarizeTransferPlan(buildTransferPlan(p, d));
 
@@ -483,7 +498,7 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
     const p = preview({
       aliasMismatchRows: [mismatchRow(importRow('m-1', 'NewAlias'), ['OldAlias'])],
     });
-    const d = decisions([['m-1', { kind: 'adoptSourceName' }]]);
+    const d = decisions([['3:m-1#NewAlias', { kind: 'adoptSourceName' }]]);
 
     const summary = summarizeTransferPlan(buildTransferPlan(p, d));
 
@@ -500,8 +515,8 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
       ],
     });
     const d = decisions([
-      ['c-rename', { kind: 'renameSource', alias: 'Renamed' }],
-      ['c-replace', { kind: 'replaceTarget' }],
+      ['8:c-rename#Old', { kind: 'renameSource', alias: 'Renamed' }],
+      ['9:c-replace#Alias1', { kind: 'replaceTarget' }],
     ]);
 
     const summary = summarizeTransferPlan(buildTransferPlan(p, d));
@@ -519,7 +534,7 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
     const p = preview({
       nameCollisionRows: [collisionRow(importRow('c-1', 'Name1'), target, ['Name1'], true)],
     });
-    const d = decisions([['c-1', { kind: 'replaceTarget' }]]);
+    const d = decisions([['3:c-1#Name1', { kind: 'replaceTarget' }]]);
 
     const summary = summarizeTransferPlan(buildTransferPlan(p, d));
 
@@ -529,6 +544,136 @@ describe('summarizeTransferPlan + projectSlots — the slot projection for a nam
       capacity: 100,
       overflow: false,
     });
+  });
+});
+
+describe("validateResolution — rule 7, a replace never removes another replace row's source (#444)", () => {
+  // Source X:A, X:B, Y:C against a target X:C, Z:A, W:B: X:A is the mismatch row, X:B collides
+  // with W, Y:C collides with X.
+  const xb = importRow('X', 'B');
+  const yc = importRow('Y', 'C');
+  const collisions = [
+    collisionRow(xb, emoteListItem('W', 'B'), ['B']),
+    collisionRow(yc, emoteListItem('X', 'C'), ['C']),
+  ];
+
+  it('flags a replace whose REMOVE would take the entry another replace row adds', () => {
+    const p = preview({
+      nameCollisionRows: collisions,
+      aliasMismatchRows: [mismatchRow(importRow('X', 'A'), ['C'])],
+      targetNames: new Set(['C', 'A', 'B']),
+    });
+    const d = decisions([
+      ['1:X#B', { kind: 'replaceTarget' }],
+      ['1:Y#C', { kind: 'replaceTarget' }],
+    ]);
+
+    expectViolation(validateResolution(p, d), 'replaceRemovesPlannedSource', ['1:Y#C', '1:X#B']);
+    expect(() => buildTransferPlan(p, d)).toThrow(/replaceRemovesPlannedSource/);
+  });
+
+  it('flags both directions of a cycle', () => {
+    const wc = importRow('W', 'C');
+    const p = preview({
+      nameCollisionRows: [
+        collisionRow(xb, emoteListItem('W', 'B'), ['B']),
+        collisionRow(wc, emoteListItem('X', 'C'), ['C']),
+      ],
+      targetNames: new Set(['B', 'C']),
+    });
+    const d = decisions([
+      ['1:X#B', { kind: 'replaceTarget' }],
+      ['1:W#C', { kind: 'replaceTarget' }],
+    ]);
+
+    const result = validateResolution(p, d);
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+    const rule7 = result.violations.filter((v) => v.rule === 'replaceRemovesPlannedSource');
+    expect(rule7.map((v) => v.rowKeys)).toEqual([
+      ['1:X#B', '1:W#C'],
+      ['1:W#C', '1:X#B'],
+    ]);
+  });
+
+  it('lets one of the two rows go once the other is skipped or renamed', () => {
+    const p = preview({ nameCollisionRows: collisions, targetNames: new Set(['B', 'C']) });
+
+    expect(
+      validateResolution(
+        p,
+        decisions([
+          ['1:X#B', { kind: 'renameSource', alias: 'B2' }],
+          ['1:Y#C', { kind: 'replaceTarget' }],
+        ]),
+      ),
+    ).toEqual({ ok: true });
+    expect(validateResolution(p, decisions([['1:Y#C', { kind: 'replaceTarget' }]]))).toEqual({
+      ok: true,
+    });
+  });
+
+  it('allows adding X next to replacing X: adds run after every REMOVE', () => {
+    const xd = importRow('X', 'D');
+    const p = preview({
+      toAdd: [xd],
+      nameCollisionRows: [collisionRow(yc, emoteListItem('X', 'C'), ['C'])],
+      targetNames: new Set(['C']),
+    });
+
+    const plan = buildTransferPlan(p, decisions([['1:Y#C', { kind: 'replaceTarget' }]]));
+
+    expect(plan.rows.map((row) => [row.action, row.source.sevenTvEmoteId])).toEqual([
+      ['replace', 'Y'],
+      ['add', 'X'],
+    ]);
+  });
+});
+
+describe('buildTransferPlan — two aliases of one source id (#444)', () => {
+  it('keys each alias of one id on its own, so each row takes its own decision', () => {
+    const ome = importRow('e1', 'ome44');
+    const hob = importRow('e1', 'hob44');
+    const p = preview({
+      nameCollisionRows: [
+        collisionRow(ome, emoteListItem('t-1', 'ome44'), ['ome44']),
+        collisionRow(hob, emoteListItem('t-2', 'hob44'), ['hob44']),
+      ],
+      targetNames: new Set(['ome44', 'hob44']),
+    });
+
+    const plan = buildTransferPlan(
+      p,
+      decisions([
+        ['2:e1#ome44', { kind: 'renameSource', alias: 'ome44b' }],
+        ['2:e1#hob44', { kind: 'replaceTarget' }],
+      ]),
+    );
+
+    expect(plan.rows.map((row) => [row.action, row.source.name, row.alias])).toEqual([
+      ['replace', 'hob44', 'hob44'],
+      ['renameSource', 'ome44', 'ome44b'],
+    ]);
+  });
+
+  it('adopts the mismatch row and adds the further alias next to it', () => {
+    const ome = importRow('e1', 'ome44');
+    const hob = importRow('e1', 'hob44');
+    const p = preview({
+      toAdd: [hob],
+      aliasMismatchRows: [mismatchRow(ome, ['Other'])],
+      targetNames: new Set(['Other']),
+    });
+
+    const plan = buildTransferPlan(p, decisions([['2:e1#ome44', { kind: 'adoptSourceName' }]]));
+
+    expect(plan.rows.map((row) => [row.action, row.alias])).toEqual([
+      ['adoptSourceName', 'ome44'],
+      ['add', 'hob44'],
+    ]);
+    expect(summarizeTransferPlan(plan)).toMatchObject({ addCount: 1, adoptCount: 1 });
   });
 });
 
@@ -547,8 +692,8 @@ describe('withoutViolations', () => {
 
   it('returns decisions that validate as they are', () => {
     const valid = decisions([
-      ['src-1', { kind: 'renameSource', alias: 'KappaNew' }],
-      ['src-3', { kind: 'adoptSourceName' }],
+      ['5:src-1#Kappa', { kind: 'renameSource', alias: 'KappaNew' }],
+      ['5:src-3#Sadge', { kind: 'adoptSourceName' }],
     ]);
 
     expect(withoutViolations(resolvable, valid)).toBe(valid);
@@ -556,14 +701,14 @@ describe('withoutViolations', () => {
 
   it('drops every decision a violation names and keeps the rest', () => {
     const clashing = decisions([
-      ['src-1', { kind: 'renameSource', alias: 'Same' }],
-      ['src-2', { kind: 'renameSource', alias: 'Same' }],
-      ['src-3', { kind: 'adoptSourceName' }],
+      ['5:src-1#Kappa', { kind: 'renameSource', alias: 'Same' }],
+      ['5:src-2#Pog', { kind: 'renameSource', alias: 'Same' }],
+      ['5:src-3#Sadge', { kind: 'adoptSourceName' }],
     ]);
 
     const kept = withoutViolations(resolvable, clashing);
 
-    expect([...kept]).toEqual([['src-3', { kind: 'adoptSourceName' }]]);
+    expect([...kept]).toEqual([['5:src-3#Sadge', { kind: 'adoptSourceName' }]]);
     expect(validateResolution(resolvable, kept)).toEqual({ ok: true });
   });
 });

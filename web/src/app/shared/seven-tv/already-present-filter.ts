@@ -1,6 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { Observable, catchError, map, of } from 'rxjs';
 
+import { importRowKey } from '../../core/seven-tv/import-source';
 import { SevenTvEntryGeneration } from '../../core/seven-tv/seven-tv-entry-target';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { ReplaceOrAdoptTransferRow, TransferPlan } from '../../core/seven-tv/transfer-plan';
@@ -28,6 +29,16 @@ export interface ImportAlreadyPresentFilterResult<T> extends AlreadyPresentFilte
   entries: SevenTvSetEntries | null;
 }
 
+/** One row `filterAlreadyPresent` checks. Without `entryAlias` it is checked on the id axis: any
+ *  named entry of the id in the set makes it present. With `entryAlias` it is checked per entry
+ *  (#444): only an entry of the id under exactly that alias makes it present, so a further alias of
+ *  an id the set already holds still goes through. The import flow sets it for a source id the
+ *  source carries under several aliases — see `recheckTransferPlan`. */
+export interface AlreadyPresentFilterRow {
+  sevenTvEmoteId: string;
+  entryAlias?: string;
+}
+
 /**
  * The one place that guards against #149's duplicate-push hole (docs/plans/Plan-149-7TV-v4-Schreibflaeche.md,
  * §0.6/T5): 7TV's `addEmote` mutation does not dedupe by emote id — it only rejects a colliding
@@ -41,7 +52,8 @@ export interface ImportAlreadyPresentFilterResult<T> extends AlreadyPresentFilte
  * `filterAlreadyPresentForRestore` below, right in the confirm-dialog-closed handler, immediately
  * before handing rows to `startRestore`/`startImport` — so the fetch it does is always fresh, never
  * a dialog-open-time snapshot reused later. This one compares the 7TV id alone (spec #200, 7.2: the
- * import and the delete path stay on the id axis). For import
+ * import and the delete path stay on the id axis), except for a row that names an `entryAlias`
+ * (#444: a further alias of a multi-alias source id is an entry of its own). For import
  * this sits *on top of* `buildImportPreview`'s own dialog-time filter (`import-preview.ts`), not
  * instead of it: that filter can already be stale by the time the user actually confirms (another
  * editor, another tab, a long-open dialog), so this re-checks right before anything is sent.
@@ -76,14 +88,14 @@ export interface ImportAlreadyPresentFilterResult<T> extends AlreadyPresentFilte
  * duplicate this filter misses is unrepairable (see the class doc above) — an unnoticed unguarded
  * run is worse than a visible one, so the failure has to reach the caller, not just the log.
  */
-export function filterAlreadyPresent<T extends { sevenTvEmoteId: string }>(
+export function filterAlreadyPresent<T extends AlreadyPresentFilterRow>(
   httpClient: HttpClient,
   targetSetId: string,
   rows: readonly T[],
 ): Observable<ImportAlreadyPresentFilterResult<T>> {
   return loadSevenTvSetEntries(httpClient, targetSetId).pipe(
     map((entries) => {
-      const filtered = rows.filter((row) => !entries.aliasesById.has(row.sevenTvEmoteId));
+      const filtered = rows.filter((row) => !isAlreadyPresent(entries, row));
       return { rows: filtered, skipped: rows.length - filtered.length, available: true, entries };
     }),
     catchError(() => of({ rows: [...rows], skipped: 0, available: false, entries: null })),
@@ -530,8 +542,8 @@ export type ReplaceTargetDriftReason =
 
 /** One replace row whose target drifted, with what the set holds for that target id right now. */
 export interface ReplaceTargetDrift {
-  /** The row's key: its source `sevenTvEmoteId`, the same key the decisions map and the run queue
-   *  use. */
+  /** The row's key: the `importRowKey` of its source row (7TV id and name, #444), the same key the
+   *  decisions map and the run queue use. */
   key: string;
   reason: ReplaceTargetDriftReason;
   /** The target id's live entries, taken from the same read — in the shape of
@@ -582,7 +594,7 @@ export function verifyReplaceTargets(
     const targetId = row.target.sevenTvEmoteId;
     const liveAliases = entries.aliasesById.get(targetId);
     drifted.push({
-      key: row.source.sevenTvEmoteId,
+      key: importRowKey(row.source),
       reason,
       live:
         liveAliases === undefined
@@ -643,4 +655,12 @@ function replaceTargetDriftReason(
     return 'aliaslessEntryChanged';
   }
   return null;
+}
+
+/** `filterAlreadyPresent`'s per-row test — see {@link AlreadyPresentFilterRow}. */
+function isAlreadyPresent(entries: SevenTvSetEntries, row: AlreadyPresentFilterRow): boolean {
+  if (row.entryAlias === undefined) {
+    return entries.aliasesById.has(row.sevenTvEmoteId);
+  }
+  return entries.aliasesById.get(row.sevenTvEmoteId)?.includes(row.entryAlias) ?? false;
 }

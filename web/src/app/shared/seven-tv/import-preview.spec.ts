@@ -585,6 +585,110 @@ describe('buildImportPreview', () => {
   });
 });
 
+describe('buildImportPreview — one source id under several aliases (#444)', () => {
+  const row = (id: string, name: string): ImportRow => ({
+    sevenTvEmoteId: id,
+    name,
+    imageUrl: null,
+  });
+  const target = (id: string, name: string): EmoteListItem => ({
+    sevenTvEmoteId: id,
+    name,
+    imageUrl: TARGET_IMAGE_URL,
+  });
+
+  it('adds every alias of an id the target does not hold, each as its own row', () => {
+    const result = buildImportPreview(source([row('e1', 'ome44'), row('e1', 'hob44')]), []);
+
+    expect(result.toAdd).toEqual([row('e1', 'ome44'), row('e1', 'hob44')]);
+    expect(result.aliasMismatchRows).toEqual([]);
+  });
+
+  it('counts the alias the target already holds as present and adds the other one', () => {
+    const result = buildImportPreview(source([row('e1', 'ome44'), row('e1', 'hob44')]), [
+      target('e1', 'hob44'),
+    ]);
+
+    expect(result.alreadyPresent).toBe(1);
+    expect(result.toAdd).toEqual([row('e1', 'ome44')]);
+    expect(result.aliasMismatchRows).toEqual([]);
+  });
+
+  it('counts both aliases as present when the target holds both', () => {
+    const result = buildImportPreview(source([row('e1', 'ome44'), row('e1', 'hob44')]), [
+      target('e1', 'ome44'),
+      target('e1', 'hob44'),
+    ]);
+
+    expect(result.alreadyPresent).toBe(2);
+    expect(result.toAdd).toEqual([]);
+  });
+
+  it('offers the first alias as a rename when the target holds the id under another name, and adds the rest', () => {
+    const result = buildImportPreview(source([row('e1', 'ome44'), row('e1', 'hob44')]), [
+      target('e1', 'Other'),
+    ]);
+
+    expect(result.aliasMismatchRows).toEqual([
+      { row: row('e1', 'ome44'), targetAliases: ['Other'], adoptBlocked: null },
+    ]);
+    expect(result.aliasMismatches).toEqual([{ sourceName: 'ome44', targetAlias: 'Other' }]);
+    expect(result.toAdd).toEqual([row('e1', 'hob44')]);
+    expect(result.alreadyPresent).toBe(0);
+  });
+
+  it('keeps a single alias against a different target alias a mismatch, exactly as before', () => {
+    const result = buildImportPreview(source([row('e1', 'ome44')]), [target('e1', 'Other')]);
+
+    expect(result.aliasMismatchRows.map((each) => each.row)).toEqual([row('e1', 'ome44')]);
+    expect(result.toAdd).toEqual([]);
+  });
+
+  it('sends a further alias whose name another emote holds through the name-collision split', () => {
+    const result = buildImportPreview(source([row('e1', 'ome44'), row('e1', 'hob44')]), [
+      target('e1', 'ome44'),
+      target('e2', 'hob44'),
+    ]);
+
+    expect(result.alreadyPresent).toBe(1);
+    expect(result.toAdd).toEqual([]);
+    expect(result.nameCollisionRowCount).toBe(1);
+    expect(result.nameCollisionRows.map((each) => [each.row, each.target.sevenTvEmoteId])).toEqual([
+      [row('e1', 'hob44'), 'e2'],
+    ]);
+  });
+
+  it('reads a tracked target listing one emote under two aliases as two entries: a source alias it holds is present, not a mismatch', () => {
+    // The Postgres-backed `trackedActive` list carries one row per slot since #444.
+    const tracked = [target('e1', 'A'), target('e1', 'B'), target('e2', 'C')];
+
+    const result = buildImportPreview(source([row('e1', 'B'), row('e3', 'A')]), tracked);
+
+    expect(result.alreadyPresent).toBe(1);
+    expect(result.aliasMismatchRows).toEqual([]);
+    expect(result.toAdd).toEqual([]);
+    // The second alias is a name the target holds, so another emote under it collides.
+    expect(result.nameCollisionRows.map((each) => [each.row, each.targetAliases])).toEqual([
+      [row('e3', 'A'), ['A', 'B']],
+    ]);
+  });
+
+  it('keeps every row in exactly one group', () => {
+    const rows = [row('e1', 'a'), row('e1', 'b'), row('e1', 'c'), row('e2', 'x')];
+    const result = buildImportPreview(source(rows), [target('e1', 'z'), target('e3', 'c')]);
+
+    expect(
+      result.toAdd.length +
+        result.alreadyPresent +
+        result.nameCollisionRowCount +
+        result.aliasMismatches.length,
+    ).toBe(rows.length);
+    expect(result.aliasMismatchRows.map((each) => each.row)).toEqual([row('e1', 'a')]);
+    expect(result.toAdd).toEqual([row('e1', 'b'), row('e2', 'x')]);
+    expect(result.nameCollisionRows.map((each) => each.row)).toEqual([row('e1', 'c')]);
+  });
+});
+
 describe('overlayPreview', () => {
   const built = buildImportPreview(
     source([
@@ -604,7 +708,7 @@ describe('overlayPreview', () => {
   it('points an overlaid collision row at its live counterpart and leaves every other row alone', () => {
     const overlaid = overlayPreview(
       built,
-      new Map([['src-1', { aliases: ['Kappa', 'KappaToo'], hasAliaslessEntry: true }]]),
+      new Map([['5:src-1#Kappa', { aliases: ['Kappa', 'KappaToo'], hasAliaslessEntry: true }]]),
     );
 
     expect(overlaid.nameCollisionRows[0]).toEqual({
@@ -618,7 +722,7 @@ describe('overlayPreview', () => {
   });
 
   it('leaves a gone target with no alias and no aliasless entry', () => {
-    const overlaid = overlayPreview(built, new Map([['src-2', null]]));
+    const overlaid = overlayPreview(built, new Map([['5:src-2#Pog', null]]));
 
     expect(overlaid.nameCollisionRows[1]).toMatchObject({
       targetAliases: [],

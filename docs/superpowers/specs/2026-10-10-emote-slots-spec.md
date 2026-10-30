@@ -104,7 +104,7 @@ Betreiber-Entscheidungen (D0–D4, D7) und Orchestrator-Vorgaben (O1–O6) sind 
 | **D22** | **`mergeSetView`** joint datierte Zeilen über `(sevenTvEmoteId, addedAt)`, provisorische über den Namen; alles Unerklärte ist `'left'` bzw. Klasse 3 je Eintrag. `slotCount`/`aliases` entfallen; neu `siblingNames`. *Kind 7, Betreiber 2026-10-12:* Klasse 3 je Eintrag nur in einer Antwort mit Slot-Zeilen, `slotCount`/`aliases` bleiben mit enger Bedeutung, der Zeitpunkt-Join bindet namensunabhängig nur Einzel ↔ Einzel mit Beleg — Regeln in §9.1. | Keine 1:1-Vermutung mehr nötig: die Live-Liste trägt `addedAt`. |
 | **D23** | **Geschwister-Hinweis:** Scrim-Glyph `+{{n}}`, `title`, Inspector, Sidecar, `aria-label` mit `usageStats.setView.alsoAs`; ersetzt `×{{slotCount}}`/`setView.slots`. | UI-Designsprache §2.5 (wie `≈`). |
 | **D24** | `/daily` je Slot (`slotId`) oder je Emote (`emoteId`, Summe); `/series` eine Entry je Slot (+`slotId`, `name`, additiv); `/totals` eine Zeile je Slot (+`slotId`, `firstSeenAtFromRest`, `siblingNames`). | Abschnitt 5. |
-| **D25** | Export eine Zeile je Slot; `seven_tv_emote_id` nicht mehr eindeutig; `import-source-parser`/`toImportRow` dedupe nach ID (erste Zeile). Voting-Export unverändert. | Import-Queue bleibt je ID (K2). |
+| **D25** | Export eine Zeile je Slot; `seven_tv_emote_id` nicht mehr eindeutig; ~~`import-source-parser`/`toImportRow` dedupe nach ID (erste Zeile)~~ — *seit #444 (2026-10-29) aufgehoben: der Kopierfluss dedupliziert je Eintrag `(ID, Alias)`, jeder Alias wird kopiert, die Import-Queue läuft je Eintrag; `sync-imported` bleibt Audit je ID (DECISIONS 2026-10-29).* Voting-Export unverändert. | ~~Import-Queue bleibt je ID (K2).~~ Seit #444 je Eintrag. |
 | **D26** | Ballot `EmoteNames` (Null-Session live; Set-Session aus `VoteSessionEmotes.NamesAtCreation text[]`), `EmoteName` = erstes Element; Vote-Erstellung dedupliziert IDs. | D3. |
 | **D27** | `OccupiedSlots` = aktive Slots aktiver Emotes im aktiven Set; `pendingRemovalSlots` = markierte Live-Zeilen. | Belegung stimmt mit `emote_count` überein. |
 | **D28** (R3/R4/R5) | **Backfill-Slots:** Für aktive-Set-Vorschauen bindet Enqueue vor Snapshot-Erstellung in derselben Reihenfolge wie REST: alle exakten (EmoteId, AddedAt)-Treffer, danach D7. Es verwendet dieselbe Transaktion mit SELECT FOR UPDATE auf der owning Emote-Zeile wie REST und Restore-Berichte. Nichtaktive Vorschauen behalten die genaue Datumsbindung und das bisherige Archivverhalten. Der Snapshot trägt SlotId und CreatedSlot. | Damit kann ein Preview-Eintrag keinen neuen Slot vor dem D7-Treffer erzeugen. AK 22, 27, 53. |
@@ -398,7 +398,7 @@ mit Flag aus ist jede Zeile im Emote-Modus, und auch mit Flag an bleibt er für 
 | „Neu"/„Im Set seit"/Trend | lesen das Slot-Datum (keine Codeänderung außer DTO); `hideObserved` je Slot |
 | Drilldown | `slotId`; Cache `channel|scope|slot:<id>|…` bzw. `emote:<id>`; 7TV-Link je Emote |
 | Suche | unverändert — findet je Slot |
-| Export (D25) | eine Zeile je Slot; Parser/`toImportRow` dedupe nach ID |
+| Export (D25) | eine Zeile je Slot; Parser/`toImportRow` dedupe ~~nach ID~~ je Eintrag `(ID, Alias)` (#444, DECISIONS 2026-10-29) |
 | Vote-Detail | `emoteNames.join(' / ')` (`vote-session-detail-page.html:113`, `:273`, `:471`); Suche über `emoteNames`; Löschen je ID ohne `alias`/`Entries` (D3) |
 
 ### 9.3 Massenlöschung je Slot (O3, D21, D32, D33)
@@ -671,7 +671,7 @@ Begründung: **1** additiv, kein Schreiber (R1 Befund 8). **2** pflegt Slot-Reco
 ## 19. Out of Scope
 
 - Namenshistorie des Chat-Archivs (Backfill-Spec Out of Scope bleibt).
-- Slot-genaue Import-Berichte (`sync-imported` bleibt Audit je ID; Import-Queue je ID, K2); Leaderboard; Fremd-Set-Vorschau.
+- Slot-genaue Import-Berichte (`sync-imported` bleibt Audit je ID; ~~Import-Queue je ID, K2~~ — die Import-Queue läuft seit #444 je Eintrag, der Bericht bleibt je ID); Leaderboard; Fremd-Set-Vorschau.
 - Tags je Slot; Votes je Slot (D3).
 - Rückbau von `SeedUnsettled`/`AddedAtFromRest`.
 - Harness (D20).

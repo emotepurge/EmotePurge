@@ -1,5 +1,5 @@
 import { EmoteListItem } from '../../core/emotes/emote-list-item.model';
-import { ImportRow, ImportSource } from '../../core/seven-tv/import-source';
+import { ImportRow, ImportSource, importRowKey } from '../../core/seven-tv/import-source';
 
 /** One `toAdd` row 7TV would refuse to add under its source alias because the target already has
  *  *some other* alias under the same `sevenTvEmoteId` — spec 8.6: "N sind vorhanden, heißen dort
@@ -109,14 +109,14 @@ export interface ImportPreview {
    * exactly like an untracked one:
    *
    * - **The Postgres-backed path — `trackedActive` only** (`EmoteAdminService.listEmotes` → our own
-   *   `Emote` table, `import-target-loader.ts:135-136`). Postgres enforces `HasIndex(e => new {
-   *   e.ChannelId, e.SevenTvEmoteId }).IsUnique()` (`AppDbContext.cs:31`), so this path can never
-   *   yield two rows sharing one `sevenTvEmoteId` for a channel — **a #74 duplicate is structurally
-   *   impossible here**, whatever 7TV itself holds: `targetAliases` has at most one entry and
-   *   `targetHasAliaslessEntry` is `false` on this path, unless that one entry's own name is falsy.
-   *   That remaining, *aliasless* half is not protected by the index (a single row can still carry a
-   *   falsy name) and was not traced with the same confidence as the live path below: `Emote.Name`
-   *   is filled by the worker's REST-compat sync (`SevenTvSyncService.cs:595`, `emote.Name =
+   *   tables). Since #444 it lists one row per active slot (`EmoteListQueryService`, the same entry
+   *   view as the occupied-slot count), so an emote under two aliases arrives as two rows sharing
+   *   one `sevenTvEmoteId`, exactly as the live path below delivers it: `targetAliases` can have two
+   *   entries here too. Before #444 it listed one row per `Emote` (unique per channel and id), which
+   *   hid every alias but one. An emote without an active slot yet is listed once under
+   *   `Emote.Name`; `targetHasAliaslessEntry` stays `false` on this path unless a name is falsy.
+   *   Whether a falsy name can occur here was not traced with the same confidence as the live
+   *   path below: `Emote.Name` (and a slot's name) is filled by the worker's REST-compat sync (`SevenTvSyncService.cs:595`, `emote.Name =
    *   live.Name`), a *different* 7TV endpoint (`SevenTvEmoteJsonDto.Name`, `SevenTvApiDtos.cs:173`,
    *   "the v4 compat layer") whose behavior for an aliasless set entry is not verified live —
    *   and `Emote.Name` is a `NOT NULL` Postgres column (`Emote.cs`), so if that endpoint ever
@@ -157,7 +157,9 @@ export interface ImportPreview {
   /** Rows whose `sevenTvEmoteId` already exists in the target, but under a different alias —
    *  pulled out of `toAdd` for the same reason as `nameCollisions` (spec 8.6): 7TV already has
    *  this emote in the set, an ADD under a second alias is not what "already present" should mean
-   *  here, and this preview never silently renames anything. */
+   *  here, and this preview never silently renames anything. At most one row per id (#444): a
+   *  source that carries the id under further names adds those as entries of their own — see
+   *  {@link buildImportPreview}. */
   aliasMismatches: AliasMismatch[];
   /** One {@link AliasMismatchRow} per entry in `aliasMismatches` (same length, same order) — the
    *  resolvable counterpart to it, adding `targetAliases` and `adoptBlocked` for a resolution step. */
@@ -205,6 +207,18 @@ export type TargetOverlay = { aliases: string[]; hasAliaslessEntry: boolean } | 
  * object ids, not display text); every name comparison is exact (`===`, case-sensitive) string
  * equality, matching how 7TV itself treats emote names/aliases.
  *
+ * **A source id under several aliases (#444).** A source row is one set entry, `(id, name)`, so
+ * one id can arrive under several names, and 7TV's `addEmote` takes the same id again under a new
+ * alias. Per row, against the target's entries of that id:
+ * - the target holds the id under this exact name → `alreadyPresent`;
+ * - otherwise, if the target holds the id under none of the source's names for it, the **first**
+ *   such row of the id (source order) is the one `aliasMismatchRow` — exactly the single-alias
+ *   behaviour, so a lone alias is still offered as a rename and never silently doubled;
+ * - every other row of that id (a further name next to a mismatch row, or any name next to an exact
+ *   match) is an additional entry and goes through the ordinary name-collision / `toAdd` split.
+ * Adopting the mismatch row renames the one existing entry and the further names are added next to
+ * it, so the copy ends up entry for entry like the source.
+ *
  * `targetEmotes` is grouped by id first (not deduplicated) precisely because the target set can
  * itself carry a #74 duplicate — two rows sharing one `sevenTvEmoteId` under different aliases,
  * 7TV's own set-merge defect. A source row matching that id is `alreadyPresent` the moment *any*
@@ -246,6 +260,16 @@ export function buildImportPreview(
     }
   }
 
+  // Which source ids already have an exact entry in the target, and which ids have used up their
+  // one alias-mismatch row (#444) — see this function's doc for the multi-alias rule.
+  const idsMatchedInTarget = new Set<string>();
+  for (const row of source.rows) {
+    if (targetById.get(row.sevenTvEmoteId)?.some((target) => target.name === row.name)) {
+      idsMatchedInTarget.add(row.sevenTvEmoteId);
+    }
+  }
+  const idsWithMismatchRow = new Set<string>();
+
   const toAdd: ImportRow[] = [];
   const nameCollisions = new Set<string>();
   let nameCollisionRowCount = 0;
@@ -260,15 +284,23 @@ export function buildImportPreview(
     if (targetGroup) {
       if (targetGroup.some((target) => target.name === row.name)) {
         alreadyPresent++;
-      } else {
+        continue;
+      }
+      if (
+        !idsMatchedInTarget.has(row.sevenTvEmoteId) &&
+        !idsWithMismatchRow.has(row.sevenTvEmoteId)
+      ) {
+        idsWithMismatchRow.add(row.sevenTvEmoteId);
         aliasMismatches.push({ sourceName: row.name, targetAlias: targetGroup[0].name });
         aliasMismatchRows.push({
           row,
           targetAliases: namedAliasesOf(targetGroup),
           adoptBlocked: adoptBlockedFor(row.name, row.sevenTvEmoteId, targetGroup, targetByName),
         });
+        continue;
       }
-      continue;
+      // A further alias of an id the target already holds (#444): an additional entry, added
+      // like any new row — through the name-collision check below, never as a rename offer.
     }
     if (targetNames.has(row.name)) {
       // Deduplicated set for display, but every row still leaves the run — two different source
@@ -413,7 +445,7 @@ const SEVEN_TV_REJECTED_ALIAS_CHARS = new Set([
   '^',
 ]);
 
-/** `preview` with each name-collision row keyed in `overlays` (by its source id) pointing at the
+/** `preview` with each name-collision row keyed in `overlays` (by its `importRowKey`) pointing at the
  *  live counterpart of its target instead of the one the preview was built from — a gone target
  *  keeps no alias and no aliasless entry. Every other field is left as it is: the overlay only
  *  changes what a replace of that row would remove. */
@@ -427,7 +459,7 @@ export function overlayPreview(
   return {
     ...preview,
     nameCollisionRows: preview.nameCollisionRows.map((collision) => {
-      const key = collision.row.sevenTvEmoteId;
+      const key = importRowKey(collision.row);
       if (!overlays.has(key)) {
         return collision;
       }

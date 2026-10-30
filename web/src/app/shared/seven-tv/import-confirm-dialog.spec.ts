@@ -208,6 +208,8 @@ const DE_TRANSLATIONS = {
         duplicateReplaceTarget: 'Dasselbe Ziel wird mehrfach ersetzt: {{ rows }}.',
         targetTouchedByReplaceAndAdopt: 'Dasselbe Ziel wird ersetzt und umbenannt: {{ rows }}.',
         adoptBlocked: 'Namen übernehmen ist hier nicht möglich: {{ rows }}.',
+        replaceRemovesPlannedSource:
+          'Ein Ersetzen entfernt ein Emote, das eine andere Zeile gerade hinzufügt — eine der beiden überspringen oder umbenennen: {{ rows }}.',
       },
       back: 'Zurück',
       apply: 'Übernehmen',
@@ -1584,10 +1586,12 @@ describe('ImportConfirmDialog', () => {
       dialog.detect();
     }
 
-    function typeAlias(dialog: Harness, key: string, value: string): void {
-      const field = host(dialog).querySelector<HTMLInputElement>(`#resolve-alias-${key}`);
+    function typeAlias(dialog: Harness, sourceName: string, value: string): void {
+      const field = option(dialog, sourceName, 'renameSource')
+        .closest('[data-resolve-index]')
+        ?.querySelector<HTMLInputElement>('input[type="text"]');
       if (!field) {
-        throw new Error(`no rename field for ${key}`);
+        throw new Error(`no rename field for ${sourceName}`);
       }
       field.value = value;
       field.dispatchEvent(new Event('input'));
@@ -1907,7 +1911,7 @@ describe('ImportConfirmDialog', () => {
 
       await openStep(dialog, 'nameCollision');
       choose(dialog, 'Collides', 'renameSource');
-      typeAlias(dialog, 'src-a', 'CollidesNew');
+      typeAlias(dialog, 'Collides', 'CollidesNew');
       apply(dialog);
       expect(projected()).toBe('12');
 
@@ -1931,14 +1935,14 @@ describe('ImportConfirmDialog', () => {
       await openStep(dialog, 'nameCollision');
 
       choose(dialog, 'Collides', 'renameSource');
-      typeAlias(dialog, 'src-a', 'Collides neu');
+      typeAlias(dialog, 'Collides', 'Collides neu');
 
       const applyButton = dialog.button('Übernehmen');
       expect(applyButton.disabled).toBe(true);
       const reason = dialog.element(applyButton.getAttribute('aria-describedby') ?? '');
       expect(reason?.textContent).toContain('Name, den 7TV nicht annimmt: Collides.');
 
-      typeAlias(dialog, 'src-a', 'CollidesNeu');
+      typeAlias(dialog, 'Collides', 'CollidesNeu');
       expect(dialog.button('Übernehmen').disabled).toBe(false);
     });
 
@@ -1948,7 +1952,7 @@ describe('ImportConfirmDialog', () => {
 
       await openStep(dialog, 'nameCollision');
       choose(dialog, 'Collides', 'renameSource');
-      typeAlias(dialog, 'src-a', 'CollidesNew');
+      typeAlias(dialog, 'Collides', 'CollidesNew');
       apply(dialog);
       await openStep(dialog, 'aliasMismatch');
       choose(dialog, 'Pog', 'adoptSourceName');
@@ -2425,7 +2429,7 @@ describe('ImportConfirmDialog', () => {
 
       await openStep(dialog, 'nameCollision');
       choose(dialog, 'Dup', 'renameSource');
-      typeAlias(dialog, 'src-b', 'DupNew');
+      typeAlias(dialog, 'Dup', 'DupNew');
       apply(dialog);
       // The file on disk describes the old plan.
       expect(dialog.hasButton('Starten')).toBe(false);

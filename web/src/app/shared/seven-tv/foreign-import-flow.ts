@@ -37,7 +37,8 @@ export function startForeignChannelImportFlow(
  * `discardedRows` is `0` for the same reason it is for the tracked-channel grid: these rows came out
  * of our own endpoint already parsed into `ForeignEmoteRow`, so there is nothing left to reject.
  * `dedupeImportRows` still runs — the engine never deduplicates, and this is the one place that can
- * promise it for this source.
+ * promise it for this source. It folds exact repeats only: an emote the source set holds under two
+ * aliases is two rows and is copied under both (#444).
  */
 export function buildForeignImportSource(picked: ForeignChannelImportResult): ImportSource {
   const deduped = dedupeImportRows(picked.rows.map(toImportRow));

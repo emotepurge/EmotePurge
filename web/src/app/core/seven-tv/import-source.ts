@@ -131,14 +131,15 @@ function assertUnreachableOrigin(origin: never): never {
 }
 
 /**
- * The rows an import run is offered, already deduplicated by `sevenTvEmoteId` (see
- * `dedupeImportRows`). `duplicatesCollapsed` counts *valid* rows that were folded away by that
- * dedup; `discardedRows` counts rows the source rejected as invalid before dedup even ran — the
- * two never overlap. `discardedRows` is always `0` for both channel origins: `'channel'` rows come
- * out of the grid, which only ever holds rows that passed `EmoteListItem` validation server-side,
- * and `'seventv-channel'` rows come out of our own `/api/seventv/...` endpoint, which parses 7TV's
- * answer into `ForeignEmoteRow` before it ever reaches the browser. Only a parsed file can discard
- * rows, because only a file is written by something other than us.
+ * The rows an import run is offered, already deduplicated per set entry (see `dedupeImportRows`).
+ * `duplicatesCollapsed` counts *valid* rows that were folded away by that dedup — exact repeats of
+ * one `(sevenTvEmoteId, name)` pair; `discardedRows` counts rows the source rejected as invalid
+ * before dedup even ran — the two never overlap. `discardedRows` is always `0` for both channel
+ * origins: `'channel'` rows come out of the grid, which only ever holds rows that passed
+ * `EmoteListItem` validation server-side, and `'seventv-channel'` rows come out of our own
+ * `/api/seventv/...` endpoint, which parses 7TV's answer into `ForeignEmoteRow` before it ever
+ * reaches the browser. Only a parsed file can discard rows, because only a file is written by
+ * something other than us.
  */
 export interface ImportSource {
   origin: ImportOrigin;
@@ -148,9 +149,25 @@ export interface ImportSource {
 }
 
 /**
- * The one deduplication both origins go through — first occurrence of a `sevenTvEmoteId` wins,
- * order of the surviving rows follows their first occurrence. Ordinal comparison on the id (plain
- * string equality): these are 7TV object ids, not display text, so there is nothing to localize.
+ * The identity of one import row: its 7TV id **and** its name, the alias the ADD writes (#444).
+ * Since the set entry is the counting unit (#365), one emote can sit in a source set under two
+ * aliases, and 7TV's `addEmote` takes the same id again under a different alias — so the id alone
+ * no longer names a row. This key is what the dedupe, the conflict decisions, the drift overlays
+ * and the run queue match rows by. The id is prefixed with its length, so the key is injective
+ * whatever either half contains: a file's id is not validated (`import-source-parser.ts` takes any
+ * non-empty string), so neither half can be assumed free of `#`. Votes, tags and the audit report
+ * stay per id (spec D3) and never read this key.
+ */
+export function importRowKey(row: Pick<ImportRow, 'sevenTvEmoteId' | 'name'>): string {
+  return `${row.sevenTvEmoteId.length}:${row.sevenTvEmoteId}#${row.name}`;
+}
+
+/**
+ * The one deduplication every origin goes through — the first occurrence of a set entry
+ * (`importRowKey`: id and name) wins, and the surviving rows keep their order. Two rows of one id
+ * under different names are two entries and both stay (#444, reversing the slot spec's D25 for the
+ * copy flow); only an exact repeat of both halves is collapsed. Ordinal comparison (plain string
+ * equality): 7TV object ids and aliases are compared as 7TV compares them, case-sensitive.
  */
 export function dedupeImportRows(rows: readonly ImportRow[]): {
   rows: ImportRow[];
@@ -160,10 +177,11 @@ export function dedupeImportRows(rows: readonly ImportRow[]): {
   const deduped: ImportRow[] = [];
 
   for (const row of rows) {
-    if (seen.has(row.sevenTvEmoteId)) {
+    const key = importRowKey(row);
+    if (seen.has(key)) {
       continue;
     }
-    seen.add(row.sevenTvEmoteId);
+    seen.add(key);
     deduped.push(row);
   }
 

@@ -11,6 +11,7 @@ import {
   ImportRow,
   importOriginLeaderboardSort,
   importOriginSourceChannelName,
+  importRowKey,
 } from './import-source';
 import {
   MAX_AUTOMATIC_SYNC_RETRIES,
@@ -44,7 +45,7 @@ import {
   isChannelMismatch,
 } from './sync-report-outcome';
 import { ImportTagContext } from './tag-run-settlement';
-import { TransferPlan, TransferRow } from './transfer-plan';
+import { TransferPlan, TransferRow, TransferRowTarget } from './transfer-plan';
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startImport`
 // call that had something to report. Same 4000 ms convention as every other transient status in
@@ -208,7 +209,8 @@ export interface ImportRunInfo extends RunRecordBase {
    *  `startImport` from `target.tag`; `null` for every other import. */
   tag: ImportTagContext | null;
   origin: ImportOrigin;
-  /** The plan this run executes, one queue row per plan row, keyed by the source 7TV id. */
+  /** The plan this run executes, one queue row per plan row, keyed by the source row's
+   *  `importRowKey`. */
   plan: TransferPlan;
   /** See `ImportSettlement`. `result` is the engine's snapshot while `'pending'` — with every
    *  `failed` row already carrying its final reason (Plan-284 Festlegung 9), `unknown` rows as the
@@ -485,7 +487,7 @@ export class SevenTvImportService {
     });
   }
 
-  /** `plan` is expected to come from `buildTransferPlan` — deduplicated per source id, validated —
+  /** `plan` is expected to come from `buildTransferPlan` — deduplicated per source entry, validated —
    *  and already re-checked against the live target set right before this call (`import-flow.ts`);
    *  this method does no filtering of its own. `target.channelName` is `null` for an untracked
    *  target (T2.6, spec 8.6) — see `ImportRunInfo.targetChannelName` for what that changes
@@ -545,11 +547,13 @@ export class SevenTvImportService {
     this.showDuplicateNotice(
       skippedDuplicates > 0 || !duplicateCheckAvailable || replaceSkippedDrift > 0,
     );
-    // The 7TV id is the only identity an imported row has — the emote does not exist in our
-    // database yet, so there is no internal `emoteId` to mirror the key from. Unique per run: the
-    // preview deduplicates by id, and no action makes two rows of one source id.
+    // The source row's `importRowKey` (7TV id and name) is the identity an imported row has — the
+    // emote does not exist in our database yet, so there is no internal `emoteId` to mirror the key
+    // from, and the id alone is not enough since one id can be two source rows under two aliases
+    // (#444). Unique per run: the source is deduplicated per entry, and no action makes two plan
+    // rows of one source row.
     const queueEmotes: RunQueueEmote[] = plan.rows.map((row) => ({
-      key: row.source.sevenTvEmoteId,
+      key: importRowKey(row.source),
       sevenTvEmoteId: row.source.sevenTvEmoteId,
       name: row.source.name,
     }));
@@ -676,7 +680,7 @@ export class SevenTvImportService {
       current === null ||
       current.syncReport === 'pending' ||
       current.settlement !== 'settled' ||
-      importedKeys(current).length === 0
+      importedIds(current).length === 0
     ) {
       return;
     }
@@ -695,7 +699,7 @@ export class SevenTvImportService {
       current.removalReport === 'pending' ||
       isChannelMismatch(current.removalReportReason) ||
       current.settlement !== 'settled' ||
-      removedTargetIds(current).length === 0
+      reportedRemovedIdsOf(current.result).length === 0
     ) {
       return;
     }
@@ -841,8 +845,8 @@ export class SevenTvImportService {
   ): void {
     const translate = (key: string): string => this.translocoService.translate(key);
     const result = settleRunResult(snapshot, context, entries, translate);
-    const reportsImported = importedKeysOf(result).length > 0;
-    const reportsRemoved = removedTargetIdsOf(result).length > 0;
+    const reportsImported = importedIdsOf(result).length > 0;
+    const reportsRemoved = reportedRemovedIdsOf(result).length > 0;
     const settled = this.lifecycle.update(runId, (run) => ({
       ...run,
       result,
@@ -864,10 +868,11 @@ export class SevenTvImportService {
 
   /** The reports and the resync of a settled run. `sync-imported` names every `done` row that
    *  added an emote (`add`, `renameSource`, `replace`); the removal report names the target of
-   *  every replace row whose REMOVE 7TV confirmed, whatever the row ended as; an adopt row reports
+   *  every replace row whose REMOVE 7TV confirmed, whatever the row ended as, except an id a `done`
+   *  add or rename row of the same run added back (`reportedRemovedIdsOf`); an adopt row reports
    *  nothing. */
   private sendFollowUp(run: ImportRunInfo): void {
-    const imported = importedKeys(run);
+    const imported = importedIds(run);
     const removed = removedTargetIds(run);
 
     // The report is the audit trail for exactly these ids, always sent — this call is never gated
@@ -900,7 +905,7 @@ export class SevenTvImportService {
         ? run.targetChannelName
         : null;
 
-    if (removed.length > 0) {
+    if (reportedRemovedIdsOf(run.result).length > 0) {
       // With a removal report, the resync waits for its answer (spec 6.5, F15): the backend resyncs
       // every channel that report touched and names it in `resyncTriggered` — a second resync of
       // ours would only run into the per-channel cooldown. A failed report names nothing, so the
@@ -941,7 +946,7 @@ export class SevenTvImportService {
     // names one, and every non-leaderboard origin sends `null` for the sort — both rules live in
     // the helpers, not here.
     const bodyBase = {
-      sevenTvEmoteIds: importedKeys(run),
+      sevenTvEmoteIds: importedIds(run),
       sourceChannelName: importOriginSourceChannelName(run.origin),
       sourceKind: run.origin.kind,
       leaderboardSort: importOriginLeaderboardSort(run.origin),
@@ -973,7 +978,7 @@ export class SevenTvImportService {
   /**
    * The placement report of a tag play-in (#201 T-C, spec 7.1/8): `POST …/tags/{tagId}/placements`
    * with the registered `operationId`, the run's own set (the one the operation was registered for)
-   * and owner, and every `done` row that added an emote — the same keys `sync-imported` names, empty
+   * and owner, and every `done` row that added an emote — the same ids `sync-imported` names, empty
    * after a cancel before the first row. Same transport rules as the other reports: one
    * `timeoutReportAttempt` per attempt, automatic retries for anything but a 401/403, and an end
    * state on every path.
@@ -1007,7 +1012,7 @@ export class SevenTvImportService {
         operationId: run.tag.operationId,
         emoteSetId: run.targetSetId,
         targetOwnerTwitchId: run.targetOwnerTwitchId,
-        sevenTvEmoteIds: importedKeys(run),
+        sevenTvEmoteIds: importedIds(run),
       })
       .pipe(
         timeoutReportAttempt(),
@@ -1045,7 +1050,7 @@ export class SevenTvImportService {
     if (run === null) {
       return;
     }
-    const sevenTvEmoteIds = [...new Set(removedTargetIds(run))];
+    const sevenTvEmoteIds = [...new Set(reportedRemovedIdsOf(run.result))];
 
     this.emoteSetService
       .reportDeletedInSet(run.targetSetId, {
@@ -1203,7 +1208,7 @@ function retryTransientSyncFailures<T>() {
 }
 
 function indexPlanRows(plan: TransferPlan | null): ReadonlyMap<string, TransferRow> {
-  return new Map((plan?.rows ?? []).map((row) => [row.source.sevenTvEmoteId, row]));
+  return new Map((plan?.rows ?? []).map((row) => [importRowKey(row.source), row]));
 }
 
 function transferRowOf(rowsByKey: ReadonlyMap<string, TransferRow>, key: string): TransferRow {
@@ -1251,19 +1256,23 @@ function addRequest(setId: string, emoteId: string, alias: string): RunRequest {
   return { mutation: ADD_EMOTE_MUTATION, variables: { setId, emoteId, alias } };
 }
 
-/** Source ids of every `done` row of `run` that added an emote — what `sync-imported` names. */
-function importedKeys(run: ImportRunInfo): string[] {
-  return importedKeysOf(run.result);
+/** Source ids of every `done` row of `run` that added an emote — what `sync-imported` and the tag
+ *  placement report name. Once per id: two aliases of one emote are two rows of the run, but the
+ *  audit and the placement stay per 7TV id (spec D3, #444). */
+function importedIds(run: ImportRunInfo): string[] {
+  return importedIdsOf(run.result);
 }
 
-function importedKeysOf(result: ImportRunResult | null): string[] {
-  return (result?.items ?? [])
+function importedIdsOf(result: ImportRunResult | null): string[] {
+  const ids = (result?.items ?? [])
     .filter((item) => item.status === 'done' && item.transfer.action !== 'adoptSourceName')
-    .map((item) => item.key);
+    .map((item) => item.transfer.source.sevenTvEmoteId);
+  return [...new Set(ids)];
 }
 
 /** Target ids of every replace row of `run` whose REMOVE 7TV confirmed, whatever the row ended as
- *  — what the removal report names. */
+ *  — what the removed count and the resync decision read; the removal report names
+ *  {@link reportedRemovedIdsOf}. */
 function removedTargetIds(run: ImportRunInfo): string[] {
   return removedTargetIdsOf(run.result);
 }
@@ -1274,6 +1283,28 @@ function removedTargetIdsOf(result: ImportRunResult | null): string[] {
       ? [item.transfer.target.sevenTvEmoteId]
       : [],
   );
+}
+
+/**
+ * The removed target ids the removal report names: `removedTargetIdsOf` minus every id a `done`
+ * add or rename row of the same run added back (#444 — a multi-alias source can hold the id a
+ * replace removed, under another alias). `sync-deleted` without entries archives the emote and every
+ * active slot of it, the one just added included, and records a leave that never happened; the
+ * resync is the bookkeeping for such an id instead. A re-add that ended `unknown` or `failed` does
+ * not count, so the id is still reported (fail-safe). `removedCount`, the dock and every file read
+ * `removedTargetIdsOf`/the rows, not this list, so they still show the REMOVE.
+ */
+function reportedRemovedIdsOf(result: ImportRunResult | null): string[] {
+  const addedBack = new Set(
+    (result?.items ?? [])
+      .filter(
+        (item) =>
+          item.status === 'done' &&
+          (item.transfer.action === 'add' || item.transfer.action === 'renameSource'),
+      )
+      .map((item) => item.transfer.source.sevenTvEmoteId),
+  );
+  return removedTargetIdsOf(result).filter((id) => !addedBack.has(id));
 }
 
 function outcomeCounts(result: ImportRunResult): {
@@ -1353,9 +1384,12 @@ function withFailureReason(
  *   (`failed` — with the gap reason for a replace, the generic unknown-outcome reason otherwise);
  *   the source id in the set under some other name cannot be told apart from a third party's
  *   entry and stays `unknown`;
- * - an unanswered REMOVE (a replace's first step): the target id still in the set means nothing
- *   happened (`failed` at step 0); gone means the REMOVE was applied and the ADD never sent —
- *   `failed` with the gap reason, and the REMOVE counts as confirmed (`completedSteps` 1);
+ * - an unanswered REMOVE (a replace's first step): the target still holding one of the entries the
+ *   row replaces (a confirmed alias, or its aliasless entry) means nothing happened (`failed` at
+ *   step 0); none of them left means the REMOVE was applied and the ADD never sent — `failed` with
+ *   the gap reason, and the REMOVE counts as confirmed (`completedSteps` 1). Compared per entry, not
+ *   per id (#444): a later row of the same run can have added the target's id again under another
+ *   alias, which says nothing about this REMOVE;
  * - an unanswered alias UPDATE: the target id under the source name means `done`, under its old
  *   alias `failed`; anything else cannot be told apart and stays `unknown`.
  * A third party who added the same source id under the plan alias meanwhile is indistinguishable
@@ -1389,7 +1423,7 @@ function settleUnknownRow(
       return settleAdd(1, unknownOutcome);
     case 'replace':
       if (item.failedStep === 0) {
-        if (entries.aliasesById.has(row.target.sevenTvEmoteId)) {
+        if (stillHoldsReplacedEntry(row.target, entries)) {
           return unknownOutcome();
         }
         return withReason(
@@ -1408,6 +1442,16 @@ function settleUnknownRow(
     default:
       return assertUnreachableTransferRow(row);
   }
+}
+
+/** Whether the set still holds one of the entries a replace row's REMOVE takes — a confirmed alias
+ *  of the target, or its aliasless entry when the row knew of one. */
+function stillHoldsReplacedEntry(target: TransferRowTarget, entries: SevenTvSetEntries): boolean {
+  const liveAliases = entries.aliasesById.get(target.sevenTvEmoteId) ?? [];
+  return (
+    target.aliases.some((alias) => liveAliases.includes(alias)) ||
+    (target.hasAliaslessEntry && entries.aliaslessIds.has(target.sevenTvEmoteId))
+  );
 }
 
 function asDone(item: ImportRunItem, completedSteps: number): ImportRunItem {
