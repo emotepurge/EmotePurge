@@ -699,7 +699,7 @@ export class SevenTvImportService {
       current.removalReport === 'pending' ||
       isChannelMismatch(current.removalReportReason) ||
       current.settlement !== 'settled' ||
-      removedTargetIds(current).length === 0
+      reportedRemovedIdsOf(current.result).length === 0
     ) {
       return;
     }
@@ -846,7 +846,7 @@ export class SevenTvImportService {
     const translate = (key: string): string => this.translocoService.translate(key);
     const result = settleRunResult(snapshot, context, entries, translate);
     const reportsImported = importedIdsOf(result).length > 0;
-    const reportsRemoved = removedTargetIdsOf(result).length > 0;
+    const reportsRemoved = reportedRemovedIdsOf(result).length > 0;
     const settled = this.lifecycle.update(runId, (run) => ({
       ...run,
       result,
@@ -868,7 +868,8 @@ export class SevenTvImportService {
 
   /** The reports and the resync of a settled run. `sync-imported` names every `done` row that
    *  added an emote (`add`, `renameSource`, `replace`); the removal report names the target of
-   *  every replace row whose REMOVE 7TV confirmed, whatever the row ended as; an adopt row reports
+   *  every replace row whose REMOVE 7TV confirmed, whatever the row ended as, except an id a `done`
+   *  add or rename row of the same run added back (`reportedRemovedIdsOf`); an adopt row reports
    *  nothing. */
   private sendFollowUp(run: ImportRunInfo): void {
     const imported = importedIds(run);
@@ -904,7 +905,7 @@ export class SevenTvImportService {
         ? run.targetChannelName
         : null;
 
-    if (removed.length > 0) {
+    if (reportedRemovedIdsOf(run.result).length > 0) {
       // With a removal report, the resync waits for its answer (spec 6.5, F15): the backend resyncs
       // every channel that report touched and names it in `resyncTriggered` — a second resync of
       // ours would only run into the per-channel cooldown. A failed report names nothing, so the
@@ -1049,7 +1050,7 @@ export class SevenTvImportService {
     if (run === null) {
       return;
     }
-    const sevenTvEmoteIds = [...new Set(removedTargetIds(run))];
+    const sevenTvEmoteIds = [...new Set(reportedRemovedIdsOf(run.result))];
 
     this.emoteSetService
       .reportDeletedInSet(run.targetSetId, {
@@ -1270,7 +1271,8 @@ function importedIdsOf(result: ImportRunResult | null): string[] {
 }
 
 /** Target ids of every replace row of `run` whose REMOVE 7TV confirmed, whatever the row ended as
- *  — what the removal report names. */
+ *  — what the removed count and the resync decision read; the removal report names
+ *  {@link reportedRemovedIdsOf}. */
 function removedTargetIds(run: ImportRunInfo): string[] {
   return removedTargetIdsOf(run.result);
 }
@@ -1281,6 +1283,28 @@ function removedTargetIdsOf(result: ImportRunResult | null): string[] {
       ? [item.transfer.target.sevenTvEmoteId]
       : [],
   );
+}
+
+/**
+ * The removed target ids the removal report names: `removedTargetIdsOf` minus every id a `done`
+ * add or rename row of the same run added back (#444 — a multi-alias source can hold the id a
+ * replace removed, under another alias). `sync-deleted` without entries archives the emote and every
+ * active slot of it, the one just added included, and records a leave that never happened; the
+ * resync is the bookkeeping for such an id instead. A re-add that ended `unknown` or `failed` does
+ * not count, so the id is still reported (fail-safe). `removedCount`, the dock and every file read
+ * `removedTargetIdsOf`/the rows, not this list, so they still show the REMOVE.
+ */
+function reportedRemovedIdsOf(result: ImportRunResult | null): string[] {
+  const addedBack = new Set(
+    (result?.items ?? [])
+      .filter(
+        (item) =>
+          item.status === 'done' &&
+          (item.transfer.action === 'add' || item.transfer.action === 'renameSource'),
+      )
+      .map((item) => item.transfer.source.sevenTvEmoteId),
+  );
+  return removedTargetIdsOf(result).filter((id) => !addedBack.has(id));
 }
 
 function outcomeCounts(result: ImportRunResult): {
