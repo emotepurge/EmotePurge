@@ -1052,11 +1052,18 @@ describe('AdminLogsPage', () => {
       rangeToUtc: null,
       truncated: false,
     });
+    const LIVE_NOW = '2026-10-14T12:00:05Z';
     const startFakeDate = (iso: string) => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date(iso));
     };
     const advanceDate = (ms: number) => vi.setSystemTime(Date.now() + ms);
+
+    // Every reconcile asks preflightReconcile whether [from_L, Date.now()) still fits the server's
+    // 8-day span. The fixtures' range starts at 2026-10-13T12:00:00Z, so on an unpinned clock the key
+    // query is (correctly) no longer sent once the calendar passes 2026-10-21T12:00Z. Pin "now" five
+    // seconds after the fixtures' newest instant; a later vi.useFakeTimers carries this time over.
+    beforeEach(() => startFakeDate(LIVE_NOW));
 
     /** One hint, the key query over the loaded interval, and the id fetch for what is missing. */
     async function reconcile(incoming: LogEntry[]): Promise<void> {
@@ -1159,7 +1166,6 @@ describe('AdminLogsPage', () => {
     });
 
     it('pauses after a failed reconcile: later hints send nothing until a manual load succeeds', async () => {
-      startFakeDate('2026-10-14T12:00:05Z');
       await openAndLoad('/admin/logs');
 
       emitLive('logs.appended');
@@ -1315,7 +1321,6 @@ describe('AdminLogsPage', () => {
     });
 
     it('announces every insert, also two in a row with the same count', async () => {
-      startFakeDate('2026-10-14T12:00:05Z');
       await openAndLoad('/admin/logs');
       const region = root().querySelector('[data-testid="log-live-announcement"]')!;
       const heard: string[] = [];
@@ -1342,7 +1347,6 @@ describe('AdminLogsPage', () => {
     });
 
     it('takes the focus off "n new" when the held rows go in on their own', async () => {
-      startFakeDate('2026-10-14T12:00:05Z');
       await openAndLoad('/admin/logs');
       const firstRowButton = () => root().querySelector<HTMLButtonElement>('[data-log-id] button')!;
       firstRowButton().click();
@@ -1581,7 +1585,6 @@ describe('AdminLogsPage', () => {
     });
 
     it('marks a live summary refresh as current, so "n of total" comes back after a failed one', async () => {
-      startFakeDate('2026-10-14T12:00:05Z');
       await open('/admin/logs');
       statusRequest().flush(healthyStatus());
       listRequest().flush(page(4, 4, null));
@@ -1598,7 +1601,6 @@ describe('AdminLogsPage', () => {
     });
 
     it('refreshes the summary at most once per 30 s, and only after something was inserted', async () => {
-      startFakeDate('2026-10-14T12:00:05Z');
       await openAndLoad('/admin/logs');
 
       advanceDate(6000);
