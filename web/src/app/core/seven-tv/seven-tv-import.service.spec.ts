@@ -646,7 +646,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 0, false);
 
       expect(service.duplicateCheckAvailable()).toBe(false);
-      // Fails open, same as always — an unverifiable check does not block the confirmed run.
+      // The service runs whatever plan it is handed — the refusal of add/renameSource rows on an
+      // unchecked read happens before this call, in `recheckTransferPlan` (#457).
       expect(service.isRunning()).toBe(true);
 
       runTwoRowsToDone();
@@ -674,6 +675,13 @@ describe('SevenTvImportService', () => {
 
       expect(service.targetUncheckedSkipped()).toBe(0);
       expect(service.duplicateNoticePending()).toBe(false);
+    });
+
+    it('opens the notice for rows refused on a failed read too', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [] }, 0, false, 0, 1);
+
+      expect(service.duplicateNoticePending()).toBe(true);
+      httpMock.expectNone(GQL_ENDPOINT);
     });
 
     it('opens the notice for a plan emptied by the refusal, and sends nothing', () => {
@@ -740,10 +748,12 @@ describe('SevenTvImportService', () => {
       expect(service.duplicateNoticePending()).toBe(true);
     });
 
-    it('becomes true when the call reports the check unavailable, even with nothing skipped', () => {
+    // #457: an unavailable check alone has nothing left to show — it only picks the wording of the
+    // refused-rows line — so it opens no empty notice window (an adopt-only plan on a failed read).
+    it('stays false when the call reports the check unavailable but nothing skipped or refused', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 0, false);
 
-      expect(service.duplicateNoticePending()).toBe(true);
+      expect(service.duplicateNoticePending()).toBe(false);
 
       runTwoRowsToDone();
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });

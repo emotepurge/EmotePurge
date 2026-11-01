@@ -442,9 +442,11 @@ export class SevenTvImportService {
 
   /** #149 P2 (independent review): whether the notice built from the signals above should
    *  currently be shown — true for `DUPLICATE_NOTICE_MS` after any `startImport` call that had
-   *  something to report (`skippedDuplicates > 0 || !duplicateCheckAvailable || replaceSkippedDrift
-   *  > 0 || targetUncheckedSkipped > 0`), including a refused (all-duplicates, all-drift, or
-   *  all-unchecked) call.
+   *  something to show (`skippedDuplicates > 0 || replaceSkippedDrift > 0 ||
+   *  targetUncheckedSkipped > 0`), including a refused (all-duplicates, all-drift, or
+   *  all-unchecked) call. `!duplicateCheckAvailable` alone no longer opens it (#457): it only picks
+   *  the wording of the `targetUncheckedSkipped` line, so with nothing refused (an adopt-only plan
+   *  on a failed read, say) there is no line to show and no empty window to open.
    *  `dockVisible()` (`usage-stats-page.ts`, via `action-dock.ts`) treats this
    *  exactly like an active run, which is what lets `import-progress-section` mount at all in that
    *  refused case — without it the section's own gate (`isRunning() || queue().length > 0`) would
@@ -556,10 +558,7 @@ export class SevenTvImportService {
     // this, such a run would leave no run/queue behind at all *and* no notice, which is exactly the
     // silence AK 16's "the protocol appears after every run" exists against.
     this.showDuplicateNotice(
-      skippedDuplicates > 0 ||
-        !duplicateCheckAvailable ||
-        replaceSkippedDrift > 0 ||
-        targetUncheckedSkipped > 0,
+      skippedDuplicates > 0 || replaceSkippedDrift > 0 || targetUncheckedSkipped > 0,
     );
     // The source row's `importRowKey` (7TV id and name) is the identity an imported row has — the
     // emote does not exist in our database yet, so there is no internal `emoteId` to mirror the key
