@@ -27,6 +27,7 @@ import { LIVE_EVENT_TYPES, LiveEvent, channelLiveUrl } from '../../core/live/liv
 import { liveEvents } from '../../core/live/live-reload';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
 import { ForeignEmoteSetResponse } from '../../core/seven-tv/foreign-emote-set.model';
+import { previewReadState } from '../../core/seven-tv/preview-read-state';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
 import { ImportCoverage } from '../../core/usage/import-coverage.model';
 import { ImportCoverageService } from '../../core/usage/import-coverage.service';
@@ -416,12 +417,25 @@ export class VoteSessionDetailPage {
     return value.emoteSetId === this.sessionSetEmoteSetId() ? value : null;
   });
 
+  /** The landed read's three-way verdict (#457), read fail-closed (`previewReadState`); `null`
+   *  while there is none. */
+  private readonly sessionSetMembersReadState = computed(() => {
+    const ready = this.sessionSetMembersReady();
+    return ready === null ? null : previewReadState(ready);
+  });
+
   /**
    * The reason deleting is locked while the session-set membership read is loading, failed (429,
-   * 503, …) or `truncated` (Opus review P2, page-level fail-closed — mirrors
-   * `usage-stats-page.ts`'s `sharedSetViewLockReasonKey`) — bound to the mass-delete panel's
+   * 503, …) or not complete (Opus review P2, page-level fail-closed — mirrors
+   * `usage-stats-page.ts`'s set-view lock) — bound to the mass-delete panel's
    * `deleteLockReasonKey` input below. `null` for a null-session (`'none'`) and for a clean, complete
-   * read (`'ready'` and not `truncated`).
+   * read (`'ready'` and `complete`).
+   *
+   * A gap read (#457: 7TV lists fewer entries than it counts, consistently) keeps deleting locked,
+   * unlike the usage page: every row here is an id row (the ballot holds 7TV ids, no set entry), and
+   * one `REMOVE` by id would also take an entry 7TV does not show — the pre-start read (#454) would
+   * refuse the batch anyway. It gets its own reason, a single key without parameters: the panel
+   * renders its host lock as a plain key, and reloading does not help with a stable gap.
    */
   protected readonly massDeleteLockReasonKey = computed<string | null>(() => {
     switch (this.sessionSetMembersState()) {
@@ -432,9 +446,14 @@ export class VoteSessionDetailPage {
       case 'unavailable':
         return 'massDelete.memberRead.lock.unavailable';
       case 'ready':
-        return this.sessionSetMembersReady()?.truncated
-          ? 'massDelete.memberRead.lock.truncated'
-          : null;
+        switch (this.sessionSetMembersReadState()) {
+          case 'complete':
+            return null;
+          case 'gap':
+            return 'massDelete.memberRead.lock.gap';
+          default:
+            return 'massDelete.memberRead.lock.truncated';
+        }
     }
   });
 
@@ -443,10 +462,14 @@ export class VoteSessionDetailPage {
    * session's own set. Empty for a null-session, and empty while the read has not landed cleanly
    * (`sessionSetMembersState() !== 'ready'`) — the page-level delete lock (`massDeleteLockReasonKey`)
    * is what actually blocks deleting during that window, not a preemptive drop here.
+   *
+   * Departure is concluded only from a `complete` read (#457): under a gap read a ballot id missing
+   * from the list may be one of the entries 7TV counts but does not list, and an inconsistent read
+   * may be wrong either way — neither may mark a card "No longer in the set".
    */
   protected readonly departedSevenTvEmoteIds = computed<ReadonlySet<string>>(() => {
     const ready = this.sessionSetMembersReady();
-    if (ready === null) {
+    if (ready === null || this.sessionSetMembersReadState() !== 'complete') {
       return new Set();
     }
     const liveIds = new Set(ready.emotes.map((entry) => entry.sevenTvEmoteId));

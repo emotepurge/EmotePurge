@@ -50,6 +50,7 @@ import { DockClearanceService } from '../../core/layout/dock-clearance.service';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
 import { listQueryState } from '../../core/routing/list-query-state';
 import { dedupeImportRows, ImportRow, ImportSource } from '../../core/seven-tv/import-source';
+import { previewOmittedCount, previewReadState } from '../../core/seven-tv/preview-read-state';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { EmoteSetListResponse } from '../../core/seven-tv/seven-tv-emote-set.model';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
@@ -224,6 +225,10 @@ interface CapturedImportScope {
   readonly emoteSetId: string;
   readonly selection: readonly ImportRow[];
   readonly visible: readonly ImportRow[];
+  /** How many entries 7TV counts but does not list in the source set (#457) — captured with the
+   *  rows, from the same member list. `null` unless that list was a gap read (the active view,
+   *  a complete list). */
+  readonly sourceOmittedCount: number | null;
 }
 
 /**
@@ -670,11 +675,15 @@ export class UsageStatsPage {
     // the shared set-view lock covers the actions in that state.
     const members = this.liveMembers();
     const merged = mergeSetView(rows, members?.emotes ?? null, false);
-    // Departure may only be inferred from a COMPLETE list: with a truncated one, a counted emote
-    // missing from the partial list may well still be in the set, so nothing is hidden (the shared
-    // lock keeps every action off in that state, and the caption says the list is incomplete).
-    // The partial list's extra live-only rows stay visible — they are real members.
-    return members?.truncated ? merged : merged.filter((row) => row.membership === 'live');
+    // Departure may only be inferred from a COMPLETE list: with any other one (a gap read, #457,
+    // or an inconsistent one), a counted emote missing from the list may well still be in the set,
+    // so nothing is hidden. Its `'left'` row stays visible and stays out of deleting, voting and
+    // copying (each of them takes `'live'` rows only); the caption says why. The partial list's
+    // extra live-only rows stay visible — they are real members.
+    const readState = this.liveMembersReadState();
+    return readState !== null && readState !== 'complete'
+      ? merged
+      : merged.filter((row) => row.membership === 'live');
   });
   protected readonly setStatus = signal<EmoteSetStatus | null>(null);
   /**
@@ -1127,6 +1136,13 @@ export class UsageStatsPage {
     this.liveMembersState() === 'ready' ? this.liveMembersResource.value() : null,
   );
 
+  /** The shown member list's three-way verdict (#457), read fail-closed (`previewReadState`), or
+   *  `null` while there is no list (the active view, or one not ready). */
+  private readonly liveMembersReadState = computed(() => {
+    const members = this.liveMembers();
+    return members ? previewReadState(members) : null;
+  });
+
   /** The sheet's loading state: the rows' own request, plus — in a non-active view — the member list
    *  they are unioned with (8.3: "die Vereinigung erst, wenn beide da sind"). A loud reload keeps the
    *  previous list on screen while it refetches, so it never flashes the skeleton. */
@@ -1153,7 +1169,7 @@ export class UsageStatsPage {
    * The channel's latest set-status read has failed and nothing has read it successfully since —
    * neither the initial request (load()) nor a later refresh (`channel.synced`, the flush probe).
    * Whether the set on screen is still the active one is then unknown, and every 7TV write that
-   * would have to know locks (`sharedSetViewLockReasonKey`). Only the lock follows from it: after a
+   * would have to know locks (`actionSetViewLockReasonKey`). Only the lock follows from it: after a
    * failed *refresh* the channel stays claimed and the last known active set stays the selected one
    * (see `refreshSetStatus`), so neither the dock nor a running delete's panel is taken away, and
    * nothing is reloaded. Read from its own flag (`setStatusUnavailableFor`) rather than derived
@@ -1167,58 +1183,50 @@ export class UsageStatsPage {
    * The "objective" reasons a non-active set view blocks a writer, independent of *which* writer:
    * the channel's set status could not be read (`setStatusUnavailable` — a reason for the active view
    * too), the view is switching (`viewSwitching`: the chosen set's rows are not on screen yet, or their
-   * request failed), the member list could not be read (503/429), the member list came back
-   * `truncated`, or the member list is still loading for the first time in a settled,
-   * non-switching view (same "not loaded yet" reason as switching — a list not yet confirmed
-   * readable must not be trusted either way). A *loud* reload (`channel.synced`, the refresh
-   * button) does not hit that last case: it keeps serving the previous list as `'ready'` while it
-   * refetches (spec's own "second review round" addendum in DECISIONS), so it locks only if that
-   * previous list was itself `truncated` — never merely for being mid-reload. `null` for a settled
-   * active view and for a non-active view whose member list loaded clean, both under a known status.
+   * request failed), the member list could not be read (503/429), the member list is not a complete
+   * read, or the member list is still loading for the first time in a settled, non-switching view
+   * (same "not loaded yet" reason as switching — a list not yet confirmed readable must not be
+   * trusted either way). A *loud* reload (`channel.synced`, the refresh button) does not hit that
+   * last case: it keeps serving the previous list as `'ready'` while it refetches (spec's own
+   * "second review round" addendum in DECISIONS), so it locks only if that previous list was itself
+   * incomplete — never merely for being mid-reload. `null` for a settled active view and for a
+   * non-active view whose member list loaded clean, both under a known status.
    *
-   * Shared by `deleteLockReasonKey` (spec #200, 8.3/8.8) and `voteLockReasonKey` (spec 9, K6) —
-   * identically since K6: a plain non-active view with a good member list locks neither. Deleting
-   * is set-aware since K5/T5.3 (T5.1/T5.2, the confirmation names the set); voting creates a
-   * set-session over the shown set since K6. An unreadable or truncated list locks both: the
-   * set-session create validates the ballot against the live member list server-side, so a list
-   * the page cannot read in full cannot back a trustworthy ballot either.
+   * Two readings of the same reasons since #457, differing only for a gap read (7TV lists fewer
+   * entries than it counts, consistently — every listed entry is present, nothing can be concluded
+   * about the rest):
+   *
+   * - **The action lock** (`actionSetViewLockReasonKey`) — deleting, voting and copying. `null`
+   *   under a gap: each of them acts on listed (`'live'`) cards only, and none concludes anything
+   *   about a hidden entry. Deleting is set-aware since K5/T5.3 and reads the set live before it
+   *   starts (`[readLiveAliasesFromSet]`, #457), so a gap at that moment blocks an id-only batch;
+   *   voting creates a set-session over the shown set since K6, whose ballot the server checks
+   *   against the listed entries; copying takes the listed rows and names the omitted count in its
+   *   confirmation. An inconsistent list still locks all three: a read that may be wrong cannot back
+   *   any of them.
+   * - **The strict lock** (`strictSetViewLockReasonKey`) — tagging. Also locked under a gap: the
+   *   server refuses a set it cannot read completely (`tag_source_set_incomplete`), its answer would
+   *   report a hidden entry as "not in the set", and its alias choice would shift (#457, DECISIONS).
    */
-  private readonly sharedSetViewLockReasonKey = computed<string | null>(() => {
-    // First, ahead of `viewSwitching`: without a readable status the page cannot tell which set is
-    // active, so neither "the view is switching" nor anything about the member list is the real
-    // reason. After a failed refresh the dock stays with the last known set, whether the URL
-    // follows the active set or names one, and this is what it says. (After a failed *initial*
-    // read with the URL following the active set, the selected set is `null` and the dock's
-    // marking half is not rendered at all.)
-    if (this.setStatusUnavailable()) {
-      return 'usageStats.setView.lock.statusUnavailable';
-    }
-    if (this.viewSwitching()) {
-      return 'usageStats.setView.lock.switching';
-    }
-    switch (this.liveMembersState()) {
-      case 'none':
-        return null;
-      case 'unavailable':
-        return 'usageStats.setView.lock.membersUnavailable';
-      case 'ready':
-        return this.liveMembers()?.truncated ? 'usageStats.setView.lock.truncated' : null;
-      case 'loading':
-        return 'usageStats.setView.lock.switching';
-      default:
-        return null;
-    }
-  });
+  private readonly actionSetViewLockReasonKey = computed<string | null>(() =>
+    this.setViewLockReasonKey(true),
+  );
+
+  /** See `actionSetViewLockReasonKey`: the same reasons, and a gap read locks too. Only ever
+   *  compared against `null` — tagging shows no reason text. */
+  private readonly strictSetViewLockReasonKey = computed<string | null>(() =>
+    this.setViewLockReasonKey(false),
+  );
 
   /**
-   * The shared set-view lock's reason as the *copy* wording (`usageStats.setView.importLock.*`),
+   * The action lock's reason (`actionSetViewLockReasonKey`) as the *copy* wording (`usageStats.setView.importLock.*`),
    * or `null` when import is not locked by it. The delete/vote texts name only those two actions,
    * so the header's transfer button and the dock shortcut get their own sentence for the same
    * four reasons. Shown next to the header button because on a loaded active-set view the dock —
    * the only other place the reason appears — is not mounted without a selection.
    */
   protected readonly importLockReasonKey = computed<string | null>(() => {
-    const key = this.sharedSetViewLockReasonKey();
+    const key = this.actionSetViewLockReasonKey();
     return key === null
       ? null
       : key.replace('usageStats.setView.lock.', 'usageStats.setView.importLock.');
@@ -1227,13 +1235,13 @@ export class UsageStatsPage {
   /**
    * Why deleting is locked in the view on screen, as a translation key, or `null` when it is not
    * (spec 8.3, 8.8): the view is switching, or the member list could not be read / came back
-   * truncated / is still loading — `sharedSetViewLockReasonKey` above. A plain non-active view with
+   * incomplete / is still loading — `actionSetViewLockReasonKey` above. A plain non-active view with
    * a good member list is no longer locked for deleting since K5/T5.3: the run is set-aware
    * (T5.1/T5.2) and the confirmation names the set (spec 8.8), so there is nothing left this lock
    * protected against.
    */
   protected readonly deleteLockReasonKey = computed<string | null>(() =>
-    this.sharedSetViewLockReasonKey(),
+    this.actionSetViewLockReasonKey(),
   );
 
   /**
@@ -1303,9 +1311,21 @@ export class UsageStatsPage {
 
     const state = this.liveMembersState();
     const members = this.liveMembers();
+    const readState = this.liveMembersReadState();
     if (state === 'unavailable') {
       sentences.push({ key: 'usageStats.setView.membersUnavailable' });
-    } else if (members?.truncated) {
+    } else if (members && readState === 'gap') {
+      // #457: replaces the truncated sentence for a gap read — it names what is missing and the
+      // rule the actions follow, rather than calling the whole list incomplete.
+      const omitted = previewOmittedCount(members);
+      sentences.push({
+        key: pluralKey(omitted, 'usageStats.setView.gap'),
+        params: {
+          count: this.formatCount(omitted),
+          total: this.formatCount(members.totalCount),
+        },
+      });
+    } else if (members && readState !== null && readState !== 'complete') {
       sentences.push({
         key: 'usageStats.setView.truncated',
         params: { total: this.formatCount(members.totalCount) },
@@ -1764,7 +1784,8 @@ export class UsageStatsPage {
    * manager (E9), a scope that still describes the channel and set on screen, a view of the
    * active set, or of another of the channel's sets whose member list is complete (#338: the
    * server snapshots a non-active set from its own membership-proven read, so it needs the list
-   * to be ready and untruncated: `sharedSetViewLockReasonKey() === null`) and something marked. `shownSetId() !== null` because a channel without an active
+   * to be ready and complete: `strictSetViewLockReasonKey() === null` — a gap read keeps tagging
+   * locked, #457) and something marked. `shownSetId() !== null` because a channel without an active
    * set has `null === null` there, and gets no dock button (spec 8). No `startLocked` — nothing here
    * writes to 7TV.
    */
@@ -1775,7 +1796,7 @@ export class UsageStatsPage {
       this.canManage() &&
       this.importScopeCurrent() &&
       shown !== null &&
-      (shown === this.activeEmoteSetId() || this.sharedSetViewLockReasonKey() === null) &&
+      (shown === this.activeEmoteSetId() || this.strictSetViewLockReasonKey() === null) &&
       this.selection.selectedItems().length > 0
     );
   });
@@ -2487,18 +2508,18 @@ export class UsageStatsPage {
         .length,
   );
 
-  /** Voting is locked exactly when deleting is (`sharedSetViewLockReasonKey`): mid-switch (spec
+  /** Voting is locked exactly when deleting is (`actionSetViewLockReasonKey`): mid-switch (spec
    *  §36: the selected set is not yet the one shown), or while the shown non-active set's member
-   *  list is loading, unreadable or truncated. A settled non-active view is otherwise a legitimate
+   *  list is loading, unreadable or inconsistent — not under a gap read (#457). A settled non-active view is otherwise a legitimate
    *  place to vote from since K6 (spec 9): it creates a set-session over the *shown* set rather
    *  than the null-session the active view creates. The dialog re-checks this at submit time. */
   protected readonly voteLocked = computed(() => this.voteLockReasonKey() !== null);
 
   /** The reason behind `voteLocked`, for the vote dialog, which re-checks it at submit time (the
-   *  dialog outlives the moment its button was enabled): `sharedSetViewLockReasonKey`, the same
+   *  dialog outlives the moment its button was enabled): `actionSetViewLockReasonKey`, the same
    *  reason — and therefore the same paragraph — the dock shows next to the delete button. */
   protected readonly voteLockReasonKey = computed<string | null>(() =>
-    this.sharedSetViewLockReasonKey(),
+    this.actionSetViewLockReasonKey(),
   );
 
   /**
@@ -2598,7 +2619,7 @@ export class UsageStatsPage {
       (this.importableVisible().length === 0 && this.importableSelection().length === 0) ||
       this.arbiter.startLocked() ||
       !this.importScopeCurrent() ||
-      this.sharedSetViewLockReasonKey() !== null,
+      this.actionSetViewLockReasonKey() !== null,
   );
 
   /** Whether the sheet is actually showing the rows `atlasOrder()` describes — the same condition
@@ -2789,7 +2810,7 @@ export class UsageStatsPage {
       selectionCount: this.importShortcutSelectionCount(),
       importScopeCurrent: this.importScopeCurrent(),
       hasActiveRun: this.arbiter.startLocked(),
-      setViewLocked: this.sharedSetViewLockReasonKey() !== null,
+      setViewLocked: this.actionSetViewLockReasonKey() !== null,
     }),
   );
 
@@ -3519,7 +3540,7 @@ export class UsageStatsPage {
     // An id row frees one slot per entry, not one (spec 7.2, AK 72) — a #74 duplicate took two
     // with its one `REMOVE`. In the active view a cell's own `slotCount` is always 1 (one name per
     // id, E20), so the run's row is asked first: the panel read the set's live entries before the
-    // run (`readLiveAliasesFromActiveSet`) and recorded every alias the `REMOVE` took. Summed over
+    // run (`readLiveAliasesFromSet`) and recorded every alias the `REMOVE` took. Summed over
     // the rows on screen before they are dropped.
     //
     // Per 7TV id, not per card (plan 377, 2.6, A8): an id row that met two slot cards of its id —
@@ -3861,7 +3882,7 @@ export class UsageStatsPage {
       emoteSetId === null ||
       !this.importScopeCurrent() ||
       this.arbiter.startLocked() ||
-      this.sharedSetViewLockReasonKey() !== null
+      this.actionSetViewLockReasonKey() !== null
     ) {
       // The header button is gated on all three, so this only guards against a click that
       // outraces a channel switch or the arbiter's lock (`startLocked`: a run running or settling,
@@ -3872,11 +3893,15 @@ export class UsageStatsPage {
       return;
     }
 
+    const members = this.liveMembers();
     const captured: CapturedImportScope = {
       channelName: this.channelName(),
       emoteSetId,
       selection: this.importableSelection(),
       visible: this.importableVisible(),
+      // From the member list the rows above were built from, in the same synchronous read (#457).
+      sourceOmittedCount:
+        members && this.liveMembersReadState() === 'gap' ? previewOmittedCount(members) : null,
     };
     if (
       (forcedScope === 'selection' && captured.selection.length === 0) ||
@@ -3951,6 +3976,42 @@ export class UsageStatsPage {
   }
 
   /**
+   * The set-view lock's reason (see `actionSetViewLockReasonKey`), read once per lock: with
+   * `gapUnlocks`, a gap read of the member list (#457) locks nothing; without, it locks like every
+   * other incomplete read.
+   */
+  private setViewLockReasonKey(gapUnlocks: boolean): string | null {
+    // First, ahead of `viewSwitching`: without a readable status the page cannot tell which set is
+    // active, so neither "the view is switching" nor anything about the member list is the real
+    // reason. After a failed refresh the dock stays with the last known set, whether the URL
+    // follows the active set or names one, and this is what it says. (After a failed *initial*
+    // read with the URL following the active set, the selected set is `null` and the dock's
+    // marking half is not rendered at all.)
+    if (this.setStatusUnavailable()) {
+      return 'usageStats.setView.lock.statusUnavailable';
+    }
+    if (this.viewSwitching()) {
+      return 'usageStats.setView.lock.switching';
+    }
+    switch (this.liveMembersState()) {
+      case 'none':
+        return null;
+      case 'unavailable':
+        return 'usageStats.setView.lock.membersUnavailable';
+      case 'ready': {
+        const readState = this.liveMembersReadState();
+        return readState === 'complete' || (gapUnlocks && readState === 'gap')
+          ? null
+          : 'usageStats.setView.lock.truncated';
+      }
+      case 'loading':
+        return 'usageStats.setView.lock.switching';
+      default:
+        return null;
+    }
+  }
+
+  /**
    * Moves DOM focus onto a cell that the virtual scroller may not have rendered yet.
    *
    * The straightforward `querySelector().focus()` covers every move inside the mounted range, which
@@ -3997,6 +4058,11 @@ export class UsageStatsPage {
       // The channel grid only ever supplies rows that already passed server-side EmoteListItem
       // validation — nothing here can be invalid the way a parsed file's rows can be (R6).
       discardedRows: 0,
+      // A gap source (#457): the entries 7TV does not list are not among the rows and are never
+      // copied; the confirmation says so. Unset otherwise, like every other origin.
+      ...(captured.sourceOmittedCount !== null
+        ? { sourceOmittedCount: captured.sourceOmittedCount }
+        : {}),
     };
 
     const deps: ImportFlowDeps = {

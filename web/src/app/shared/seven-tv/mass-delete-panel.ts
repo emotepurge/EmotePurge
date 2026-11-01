@@ -43,12 +43,13 @@ export interface DeletableEmote {
   /** Every alias the emote sits under in the set — two for a #74 duplicate cell, which one
    *  `REMOVE` takes whole. Recorded in the protocol so a restore can re-add each. Omitted means
    *  `[name]`. A host that cannot know every alias (the active set's view keeps one name per id)
-   *  sets `readLiveAliasesFromActiveSet` instead, and the panel reads them from 7TV itself before
-   *  the run starts. The vote-session page's rows are frozen at session-creation time
-   *  (`VoteSessionEmote.NameAtCreation`) and so can never know a live alias either — it sets
-   *  `readLiveAliasesFromSet` instead, the same live read against the panel's own (possibly
-   *  non-active) `setId()` rather than only the active one (#227, fixing the #200 K6 known
-   *  limitation this comment used to describe as open). */
+   *  sets `readLiveAliasesFromActiveSet` or `readLiveAliasesFromSet` instead, and the panel reads
+   *  them from 7TV itself before the run starts. The vote-session page's rows are frozen at
+   *  session-creation time (`VoteSessionEmote.NameAtCreation`) and so can never know a live alias
+   *  either — it sets `readLiveAliasesFromSet`, the same live read against the panel's own
+   *  (possibly non-active) `setId()` rather than only the active one (#227, fixing the #200 K6
+   *  known limitation this comment used to describe as open). The usage page sets it too since
+   *  #457. */
   aliases?: readonly string[];
   /**
    * The names the delete confirmation lists for this entry — omitted means `[name]` (plan 377, 2.6,
@@ -226,9 +227,10 @@ export class MassDeletePanel {
    * (#454, `delete-flow.ts`): it blocks a batch of id rows only, and a batch with entry rows runs,
    * deciding per row.
    *
-   * Opt-in, `false` by default: a non-active set's rows already carry every alias from the live
-   * member list the view is built from, so no second read happens there; and the vote-session page
-   * reads its own set instead, through `readLiveAliasesFromSet` below — never both.
+   * Opt-in, `false` by default. No host page binds it any more: since #457 the usage page reads
+   * its own set through `readLiveAliasesFromSet` below in every view, like the vote-session page —
+   * a non-active view's member list may be a gap read or arbitrarily old, so it no longer skips the
+   * read (superseding spec #200 §37 / K5 round (k)). Kept for its own contract and specs.
    */
   readonly readLiveAliasesFromActiveSet = input<boolean>(false);
 
@@ -245,10 +247,10 @@ export class MassDeletePanel {
    * blocks the run rather than silently deleting under the frozen name (spec 8.3's "a list that
    * only knows half must not delete") — the exact defect #227 exists to close.
    *
-   * Opt-in, `false` by default, and mutually exclusive with `readLiveAliasesFromActiveSet` in
-   * practice (only one of the two host pages ever sets either) — nothing here enforces that, since
-   * setting both would simply mean the same read fires from the same `liveAliasRead` check
-   * either way.
+   * Opt-in, `false` by default. Both host pages bind it unconditionally — the vote-session page
+   * since #227, the usage page since #457 — and neither binds `readLiveAliasesFromActiveSet`;
+   * nothing here enforces that, since setting both would simply mean the same read fires from the
+   * same `liveAliasRead` check either way.
    */
   readonly readLiveAliasesFromSet = input<boolean>(false);
 

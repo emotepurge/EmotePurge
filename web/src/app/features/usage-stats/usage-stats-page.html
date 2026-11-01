@@ -1275,6 +1275,13 @@
             {{ retryHintKey() | transloco: { count: dockRetryCount() } }}
           </p>
         }
+        <!-- `readLiveAliasesFromSet` is bound unconditionally (#457, superseding spec #200 §37 /
+             K5 round (k)): every confirmed delete reads the shown set live before it starts, in the
+             active view (the same read the active-set mode made there) and in a non-active one,
+             whose member list may be a gap read or arbitrarily old. A gap at that moment blocks an
+             id-only batch and skips id rows (#454); a complete read runs #227's missing-row check.
+             Not derived from the view: a confirmation opened on a non-active set that becomes the
+             active one before the click would otherwise lose its read. -->
         <app-mass-delete-panel
           #massDeletePanel
           [setId]="setId"
@@ -1283,7 +1290,7 @@
           [channelName]="channelName()"
           [selectedEmotes]="selectedForDelete()"
           [deleteLockReasonKey]="deleteLockReasonKey()"
-          [readLiveAliasesFromActiveSet]="true"
+          [readLiveAliasesFromSet]="true"
           [leadingActionsPresent]="true"
           (deleted)="onDeleted($event)"
           (reloadRequested)="onReloadRequested()"
@@ -1340,8 +1347,9 @@
                accessible name (the count in the label), and needs no extra reason text. It points at
                the delete button's own `deleteLockReasonId` (`#massDeletePanel`, public for exactly
                this) rather than a second paragraph: since K6 `voteLockReasonKey()` and
-               `deleteLockReasonKey()` are the same `sharedSetViewLockReasonKey` (switching, or a
-               loading/unreadable/truncated member list), so whenever `voteLocked()` is `true` the
+               `deleteLockReasonKey()` are the same `actionSetViewLockReasonKey` (switching, or a
+               loading/unreadable/inconsistent member list; a gap read locks neither, #457), so
+               whenever `voteLocked()` is `true` the
                delete button's reason on screen is the identical text — nothing to duplicate,
                nothing that can drift out of sync. -->
           <ng-container ngProjectAs="[selection-actions]">

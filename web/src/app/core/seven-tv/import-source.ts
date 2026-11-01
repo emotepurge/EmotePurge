@@ -146,6 +146,14 @@ export interface ImportSource {
   rows: ImportRow[];
   duplicatesCollapsed: number;
   discardedRows: number;
+  /**
+   * How many entries of the source set 7TV counts but does not list (a gap read, #457) — entries
+   * the copy cannot see and therefore never copies. Set only by the usage page's channel copy, and
+   * only when the source preview was a gap; captured with the rows before the picker opens. Every
+   * other origin leaves it unset, so no `ImportOrigin` switch depends on it. The confirmation names
+   * it (`import.confirm.sourceOmitted`); the run and its protocol never see these entries.
+   */
+  sourceOmittedCount?: number;
 }
 
 /**

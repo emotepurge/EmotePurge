@@ -104,6 +104,11 @@ const DE_TRANSLATIONS = {
         one: '{{ count }} Name enthält Zeichen, die 7TV nicht anlegen kann:',
         other: '{{ count }} Namen enthalten Zeichen, die 7TV nicht anlegen kann:',
       },
+      sourceOmitted: {
+        one: '7TV listet {{ count }} Eintrag des Quellsets nicht auf; er wird nicht übertragen.',
+        other:
+          '7TV listet {{ count }} Einträge des Quellsets nicht auf; sie werden nicht übertragen.',
+      },
       discardedRows: {
         one: '{{ count }} ungültige Zeile in der Quelle verworfen.',
         other: '{{ count }} ungültige Zeilen in der Quelle verworfen.',
@@ -1304,6 +1309,51 @@ describe('ImportConfirmDialog', () => {
       ]);
       // No loading hint once the target has answered.
       expect(dialog.text()).not.toContain('Zieldaten werden geladen…');
+    });
+
+    /*
+     * #457, AK 12.
+     * protects: the copy confirmation names the entries of a gap source that 7TV does not list,
+     *   as the first source note — before discarded rows and collapsed duplicates (the documented
+     *   order, docs/UI-Designsprache.md §7.2) — and says nothing when the source has none.
+     * fails_when: the line is missing, stands after another source note, or shows without a count.
+     * no_claim: layout; that only the usage page sets the count (its own spec, AK 11).
+     */
+    it('puts the source-omitted line first among the source notes', () => {
+      const dialog = render({
+        source: channelSource([row('new-1', 'Kappa')], {
+          sourceOmittedCount: 2,
+          discardedRows: 1,
+          duplicatesCollapsed: 3,
+        }),
+      });
+
+      const contract = [
+        '7TV listet 2 Einträge des Quellsets nicht auf; sie werden nicht übertragen.',
+        '1 ungültige Zeile in der Quelle verworfen.',
+        '3 doppelte Zeilen in der Quelle zusammengefasst.',
+        'Das Hinzufügen läuft danach automatisch nacheinander.',
+      ];
+      expect(inRenderedOrder(dialog.text(), contract)).toEqual(contract);
+    });
+
+    it('picks the singular source-omitted line for one entry', () => {
+      const dialog = render({
+        source: channelSource([row('new-1', 'Kappa')], { sourceOmittedCount: 1 }),
+      });
+
+      expect(dialog.text()).toContain(
+        '7TV listet 1 Eintrag des Quellsets nicht auf; er wird nicht übertragen.',
+      );
+    });
+
+    it('shows no source-omitted line for a source without one', () => {
+      const dialog = render({
+        source: channelSource([row('new-1', 'Kappa')], { duplicatesCollapsed: 1 }),
+      });
+
+      expect(dialog.text()).not.toContain('des Quellsets nicht auf');
+      expect(dialog.text()).toContain('1 doppelte Zeile in der Quelle zusammengefasst.');
     });
 
     it('puts the nothing-to-add banner after the source findings and before the closing lines', () => {

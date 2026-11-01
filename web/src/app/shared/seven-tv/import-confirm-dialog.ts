@@ -177,9 +177,10 @@ const WIDE_PANEL_CLASS = 'app-dialog-panel-wide';
  * to "could not check", exactly as the delete dialog does.
  *
  * Colour follows §7: only the finding that makes *this* run unusual gets a banner. The row order
- * below is a contract (§7), not a layout preference — in particular `discardedRows` stands *before*
- * `duplicatesCollapsed`, because a discarded row is data actually lost while a collapsed duplicate
- * is only folded, and the heavier finding reads first.
+ * below is a contract (§7), not a layout preference — in particular the source notes read
+ * `sourceOmittedCount` → `discardedRows` → `duplicatesCollapsed`, heaviest first: entries of the
+ * source set 7TV does not list at all (#457 — the run cannot even see them), then rows actually
+ * lost, then duplicates merely folded.
  *
  * **Two steps, one dialog.** Both conflict groups (name collisions, alias mismatches) open a second
  * step in the same pane — `ImportConflictResolutionStep`, one group per opening — where each row
@@ -547,8 +548,18 @@ const WIDE_PANEL_CLASS = 'app-dialog-panel-wide';
           }
         }
 
-        @if (data.source.discardedRows > 0 || data.source.duplicatesCollapsed > 0) {
+        @if (
+          sourceOmittedCount > 0 ||
+          data.source.discardedRows > 0 ||
+          data.source.duplicatesCollapsed > 0
+        ) {
           <div class="flex flex-col gap-1">
+            <!-- First: the heaviest source finding (#457, order contract in the class docs). -->
+            @if (sourceOmittedCount > 0) {
+              <p class="text-sm text-fg-secondary">
+                {{ sourceOmittedKey | transloco: { count: sourceOmittedCount } }}
+              </p>
+            }
             @if (data.source.discardedRows > 0) {
               <p class="text-sm text-fg-secondary">
                 {{ discardedRowsKey | transloco: { count: data.source.discardedRows } }}
@@ -997,6 +1008,15 @@ export class ImportConfirmDialog {
     const preview = this.preview();
     return preview !== null && preview.alreadyPresent === this.data.source.rows.length;
   });
+
+  /** Entries of a gap source 7TV does not list (#457) — only the usage page's channel copy sets
+   *  it; `0` for every other origin, which keeps the source-notes block exactly as before. */
+  protected readonly sourceOmittedCount = this.data.source.sourceOmittedCount ?? 0;
+
+  protected readonly sourceOmittedKey = pluralKey(
+    this.sourceOmittedCount,
+    'import.confirm.sourceOmitted',
+  );
 
   protected readonly discardedRowsKey = pluralKey(
     this.data.source.discardedRows,
