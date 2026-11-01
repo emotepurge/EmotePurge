@@ -553,12 +553,55 @@ public sealed class SevenTvEmoteSetPreviewResult
 /// The set's slot limit; <c>0</c> is already normalised to <c>null</c> here, the same idiom
 /// <see cref="SevenTvEmoteSet"/> and <see cref="SevenTvEmoteSetListEntry"/> already use.
 /// </param>
+/// <param name="ReadState">
+/// The read's three-way verdict (#457), one of the <see cref="SevenTvSetReadState"/> values.
+/// <see cref="Truncated"/> is exactly "not <see cref="SevenTvSetReadState.Complete"/>". Trailing and
+/// optional like <see cref="Name"/>: an instance built without it reads as
+/// <see cref="SevenTvSetReadState.FromTruncated"/> of <see cref="Truncated"/>, so it can never claim
+/// a gap or a completeness the flag does not.
+/// </param>
+/// <param name="OmittedCount">
+/// How many counted entries 7TV did not list; above zero only for a
+/// <see cref="SevenTvSetReadState.Gap"/> read.
+/// </param>
 public sealed record SevenTvEmoteSetPreview(
     int TotalCount,
     bool Truncated,
     IReadOnlyList<SevenTvEmoteSetPreviewItem> Items,
     string? Name = null,
-    int? Capacity = null);
+    int? Capacity = null,
+    string? ReadState = null,
+    int OmittedCount = 0)
+{
+    /// <summary>Never <c>null</c>: a missing verdict is derived from <see cref="Truncated"/>.</summary>
+    public string ReadState { get; init; } = ReadState ?? SevenTvSetReadState.FromTruncated(Truncated);
+}
+
+/// <summary>
+/// The verdict of one paginated 7TV set read (#454 in the browser, #457 for the backend preview),
+/// as the lowercase strings that also go on the wire — deliberately not an enum, since the Api has
+/// no string-enum converter and an enum would serialize as a number.
+/// </summary>
+/// <remarks>
+/// <see cref="Complete"/>: every counted entry is listed, consistently. <see cref="Gap"/>: a stable,
+/// self-consistent under-count — every listed entry is present, but nothing may be concluded about
+/// the ones 7TV counts and does not list. <see cref="Inconsistent"/>: the read itself may be wrong
+/// (drift, a repeat across pages, the page cap, an over-count, a failed verification).
+/// </remarks>
+public static class SevenTvSetReadState
+{
+    public const string Complete = "complete";
+
+    public const string Gap = "gap";
+
+    public const string Inconsistent = "inconsistent";
+
+    /// <summary>
+    /// The verdict a reader that only knows the two-way flag must assume: an incomplete read is
+    /// <see cref="Inconsistent"/>, never a <see cref="Gap"/> — the fail-closed direction.
+    /// </summary>
+    public static string FromTruncated(bool truncated) => truncated ? Inconsistent : Complete;
+}
 
 /// <summary>
 /// One emote as it appears in a specific foreign set: <see cref="Alias"/> is the name used within
