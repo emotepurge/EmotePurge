@@ -1,3 +1,5 @@
+import type { SevenTvSetReadState } from './seven-tv-set-entries';
+
 /**
  * One emote in a foreign channel's active 7Tv set — the row shape the T3 selection grid
  * (`shared/seven-tv/foreign-emote-grid.ts`) and the picker dialog operate on.
@@ -56,10 +58,24 @@ export interface ForeignEmoteSetResponse {
   /** What 7TV reports as the set's total entry count. */
   totalCount: number;
   /**
-   * `true` when the page cap was hit while `totalCount` promised more (spec F3) — a sub-set
-   * legitimately has more than 1000 entries. Never silently truncate: a caller that has this `true`
-   * must say so, not just render however many `emotes` came back.
+   * `true` whenever the list is not a complete, verified read of the set — since #457 exactly
+   * `readState !== 'complete'`: the page cap was hit while `totalCount` promised more (spec F3),
+   * 7TV listed fewer or more entries than it counts, or the pages did not add up to one consistent
+   * snapshot. Never silently truncate: a caller that has this `true` must say so, not just render
+   * however many `emotes` came back. Every reader that only needs "complete or not" keeps reading
+   * this; a reader that may act on a stable gap reads `previewReadState` (`preview-read-state.ts`) instead.
    */
   truncated: boolean;
+  /**
+   * The three-way verdict on the read (#457, the backend counterpart of #454's
+   * `SevenTvSetEntries.readState`): `'gap'` is a self-consistent read in which 7TV lists fewer
+   * entries than it counts — every listed entry is present, nothing can be concluded about the rest.
+   * Optional because an Api from before #457 does not send it; read it through
+   * `previewReadState`, never directly, so such a response fails closed.
+   */
+  readState?: SevenTvSetReadState;
+  /** `totalCount` minus the entries listed — greater than zero only for `readState: 'gap'` (#457).
+   *  Read it through `previewOmittedCount`. */
+  omittedCount?: number;
   emotes: ForeignEmoteRow[];
 }
