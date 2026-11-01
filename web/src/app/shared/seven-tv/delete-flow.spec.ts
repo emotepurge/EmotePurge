@@ -184,6 +184,51 @@ describe('readLiveSetAliases', () => {
     expect(result()).toEqual({ status: 'blocked', reasonKey: MEMBER_READ_TRUNCATED_REASON_KEY });
   });
 
+  /*
+   * #454: the delete chain opts into gap reads; the tag flows, which share this read, do not.
+   * protects: decision 4 — a gap read passes the pre-start read for the delete chain (the batch and
+   *   the run decide), while every other incomplete read still blocks with `truncated`, and a caller
+   *   without `allowGap` keeps blocking an under-count.
+   * fails_when: a gap read blocks the delete chain, an over-count passes it, or an under-count
+   *   passes a caller that did not opt in.
+   * no_claim: the batch decision on a gap read (mass-delete-panel.spec.ts).
+   */
+  describe('with allowGap (the delete chain)', () => {
+    function readAllowingGap(): () => LiveAliasReadResult | undefined {
+      let result: LiveAliasReadResult | undefined;
+      readLiveSetAliases(httpClient, 'set-1', { allowGap: true }).subscribe(
+        (answer) => (result = answer),
+      );
+      return () => result;
+    }
+
+    it('passes a gap read through with its count', () => {
+      const result = readAllowingGap();
+      httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }], true));
+
+      expect(result()).toMatchObject({
+        status: 'ok',
+        entries: { readState: 'gap', omittedCount: 1, complete: false },
+      });
+    });
+
+    it('still blocks an inconsistent read with the truncated reason', () => {
+      const result = readAllowingGap();
+      const overCount = entriesPage([{ id: '7tv-1', alias: 'PogU' }]);
+      overCount.data.emoteSets.emoteSet.emotes.totalCount = 0;
+      httpMock.expectOne(GQL).flush(overCount);
+
+      expect(result()).toEqual({ status: 'blocked', reasonKey: MEMBER_READ_TRUNCATED_REASON_KEY });
+    });
+
+    it('leaves a caller without allowGap blocking the same under-count', () => {
+      const { result } = read();
+      httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-1', alias: 'PogU' }], true));
+
+      expect(result()).toEqual({ status: 'blocked', reasonKey: MEMBER_READ_TRUNCATED_REASON_KEY });
+    });
+  });
+
   it('blocks a failed read with the unavailable reason', () => {
     const { result } = read();
     httpMock.expectOne(GQL).flush('boom', { status: 503, statusText: 'Service Unavailable' });
