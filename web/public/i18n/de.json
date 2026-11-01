@@ -1312,6 +1312,10 @@
         "one": "{{names}} wird gerade mit 7TV abgeglichen und ist deshalb nicht im Löschlauf — in einer Minute erneut versuchen.",
         "other": "{{names}} werden gerade mit 7TV abgeglichen und sind deshalb nicht im Löschlauf — in einer Minute erneut versuchen."
       },
+      "retryHint": {
+        "one": "1 Eintrag wurde nicht gelöscht und ist weiterhin ausgewählt — Löschen erneut starten, um es noch einmal zu versuchen.",
+        "other": "{{count}} Einträge wurden nicht gelöscht und sind weiterhin ausgewählt — Löschen erneut starten, um es noch einmal zu versuchen."
+      },
       "unexpectedRemoval": {
         "one": "{{names}} fehlt jetzt im Set, ohne dass der Lauf es gelöscht hat — möglicherweise hat eine Löschung diesen Eintrag mit entfernt.",
         "other": "{{names}} fehlen jetzt im Set, ohne dass der Lauf sie gelöscht hat — möglicherweise hat eine Löschung diese Einträge mit entfernt."

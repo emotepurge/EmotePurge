@@ -1998,6 +1998,42 @@ test.describe('emote slot delete runs (#378)', () => {
     await expect(cell(page, 'hob44')).toBeVisible();
   });
 
+  // #453: the rows a run did not delete stay marked, the dock says how many, and the next Delete
+  // opens a confirmation for exactly those.
+  test('a skipped card stays marked after the run, the dock names how many, and Delete again confirms exactly that one (#453)', async ({
+    page,
+  }) => {
+    await mockRunSurroundings(page, true);
+    const backend = await mockSevenTvSetBackend(page, slotLive);
+    const syncDeleted = await mockSyncDeletedInSet(page, ACTIVE_SET_ID);
+
+    await openAtlas(page, slotRows);
+    // Another editor renames hob44 on 7TV after the page loaded: the run skips it, deletes plainOne.
+    backend.live = backend.live.map((entry) =>
+      entry.alias === 'hob44' ? { ...entry, alias: 'hob45' } : entry,
+    );
+    await cell(page, 'hob44').click();
+    await cell(page, 'plainOne').click();
+    await confirmDelete(page, 2);
+    await expect.poll(() => syncDeleted.length).toBeGreaterThan(0);
+
+    await expect(cell(page, 'plainOne')).toHaveCount(0);
+    await expect(cell(page, 'hob44')).toHaveAttribute('aria-pressed', 'true');
+    await expect(
+      page
+        .locator('.app-dock')
+        .getByText(
+          '1 Eintrag wurde nicht gelöscht und ist weiterhin ausgewählt — Löschen erneut starten, um es noch einmal zu versuchen.',
+        ),
+    ).toBeVisible();
+
+    await page.getByRole('button', { name: 'Löschen (1)' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.locator('#app-dialog-title')).toContainText('1 Emote');
+    await expect(dialog.getByText('hob44', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('plainOne', { exact: true })).toHaveCount(0);
+  });
+
   test('an entry that vanished with the removal is named in the dock and restored on its own, reported by 7TV id only (4.5, 4.7)', async ({
     page,
   }) => {
