@@ -10,6 +10,20 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-11-01 — Import: the rows the last recheck refused stay in the settled run summary (#460)
+
+**Betrifft:** `web/src/app/core/seven-tv/seven-tv-import.service.ts` · `web/src/app/shared/seven-tv/import-progress-section.ts` · `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `docs/UI-Designsprache.md` (§4.5)
+
+**(a) The gap.** The import's two refusal counts, `targetUncheckedSkipped` (#457) and `replaceSkippedDrift`, were shown and spoken only inside the transient notice window (`DUPLICATE_NOTICE_MS`, 4 s). Afterwards nothing named them: the settled summary read "38 copied · 0 failed · 0 cancelled" for a run confirmed with 50 rows. A run longer than the window lost the lines before it ended. This is the reasoning the undo already applied to its own skips (2026-10 #254 entry, point (c)): a transient line makes a refused row vanish from every count after four seconds.
+
+**(b) The rule.** `ImportRunInfo` carries `targetUncheckedSkipped`, its wording flag `duplicateCheckAvailable` and `replaceSkippedDrift`, frozen by `startImport` when it opens the run. The settled summary shows one line per non-zero count, with the existing locale keys, for as long as the run is shown: until Close (`reset()`) or until the next run replaces it, the same lifetime as `unknownCount` and `removedCount` beside them. Because the counts live on the record, a refused start that restores an earlier shown run can never rewrite that run's lines. The service-level signals stay, for the transient notice only.
+
+**(c) No double naming, no double speech.** The transient lines give way once the run their start began has stopped running (`importRefusalNoticeVisible`, modelled on `undoSkippedNotice`; the service exposes `refusalNoticeRunId` for it, `null` when the call began no run). While the run is `settling` neither stands, as for the undo. The settled lines mount in `RunProgressPanel`'s run-actions block, inside its `role="status"` region that has been mounted since the run started, so that region speaks them: they are not `aria-hidden` and have no twin in `DockOutcomeAnnouncer` (the #378 case of §4.5). The announcer keeps speaking only the transient lines.
+
+**(d) A start that began no run keeps the notice, longer.** When every row was refused (or the engine refused the start) there is no record to anchor a persistent line or a dismiss button to, so the transient notice remains the only voice, as before. Its window is now `ABORTED_DELETE_NOTICE_MS` (8 s), the same purpose as the delete's abort notice: a confirmed action did not happen. The import reuses that constant (`NOT_STARTED_NOTICE_MS`), no second literal. A start that began a run keeps 4 s, since the summary now carries its lines. This also lengthens the notice of an all-duplicates start to 8 s, which is the same situation.
+
+**(e) Not changed.** The transfer-run protocol still lists no refused rows (a format change, own issue if wanted); `skippedDuplicates` stays transient (the emote is already in the target); the restore's skips are untouched.
+
 ### 2026-11-01 — Import recheck: a target read that is incomplete or failed lets no ADD through (#457)
 
 **Betrifft:** `web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts` · `web/src/app/shared/seven-tv/import-progress-section.ts` · `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
