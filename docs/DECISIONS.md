@@ -10,6 +10,24 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-11-01 — Import recheck: a target read that is incomplete or failed lets no ADD through (#457)
+
+**Betrifft:** `web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts` · `web/src/app/shared/seven-tv/import-progress-section.ts` · `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`
+
+**(a) The hole.** `recheckTransferPlan`, the last read of the target set before an import run starts, took any successful read as an all-clear. `filterAlreadyPresent` ignores `entries.complete`: it drops what the read lists and returns `available: true` for an incomplete read as well. An `add` or `renameSource` row whose source id the target holds under an alias 7TV does not list therefore went out, and 7TV's `addEmote` appended a second entry of the id (it does not deduplicate by id, see the #149 entry of 2026-09-10). Two ways to get there: an `'activeSet'` target, whose confirmation is built from our database and never sees what 7TV hides, and a chosen target that turned into a gap after the picker loaded it. Found by Codex Sol's adversarial review of the #457 spec (P1), verified against the code.
+
+**(b) The rule.** A target read counts as **unchecked** when it fails or times out (`available: false`, `LIVE_READ_TIMEOUT_MS` included) or when it succeeds with `complete: false` — any incomplete state: a gap, an over-count, a drift, a repeat, the page cap. Against an unchecked read every `add` and `renameSource` row is refused and counted in a new `targetUncheckedSkipped`. `replace` rows were already refused in both cases (`replaceSkippedDrift`), and `adoptSourceName` rows still pass: they are an UPDATE of an entry the target holds by definition, never an ADD. `skippedDuplicates` keeps counting only rows a successful read positively showed as present. The rule applies to every origin of `startImportFlow` (channel copy, tag play-in, file import, foreign channel, leaderboard), since all of them go through this one recheck.
+
+**(c) Supersedes #149's fail-open for the import recheck** (operator decision 2026-11-01). Until now a failed read let every row through and showed `import.duplicateCheckUnavailable` ("duplicate entries are possible"). A duplicate cannot be repaired after the fact, so a run that could push one no longer starts on an unverified basis; the user retries. `import.duplicateCheckUnavailable` is retired from the summary, the announcer and both locales, because it is no longer true. `filterAlreadyPresent` itself keeps its contract (fail-open result shape, `available: false` on a failed read); the refusal lives in `recheckTransferPlan`. Restore is untouched: `filterAlreadyPresentForRestore` and `restore.duplicateCheckUnavailable` stay as they are.
+
+**(d) One count, two wordings.** `SevenTvImportService.startImport` gains a trailing `targetUncheckedSkipped` (default 0), and the transient notice opens when it is above 0. `duplicateCheckAvailable` keeps its meaning (`true` for a successful read, complete or not; `false` for a failed one) but now only picks the wording: `import.summary.targetUncheckedSkipped.incomplete` ("7TV did not list the target set in full") or `.unavailable` ("could not be checked right now, try again"). The two reasons differ in what the user can do; the count means the same in both.
+
+**(e) Tag play-in.** A plan emptied by this refusal is not "everything is already there": the play-in's no-op check also requires `targetUncheckedSkipped === 0`, so the plan falls through to `startImport`, whose notice names the refused rows, and the tag is never reported as played in.
+
+**(f) Visible consequence.** A set that 7TV currently lists incompletely cannot receive copies until 7TV lists it in full again, and a copy confirmed while 7TV's read fails or times out copies no `add`/`renameSource` row. A v3 cross-check that could prove absence in such a target is out of scope.
+
+---
+
 ### 2026-11-01 — Slot mass delete: a stable 7TV "gap read" is decided per row instead of blocking the run (#454)
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-set-entries.ts` · `web/src/app/core/seven-tv/seven-tv-rate-limit.ts` · `web/src/app/core/seven-tv/seven-tv-run-engine.ts` · `web/src/app/core/seven-tv/seven-tv-delete.service.ts` · `web/src/app/shared/seven-tv/delete-flow.ts` · `web/src/app/shared/seven-tv/delete-progress-section.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json`

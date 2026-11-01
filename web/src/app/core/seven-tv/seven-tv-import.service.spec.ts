@@ -664,6 +664,61 @@ describe('SevenTvImportService', () => {
     });
   });
 
+  // #457: the add/renameSource rows the caller's fresh pre-run check refused because its read of
+  // the target could not rule out a duplicate (failed, timed out, or incomplete). The service gets
+  // the plan already trimmed; this pins that the count reaches the notice and that a trimmed plan
+  // puts no ADD on the wire.
+  describe('targetUncheckedSkipped (#457)', () => {
+    it('defaults to 0 when the caller omits it', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([]));
+
+      expect(service.targetUncheckedSkipped()).toBe(0);
+      expect(service.duplicateNoticePending()).toBe(false);
+    });
+
+    it('opens the notice for a plan emptied by the refusal, and sends nothing', () => {
+      const started = service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [] }, 0, true, 0, 2);
+
+      expect(started).toBe(false);
+      expect(service.targetUncheckedSkipped()).toBe(2);
+      expect(service.duplicateNoticePending()).toBe(true);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('runs the adopt row the refusal kept as an UPDATE, with no ADD on the wire', () => {
+      service.startImport(
+        TARGET_B,
+        CHANNEL_ORIGIN,
+        { rows: [adoptRow(SOURCE_X, 'KappaOld')] },
+        0,
+        false,
+        1,
+        2,
+      );
+
+      const mutation = nextMutation();
+      const query = (mutation.request.body as { query: string }).query;
+      expect(query).toContain('UpdateEmoteAlias');
+      expect(query).not.toContain('AddEmote');
+      flushApplied(mutation);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(service.isRunning()).toBe(false);
+      expect(service.targetUncheckedSkipped()).toBe(2);
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('is cleared by reset() and by a blocked pre-check', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [] }, 0, true, 0, 2);
+      service.reset();
+      expect(service.targetUncheckedSkipped()).toBe(0);
+
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [] }, 0, true, 0, 2);
+      service.reportTargetCheckBlocked('unavailable');
+      expect(service.targetUncheckedSkipped()).toBe(0);
+    });
+  });
+
   // #149 P2 (independent review): a fully-refused (all-duplicates) startImport leaves no run/queue
   // behind, so this transient flag is what lets `dockVisible()` (`usage-stats-page.ts`, via
   // `action-dock.ts`) mount the notice at all — and what lets it clear on its own afterwards rather

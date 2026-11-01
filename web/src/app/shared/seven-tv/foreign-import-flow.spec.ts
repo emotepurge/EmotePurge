@@ -224,6 +224,7 @@ describe('startForeignChannelImportFlow', () => {
       0,
       true,
       0,
+      0,
     );
   });
 
@@ -388,6 +389,7 @@ describe('startLeaderboardImportFlow', () => {
       },
       0,
       true,
+      0,
       0,
     );
   });
