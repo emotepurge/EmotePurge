@@ -29,12 +29,14 @@ import {
   RunOperation,
   RunQueueEmote,
   RunQueueItem,
+  MAX_RATE_LIMIT_RETRIES,
   RunResult,
   SevenTvMutation,
   SevenTvRunEngine,
   StepGate,
   SkipReasonKey,
 } from './seven-tv-run-engine';
+import { RateLimitInfo } from './seven-tv-rate-limit';
 import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { RunRecordBase, SevenTvRunLifecycle } from './seven-tv-run-lifecycle';
 import {
@@ -52,7 +54,12 @@ import {
   settleEntryDeleteRun,
   unknownCount,
 } from './seven-tv-run-settlement';
-import { SevenTvSetEntries, SevenTvSetEntry, loadSevenTvSetEntries } from './seven-tv-set-entries';
+import {
+  SevenTvSetEntries,
+  SevenTvSetEntry,
+  SevenTvSetReadError,
+  loadSevenTvSetEntries,
+} from './seven-tv-set-entries';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import {
   SyncReportOutcome,
@@ -122,7 +129,9 @@ export const ENTRY_BINDING_READ_TIMEOUT_MS = 20_000;
 
 /** After this many failed or incomplete binding reads in a row, every remaining entry row is
  *  skipped without another read (Plan-378 4.4 rule 1, the mirror of the undo's
- *  `MAX_CONSECUTIVE_RECHECK_FAILURES`); id rows keep running. */
+ *  `MAX_CONSECUTIVE_RECHECK_FAILURES`); id rows keep running. A gap read (#454) is a usable read
+ *  and resets the count; a rate-limited read is a pause, not a failure, until the run-wide streak
+ *  of them passes `MAX_RATE_LIMIT_RETRIES`. */
 export const MAX_CONSECUTIVE_ENTRY_READ_FAILURES = 3;
 
 const PROCEED: StepGate = { kind: 'proceed' };
@@ -212,11 +221,37 @@ interface EntryRunContext {
    *  — what an unexpectedly removed entry without an alias is called by (the read that notices it
    *  gone may no longer list the emote at all). */
   readonly defaultNames: Map<string, string>;
-  /** The last complete read and when its request started; `null` before the first one. */
+  /** The last usable read — complete or gap (#454) — and when its request started; `null` before
+   *  the first one. A gap read is held only for the baseline's sake, never reused for a later
+   *  attempt (see `bindBeforeRemove`). */
   held: { read: SevenTvSetEntries; startedAt: number } | null;
   consecutiveReadFailures: number;
   /** What the last failed read was — the reason every row skipped after three in a row carries. */
   lastReadFailure: 'unavailable' | 'truncated';
+  /** The `omittedCount` of the first gap read this run saw — the pre-start read or a binding read —
+   *  `null` until then, never cleared (#454). Once set, every id row of the run is skipped: its
+   *  `REMOVE` would take every entry of the id, a hidden one included, and the protocol would not
+   *  record it (#227). */
+  idRowGap: number | null;
+  /** Binding reads in a row that 7TV refused with its rate limit — reset by any read that answered
+   *  (usable or not) or failed otherwise. Up to `MAX_RATE_LIMIT_RETRIES` of them make the engine
+   *  wait; every further one counts as an `unavailable` read failure, so a bucket that stays closed
+   *  ends the run's entry rows through the three-strike rule instead of waiting per row (#454). */
+  rateLimitedReadsInARow: number;
+}
+
+/** What one binding read yields for the gate (#454): a usable read, a failure already counted, or
+ *  7TV's rate limit, which the engine waits out before asking again. */
+type BindingRead =
+  | { kind: 'read'; read: SevenTvSetEntries }
+  | { kind: 'failed' }
+  | { kind: 'rateLimited'; info: RateLimitInfo };
+
+/** What `startDelete` learns from the flow beyond the rows (#454). */
+export interface DeleteStartOptions {
+  /** The flow's pre-start read of the set, when it was a gap read. Seeds `idRowGap`: an id row of
+   *  this run is skipped from its first attempt on. */
+  preRunRead?: Pick<SevenTvSetEntries, 'readState' | 'omittedCount'>;
 }
 
 /** How an entry row's live entries at its add date decide its attempt (Plan-378 4.4 step 4). */
@@ -515,7 +550,8 @@ export class SevenTvDeleteService {
    *  onto the record here, never re-resolved by this service. A run that starts is shown at once;
    *  the run shown before it goes on to close on its own record (#256). `tag` is only for a tag
    *  removal (#201 T-C, `tag-removal-flow.ts`): frozen onto the record, it makes the settled run
-   *  send the removal report as a second report beside `sync-deleted`. */
+   *  send the removal report as a second report beside `sync-deleted`. `options.preRunRead` is the
+   *  delete flow's pre-start read when it was a gap read (#454) — see {@link DeleteStartOptions}. */
   startDelete(
     setId: string,
     channelName: string,
@@ -523,6 +559,7 @@ export class SevenTvDeleteService {
     expectedChannelName: string | null,
     targetOwnerTwitchId: string | null,
     tag?: DeleteTagContext,
+    options: DeleteStartOptions = {},
   ): void {
     const previousShown = this.lifecycle.shown();
     const runId = this.lifecycle.createRunId();
@@ -546,8 +583,14 @@ export class SevenTvDeleteService {
     this.lifecycle.open(started);
     const queue = toDeleteQueue(emotes);
     // A run of id rows only (every run in emote mode) gets no hook at all — the operation, its
-    // requests and its reads are byte for byte what they were (Plan-378 1).
-    const context = createEntryRunContext(queue);
+    // requests and its reads are byte for byte what they were (Plan-378 1). The one exception is a
+    // gap pre-start read (#454), which the flow already refuses for an id-only batch; should one
+    // still arrive, the hook skips its id rows rather than send an id `REMOVE` blind.
+    const preRunRead = options.preRunRead;
+    const context = createEntryRunContext(
+      queue,
+      preRunRead?.readState === 'gap' ? preRunRead.omittedCount : null,
+    );
     const engineStarted = this.engine.start(
       setId,
       queue,
@@ -649,22 +692,36 @@ export class SevenTvDeleteService {
    * plus a `beforeStep` hook that binds every attempt of an entry row to a read of the set
    * (Plan-378 4.4, D21). The engine asks the hook again before every rate-limit retry, so a retry is
    * bound afresh too (A4); should a future transport retry ever bypass `runGatedOne`, the binding
-   * would go with it. Id rows pass straight through, without a read.
+   * would go with it. Id rows pass straight through, without a read — unless a read of this run
+   * was a gap read (#454): from then on an id row is skipped (`gapIdRow`, with the first gap's
+   * count), because its `REMOVE` would also take entries no read of the run has shown.
    */
   private createEntryOperation(context: EntryRunContext): RunOperation {
     return {
       ...REMOVE_OPERATION,
-      beforeStep: (setId, emote) =>
-        emote.entry ? this.bindBeforeRemove(context, setId, emote, emote.entry) : of(PROCEED),
+      beforeStep: (setId, emote) => {
+        if (emote.entry) {
+          return this.bindBeforeRemove(context, setId, emote, emote.entry);
+        }
+        return of(
+          context.idRowGap === null
+            ? PROCEED
+            : this.skipEntry(context, emote, 'usageStats.delete.gapIdRow', {
+                count: String(context.idRowGap),
+              }),
+        );
+      },
     };
   }
 
   /**
    * The gate in front of one attempt of an entry row (Plan-378 4.4, rules 1 to 4). Reads the set
-   * afresh when nothing is held yet, when the held read started more than `ENTRY_READ_REUSE_MS` ago,
-   * or when it shows the row's emote with two or more entries (AK 51); otherwise binds against the
-   * held read. Never throws and never errors: every failure is a skip with its reason, so no
-   * request ever goes out unbound.
+   * afresh when nothing is held yet, when the held read is a gap read (#454 — never reused: a
+   * hidden sibling defeats AK 51's singleton rule), when the held read started more than
+   * `ENTRY_READ_REUSE_MS` ago, or when it shows the row's emote with two or more entries (AK 51);
+   * otherwise binds against the held read. Never throws and never errors: every failure is a skip
+   * with its reason, and 7TV's rate limit is a `rateLimited` answer the engine waits out before
+   * asking again (a fresh read then), so no request ever goes out unbound.
    */
   private bindBeforeRemove(
     context: EntryRunContext,
@@ -678,37 +735,56 @@ export class SevenTvDeleteService {
     const held = context.held;
     const fresh =
       held === null ||
+      held.read.readState === 'gap' ||
       Date.now() - held.startedAt > ENTRY_READ_REUSE_MS ||
       (held.read.entriesById?.get(emote.sevenTvEmoteId)?.length ?? 0) >= 2;
-    const read$ = fresh ? this.readForBinding(context, setId) : of(held.read);
+    const read$: Observable<BindingRead> = fresh
+      ? this.readForBinding(context, setId)
+      : of({ kind: 'read', read: held.read });
     return read$.pipe(
-      map((read) =>
-        read === null
-          ? this.skipEntry(context, emote, readFailureKey(context.lastReadFailure), {})
-          : this.gateEntry(context, emote, entry, read),
-      ),
+      map((outcome): StepGate => {
+        switch (outcome.kind) {
+          case 'failed':
+            return this.skipEntry(context, emote, readFailureKey(context.lastReadFailure), {});
+          case 'rateLimited':
+            context.attempted.delete(emote.key);
+            return { kind: 'rateLimited', info: outcome.info };
+          case 'read':
+            return this.gateEntry(context, emote, entry, outcome.read);
+        }
+      }),
     );
   }
 
-  /** One read of the set with add dates, bounded by `ENTRY_BINDING_READ_TIMEOUT_MS`. A complete
-   *  read resets the failure count, is checked against the baseline for entries gone without an own
-   *  removal (4.4 step 6), joins the baseline and becomes the held read; a failed, timed-out or
-   *  incomplete one counts as a failure and answers `null`. */
-  private readForBinding(
-    context: EntryRunContext,
-    setId: string,
-  ): Observable<SevenTvSetEntries | null> {
+  /** One read of the set with add dates and gap detection (#454), bounded by
+   *  `ENTRY_BINDING_READ_TIMEOUT_MS`. A usable read — complete or gap — resets the failure count,
+   *  joins the baseline (every entry it lists is present) and becomes the held read; only a
+   *  complete one is checked against the baseline for entries gone without an own removal (4.4
+   *  step 6), because a gap read proves no absence, and a gap read records the run's first gap for
+   *  the id rows. An inconsistent, failed or timed-out read counts as a failure. 7TV's rate limit
+   *  (a GraphQL rate-limit answer or an HTTP 429) answers `rateLimited` without touching the count
+   *  or the held read, up to `MAX_RATE_LIMIT_RETRIES` in a row across the run; beyond that it
+   *  counts as an `unavailable` failure. */
+  private readForBinding(context: EntryRunContext, setId: string): Observable<BindingRead> {
     return defer(() => {
       const startedAt = Date.now();
-      return loadSevenTvSetEntries(this.httpClient, setId, { withAddedAt: true }).pipe(
+      return loadSevenTvSetEntries(this.httpClient, setId, {
+        withAddedAt: true,
+        detectGap: true,
+      }).pipe(
         timeout(ENTRY_BINDING_READ_TIMEOUT_MS),
-        map((read) => {
-          if (!read.complete) {
+        map((read): BindingRead => {
+          context.rateLimitedReadsInARow = 0;
+          if (read.readState === 'inconsistent') {
             return failBindingRead(context, 'truncated');
           }
           context.consecutiveReadFailures = 0;
           noteDefaultNames(context, read);
-          noteEarlyUnexpectedRemovals(context, read);
+          if (read.readState === 'complete') {
+            noteEarlyUnexpectedRemovals(context, read);
+          } else {
+            context.idRowGap ??= read.omittedCount;
+          }
           for (const sevenTvEmoteId of context.entryEmoteIds) {
             mergeIntoBaseline(
               context.baseline,
@@ -717,15 +793,30 @@ export class SevenTvDeleteService {
             );
           }
           context.held = { read, startedAt };
-          return read;
+          return { kind: 'read', read };
         }),
-        catchError(() => of(failBindingRead(context, 'unavailable'))),
+        catchError((error: unknown) => {
+          const info = rateLimitOfRead(error);
+          if (info === null) {
+            context.rateLimitedReadsInARow = 0;
+            return of(failBindingRead(context, 'unavailable'));
+          }
+          context.rateLimitedReadsInARow += 1;
+          return of<BindingRead>(
+            context.rateLimitedReadsInARow <= MAX_RATE_LIMIT_RETRIES
+              ? { kind: 'rateLimited', info }
+              : failBindingRead(context, 'unavailable'),
+          );
+        }),
       );
     });
   }
 
   /** Classifies the row against `read` (4.4 step 4) and answers the engine. A row let through is
-   *  recorded as attempted and freezes its baseline date; a skipped one is no longer attempted. */
+   *  recorded as attempted and freezes its baseline date; a skipped one is no longer attempted.
+   *  Under a gap read (#454) only the exact member decides: listed at the row's add date under the
+   *  row's alias → through; anything else → `gapHidden`. `renamed`, `noAlias` from the read and
+   *  `departed` all rest on "the row's entry is absent", which a gap read cannot prove. */
   private gateEntry(
     context: EntryRunContext,
     emote: RunQueueEmote,
@@ -733,6 +824,12 @@ export class SevenTvDeleteService {
     read: SevenTvSetEntries,
   ): StepGate {
     const binding = bindEntry(entry, read.entriesById?.get(emote.sevenTvEmoteId) ?? []);
+    if (read.readState === 'gap' && entry.alias && binding.kind !== 'proceed') {
+      return this.skipEntry(context, emote, 'usageStats.delete.gapHidden', {
+        name: entry.alias,
+        count: String(read.omittedCount),
+      });
+    }
     switch (binding.kind) {
       case 'proceed': {
         const timeKey = entryTimeKey(entry.addedAt);
@@ -1191,12 +1288,16 @@ function doneIdRowKeys(result: RunResult): string[] {
   return result.doneKeys.filter((key) => !entryKeys.has(key));
 }
 
-/** The per-run state of a slot delete run, or `null` for a run without an entry row. */
-function createEntryRunContext(queue: readonly RunQueueEmote[]): EntryRunContext | null {
+/** The per-run state of a slot delete run, or `null` for a run without an entry row and without a
+ *  gap pre-start read. `idRowGap` is the pre-start read's `omittedCount` when it was a gap (#454). */
+function createEntryRunContext(
+  queue: readonly RunQueueEmote[],
+  idRowGap: number | null,
+): EntryRunContext | null {
   const entryEmoteIds = new Set(
     queue.filter((row) => row.entry !== undefined).map((row) => row.sevenTvEmoteId),
   );
-  if (entryEmoteIds.size === 0) {
+  if (entryEmoteIds.size === 0 && idRowGap === null) {
     return null;
   }
   return {
@@ -1208,6 +1309,8 @@ function createEntryRunContext(queue: readonly RunQueueEmote[]): EntryRunContext
     held: null,
     consecutiveReadFailures: 0,
     lastReadFailure: 'unavailable',
+    idRowGap,
+    rateLimitedReadsInARow: 0,
   };
 }
 
@@ -1290,9 +1393,24 @@ function withDefaultName(
   return removal.alias || defaultName === undefined ? removal : { ...removal, defaultName };
 }
 
-function failBindingRead(context: EntryRunContext, reason: 'unavailable' | 'truncated'): null {
+function failBindingRead(
+  context: EntryRunContext,
+  reason: 'unavailable' | 'truncated',
+): { kind: 'failed' } {
   context.consecutiveReadFailures += 1;
   context.lastReadFailure = reason;
+  return { kind: 'failed' };
+}
+
+/** 7TV's rate limit behind a failed set read (#454): the numbers of a GraphQL rate-limit answer,
+ *  blind ones for an HTTP 429 (its headers are not CORS-exposed), `null` for every other failure. */
+function rateLimitOfRead(error: unknown): RateLimitInfo | null {
+  if (error instanceof SevenTvSetReadError) {
+    return error.rateLimit;
+  }
+  if (error instanceof HttpErrorResponse && error.status === 429) {
+    return { limit: null, remaining: null, reset: null, used: null };
+  }
   return null;
 }
 

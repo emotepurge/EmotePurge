@@ -21,6 +21,12 @@ import { SevenTvRunArbiter } from './seven-tv-run-arbiter';
 import { CANCEL_SETTLE_GRACE_MS, SET_ENTRIES_READ_TIMEOUT_MS } from './seven-tv-run-settlement';
 import { SevenTvTokenService } from './seven-tv-token.service';
 import { flushApplied, flushWithoutResult } from './seven-tv-mutation.testing';
+import {
+  GAP_FIXTURE_TOTAL_COUNT,
+  gapRead496of494Response,
+  hiddenEntries,
+  visibleEntries,
+} from './seven-tv-set-entries.testing';
 import { DeleteTagContext } from './tag-run-settlement';
 
 // Only the keys this service actually translates — not the full app translation file.
@@ -2401,9 +2407,10 @@ describe('SevenTvDeleteService', () => {
         'Die aktuellen Einträge dieses Sets konnten nicht von 7TV gelesen werden.',
       );
 
+      // An over-count: inconsistent. Since #454 an under-count is a gap read, not a failure.
       httpMock
         .expectOne(isSetRead)
-        .flush(datedSetPage([{ id: '7tv-z', alias: 'bbb', addedAt: T2 }], 600));
+        .flush(datedSetPage([{ id: '7tv-z', alias: 'bbb', addedAt: T2 }], 0));
       vi.advanceTimersByTime(DELETE_DELAY_MS);
       expect(rowOf('7tv-z#slot-bbb')?.errorMessage).toBe(
         'Die Einträge dieses Sets konnten nur teilweise gelesen werden.',
@@ -2434,9 +2441,10 @@ describe('SevenTvDeleteService', () => {
       service.startDelete('set-1', 'sensitron', [...rows, EMOTES[1]], 'sensitron', null);
 
       for (let attempt = 0; attempt < MAX_CONSECUTIVE_ENTRY_READ_FAILURES; attempt++) {
+        // An over-count: inconsistent (an under-count is a gap read since #454).
         httpMock
           .expectOne(isSetRead)
-          .flush(datedSetPage([{ id: '7tv-a1', alias: 'a1', addedAt: T1 }], 900));
+          .flush(datedSetPage([{ id: '7tv-a1', alias: 'a1', addedAt: T1 }], 0));
         vi.advanceTimersByTime(DELETE_DELAY_MS);
       }
       // The fourth entry row is skipped without asking 7TV, with the last read's reason.
@@ -2464,12 +2472,12 @@ describe('SevenTvDeleteService', () => {
       ];
 
       for (let attempt = 0; attempt < 2; attempt++) {
-        httpMock.expectOne(isSetRead).flush(datedSetPage(live, 900));
+        httpMock.expectOne(isSetRead).flush(datedSetPage(live, 1));
         vi.advanceTimersByTime(DELETE_DELAY_MS);
       }
       answerRead(live);
       answerRemove();
-      httpMock.expectOne(isSetRead).flush(datedSetPage(live, 900));
+      httpMock.expectOne(isSetRead).flush(datedSetPage(live, 1));
       vi.advanceTimersByTime(DELETE_DELAY_MS);
       // Two failures, a success, one failure: had the success not reset the count, this row would
       // be skipped without a read.
@@ -2782,6 +2790,355 @@ describe('SevenTvDeleteService', () => {
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
   });
+  /*
+   * #454: a binding read that lists fewer entries than 7TV counts (a gap read) decides per row.
+   * protects: decisions 2–4 and AC 4–7 — an entry row is removed only when the gap read of its own
+   *   attempt lists its exact member; every other entry row is `gapHidden` (never departed/renamed/
+   *   truncated); id rows are skipped once any read was a gap; a gap read resets the failure count,
+   *   is never reused, and concludes no absence; 7TV's rate limit on a binding read is waited out
+   *   through the engine's backoff, bounded run-wide.
+   * fails_when: a REMOVE goes out for an entry the attempt's read does not list, or for an id row
+   *   after a gap; a gap read is reused or counted as a failure; a gap read adds an unexpected
+   *   removal or drops one a complete read found; a rate-limited read skips instead of waiting, or
+   *   waits more than five times in a row.
+   * no_claim: pacing between rows, message wording, the read→mutation window inside one attempt.
+   */
+  describe('a gap read in front of an attempt (#454)', () => {
+    const GAP_ROW = (() => {
+      const entry = visibleEntries()[100];
+      return entryRow(entry.id, entry.alias, entry.addedAt);
+    })();
+    const HIDDEN_ROW = entryRow(
+      hiddenEntries[0].id,
+      hiddenEntries[0].alias,
+      hiddenEntries[0].addedAt,
+    );
+
+    /** A single-page read listing `entries` while 7TV counts `omitted` more. */
+    function answerGapRead(entries: readonly LiveEntry[], omitted = 1) {
+      httpMock.expectOne(isSetRead).flush(datedSetPage(entries, entries.length + omitted));
+    }
+
+    function failSetRead() {
+      httpMock.expectOne(isSetRead).error(new ProgressEvent('network error'));
+    }
+
+    function rateLimitedRead(resetSeconds: number | null) {
+      const read = httpMock.expectOne(isSetRead);
+      if (resetSeconds === null) {
+        read.flush(null, { status: 429, statusText: 'Too Many Requests' });
+      } else {
+        read.flush(rateLimitResponse(resetSeconds));
+      }
+    }
+
+    it('removes an entry row the measured 496/494 gap read lists, with exactly its alias', () => {
+      service.startDelete('set-1', 'sensitron', [GAP_ROW], 'sensitron', null);
+
+      httpMock.expectOne(isSetRead).flush(gapRead496of494Response());
+      const request = httpMock.expectOne(isRemove);
+      expect(request.request.body.query).toContain('alias: $alias');
+      expect(request.request.body.variables).toEqual({
+        setId: 'set-1',
+        emoteId: GAP_ROW.sevenTvEmoteId,
+        alias: GAP_ROW.name,
+      });
+      flushApplied(request);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      expect(rowOf(`${GAP_ROW.sevenTvEmoteId}#${GAP_ROW.entry!.cardKey}`)?.status).toBe('done');
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('skips an entry row the gap read does not list as gapHidden with the count, without a request', () => {
+      service.startDelete('set-1', 'sensitron', [HIDDEN_ROW], 'sensitron', null);
+
+      httpMock.expectOne(isSetRead).flush(gapRead496of494Response());
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isRemove);
+      expect(rowOf(`${HIDDEN_ROW.sevenTvEmoteId}#${HIDDEN_ROW.entry!.cardKey}`)).toMatchObject({
+        status: 'cancelled',
+        skipReason: {
+          key: 'usageStats.delete.gapHidden',
+          params: { name: 'brudiWrap2', count: String(GAP_FIXTURE_TOTAL_COUNT - 494) },
+        },
+      });
+      expect(service.run()?.result?.doneKeys).toEqual([]);
+    });
+
+    it('says gapHidden, not renamed, when the gap read shows one other alias at the row date', () => {
+      service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+
+      answerGapRead([{ id: '7tv-x', alias: 'ccc', addedAt: T1 }], 2);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')?.skipReason).toEqual({
+        key: 'usageStats.delete.gapHidden',
+        params: { name: 'aaa', count: '2' },
+      });
+    });
+
+    it('never skips without a read after gap reads, and counts unavailable → gap → unavailable as 1', () => {
+      const rows = ['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7'].map((alias) =>
+        entryRow(`7tv-${alias}`, alias, T1),
+      );
+      service.startDelete('set-1', 'sensitron', rows, 'sensitron', null);
+
+      // Three gap reads in a row: each row is read for and skipped as hidden.
+      for (let row = 0; row < 3; row++) {
+        answerGapRead([{ id: '7tv-other', alias: 'other', addedAt: T2 }]);
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+      }
+      expect(rowOf('7tv-a3#slot-a3')?.skipReason?.key).toBe('usageStats.delete.gapHidden');
+      // a4: still read — then unavailable (1), a5 gap (0), a6 unavailable (1), a7 unavailable (2).
+      failSetRead();
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      answerGapRead([{ id: '7tv-other', alias: 'other', addedAt: T2 }]);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      failSetRead();
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      // Had the gap counted (or not reset), the count would be 3 here and a7 skipped unread.
+      failSetRead();
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      expect(rowOf('7tv-a7#slot-a7')?.skipReason?.key).toBe('massDelete.memberRead.unavailable');
+      expect(
+        service
+          .queue()
+          .map((row) => row.skipReason?.key)
+          .filter((key) => key === 'massDelete.memberRead.truncated' || key?.includes('departed')),
+      ).toEqual([]);
+    });
+
+    it('reads afresh for every attempt after a gap read, even within ENTRY_READ_REUSE_MS and for a single entry', () => {
+      service.startDelete('set-1', 'sensitron', [Y, A], 'sensitron', null);
+
+      answerGapRead([
+        { id: '7tv-y', alias: 'yyy', addedAt: T3 },
+        { id: '7tv-x', alias: 'aaa', addedAt: T1 },
+      ]);
+      answerRemove();
+      // A complete read would be reused here (see "reuses one read …"); a gap read is not.
+      answerGapRead([{ id: '7tv-x', alias: 'aaa', addedAt: T1 }]);
+      expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    // Edge 26, Codex Sol P1: the gap read shows x/aaa/T1 as a singleton while x/bbb/T2 is hidden;
+    // another editor swaps the aliases (T1 → ccc, T2 → aaa) before A's attempt.
+    it('sends no REMOVE after an alias swap with a hidden sibling', () => {
+      service.startDelete('set-1', 'sensitron', [Y, A], 'sensitron', null);
+
+      answerGapRead([
+        { id: '7tv-y', alias: 'yyy', addedAt: T3 },
+        { id: '7tv-x', alias: 'aaa', addedAt: T1 },
+      ]);
+      answerRemove();
+      answerGapRead([{ id: '7tv-x', alias: 'aaa', addedAt: T2 }]);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe('usageStats.delete.gapHidden');
+      expect(service.run()?.result?.doneKeys).toEqual(['7tv-y#slot-yyy']);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    describe('id rows', () => {
+      it('skips an id row after a gap pre-start read with its count, and runs the entry row', () => {
+        service.startDelete('set-1', 'sensitron', [EMOTES[1], A], 'sensitron', null, undefined, {
+          preRunRead: { readState: 'gap', omittedCount: 2 },
+        });
+
+        httpMock.expectNone(isRemove);
+        expect(rowOf('7tv-2')).toMatchObject({
+          status: 'cancelled',
+          skipReason: { key: 'usageStats.delete.gapIdRow', params: { count: '2' } },
+        });
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+        answerRead([{ id: '7tv-x', alias: 'aaa', addedAt: T1 }]);
+        expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+
+      it('keeps skipping an id row with the first gap count after another gap and a complete read', () => {
+        const Z = entryRow('7tv-z', 'zzz', T2);
+        service.startDelete('set-1', 'sensitron', [A, Y, Z, EMOTES[1]], 'sensitron', null);
+
+        answerGapRead(
+          [
+            { id: '7tv-x', alias: 'aaa', addedAt: T1 },
+            { id: '7tv-y', alias: 'yyy', addedAt: T3 },
+            { id: '7tv-z', alias: 'zzz', addedAt: T2 },
+          ],
+          3,
+        );
+        answerRemove();
+        answerGapRead(
+          [
+            { id: '7tv-y', alias: 'yyy', addedAt: T3 },
+            { id: '7tv-z', alias: 'zzz', addedAt: T2 },
+          ],
+          5,
+        );
+        answerRemove();
+        answerRead([{ id: '7tv-z', alias: 'zzz', addedAt: T2 }]);
+        answerRemove();
+
+        httpMock.expectNone(isRemove);
+        expect(rowOf('7tv-2')?.skipReason).toEqual({
+          key: 'usageStats.delete.gapIdRow',
+          params: { count: '3' },
+        });
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+
+      it('never sends an id REMOVE for an id-only run handed a gap pre-start read', () => {
+        service.startDelete('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null, undefined, {
+          preRunRead: { readState: 'gap', omittedCount: 2 },
+        });
+
+        httpMock.expectNone(isRemove);
+        httpMock.expectNone(isSetRead);
+        expect(rowOf('7tv-1')?.skipReason?.key).toBe('usageStats.delete.gapIdRow');
+      });
+
+      it('lets an id row through as before when the pre-start read was complete', () => {
+        service.startDelete('set-1', 'sensitron', [EMOTES[1], A], 'sensitron', null, undefined, {
+          preRunRead: { readState: 'complete', omittedCount: 0 },
+        });
+
+        expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-2' });
+        answerRead([{ id: '7tv-x', alias: 'aaa', addedAt: T1 }]);
+        answerRemove();
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+    });
+
+    describe('absence after the run', () => {
+      const X_AAA: LiveEntry = { id: '7tv-x', alias: 'aaa', addedAt: T1 };
+      const X_BBB: LiveEntry = { id: '7tv-x', alias: 'bbb', addedAt: T2 };
+      const X_CCC: LiveEntry = { id: '7tv-x', alias: 'ccc', addedAt: T3 };
+      const C = entryRow('7tv-x', 'ccc', T3);
+
+      it('draws no conclusion from a gap re-read: owed check unavailable, nothing flagged, unknown stays unknown', () => {
+        service.startDelete('set-1', 'sensitron', [A], 'sensitron', null);
+
+        answerRead([X_AAA, X_BBB]);
+        flushWithoutResult(httpMock.expectOne(isRemove));
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+        // Neither entry listed, one more counted: a complete read would flag bbb and settle aaa.
+        answerGapRead([], 1);
+
+        expect(service.run()).toMatchObject({ unexpectedRemovals: [], postCheckUnavailable: true });
+        expect(rowOf('7tv-x#slot-aaa')?.status).toBe('unknown');
+        httpMock
+          .expectOne('/api/channels/sensitron/resync')
+          .flush(null, { status: 202, statusText: 'Accepted' });
+      });
+
+      it('keeps a removal a complete binding read noticed when the re-read is a gap', () => {
+        service.startDelete('set-1', 'sensitron', [A, C], 'sensitron', null);
+
+        answerRead([X_AAA, X_BBB, X_CCC]);
+        answerRemove();
+        // bbb went with the first request; the complete read in front of ccc's attempt shows it.
+        answerRead([X_CCC]);
+        answerRemove();
+        answerGapRead([], 1);
+
+        expect(service.run()).toMatchObject({
+          unexpectedRemovals: [{ sevenTvEmoteId: '7tv-x', alias: 'bbb', addedAt: T2 }],
+          postCheckUnavailable: true,
+        });
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+
+      it('does not note an entry missing only from a gap binding read as an unexpected removal', () => {
+        service.startDelete('set-1', 'sensitron', [A, C], 'sensitron', null);
+
+        answerRead([X_AAA, X_BBB, X_CCC]);
+        answerRemove();
+        // bbb is hidden, not gone.
+        answerGapRead([X_CCC], 1);
+        answerRemove();
+        answerRead([X_BBB]);
+
+        expect(service.run()).toMatchObject({
+          unexpectedRemovals: [],
+          postCheckUnavailable: false,
+        });
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+    });
+
+    describe("7TV's rate limit on a binding read", () => {
+      const rows = ['a1', 'a2', 'a3', 'a4'].map((alias) => entryRow(`7tv-${alias}`, alias, T1));
+      const listed = rows.map((row) => ({ id: row.sevenTvEmoteId, alias: row.name, addedAt: T1 }));
+
+      it('waits reset + 500 ms with the countdown, then reads afresh and removes the row, without counting a failure', () => {
+        service.startDelete('set-1', 'sensitron', rows.slice(0, 3), 'sensitron', null);
+
+        failSetRead();
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+        failSetRead();
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+        // Two failures in a row: a third would end every entry row unread.
+        rateLimitedRead(7);
+        expect(service.rateLimitPauseSeconds()).toBe(8);
+        httpMock.expectNone(isSetRead);
+        vi.advanceTimersByTime(7_500);
+
+        answerGapRead(listed);
+        expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-a3', alias: 'a3' });
+        expect(rowOf('7tv-a3#slot-a3')?.status).toBe('done');
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+
+      it('waits 60 s blind after an HTTP 429 and reads afresh', () => {
+        service.startDelete('set-1', 'sensitron', [rows[0]], 'sensitron', null);
+
+        rateLimitedRead(null);
+        expect(service.rateLimitPauseSeconds()).toBe(60);
+        vi.advanceTimersByTime(60_000);
+
+        answerGapRead(listed);
+        expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-a1', alias: 'a1' });
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+
+      it('waits exactly five times in a row, then counts each further one as unavailable until the three-strike rule ends the entry rows', () => {
+        service.startDelete('set-1', 'sensitron', rows, 'sensitron', null);
+
+        for (let wait = 1; wait <= 5; wait++) {
+          rateLimitedRead(null);
+          expect(service.rateLimitPauseSeconds()).toBe(60);
+          vi.advanceTimersByTime(60_000);
+        }
+        // The sixth: no pause, a1 skipped unavailable (count 1).
+        rateLimitedRead(null);
+        expect(service.rateLimitPauseSeconds()).toBeNull();
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+        expect(rowOf('7tv-a1#slot-a1')?.skipReason?.key).toBe('massDelete.memberRead.unavailable');
+        rateLimitedRead(null);
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+        rateLimitedRead(null);
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+        httpMock.expectNone(isSetRead);
+        httpMock.expectNone(isRemove);
+        expect(service.queue().map((row) => row.skipReason?.key)).toEqual([
+          'massDelete.memberRead.unavailable',
+          'massDelete.memberRead.unavailable',
+          'massDelete.memberRead.unavailable',
+          'massDelete.memberRead.unavailable',
+        ]);
+      });
+    });
+  });
+
   // Plan-378 4.6 (D32, AK 37, 41): the report names removed entries with their generation.
   describe('reporting removed slots', () => {
     const T_MICRO = '2026-10-13T10:00:14.902123+02:00';
