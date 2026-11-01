@@ -49,7 +49,8 @@ import { TransferPlan, TransferRow, TransferRowTarget } from './transfer-plan';
 import { ABORTED_DELETE_NOTICE_MS } from './seven-tv-delete.service';
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startImport`
-// call that had something to report. Same 4000 ms convention as every other transient status in
+// call that began a run and had something to report (a start that began none keeps the longer
+// `NOT_STARTED_NOTICE_MS` below). Same 4000 ms convention as every other transient status in
 // this app (docs/UI-Designsprache.md §4.5 — usage-stats-page's SELECTION_PRUNED_FEEDBACK_MS,
 // admin-channels-page's resync feedback timer). Lives here rather than on the page that renders
 // it because the *visibility* of the page's own dock depends on this flag (see
@@ -460,7 +461,8 @@ export class SevenTvImportService {
   readonly duplicateCheckAvailable = signal(true);
 
   /** #149 P2 (independent review): whether the notice built from the signals above should
-   *  currently be shown — true for `DUPLICATE_NOTICE_MS` after any `startImport` call that had
+   *  currently be shown — true for `DUPLICATE_NOTICE_MS` after a `startImport` call that began a
+   *  run, or for the longer `NOT_STARTED_NOTICE_MS` after one that began none (#460), when it had
    *  something to show (`skippedDuplicates > 0 || replaceSkippedDrift > 0 ||
    *  targetUncheckedSkipped > 0`), including a refused (all-duplicates, all-drift, or
    *  all-unchecked) call. `!duplicateCheckAvailable` alone no longer opens it (#457): it only picks
@@ -712,7 +714,7 @@ export class SevenTvImportService {
     this.replaceSkippedDrift.set(0);
     this.targetUncheckedSkipped.set(0);
     this.noticeRunIdState.set(null);
-    this.showDuplicateNotice(true);
+    this.showDuplicateNotice(true, NOT_STARTED_NOTICE_MS);
   }
 
   /** Records on the shown run that its transfer-run protocol was downloaded. */
@@ -1211,7 +1213,8 @@ export class SevenTvImportService {
   }
 
   /** #149 P2: `hasSomethingToReport` clears any earlier timer first — a second call within
-   *  `DUPLICATE_NOTICE_MS` of the first must not let the first timer's clear race the new one and
+   *  window (`DUPLICATE_NOTICE_MS`, or `NOT_STARTED_NOTICE_MS` for a start that began no run) of
+   *  the first must not let the first timer's clear race the new one and
    *  hide a still-current notice out from under it. */
   private showDuplicateNotice(
     hasSomethingToReport: boolean,

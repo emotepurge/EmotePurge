@@ -884,10 +884,10 @@ describe('SevenTvImportService', () => {
       expect(service.duplicateNoticePending()).toBe(true);
     });
 
-    it('clears itself after DUPLICATE_NOTICE_MS, the same window as every other transient notice', () => {
+    it('clears itself after ABORTED_DELETE_NOTICE_MS: no run is behind it, like any start that began none (#460)', () => {
       service.reportTargetCheckBlocked('unavailable');
 
-      vi.advanceTimersByTime(3999);
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS - 1);
       expect(service.duplicateNoticePending()).toBe(true);
 
       vi.advanceTimersByTime(1);
