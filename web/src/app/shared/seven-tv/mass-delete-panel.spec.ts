@@ -3222,6 +3222,123 @@ describe("MassDeletePanel — readLiveAliasesFromSet reads the panel's own set r
     expect(statusText()).toContain('massDelete.memberRead.missingFromSet.one');
   });
 
+  /*
+   * #457, AK 10: the usage page binds this own-set read for every delete since #457 (operator
+   * decision 2026-11-01, superseding spec #200 §37 / K5 round (k)), so a non-active set's delete
+   * reads live before it starts — whatever the member list on the page said, and however old it is.
+   * protects: the seam between that binding and #454's chain — a current gap blocks an id-only
+   *   batch and hands a mixed one `preRunRead`, a complete read runs #227's missing-row check, and
+   *   a set that turns active behind the open confirmation still gets its read (Codex Sol round 2).
+   * fails_when: a `REMOVE` path is reachable for id rows while the set's current read is a gap, or
+   *   the read is skipped once the shown set became the active one.
+   * no_claim: 7TV's mutation behaviour; what the run does per row (seven-tv-delete.service.spec.ts).
+   */
+  describe('a non-active delete from the usage page (#457)', () => {
+    const PUMP = {
+      emoteId: 'e1',
+      sevenTvEmoteId: '7tv-pump',
+      name: 'Pumpkin',
+      aliases: ['Pumpkin'],
+      hidden: false,
+    };
+    const GHOST_ENTRY = {
+      emoteId: 'e2',
+      sevenTvEmoteId: '7tv-ghost',
+      name: 'Ghost',
+      aliases: ['Ghost'],
+      hidden: false,
+      entry: { slotId: 'slot-ghost', alias: 'Ghost', addedAt: null, cardKey: 'slot-ghost' },
+    };
+
+    function gapPage(entries: { id: string; alias?: string }[], totalCount: number) {
+      const page = entriesPage(entries);
+      page.data.emoteSets.emoteSet.emotes.totalCount = totalCount;
+      return page;
+    }
+
+    it('(a) refuses an id-only batch when a retained complete list meets a current gap — no id REMOVE', async () => {
+      // The page's member list listed Pumpkin as complete; since then 7TV hides a sibling entry.
+      await setUp({ setId: 'set-halloween', activeSetId: 'set-active', selectedEmotes: [PUMP] });
+
+      confirm();
+      const read = httpMock.expectOne(GQL);
+      expect(read.request.body.variables.id).toBe('set-halloween');
+      read.flush(gapPage([{ id: '7tv-pump', alias: 'Pumpkin' }], 2));
+      fixture.detectChanges();
+
+      expect(startDelete).not.toHaveBeenCalled();
+      expect(statusText()).toContain('massDelete.nothingDeleted');
+      expect(fixture.componentInstance['abortNotice']()).toMatchObject({
+        reasonKey: 'massDelete.memberRead.gap.one',
+        reasonParams: { count: 1 },
+      });
+    });
+
+    it('(b) starts a mixed batch with the gap handed over as preRunRead', async () => {
+      await setUp({
+        setId: 'set-halloween',
+        activeSetId: 'set-active',
+        selectedEmotes: [PUMP, GHOST_ENTRY],
+      });
+
+      confirm();
+      httpMock.expectOne(GQL).flush(gapPage([{ id: '7tv-ghost', alias: 'Ghost' }], 3));
+
+      expect(startDelete).toHaveBeenCalledTimes(1);
+      expect(startDelete.mock.calls[0][0]).toBe('set-halloween');
+      expect(startDelete.mock.calls[0][6]).toEqual({
+        preRunRead: { readState: 'gap', omittedCount: 2 },
+      });
+    });
+
+    it('(c) refuses the whole batch when a complete read is missing a confirmed row', async () => {
+      await setUp({ setId: 'set-halloween', activeSetId: 'set-active', selectedEmotes: [PUMP] });
+
+      confirm();
+      httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-other', alias: 'Other' }]));
+      fixture.detectChanges();
+
+      expect(startDelete).not.toHaveBeenCalled();
+      expect(statusText()).toContain('massDelete.memberRead.missingFromSet.one');
+    });
+
+    describe('(d) the shown set becomes the active one while the confirmation is open', () => {
+      async function openThenActivate(): Promise<void> {
+        await setUp({ setId: 'set-halloween', activeSetId: 'set-active', selectedEmotes: [PUMP] });
+        fixture.componentInstance['openConfirm']();
+        // `channel.synced` made the shown set the active one; same set id, no host lock.
+        fixture.componentRef.setInput('activeSetId', 'set-halloween');
+        fixture.detectChanges();
+        closed.next(true);
+        fixture.detectChanges();
+      }
+
+      it('still reads live, and a gap refuses the id-only batch', async () => {
+        await openThenActivate();
+
+        httpMock.expectOne(GQL).flush(gapPage([{ id: '7tv-pump', alias: 'Pumpkin' }], 2));
+        fixture.detectChanges();
+
+        expect(startDelete).not.toHaveBeenCalled();
+        expect(fixture.componentInstance['abortNotice']()).toMatchObject({
+          reasonKey: 'massDelete.memberRead.gap.one',
+        });
+      });
+
+      it('still reads live, and a complete read takes the normal path', async () => {
+        await openThenActivate();
+
+        httpMock.expectOne(GQL).flush(entriesPage([{ id: '7tv-pump', alias: 'Pumpkin' }]));
+
+        expect(startDelete).toHaveBeenCalledTimes(1);
+        expect(startDelete.mock.calls[0][0]).toBe('set-halloween');
+        expect(startDelete.mock.calls[0][2]).toEqual([
+          { emoteId: 'e1', sevenTvEmoteId: '7tv-pump', name: 'Pumpkin', aliases: ['Pumpkin'] },
+        ]);
+      });
+    });
+  });
+
   it('makes no read at all when the host did not opt in', async () => {
     startDelete = vi.fn();
     closed = new Subject<boolean | undefined>();

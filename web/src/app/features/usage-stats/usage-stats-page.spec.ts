@@ -55,6 +55,7 @@ import {
   ForeignEmoteRow,
   ForeignEmoteSetResponse,
 } from '../../core/seven-tv/foreign-emote-set.model';
+import { ImportSource } from '../../core/seven-tv/import-source';
 import {
   EmoteSetListResponse,
   EmoteSetSummary,
@@ -83,6 +84,7 @@ import { CSV_MIME } from '../../shared/export/csv';
 import { ExportDialogData } from '../../shared/export/export-dialog';
 import { JSON_MIME } from '../../shared/export/export-envelope';
 import { ExportPurposeId } from '../../shared/export/usage-export-purposes';
+import { MassDeletePanel } from '../../shared/seven-tv/mass-delete-panel';
 import { TagAssignDialogData, TagAssignDialogResult } from '../../shared/tags/tag-assign-dialog';
 import { CreateVoteSessionDialogData } from './create-vote-session-dialog';
 import { UsageStatsPage } from './usage-stats-page';
@@ -5790,6 +5792,212 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       expect(liveListRequests().length).toBeGreaterThan(0);
     });
   });
+
+  /*
+   * #457: a gap read of the member list (7TV lists fewer entries than it counts, consistently).
+   * protects: AK 7/8/11 and E13 — exactly the gap-safe actions (delete, vote, copy) unlock, tags
+   *   stay locked, the caption names the gap; a counted card 7TV does not list stays visible and
+   *   outside every action; the copy captures the omitted count with the rows. An inconsistent
+   *   list keeps every lock and sentence it had.
+   * fails_when: tags unlock under a gap, delete/vote/copy stay locked, the truncated sentence
+   *   shows for a gap, a `'left'` card reaches a ballot, a delete or a copy, or anything unlocks
+   *   for an inconsistent list.
+   * no_claim: template rendering (rule 12); what the run does per row (#454's specs).
+   */
+  describe('a gap read of the member list (#457)', () => {
+    function gapList(listed: ForeignEmoteRow[], omitted: number): ForeignEmoteSetResponse {
+      return memberList(listed, {
+        totalCount: listed.length + omitted,
+        truncated: true,
+        readState: 'gap',
+        omittedCount: omitted,
+      });
+    }
+
+    it('unlocks deleting, voting and copying, keeps tags locked, and says what 7TV does not list (AK 7)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('a', 'Alpha', 12), emote('b', 'Beta', 3)],
+        members: gapList([member('7tv-a', 'Alpha'), member('7tv-b', 'Beta')], 2),
+      });
+      component['markAll']();
+      expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
+
+      expect(component['deleteLockReasonKey']()).toBeNull();
+      expect(component['voteLockReasonKey']()).toBeNull();
+      expect(component['importLockReasonKey']()).toBeNull();
+      expect(component['transferButtonDisabled']()).toBe(false);
+      expect(component['importShortcutLocked']()).toBe(false);
+      expect(component['tagAssignShown']()).toBe(false);
+
+      const captions = component['setViewCaptions']();
+      expect(captions).toContainEqual({
+        key: 'usageStats.setView.gap.other',
+        params: { count: '2', total: '4' },
+      });
+      expect(captionKeys()).not.toContain('usageStats.setView.truncated');
+    });
+
+    it('offers tags on the same view once the list is complete — the gap alone is what hides them', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('a', 'Alpha', 12)],
+        members: memberList([member('7tv-a', 'Alpha')], { readState: 'complete', omittedCount: 0 }),
+      });
+      component['markAll']();
+
+      expect(component['tagAssignShown']()).toBe(true);
+    });
+
+    it('picks the singular caption for one omitted entry', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('a', 'Alpha', 12)],
+        members: gapList([member('7tv-a', 'Alpha')], 1),
+      });
+
+      expect(component['setViewCaptions']()).toContainEqual({
+        key: 'usageStats.setView.gap.one',
+        params: { count: '1', total: '2' },
+      });
+    });
+
+    it('keeps an inconsistent list locked exactly as before, with the truncated wording (AK 8)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('a', 'Alpha', 12)],
+        members: memberList([member('7tv-a', 'Alpha')], {
+          totalCount: 900,
+          truncated: true,
+          readState: 'inconsistent',
+          omittedCount: 0,
+        }),
+      });
+      component['markAll']();
+
+      expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.truncated');
+      expect(component['voteLockReasonKey']()).toBe('usageStats.setView.lock.truncated');
+      expect(component['importLockReasonKey']()).toBe('usageStats.setView.importLock.truncated');
+      expect(component['transferButtonDisabled']()).toBe(true);
+      expect(component['importShortcutLocked']()).toBe(true);
+      expect(component['tagAssignShown']()).toBe(false);
+      expect(captionKeys()).toContain('usageStats.setView.truncated');
+      expect(captionKeys().some((key) => key.startsWith('usageStats.setView.gap'))).toBe(false);
+    });
+
+    it('keeps a counted card 7TV does not list visible, and out of deleting, voting and copying (E13)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('hidden', 'MaybeHidden', 30), emote('a', 'Alpha', 70)],
+        members: gapList([member('7tv-a', 'Alpha')], 1),
+      });
+
+      const rows = component['emotes']();
+      expect(rows.map((row) => [row.sevenTvEmoteId, row.membership])).toEqual(
+        expect.arrayContaining([
+          ['7tv-hidden', 'left'],
+          ['7tv-a', 'live'],
+        ]),
+      );
+      component['markAll']();
+      expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-hidden']);
+
+      expect(component['selectedForDelete']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+      expect([...component['voteBallotSevenTvEmoteIds']()]).toEqual(['7tv-a']);
+      expect(component['importableSelection']().map((row) => row.sevenTvEmoteId)).toEqual([
+        '7tv-a',
+      ]);
+      expect(component['importableVisible']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+    });
+
+    it('keeps the dock copy shortcut disabled when only unlisted cards are marked (E21)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('hidden', 'MaybeHidden', 30), emote('a', 'Alpha', 70)],
+        members: gapList([member('7tv-fresh', 'Fresh')], 1),
+      });
+      const hidden = component['emotes']().filter((row) => row.membership === 'left');
+      expect(hidden.length).toBeGreaterThan(0);
+      for (const row of hidden) {
+        component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+      }
+      expect(component['selection'].selectedItems().every((row) => row.membership === 'left')).toBe(
+        true,
+      );
+      expect(component['importShortcutLocked']()).toBe(true);
+    });
+
+    describe('the copy captures the omitted count with the rows (AK 11)', () => {
+      const CHOICE = {
+        scope: 'selection',
+        emoteSetId: 'target-set',
+        channelName: 'b',
+        ownerDisplayName: 'b',
+        ownerTwitchChannelId: null,
+        setName: 'Target',
+        isTracked: true,
+        twitchLogin: 'b',
+        activeEmoteSetId: 'target-set',
+      };
+
+      function copyAndCaptureSource(): { source: () => ImportSource | undefined } {
+        const pickerClosed = new Subject<unknown>();
+        const openSpy = vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
+          closed: pickerClosed,
+        } as unknown as ReturnType<Dialog['open']>);
+        component['openImportTarget']('selection');
+        expect(openSpy).toHaveBeenCalledTimes(1);
+        return {
+          source: () => {
+            pickerClosed.next(CHOICE);
+            // The confirmation is the second dialog the flow opens; its data carries the source.
+            const confirmCall = openSpy.mock.calls[1];
+            return (confirmCall?.[1]?.data as { source: ImportSource } | undefined)?.source;
+          },
+        };
+      }
+
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      it('hands the confirmation the gap count and only the listed rows', async () => {
+        await openView({
+          emoteSetId: 'set-b',
+          totals: [emote('hidden', 'MaybeHidden', 30), emote('a', 'Alpha', 70)],
+          members: gapList([member('7tv-a', 'Alpha')], 2),
+        });
+        component['markAll']();
+        const copy = copyAndCaptureSource();
+
+        // A reload behind the open picker turns the list complete — the capture keeps its count.
+        component['liveMembersResource'].set(memberList([member('7tv-a', 'Alpha')]));
+
+        const source = copy.source();
+        expect(source?.sourceOmittedCount).toBe(2);
+        expect(source?.rows.map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+      });
+
+      it('leaves the count unset for a complete source and for the active view', async () => {
+        await openView({
+          emoteSetId: 'set-b',
+          totals: [emote('a', 'Alpha', 70)],
+          members: memberList([member('7tv-a', 'Alpha')]),
+        });
+        component['markAll']();
+        let source = copyAndCaptureSource().source();
+        expect(source).toBeDefined();
+        expect(source).not.toHaveProperty('sourceOmittedCount');
+
+        vi.restoreAllMocks();
+        await openView({ totals: [emote('a', 'Alpha', 70)] });
+        component['markAll']();
+        source = copyAndCaptureSource().source();
+        expect(source).toBeDefined();
+        expect(source).not.toHaveProperty('sourceOmittedCount');
+      });
+    });
+  });
 });
 
 /**
@@ -6094,6 +6302,170 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
     // The positive a11y assertion: the locked button still points at the SAME paragraph the
     // delete button uses, in the one case that still locks both together.
     expect(button!.getAttribute('aria-describedby')).toBe(reasonParagraph!.id);
+  });
+});
+
+/*
+ * #457, AK 9 (operator decision 2026-11-01, superseding spec #200 §37 / K5 round (k)).
+ * protects: every delete started from the usage page reads its set live before the run — the
+ *   panel's own-set read is bound in the active view, in a non-active view with a complete or a
+ *   gap member list, and mid-switch — so no id `REMOVE` goes out on a member list of any age, and
+ *   a confirmation opened on a non-active set that turns active keeps its read.
+ * fails_when: the binding is false in any of these states.
+ * no_claim: what the read decides per row (#454's mass-delete-panel and delete-service specs).
+ * Real template: the binding only exists there.
+ */
+describe('UsageStatsPage — the delete panel reads the shown set live in every view state (#457, AK 9)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  const IMAGE = 'https://cdn.7tv.app/emote/x/1x.webp';
+  const SERIES = { from: '2026-01-01', to: '2026-09-08', liveDays: [], emotes: [] };
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  function members(overrides: Partial<ForeignEmoteSetResponse>): ForeignEmoteSetResponse {
+    return {
+      channelName: 'a',
+      sevenTvUserId: null,
+      emoteSetId: 'set-b',
+      emoteSetName: 'Halloween',
+      capacity: 1000,
+      totalCount: 1,
+      truncated: false,
+      emotes: [
+        {
+          sevenTvEmoteId: '7tv-a',
+          name: 'Alpha',
+          defaultName: 'Alpha',
+          imageUrl: IMAGE,
+          topAllTime: null,
+          trending: null,
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  async function mount(emoteSetId: string | null): Promise<void> {
+    if (emoteSetId) {
+      await TestBed.inject(Router).navigate([], { queryParams: { emoteSetId } });
+    }
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock
+      .match((request) => request.url === '/api/channels/a/emote-sets')
+      .forEach((request) =>
+        request.flush(
+          emoteSetList([
+            emoteSet({
+              id: 'set-a',
+              isActive: true,
+              observations: [{ fromUtc: '2026-01-01T00:00:00Z', toUtc: null }],
+            }),
+            emoteSet({ id: 'set-b', name: 'Halloween', isActive: false, observations: [] }),
+          ]),
+        ),
+      );
+    await settle();
+  }
+
+  function flushRows(memberList: ForeignEmoteSetResponse | null): void {
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'Alpha', 12), imageUrl: IMAGE },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    if (memberList) {
+      httpMock
+        .match((request) => LIVE_LIST_URL.test(request.url))
+        .forEach((request) => request.flush(memberList));
+    }
+  }
+
+  async function markFirstRow(): Promise<void> {
+    const [row] = component['emotes']();
+    component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+    await settle();
+  }
+
+  function panelReadsOwnSet(): boolean {
+    const panel = fixture.debugElement.query(By.directive(MassDeletePanel));
+    expect(panel).not.toBeNull();
+    return (panel.componentInstance as MassDeletePanel).readLiveAliasesFromSet();
+  }
+
+  it('binds the read in the active view, mid-switch, and once the non-active gap list has landed', async () => {
+    await mount(null);
+    flushRows(null);
+    await settle();
+    await markFirstRow();
+    expect(component['isNonActiveView']()).toBe(false);
+    expect(panelReadsOwnSet()).toBe(true);
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    expect(component['viewSwitching']()).toBe(true);
+    expect(panelReadsOwnSet()).toBe(true);
+
+    flushRows(members({ totalCount: 3, truncated: true, readState: 'gap', omittedCount: 2 }));
+    await settle();
+    expect(component['isNonActiveView']()).toBe(true);
+    expect(component['viewSwitching']()).toBe(false);
+    expect(component['deleteLockReasonKey']()).toBeNull();
+    expect(panelReadsOwnSet()).toBe(true);
+  });
+
+  it('binds the read in a non-active view whose member list is complete', async () => {
+    await mount('set-b');
+    flushRows(members({ readState: 'complete', omittedCount: 0 }));
+    await settle();
+    await markFirstRow();
+
+    expect(component['isNonActiveView']()).toBe(true);
+    expect(component['deleteLockReasonKey']()).toBeNull();
+    expect(panelReadsOwnSet()).toBe(true);
   });
 });
 
@@ -7243,7 +7615,7 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     component['onEmoteSetSelected']('set-b');
     await settle();
 
-    expect(component['sharedSetViewLockReasonKey']()).not.toBeNull();
+    expect(component['strictSetViewLockReasonKey']()).not.toBeNull();
     expect(component['selection'].selectedItems().length).toBeGreaterThan(0);
     expect(component['tagAssignShown']()).toBe(false);
   });
