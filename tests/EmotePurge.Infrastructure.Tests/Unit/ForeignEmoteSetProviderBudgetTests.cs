@@ -1,4 +1,5 @@
 using EmotePurge.Infrastructure.SevenTv;
+using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Unit;
@@ -183,6 +184,66 @@ public class ForeignEmoteSetProviderBudgetTests
         {
             Assert.True(await budget.TryChargeRequestAsync(TimeSpan.Zero, CancellationToken.None));
         }
+    }
+
+    // ---- #457: the preview reserve (AK 2b) ----
+
+    /// <summary>
+    /// AK 2b: with 40 permits held, a charge that must leave 20 free is refused at once, while a
+    /// charge without a reserve keeps succeeding up to the unchanged ceiling of 60. protects: preview
+    /// pages can never take permits 41–60. fails_when: the reserve charge succeeds, or a no-reserve
+    /// charge is refused before 60.
+    /// </summary>
+    [Fact]
+    public async Task WithFortyPermitsHeld_AReserveChargeIsRefused_WhileANoReserveChargeRunsToSixty()
+    {
+        var clock = NewClock();
+        using var budget = new ForeignEmoteSetProviderBudget(clock.Provider);
+        const int previewShare = ForeignEmoteSetProviderBudget.MaxRequestsPerWindow - ForeignEmoteSetProviderBudget.PreviewReserve;
+
+        for (var i = 0; i < previewShare; i++)
+        {
+            Assert.True(await budget.TryChargeRequestAsync(ForeignEmoteSetProviderBudget.PreviewReserve, TimeSpan.Zero));
+        }
+
+        Assert.False(await budget.TryChargeRequestAsync(ForeignEmoteSetProviderBudget.PreviewReserve, TimeSpan.Zero));
+        for (var i = previewShare; i < ForeignEmoteSetProviderBudget.MaxRequestsPerWindow; i++)
+        {
+            Assert.True(await budget.TryChargeRequestAsync(TimeSpan.Zero, CancellationToken.None));
+        }
+
+        Assert.False(await budget.TryChargeRequestAsync(TimeSpan.Zero, CancellationToken.None));
+    }
+
+    /// <summary>
+    /// AK 2b, the waiting half: a reserve charge waits up to its timeout for headroom above the
+    /// reserve, is refused when none frees in time, and is granted once enough permits age out —
+    /// with more than 40 held, that takes more than the oldest one expiring.
+    /// </summary>
+    [Fact]
+    public async Task AReserveCharge_WaitsForHeadroomAboveTheReserve_AndIsRefusedWhenNoneFreesInTime()
+    {
+        var time = new FakeTimeProvider(new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        using var budget = new ForeignEmoteSetProviderBudget(time);
+        // 45 permits, one a second: the reserve charge needs the count at 39, i.e. six to age out.
+        for (var i = 0; i < 45; i++)
+        {
+            Assert.True(await budget.TryChargeRequestAsync(TimeSpan.Zero, CancellationToken.None));
+            time.Advance(TimeSpan.FromSeconds(1));
+        }
+
+        var refused = budget.TryChargeRequestAsync(
+            ForeignEmoteSetProviderBudget.PreviewReserve, ForeignEmoteSetProviderBudget.DefaultRequestWaitTimeout);
+        time.Advance(ForeignEmoteSetProviderBudget.DefaultRequestWaitTimeout);
+        Assert.False(await refused.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        // Now t = 50 s; the sixth-oldest permit (t = 5 s) ages out at t = 65 s.
+        var granted = budget.TryChargeRequestAsync(ForeignEmoteSetProviderBudget.PreviewReserve, TimeSpan.FromSeconds(30));
+        time.Advance(TimeSpan.FromSeconds(10));
+        await Task.Delay(50);
+        Assert.False(granted.IsCompleted);
+        time.Advance(TimeSpan.FromSeconds(5));
+        Assert.True(await granted.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
     private static FakeClock NewClock() => new(new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero));

@@ -544,5 +544,8 @@ public class ForeignEmoteSetServiceTests
     {
         public Task<bool> TryChargeRequestAsync(CancellationToken cancellationToken = default) =>
             inner.TryChargeRequestAsync(TimeSpan.Zero, cancellationToken);
+
+        public Task<bool> TryChargeRequestAsync(int reserve, TimeSpan timeout, CancellationToken cancellationToken = default) =>
+            inner.TryChargeRequestAsync(reserve, TimeSpan.Zero, cancellationToken);
     }
 }

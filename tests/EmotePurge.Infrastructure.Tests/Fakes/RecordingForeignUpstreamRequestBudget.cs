@@ -15,11 +15,40 @@ namespace EmotePurge.Infrastructure.Tests.Fakes;
 /// </param>
 public sealed class RecordingForeignUpstreamRequestBudget(int grantCount = int.MaxValue) : IForeignUpstreamRequestBudget
 {
+    private readonly Lock _gate = new();
+    private readonly List<(int Reserve, TimeSpan? Timeout)> _requests = [];
     private int _charges;
 
     /// <summary>How often a permit was asked for, granted or not.</summary>
     public int Charges => Volatile.Read(ref _charges);
 
-    public Task<bool> TryChargeRequestAsync(CancellationToken cancellationToken = default) =>
-        Task.FromResult(Interlocked.Increment(ref _charges) <= grantCount);
+    /// <summary>
+    /// The reserve and wait of every permit asked for, in order; <c>Timeout</c> is <c>null</c> for
+    /// the no-argument overload (reserve 0, the budget's default wait).
+    /// </summary>
+    public IReadOnlyList<(int Reserve, TimeSpan? Timeout)> Requests
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _requests];
+            }
+        }
+    }
+
+    public Task<bool> TryChargeRequestAsync(CancellationToken cancellationToken = default) => Charge(0, null);
+
+    public Task<bool> TryChargeRequestAsync(int reserve, TimeSpan timeout, CancellationToken cancellationToken = default) =>
+        Charge(reserve, timeout);
+
+    private Task<bool> Charge(int reserve, TimeSpan? timeout)
+    {
+        lock (_gate)
+        {
+            _requests.Add((reserve, timeout));
+        }
+
+        return Task.FromResult(Interlocked.Increment(ref _charges) <= grantCount);
+    }
 }
