@@ -149,6 +149,9 @@ function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
     tagPlacementReportReason: null,
     tagPlacementDiscardedStaleCount: 0,
     origin: { kind: 'channel', channelName: 'quellkanal' },
+    targetUncheckedSkipped: 0,
+    duplicateCheckAvailable: true,
+    replaceSkippedDrift: 0,
     plan: { rows: [] },
     settlement: 'pending',
     removedCount: 0,
@@ -186,6 +189,7 @@ interface FakeImportService {
   targetUncheckedSkipped: WritableSignal<number>;
   duplicateCheckAvailable: WritableSignal<boolean>;
   duplicateNoticePending: WritableSignal<boolean>;
+  refusalNoticeRunId: WritableSignal<string | null>;
   targetCheckBlockReason: WritableSignal<TargetCheckBlockReason | null>;
   protocolSaved: WritableSignal<boolean>;
   markProtocolSaved: ReturnType<typeof vi.fn>;
@@ -218,6 +222,7 @@ function createFakeImportService(): FakeImportService {
     targetUncheckedSkipped: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
+    refusalNoticeRunId: signal<string | null>(null),
     targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
     protocolSaved: signal(false),
     markProtocolSaved: vi.fn(),
@@ -744,6 +749,140 @@ describe('ImportProgressSection', () => {
     const fixture = render();
 
     expect(fixture.nativeElement.textContent).not.toContain('nicht kopiert');
+  });
+
+  // #460: the rows the last recheck refused stay named in the settled summary for as long as the
+  // run is shown, read off the run's own record.
+  describe('refusal lines of the settled summary (#460)', () => {
+    const UNCHECKED_UNAVAILABLE =
+      '2 Emotes nicht kopiert — das Zielset ließ sich gerade nicht prüfen.';
+    const UNCHECKED_INCOMPLETE =
+      '2 Emotes nicht kopiert — 7TV hat das Zielset nur teilweise gelistet.';
+    const DRIFT = '3 Ersetzungen übersprungen — Ziel hat sich verändert.';
+
+    function showSettled(overrides: Partial<ImportRunInfo>): void {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled', ...overrides }));
+    }
+
+    function occurrences(root: HTMLElement, text: string): number {
+      return (root.textContent ?? '').split(text).length - 1;
+    }
+
+    it('keeps both lines after the notice window has closed, in the wording the run froze', () => {
+      showSettled({
+        targetUncheckedSkipped: 2,
+        duplicateCheckAvailable: false,
+        replaceSkippedDrift: 3,
+      });
+      importService.duplicateNoticePending.set(false);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(UNCHECKED_UNAVAILABLE);
+      expect(fixture.nativeElement.textContent).toContain(DRIFT);
+    });
+
+    it('picks the incomplete wording when the run froze a read that listed the set only partly', () => {
+      showSettled({ targetUncheckedSkipped: 2, duplicateCheckAvailable: true });
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(UNCHECKED_INCOMPLETE);
+      expect(fixture.nativeElement.textContent).not.toContain('ließ sich gerade nicht prüfen');
+    });
+
+    it('shows no line for a count of zero', () => {
+      showSettled({});
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('nicht kopiert');
+      expect(fixture.nativeElement.textContent).not.toContain('übersprungen');
+    });
+
+    it('reads the run, not the service-level counts a later refused start may have overwritten', () => {
+      showSettled({ targetUncheckedSkipped: 2, duplicateCheckAvailable: false });
+      importService.targetUncheckedSkipped.set(9);
+      importService.replaceSkippedDrift.set(7);
+      importService.duplicateCheckAvailable.set(true);
+      importService.duplicateNoticePending.set(false);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(UNCHECKED_UNAVAILABLE);
+      expect(fixture.nativeElement.textContent).not.toContain('9 Emotes');
+      expect(fixture.nativeElement.textContent).not.toContain('Ersetzung');
+    });
+
+    it('is spoken by the summary panel itself, not hidden from it', () => {
+      showSettled({ targetUncheckedSkipped: 2, duplicateCheckAvailable: false });
+
+      const fixture = render();
+
+      expect(announcedByStatusRegions(fixture.nativeElement)).toContain(UNCHECKED_UNAVAILABLE);
+    });
+
+    it('names a row once: the transient line gives way to the summary line when the run has stopped running', () => {
+      showSettled({ targetUncheckedSkipped: 2, duplicateCheckAvailable: false });
+      importService.targetUncheckedSkipped.set(2);
+      importService.duplicateCheckAvailable.set(false);
+      importService.duplicateNoticePending.set(true);
+      importService.refusalNoticeRunId.set('import-1');
+
+      const fixture = render();
+
+      expect(occurrences(fixture.nativeElement, UNCHECKED_UNAVAILABLE)).toBe(1);
+      expect(fixture.nativeElement.querySelectorAll('p[aria-hidden="true"]').length).toBe(0);
+    });
+
+    it('keeps the transient line while the run its start began is still running', () => {
+      importService.isRunning.set(true);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ targetUncheckedSkipped: 2, duplicateCheckAvailable: false }));
+      importService.targetUncheckedSkipped.set(2);
+      importService.duplicateCheckAvailable.set(false);
+      importService.duplicateNoticePending.set(true);
+      importService.refusalNoticeRunId.set('import-1');
+
+      const fixture = render();
+
+      expect(occurrences(fixture.nativeElement, UNCHECKED_UNAVAILABLE)).toBe(1);
+      expect(fixture.nativeElement.querySelectorAll('p[aria-hidden="true"]').length).toBe(1);
+    });
+
+    it('keeps the transient line of a start that began no run, next to an earlier run that has its own', () => {
+      showSettled({ targetUncheckedSkipped: 2, duplicateCheckAvailable: false });
+      importService.targetUncheckedSkipped.set(4);
+      importService.duplicateCheckAvailable.set(true);
+      importService.duplicateNoticePending.set(true);
+      importService.refusalNoticeRunId.set(null);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(UNCHECKED_UNAVAILABLE);
+      expect(fixture.nativeElement.textContent).toContain(
+        '4 Emotes nicht kopiert — 7TV hat das Zielset nur teilweise gelistet.',
+      );
+    });
+
+    it('is gone once the run is no longer shown, or the next run carries no refusals', () => {
+      showSettled({ targetUncheckedSkipped: 2, replaceSkippedDrift: 3 });
+      const fixture = render();
+      expect(fixture.nativeElement.textContent).toContain('nicht kopiert');
+
+      importService.run.set(null);
+      importService.queue.set([]);
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).not.toContain('nicht kopiert');
+      expect(fixture.nativeElement.textContent).not.toContain('übersprungen');
+
+      showSettled({ runId: 'import-2' });
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).not.toContain('nicht kopiert');
+      expect(fixture.nativeElement.textContent).not.toContain('übersprungen');
+    });
   });
 
   // The transfer-run protocol's dock offering, the removed/unknown-row summary lines, the drift

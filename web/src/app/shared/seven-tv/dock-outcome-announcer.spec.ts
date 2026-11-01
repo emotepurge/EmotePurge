@@ -26,6 +26,7 @@ import {
   START_CHECK_ANNOUNCE_DELAY_MS,
   copiedNotActiveNotice,
   hiddenByFilterNoticeKey,
+  importRefusalNoticeVisible,
   markedCountNoticeKey,
   pendingSyncNoticeKey,
   renamedNotActiveNotice,
@@ -147,6 +148,9 @@ interface FakeOutcomeSource {
   skippedNameTaken: WritableSignal<number>;
   duplicateCheckAvailable: WritableSignal<boolean>;
   duplicateNoticePending: WritableSignal<boolean>;
+  refusalNoticeRunId: WritableSignal<string | null>;
+  /** Only `SevenTvImportService` has this — the refusal lines' give-way gate reads it (#460). */
+  isRunning: WritableSignal<boolean>;
   /** Only `SevenTvImportService` actually has this (finding 3, Live-Verifikation K2 2026-09-21,
    *  `copiedNotActiveNotice`) — carried on the shared fake shape anyway since both services are
    *  built from the same factory; the restore fake's copy is simply never read. */
@@ -180,6 +184,8 @@ function createFakeSource(): FakeOutcomeSource {
     skippedNameTaken: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
+    refusalNoticeRunId: signal<string | null>(null),
+    isRunning: signal(false),
     run: signal<ImportRunInfo | null>(null),
     replaceSkippedDrift: signal(0),
     targetUncheckedSkipped: signal(0),
@@ -242,6 +248,85 @@ const SPOKEN_STATES = {
   failed: true,
   backendTriggered: true,
 } satisfies Record<Exclude<ResyncTriggerState, 'idle'>, true>;
+
+describe('importRefusalNoticeVisible (#460)', () => {
+  const run = (runId: string) => ({ runId }) as ImportRunInfo;
+  const cases: {
+    name: string;
+    noticeRunId: string | null;
+    run: ImportRunInfo | null;
+    isRunning: boolean;
+    visible: boolean;
+  }[] = [
+    {
+      name: 'no run behind the notice',
+      noticeRunId: null,
+      run: null,
+      isRunning: false,
+      visible: true,
+    },
+    {
+      name: 'no run behind the notice, another run shown',
+      noticeRunId: null,
+      run: run('a'),
+      isRunning: false,
+      visible: true,
+    },
+    {
+      name: 'its run is shown and running',
+      noticeRunId: 'a',
+      run: run('a'),
+      isRunning: true,
+      visible: true,
+    },
+    {
+      name: 'its run is shown and stopped',
+      noticeRunId: 'a',
+      run: run('a'),
+      isRunning: false,
+      visible: false,
+    },
+    {
+      name: 'a different run is shown',
+      noticeRunId: 'a',
+      run: run('b'),
+      isRunning: false,
+      visible: true,
+    },
+    {
+      name: 'a different run is shown and running',
+      noticeRunId: 'a',
+      run: run('b'),
+      isRunning: true,
+      visible: true,
+    },
+    { name: 'no run is shown', noticeRunId: 'a', run: null, isRunning: false, visible: true },
+  ];
+
+  for (const c of cases) {
+    it(`${c.name}: ${c.visible ? 'stands' : 'gives way'}`, () => {
+      expect(
+        importRefusalNoticeVisible({
+          noticePending: true,
+          noticeRunId: c.noticeRunId,
+          run: c.run,
+          isRunning: c.isRunning,
+        }),
+      ).toBe(c.visible);
+    });
+  }
+
+  it('never stands once the notice window is over', () => {
+    expect(
+      importRefusalNoticeVisible({
+        noticePending: false,
+        noticeRunId: null,
+        run: null,
+        isRunning: false,
+      }),
+    ).toBe(false);
+  });
+});
 
 describe('resyncNoticeKey', () => {
   it('has nothing to say while idle, regardless of family', () => {
@@ -371,6 +456,46 @@ describe('DockOutcomeAnnouncer', () => {
     expect(spoken()).toEqual([
       '3 Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.',
     ]);
+  });
+
+  // #460: the settled run's summary names the refused rows from its own record, in the panel's
+  // status region — so the announcer drops its transient twin once that run has stopped running.
+  describe('import refusal lines and the run their start began (#460)', () => {
+    const UNCHECKED = '2 Emotes nicht kopiert — Zielset gerade nicht prüfbar.';
+    const DRIFT =
+      '3 Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.';
+
+    function openNotice(runId: string | null, isRunning: boolean): void {
+      importService.run.set(nonActiveRun([]));
+      importService.isRunning.set(isRunning);
+      importService.targetUncheckedSkipped.set(2);
+      importService.duplicateCheckAvailable.set(false);
+      importService.replaceSkippedDrift.set(3);
+      importService.duplicateNoticePending.set(true);
+      importService.refusalNoticeRunId.set(runId);
+      fixture.detectChanges();
+    }
+
+    it('speaks both while the run its start began is still running', () => {
+      openNotice('import-1', true);
+
+      expect(spoken()).toEqual([UNCHECKED, DRIFT]);
+    });
+
+    it('speaks neither once that run has stopped running', () => {
+      openNotice('import-1', true);
+
+      importService.isRunning.set(false);
+      fixture.detectChanges();
+
+      expect(spoken()).toEqual([]);
+    });
+
+    it('speaks both for a start that began no run, shown run or not', () => {
+      openNotice(null, false);
+
+      expect(spoken()).toEqual([UNCHECKED, DRIFT]);
+    });
   });
 
   // #253, spec 4.5 point 17, AK 32: the shared pre-check blocked a replace-carrying start before
@@ -508,6 +633,9 @@ describe('DockOutcomeAnnouncer', () => {
       tagPlacementReportReason: null,
       tagPlacementDiscardedStaleCount: 0,
       origin: { kind: 'channel', channelName: 'quellkanal' },
+      targetUncheckedSkipped: 0,
+      duplicateCheckAvailable: true,
+      replaceSkippedDrift: 0,
       plan: { rows: [] },
       settlement: 'settled',
       removedCount: 0,
