@@ -168,6 +168,27 @@ export function undoSkippedNotice(state: {
   return undoSkippedLines(counts);
 }
 
+/**
+ * Whether the import's transient `targetUncheckedSkipped` and `replaceSkippedDrift` lines stand
+ * (#460) — shared by `ImportProgressSection` (visible, aria-hidden) and this announcer (spoken).
+ * They give way once the run their start began has stopped running: the run's settled summary
+ * names the same rows from its own record, and showing both would name each row twice (and speak
+ * it twice). Like the undo's {@link undoSkippedNotice}, neither stands while the run is
+ * `settling`. A start that began no run — everything refused, the engine refused — leaves no
+ * summary, so its notice is the only voice and stands for its whole window.
+ */
+export function importRefusalNoticeVisible(state: {
+  noticePending: boolean;
+  noticeRunId: string | null;
+  run: ImportRunInfo | null;
+  isRunning: boolean;
+}): boolean {
+  if (!state.noticePending) {
+    return false;
+  }
+  return state.noticeRunId === null || state.run?.runId !== state.noticeRunId || state.isRunning;
+}
+
 /** The two settled-run notices below (`copiedNotActiveNotice`, `renamedNotActiveNotice`) share this
  *  gate: a *settled* (`settlement === 'settled'`) run into a tracked, non-active set — the case
  *  `SevenTvImportService.onRunComplete`'s resync never fires for at all (there is nothing for
@@ -416,7 +437,7 @@ export function markedCountNoticeKey(count: number): string {
           {{ importSkippedKey() | transloco: { count: importService.skippedDuplicates() } }}
         </p>
       }
-      @if (importService.duplicateNoticePending() && importService.targetUncheckedSkipped() > 0) {
+      @if (importRefusalNoticeVisible() && importService.targetUncheckedSkipped() > 0) {
         <p>
           {{
             importTargetUncheckedSkippedKey()
@@ -424,7 +445,9 @@ export function markedCountNoticeKey(count: number): string {
           }}
         </p>
       }
-      @if (importService.duplicateNoticePending() && importService.replaceSkippedDrift() > 0) {
+      <!-- #460: both refusal counts give way once the run their start began has stopped running; the
+           settled summary names them from the run record, spoken by the panel's own status region. -->
+      @if (importRefusalNoticeVisible() && importService.replaceSkippedDrift() > 0) {
         <p>
           {{
             importReplaceSkippedDriftKey()
@@ -537,6 +560,14 @@ export class DockOutcomeAnnouncer {
   );
   protected readonly importSkippedKey = computed(() =>
     pluralKey(this.importService.skippedDuplicates(), 'import.skippedDuplicates'),
+  );
+  protected readonly importRefusalNoticeVisible = computed(() =>
+    importRefusalNoticeVisible({
+      noticePending: this.importService.duplicateNoticePending(),
+      noticeRunId: this.importService.refusalNoticeRunId(),
+      run: this.importService.run(),
+      isRunning: this.importService.isRunning(),
+    }),
   );
   protected readonly importTargetUncheckedSkippedKey = computed(() =>
     importTargetUncheckedSkippedKey(

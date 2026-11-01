@@ -46,6 +46,7 @@ import {
 } from './sync-report-outcome';
 import { ImportTagContext } from './tag-run-settlement';
 import { TransferPlan, TransferRow, TransferRowTarget } from './transfer-plan';
+import { ABORTED_DELETE_NOTICE_MS } from './seven-tv-delete.service';
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startImport`
 // call that had something to report. Same 4000 ms convention as every other transient status in
@@ -55,6 +56,13 @@ import { TransferPlan, TransferRow, TransferRowTarget } from './transfer-plan';
 // `dockVisible`/`action-dock.ts`) — a refused, all-duplicates run leaves no run/queue for the dock
 // to mount on otherwise, which is exactly the bug this exists to fix.
 const DUPLICATE_NOTICE_MS = 4000;
+
+/** #460: how long the transient notice stands for a confirmed import that started no run at all
+ *  (every row refused, or the engine refused the start). Nothing else names those rows afterwards,
+ *  and the user confirmed an action that did not happen — the same purpose, hence the same length,
+ *  as the delete's abort notice; one constant, not a second literal. A start that did start a run
+ *  keeps `DUPLICATE_NOTICE_MS`: its settled summary carries the refusal lines from then on. */
+const NOT_STARTED_NOTICE_MS = ABORTED_DELETE_NOTICE_MS;
 
 /** The same ADD the restore run uses — an import *is* an ADD, only with rows that come from
  *  somewhere else. `alias` carries the plan row's alias: the source alias for an `add` row, so the
@@ -209,6 +217,17 @@ export interface ImportRunInfo extends RunRecordBase {
    *  `startImport` from `target.tag`; `null` for every other import. */
   tag: ImportTagContext | null;
   origin: ImportOrigin;
+  /** #460: `add`/`renameSource` rows the last recheck refused before this run started because the
+   *  target read could not rule out a duplicate (#457). Bound to the run, not read from the
+   *  service-level signal of the same name, so the settled summary keeps naming them for as long
+   *  as the run is shown, and a later refused start can never rewrite them. */
+  targetUncheckedSkipped: number;
+  /** Which wording `targetUncheckedSkipped` takes: `true` when the read succeeded but did not
+   *  list the whole set, `false` when it failed or timed out. Frozen with the count. */
+  duplicateCheckAvailable: boolean;
+  /** #460: `replace` rows the last recheck held back because their target drifted since the
+   *  confirmation. Run-bound for the same reason as `targetUncheckedSkipped`. */
+  replaceSkippedDrift: number;
   /** The plan this run executes, one queue row per plan row, keyed by the source row's
    *  `importRowKey`. */
   plan: TransferPlan;
@@ -457,6 +476,14 @@ export class SevenTvImportService {
    *  to sit next to an unrelated *later* run's details with nothing to clear it. */
   readonly duplicateNoticePending = signal(false);
 
+  private readonly noticeRunIdState = signal<string | null>(null);
+
+  /** #460: the id of the run the call that opened the current notice started — `null` when that
+   *  call started none (everything refused, the engine refused, a blocked pre-check). What decides
+   *  whether the transient refusal lines give way to the run's own summary lines: see
+   *  `importRefusalNoticeVisible` in `dock-outcome-announcer.ts`. */
+  readonly refusalNoticeRunId = this.noticeRunIdState.asReadonly();
+
   /** Why the shared pre-check (spec 4.2, 6.2, E19) blocked a plan with at least one replace row
    *  before `import-flow.ts`'s `start()` ever reached `recheckTransferPlan` (spec 4.5 point 17) —
    *  `null` whenever nothing is currently blocked. Set by {@link reportTargetCheckBlocked}, which
@@ -557,9 +584,10 @@ export class SevenTvImportService {
     // queued) or by an unchecked target read (every add/renameSource row refused, #457) — without
     // this, such a run would leave no run/queue behind at all *and* no notice, which is exactly the
     // silence AK 16's "the protocol appears after every run" exists against.
-    this.showDuplicateNotice(
-      skippedDuplicates > 0 || replaceSkippedDrift > 0 || targetUncheckedSkipped > 0,
-    );
+    const hasSomethingToReport =
+      skippedDuplicates > 0 || replaceSkippedDrift > 0 || targetUncheckedSkipped > 0;
+    this.noticeRunIdState.set(null);
+    this.showDuplicateNotice(hasSomethingToReport);
     // The source row's `importRowKey` (7TV id and name) is the identity an imported row has — the
     // emote does not exist in our database yet, so there is no internal `emoteId` to mirror the key
     // from, and the id alone is not enough since one id can be two source rows under two aliases
@@ -586,6 +614,9 @@ export class SevenTvImportService {
       targetIsActiveSet: target.isActiveSet ?? true,
       tag: target.tag ?? null,
       origin,
+      targetUncheckedSkipped,
+      duplicateCheckAvailable,
+      replaceSkippedDrift,
       plan,
       settlement: 'pending',
       removedCount: 0,
@@ -624,8 +655,12 @@ export class SevenTvImportService {
       // as set: an all-duplicates import is a legitimate "refused" case whose count (and whether it
       // is even trustworthy) the caller still needs to see.
       this.lifecycle.discardUnstarted(started.runId, previousShown);
+      if (hasSomethingToReport) {
+        this.showDuplicateNotice(true, NOT_STARTED_NOTICE_MS);
+      }
       return false;
     }
+    this.noticeRunIdState.set(started.runId);
     return true;
   }
 
@@ -657,6 +692,7 @@ export class SevenTvImportService {
     this.targetUncheckedSkipped.set(0);
     this.duplicateCheckAvailable.set(true);
     this.targetCheckBlockReason.set(null);
+    this.noticeRunIdState.set(null);
     this.showDuplicateNotice(false);
   }
 
@@ -675,6 +711,7 @@ export class SevenTvImportService {
     this.duplicateCheckAvailable.set(true);
     this.replaceSkippedDrift.set(0);
     this.targetUncheckedSkipped.set(0);
+    this.noticeRunIdState.set(null);
     this.showDuplicateNotice(true);
   }
 
@@ -1176,7 +1213,10 @@ export class SevenTvImportService {
   /** #149 P2: `hasSomethingToReport` clears any earlier timer first — a second call within
    *  `DUPLICATE_NOTICE_MS` of the first must not let the first timer's clear race the new one and
    *  hide a still-current notice out from under it. */
-  private showDuplicateNotice(hasSomethingToReport: boolean): void {
+  private showDuplicateNotice(
+    hasSomethingToReport: boolean,
+    windowMs: number = DUPLICATE_NOTICE_MS,
+  ): void {
     clearTimeout(this.duplicateNoticeTimeout);
     if (!hasSomethingToReport) {
       this.duplicateNoticePending.set(false);
@@ -1185,7 +1225,7 @@ export class SevenTvImportService {
     this.duplicateNoticePending.set(true);
     this.duplicateNoticeTimeout = setTimeout(
       () => this.duplicateNoticePending.set(false),
-      DUPLICATE_NOTICE_MS,
+      windowMs,
     );
   }
 }

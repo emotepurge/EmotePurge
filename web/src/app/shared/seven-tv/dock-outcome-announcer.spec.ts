@@ -147,6 +147,9 @@ interface FakeOutcomeSource {
   skippedNameTaken: WritableSignal<number>;
   duplicateCheckAvailable: WritableSignal<boolean>;
   duplicateNoticePending: WritableSignal<boolean>;
+  refusalNoticeRunId: WritableSignal<string | null>;
+  /** Only `SevenTvImportService` has this — the refusal lines' give-way gate reads it (#460). */
+  isRunning: WritableSignal<boolean>;
   /** Only `SevenTvImportService` actually has this (finding 3, Live-Verifikation K2 2026-09-21,
    *  `copiedNotActiveNotice`) — carried on the shared fake shape anyway since both services are
    *  built from the same factory; the restore fake's copy is simply never read. */
@@ -180,6 +183,8 @@ function createFakeSource(): FakeOutcomeSource {
     skippedNameTaken: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
+    refusalNoticeRunId: signal<string | null>(null),
+    isRunning: signal(false),
     run: signal<ImportRunInfo | null>(null),
     replaceSkippedDrift: signal(0),
     targetUncheckedSkipped: signal(0),
@@ -373,6 +378,46 @@ describe('DockOutcomeAnnouncer', () => {
     ]);
   });
 
+  // #460: the settled run's summary names the refused rows from its own record, in the panel's
+  // status region — so the announcer drops its transient twin once that run has stopped running.
+  describe('import refusal lines and the run their start began (#460)', () => {
+    const UNCHECKED = '2 Emotes nicht kopiert — Zielset gerade nicht prüfbar.';
+    const DRIFT =
+      '3 Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.';
+
+    function openNotice(runId: string | null, isRunning: boolean): void {
+      importService.run.set(nonActiveRun([]));
+      importService.isRunning.set(isRunning);
+      importService.targetUncheckedSkipped.set(2);
+      importService.duplicateCheckAvailable.set(false);
+      importService.replaceSkippedDrift.set(3);
+      importService.duplicateNoticePending.set(true);
+      importService.refusalNoticeRunId.set(runId);
+      fixture.detectChanges();
+    }
+
+    it('speaks both while the run its start began is still running', () => {
+      openNotice('import-1', true);
+
+      expect(spoken()).toEqual([UNCHECKED, DRIFT]);
+    });
+
+    it('speaks neither once that run has stopped running', () => {
+      openNotice('import-1', true);
+
+      importService.isRunning.set(false);
+      fixture.detectChanges();
+
+      expect(spoken()).toEqual([]);
+    });
+
+    it('speaks both for a start that began no run, shown run or not', () => {
+      openNotice(null, false);
+
+      expect(spoken()).toEqual([UNCHECKED, DRIFT]);
+    });
+  });
+
   // #253, spec 4.5 point 17, AK 32: the shared pre-check blocked a replace-carrying start before
   // anything ran — same reachable-with-no-run shape as the drift notice above, same window.
   it('fills the region that was already standing when the shared pre-check blocks a replace-carrying start', () => {
@@ -508,6 +553,9 @@ describe('DockOutcomeAnnouncer', () => {
       tagPlacementReportReason: null,
       tagPlacementDiscardedStaleCount: 0,
       origin: { kind: 'channel', channelName: 'quellkanal' },
+      targetUncheckedSkipped: 0,
+      duplicateCheckAvailable: true,
+      replaceSkippedDrift: 0,
       plan: { rows: [] },
       settlement: 'settled',
       removedCount: 0,

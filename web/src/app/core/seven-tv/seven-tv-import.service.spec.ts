@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ImportOrigin, ImportRow } from './import-source';
 import { TagPlacementsResult } from '../tags/emote-tag.model';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
-import { REPORT_TIMEOUT_MS } from './seven-tv-delete.service';
+import { ABORTED_DELETE_NOTICE_MS, REPORT_TIMEOUT_MS } from './seven-tv-delete.service';
 import { SevenTvImportService } from './seven-tv-import.service';
 import { RUN_DELAY_MS } from './seven-tv-run-engine';
 import { CANCEL_SETTLE_GRACE_MS, SET_ENTRIES_READ_TIMEOUT_MS } from './seven-tv-run-settlement';
@@ -760,11 +760,28 @@ describe('SevenTvImportService', () => {
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
-    it('clears itself after DUPLICATE_NOTICE_MS without any dismiss call', () => {
-      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([]), 2);
+    // #460: a start that ran nothing keeps the longer window; the 4 s one is the mixed plan's.
+    it('clears itself after DUPLICATE_NOTICE_MS without any dismiss call, for a start that began a run', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 2);
       expect(service.duplicateNoticePending()).toBe(true);
 
       vi.advanceTimersByTime(3999);
+      expect(service.duplicateNoticePending()).toBe(true);
+
+      vi.advanceTimersByTime(1);
+      expect(service.duplicateNoticePending()).toBe(false);
+
+      runTwoRowsToDone();
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('holds the notice for ABORTED_DELETE_NOTICE_MS when the start began no run (every row refused)', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([]), 0, true, 0, 3);
+      expect(service.duplicateNoticePending()).toBe(true);
+      expect(service.refusalNoticeRunId()).toBeNull();
+
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS - 1);
       expect(service.duplicateNoticePending()).toBe(true);
 
       vi.advanceTimersByTime(1);
@@ -773,15 +790,15 @@ describe('SevenTvImportService', () => {
 
     it("a second call within the window restarts it, rather than the first call's timer cutting the new notice short", () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([]), 2);
-      vi.advanceTimersByTime(3000);
+      vi.advanceTimersByTime(7000);
 
       service.startImport(TARGET_C, CHANNEL_ORIGIN, addPlan([]), 3);
       vi.advanceTimersByTime(2000);
 
-      // 5000 ms after the first call, but only 2000 ms after the second — still pending.
+      // 9000 ms after the first call, but only 2000 ms after the second — still pending.
       expect(service.duplicateNoticePending()).toBe(true);
 
-      vi.advanceTimersByTime(2000);
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS - 2000);
       expect(service.duplicateNoticePending()).toBe(false);
     });
 
@@ -792,6 +809,67 @@ describe('SevenTvImportService', () => {
       service.reset();
 
       expect(service.duplicateNoticePending()).toBe(false);
+    });
+  });
+
+  // #460: the refusal counts of the start travel on the run it opened, so the settled summary can
+  // keep naming them and a later refused start cannot rewrite them.
+  describe('run-bound refusal counts (#460)', () => {
+    function settleRun(): void {
+      runTwoRowsToDone();
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    }
+
+    it('records both counts and the wording flag on the run the start opened', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 0, false, 2, 3);
+
+      const run = service.run();
+      expect(run?.targetUncheckedSkipped).toBe(3);
+      expect(run?.duplicateCheckAvailable).toBe(false);
+      expect(run?.replaceSkippedDrift).toBe(2);
+      expect(service.refusalNoticeRunId()).toBe(run?.runId);
+
+      settleRun();
+    });
+
+    it('defaults the run-bound counts to none, with the check available', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
+
+      expect(service.run()?.targetUncheckedSkipped).toBe(0);
+      expect(service.run()?.replaceSkippedDrift).toBe(0);
+      expect(service.run()?.duplicateCheckAvailable).toBe(true);
+
+      settleRun();
+    });
+
+    it('a refused start leaves the shown run untouched, whatever it refused itself', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 0, true, 0, 1);
+      const shown = service.run();
+      settleRun();
+      expect(service.run()?.runId).toBe(shown?.runId);
+
+      expect(service.startImport(TARGET_C, CHANNEL_ORIGIN, addPlan([]), 0, false, 4, 5)).toBe(
+        false,
+      );
+
+      expect(service.run()?.runId).toBe(shown?.runId);
+      expect(service.run()?.targetUncheckedSkipped).toBe(1);
+      expect(service.run()?.duplicateCheckAvailable).toBe(true);
+      expect(service.run()?.replaceSkippedDrift).toBe(0);
+      // The refused call's own counts live on the transient signals only, with no run behind them.
+      expect(service.targetUncheckedSkipped()).toBe(5);
+      expect(service.refusalNoticeRunId()).toBeNull();
+    });
+
+    it('reset() forgets which run the notice belongs to', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 0, true, 0, 1);
+      settleRun();
+
+      service.reset();
+
+      expect(service.refusalNoticeRunId()).toBeNull();
+      expect(service.run()).toBeNull();
     });
   });
 
