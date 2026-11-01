@@ -9,6 +9,7 @@ import {
   inject,
   input,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { rxResource, takeUntilDestroyed } from '@angular/core/rxjs-interop';
@@ -73,6 +74,8 @@ import {
   atlasColumns,
 } from '../../shared/grid/atlas-grid';
 import { chunkIntoRows } from '../../shared/grid/grid-columns';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { DockOutcomeAnnouncer } from '../../shared/seven-tv/dock-outcome-announcer';
 import { DeletableEmote, MassDeletePanel } from '../../shared/seven-tv/mass-delete-panel';
 import { RestoreProgressSection } from '../../shared/seven-tv/restore-progress-section';
@@ -150,6 +153,7 @@ export class VoteSessionDetailPage {
   private readonly dialog = inject(Dialog);
   private readonly emoteSetService = inject(SevenTvEmoteSetService);
   private readonly importCoverageService = inject(ImportCoverageService);
+  private readonly deleteService = inject(SevenTvDeleteService);
 
   /** See UsageStatsPage: no 7TV write access without a mouse. */
   protected readonly isCoarse = inject(PointerModeService).isCoarse;
@@ -555,6 +559,57 @@ export class VoteSessionDetailPage {
     this.orderedEmotes,
   );
 
+  /** The delete run the ballot on screen can still be told about: the last one, when it ran in this
+   *  channel over the set the panel is bound to. `null` while a run is in flight and for any other. */
+  private readonly shownDeleteRun = computed(() => {
+    const run = this.deleteService.lastRun();
+    return run !== null &&
+      run.channelName === this.channelName() &&
+      run.setId === this.massDeletePanelSetId()
+      ? run
+      : null;
+  });
+
+  /** The `result` of the last delete run whose `done` rows are already deselected (#453) — makes the
+   *  restore effect's `reloadRequested` for the same delete a no-op for the selection. */
+  private consumedDeleteResult: RunResult | null = null;
+
+  /** The run `result` the user has moved on from (a selection gesture, a session or channel
+   *  switch) — per result, so a prune never brings the hint back and the next run is never
+   *  pre-dismissed. */
+  private readonly retryHintDismissedFor = signal<RunResult | null>(null);
+
+  /** How many marked rows the shown run left undeleted, `0` when the hint is not on screen. This
+   *  page's runs are id rows only, so a run key is the 7TV id and maps to its ballot row's Guid. */
+  protected readonly retryCount = computed(() => {
+    const run = this.shownDeleteRun();
+    if (run === null || this.retryHintDismissedFor() === run.result) {
+      return 0;
+    }
+    const done = new Set(this.selectionKeysOfRunKeys(run.result.doneKeys));
+    const notDone = new Set(
+      this.selectionKeysOfRunKeys(
+        run.result.items.filter((item) => item.status !== 'done').map((item) => item.key),
+      ),
+    );
+    return this.selection.selectedKeys().filter((key) => notDone.has(key) && !done.has(key)).length;
+  });
+
+  /** The retry count as shown and spoken: 0 unless the panel the hint belongs to is mounted (the
+   *  template's own gate). */
+  protected readonly shownRetryCount = computed(() =>
+    this.results() &&
+    this.canSelectForDelete() &&
+    !this.isCoarse() &&
+    this.massDeletePanelSetId() !== null
+      ? this.retryCount()
+      : 0,
+  );
+
+  protected readonly retryHintKey = computed(() =>
+    pluralKey(this.shownRetryCount(), 'usageStats.delete.retryHint'),
+  );
+
   protected readonly emoteCountKey = computed(() =>
     pluralKey(this.orderedEmotes().length, 'emoteCount'),
   );
@@ -616,6 +671,13 @@ export class VoteSessionDetailPage {
       if (this.isCoarse()) {
         this.selection.clear();
       }
+    });
+
+    // A session or channel switch retires the retry hint of the run before it.
+    effect(() => {
+      this.channelName();
+      this.sessionId();
+      untracked(() => this.dismissRetryHint());
     });
 
     effect((onCleanup) => {
@@ -779,6 +841,7 @@ export class VoteSessionDetailPage {
       this.openDrilldown(emote);
       return;
     }
+    this.dismissRetryHint();
     this.selection.onRowClick(emote, event as MouseEvent);
   }
 
@@ -1029,6 +1092,12 @@ export class VoteSessionDetailPage {
   // page's own selection stays keyed by the Guid, which every ballot row has.
   protected onDeleted(deletedSevenTvEmoteIds: string[]): void {
     const deleted = new Set(deletedSevenTvEmoteIds);
+    // Only the deleted rows leave the selection (#453); the rest stays marked for a retry. Resolved
+    // to Guids before the rows are dropped below.
+    const run = this.shownDeleteRun();
+    if (run !== null) {
+      this.deselectRunRows(run.result, deletedSevenTvEmoteIds);
+    }
     this.results.update((results) =>
       results
         ? {
@@ -1037,14 +1106,23 @@ export class VoteSessionDetailPage {
           }
         : results,
     );
-    this.selection.clear();
   }
 
   // The delete run finished on 7TV, but the backend could not confirm it — refetch instead of
-  // filtering locally, so the list never claims a state the server does not share.
+  // filtering locally, so the list never claims a state the server does not share. The run's `done`
+  // rows were removed on 7TV all the same, so they leave the selection; a reload that follows a
+  // restore finds the delete's result consumed and only reloads.
   protected onReloadRequested(): void {
-    this.selection.clear();
+    const run = this.shownDeleteRun();
+    if (run !== null) {
+      this.deselectRunRows(run.result, run.result.doneKeys);
+    }
     this.load();
+  }
+
+  protected clearSelection(): void {
+    this.dismissRetryHint();
+    this.selection.clear();
   }
 
   /**
@@ -1130,6 +1208,26 @@ export class VoteSessionDetailPage {
       next: (results) => this.applyResults(results, options),
       error: () => this.errorMessage.set('voting.detail.errors.loadFailed'),
     });
+  }
+
+  /** Run keys (7TV ids — this page runs id rows only) → the ballot rows' Guids, the selection's key. */
+  private selectionKeysOfRunKeys(runKeys: readonly string[]): string[] {
+    const ids = new Set(runKeys);
+    return (this.results()?.emotes ?? [])
+      .filter((emote) => ids.has(emote.sevenTvEmoteId))
+      .map((emote) => emote.emoteId);
+  }
+
+  private deselectRunRows(result: RunResult, doneKeys: readonly string[]): void {
+    if (this.consumedDeleteResult === result) {
+      return;
+    }
+    this.consumedDeleteResult = result;
+    this.selection.deselectKeys(this.selectionKeysOfRunKeys(doneKeys));
+  }
+
+  private dismissRetryHint(): void {
+    this.retryHintDismissedFor.set(untracked(() => this.deleteService.lastRun())?.result ?? null);
   }
 
   private applyResults(results: VoteSessionResults, options: { freeze: boolean }): void {

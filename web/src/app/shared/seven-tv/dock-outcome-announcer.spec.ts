@@ -54,6 +54,10 @@ const DE_TRANSLATIONS = {
       },
     },
     delete: {
+      retryHint: {
+        one: '{{ count }} Eintrag nicht gelöscht, weiter ausgewählt.',
+        other: '{{ count }} Einträge nicht gelöscht, weiter ausgewählt.',
+      },
       pendingSync: {
         one: '{{ names }} wird abgeglichen, nicht im Löschlauf.',
         other: '{{ names }} werden abgeglichen, nicht im Löschlauf.',
@@ -204,6 +208,7 @@ function createFakeUndoSource(): FakeUndoSource {
     [markedCount]="markedCount()"
     [hiddenSelectedCount]="hiddenSelectedCount()"
     [pendingSyncNames]="pendingSyncNames()"
+    [retrySelectedCount]="retrySelectedCount()"
   />`,
 })
 class HostPage {
@@ -211,6 +216,7 @@ class HostPage {
   readonly markedCount = signal(0);
   readonly hiddenSelectedCount = signal(0);
   readonly pendingSyncNames = signal<readonly string[]>([]);
+  readonly retrySelectedCount = signal(0);
 }
 
 // Keyed by the type rather than hand-listed, so a new ResyncTriggerState member (other than
@@ -716,6 +722,34 @@ describe('DockOutcomeAnnouncer', () => {
       '2 davon durch den Filter ausgeblendet',
       'Synchronisierung angestoßen.',
     ]);
+  });
+
+  /**
+   * protects: the retry hint (#453) is spoken on each 0 -> positive transition of the host's count.
+   * fails_when: a positive -> positive change (a prune from 25 to 24) speaks again, the return to 0
+   *   speaks, or a second run with the same count stays silent.
+   * no_claim: the DOM nesting of the paragraph, the wording of the translation.
+   */
+  it('speaks the retry hint once per 0 -> positive transition and stays silent on prunes', () => {
+    const host = fixture.componentInstance;
+    const regionAtRest = regions()[0];
+
+    host.retrySelectedCount.set(25);
+    fixture.detectChanges();
+    expect(spoken()).toEqual(['25 Einträge nicht gelöscht, weiter ausgewählt.']);
+
+    host.retrySelectedCount.set(24);
+    fixture.detectChanges();
+    expect(spoken()).toEqual(['25 Einträge nicht gelöscht, weiter ausgewählt.']);
+
+    host.retrySelectedCount.set(0);
+    fixture.detectChanges();
+    expect(spoken()).toEqual([]);
+
+    host.retrySelectedCount.set(25);
+    fixture.detectChanges();
+    expect(spoken()).toEqual(['25 Einträge nicht gelöscht, weiter ausgewählt.']);
+    expect(regions()).toEqual([regionAtRest]);
   });
 
   // #201 T-C: a tag play-in's placement report — its end state only, never the pending line.

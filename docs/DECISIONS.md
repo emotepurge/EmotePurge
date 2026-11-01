@@ -32,6 +32,22 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-11-01 — A finished delete run consumes only its done rows (#453)
+
+**Betrifft:** `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/features/usage-stats/usage-stats-page.html` · `web/src/app/features/voting/vote-session-detail-page.ts` · `web/src/app/features/voting/vote-session-detail-page.html` · `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `web/public/i18n/en.json` · `web/public/i18n/de.json` · `docs/UI-Designsprache.md`
+
+Operator decision. Until now the host page cleared the **whole** selection once a delete run had settled, whatever each row's outcome; after the run of 2026-10-27 the user had to find about 25 skipped rows of 155 again by name and re-mark them one by one. The rule is now: **a run deselects exactly the rows it deleted (`done`). Every other row of the run (skipped, failed, cancelled, `unknown`) and every row marked after the confirmation stays selected**, and the dock says so once: "n entries were not deleted and are still selected — start the delete again to retry." The selection is the retry mechanism; there is no retry button and no automatic retry.
+
+- **Done rows are mapped to selection keys, not matched by position.** An entry key (`${id}#${cardKey}`) names the card whose `entryRowKey` equals it; a bare 7TV id names every card of that id (an id row took every entry). On the vote page the 7TV id maps to the ballot row's Guid. One helper per page serves both the deselection and the hint count, so the two cannot drift.
+- **`onReloadRequested` no longer calls `clear()`.** On a `failed`/`partial` report the done rows were removed on 7TV even though the backend may still list them until its resync, so they are deselected; the nothing-but-`unknown` case deselects nothing. Rows that left the list are pruned by the existing `retainAmong` after the refresh.
+- **A delete result is consumed once.** The panel's restore effect also emits `reloadRequested` while `lastRun()` still points at the historical delete; consuming the result identity makes that second reload a refresh only, so a restored and re-marked row keeps its mark. Both handlers deselect only for a run of this channel over the shown set, in the active view (a non-active view only refreshes and shows no hint; the vote page: the set its panel is bound to).
+- **The hint is derived from `lastRun()` alone** (selected keys that belong to non-`done` rows of the matching run), so a run for which the panel emits nothing, because every row was skipped, still shows it. It is dismissed per run result by the next selection gesture or a set/channel (vote page: session) switch and does not return for that result when a prune leaves the count positive; the next run's result is never pre-dismissed. The `DockOutcomeAnnouncer` speaks it on each 0-to-positive transition of `retrySelectedCount` and stays silent on a change between positive values and on the return to 0.
+- **Unchanged:** which rows a run reports, `doneKeys`, the panel's outputs, "shown = deleted" (#229), and the tags page (its clear-out selection is "ticked own placements" and its removal report moves kept ids and deactivates the tag; keeping ticks after a settled report would contradict that flow).
+
+Tests: usage page (mixed done/skipped, id row over two cards, rows marked during the run, reload without `clear()`, second reload for one result, other channel/set, retry count incl. an all-skipped run, per-result dismissal), announcer (0-to-positive only), vote page (Guid mapping, guards, restore reload), one E2E case.
+
+---
+
 ### 2026-10-29 — Copy flow: a source row is a set entry, not a 7TV id (#444)
 
 **Betrifft:** `web/src/app/core/seven-tv/import-source.ts` · `web/src/app/shared/seven-tv/import-preview.ts` · `web/src/app/shared/seven-tv/already-present-filter.ts` · `web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/features/usage-stats/usage-stats-page.ts` · `web/src/app/shared/export/usage-export-purposes.ts` · `web/src/app/shared/export/import-source-parser.ts` · `web/src/app/shared/seven-tv/foreign-import-flow.ts` · `web/src/app/core/seven-tv/undo-plan.ts` · `web/src/app/core/seven-tv/seven-tv-import.service.ts` · `web/src/app/shared/seven-tv/conflict-resolution.ts` · `web/src/app/shared/seven-tv/import-conflict-resolution-step.ts` · `web/public/i18n/de.json` · `web/public/i18n/en.json` · `docs/superpowers/specs/2026-10-10-emote-slots-spec.md`

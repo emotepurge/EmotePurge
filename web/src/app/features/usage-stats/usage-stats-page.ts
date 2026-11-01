@@ -2327,6 +2327,64 @@ export class UsageStatsPage {
     !this.isCoarse() && this.selectedEmoteSetId() !== null ? this.pendingSyncNames() : [],
   );
 
+  /** The delete run the rows on screen can still be told about: the last one, when it ran in this
+   *  channel and over the set shown, in the active view (a non-active view only refreshes, edge 9a). `null` while a run is in flight (`lastRun()` is `null` then) and
+   *  for a run of another channel or set. */
+  private readonly shownDeleteRun = computed(() => {
+    const run = this.deleteService.lastRun();
+    return run !== null &&
+      run.channelName === this.totalsChannel() &&
+      run.setId === this.shownSetId() &&
+      !this.isNonActiveView()
+      ? run
+      : null;
+  });
+
+  /** The `result` of the last delete run whose `done` rows have already been deselected (#453). A
+   *  plain field: no computed reads it, and it only has to make the second `reloadRequested` for the
+   *  same run — the restore effect's — a no-op for the selection. */
+  private consumedDeleteResult: RunResult | null = null;
+
+  /** The run `result` whose retry hint the user has moved on from (a selection gesture, a set or
+   *  channel switch). Per result, so a `retainAmong` prune that leaves the count positive does not
+   *  bring the hint back, and the next run's result is never pre-dismissed. */
+  private readonly retryHintDismissedFor = signal<RunResult | null>(null);
+
+  /** How many marked rows the shown run left undeleted (skipped, failed, cancelled, `unknown`) and
+   *  that are still marked — `done` rows are not counted, so this is right before `onDeleted` has
+   *  deselected them. Derived from `lastRun()` alone, so a run for which the panel emits nothing
+   *  (all rows skipped) is covered too. */
+  private readonly retryCount = computed(() => {
+    const run = this.shownDeleteRun();
+    if (run === null) {
+      return 0;
+    }
+    const done = new Set(this.selectionKeysOfRunKeys(run.result.doneKeys));
+    const notDone = new Set(
+      this.selectionKeysOfRunKeys(
+        run.result.items.filter((item) => item.status !== 'done').map((item) => item.key),
+      ),
+    );
+    return this.selection.selectedKeys().filter((key) => notDone.has(key) && !done.has(key)).length;
+  });
+
+  /** The retry hint's count as the dock shows and `DockOutcomeAnnouncer` speaks it, `0` when the
+   *  hint is not on screen: nothing left over, dismissed for this run, or the dock's own gates
+   *  (`!isCoarse()`, the marking half's set gate) are closed. */
+  protected readonly dockRetryCount = computed(() => {
+    const run = this.shownDeleteRun();
+    return run !== null &&
+      !this.isCoarse() &&
+      this.selectedEmoteSetId() !== null &&
+      this.retryHintDismissedFor() !== run.result
+      ? this.retryCount()
+      : 0;
+  });
+
+  protected readonly retryHintKey = computed(() =>
+    pluralKey(this.dockRetryCount(), 'usageStats.delete.retryHint'),
+  );
+
   /**
    * How many slots of the shown set deleting the marked rows would free (spec 8.2, AK 58; D27), per
    * row kind (plan 378, 4.9): an entry row frees its one slot; an id row frees every entry of the id
@@ -2849,6 +2907,13 @@ export class UsageStatsPage {
       }
     });
 
+    // A set or channel switch retires the retry hint of the run before it.
+    effect(() => {
+      this.channelName();
+      this.shownSetId();
+      untracked(() => this.dismissRetryHint());
+    });
+
     // Resolves "all time" against the tracking start as soon as it is known — the initial from()
     // is only a placeholder (see its declaration). Every consumer of from() (grid request,
     // drilldown, export, vote-session prefill) inherits the corrected value. Re-selecting "all" in
@@ -3234,6 +3299,7 @@ export class UsageStatsPage {
       return;
     }
 
+    this.dismissRetryHint();
     this.selection.onRowClick(emote, event);
   }
 
@@ -3266,6 +3332,7 @@ export class UsageStatsPage {
   protected selectBand(key: AtlasGroupKey): void {
     const group = this.atlasGroups().find((candidate) => candidate.key === key);
     if (group) {
+      this.dismissRetryHint();
       this.selection.selectMany(group.items);
       // A bulk gesture, unlike an individual click, has no cell of its own to announce through —
       // see `dockMarkedCount`'s comment for why only these two writers exist.
@@ -3276,6 +3343,7 @@ export class UsageStatsPage {
   /** The toolbar's mark-all control (see `showMarkAll`/`markAllDisabled`) — scope is the current
    *  filtered/sorted/banded view, exactly what `atlasOrder()` returns and the sheet is showing. */
   protected markAll(): void {
+    this.dismissRetryHint();
     this.selection.selectMany(this.atlasOrder());
     // See `selectBand()`'s comment just above for why this writes here and `dockMarkedCount`'s own
     // comment for why the announcer needs it at all.
@@ -3477,6 +3545,11 @@ export class UsageStatsPage {
         sum + Math.max(cardSlots, runAliasCounts.get(sevenTvEmoteId) ?? 0),
       freedEntrySlots.size,
     );
+    // Only the rows the run deleted leave the selection (#453): skipped, failed and cancelled rows
+    // stay marked so the user can start the delete again, and so does whatever was marked meanwhile.
+    // Before the cards are dropped below, so the keys still resolve and `selectedItems` is never
+    // ahead of the list.
+    this.deselectRunRows(run.result, doneKeys);
     this.totalsRows.update((items) =>
       items
         .filter(
@@ -3504,7 +3577,6 @@ export class UsageStatsPage {
         ? { ...status, occupiedSlots: Math.max(status.occupiedSlots - freedSlots, 0) }
         : status,
     );
-    this.selection.clear();
   }
 
   // Hands the dialog a LIVE view of the selection (#132), not a snapshot: this page keeps reloading
@@ -3836,8 +3908,21 @@ export class UsageStatsPage {
   // The delete run finished on 7TV, but the backend could not confirm it — refetch instead of
   // filtering locally, so the list never claims a state the server does not share.
   protected onReloadRequested(): void {
-    this.selection.clear();
+    // Not clear() (#453): the delete's `done` rows were removed on 7TV even when the backend cannot
+    // confirm it, so they leave the selection; everything else stays marked. A reload that follows a
+    // restore finds the delete's result already consumed and only refreshes.
+    const run = this.shownDeleteRun();
+    if (run !== null) {
+      this.deselectRunRows(run.result, run.result.doneKeys);
+    }
     this.refresh();
+  }
+
+  /** Records that the user has moved on from the retry hint of the run shown now — see
+   *  `retryHintDismissedFor`. */
+  protected clearSelection(): void {
+    this.dismissRetryHint();
+    this.selection.clear();
   }
 
   /** The single writer of `bulkMarkAnnouncement`/`bulkMarkSnapshot` (see `markAll()`/`selectBand()`,
@@ -4371,6 +4456,34 @@ export class UsageStatsPage {
       clearTimeout(this.tagFeedbackTimeout);
       this.tagFeedbackTimeout = null;
     }
+  }
+
+  /** Run keys → selection keys (`slotKey`): an entry key (`${id}#${cardKey}`) names the card whose
+   *  `entryRowKey` equals it, a bare 7TV id every card of that id (an id row took every entry). One
+   *  mapping for the done rows' deselection and the retry count, so the two cannot drift. */
+  private selectionKeysOfRunKeys(runKeys: readonly string[]): string[] {
+    const ids = new Set(runKeys.filter((key) => !key.includes('#')));
+    const entryKeys = new Set(runKeys.filter((key) => key.includes('#')));
+    return this.emotes()
+      .filter(
+        (emote) =>
+          ids.has(emote.sevenTvEmoteId) ||
+          entryKeys.has(entryRowKey(emote.sevenTvEmoteId, emote.slotKey)),
+      )
+      .map((emote) => emote.slotKey);
+  }
+
+  /** Unmarks the rows `doneKeys` name, once per run `result` (#453). */
+  private deselectRunRows(result: RunResult, doneKeys: readonly string[]): void {
+    if (this.consumedDeleteResult === result) {
+      return;
+    }
+    this.consumedDeleteResult = result;
+    this.selection.deselectKeys(this.selectionKeysOfRunKeys(doneKeys));
+  }
+
+  private dismissRetryHint(): void {
+    this.retryHintDismissedFor.set(untracked(() => this.deleteService.lastRun())?.result ?? null);
   }
 
   /**
