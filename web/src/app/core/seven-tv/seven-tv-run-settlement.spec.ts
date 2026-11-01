@@ -43,6 +43,8 @@ function setEntries(overrides: Partial<SevenTvSetEntries> = {}): SevenTvSetEntri
     animatedById: new Map(),
     occupiedSlots: 0,
     complete: true,
+    readState: 'complete',
+    omittedCount: 0,
     ...overrides,
   };
 }
@@ -530,6 +532,33 @@ describe('mergeIntoBaseline', () => {
 
     expect(aliasesOf(baseline)).toEqual({ [T1]: ['a', 'b'], [T2]: ['cc'] });
   });
+
+  /*
+   * #454 review: a gap read proves presence only, so it must never replace the baseline — an entry
+   * it does not list may be hidden, not gone.
+   * protects: the collateral check after a removal keeps an entry a complete read established.
+   * fails_when: merging a gap read drops a date of an unfrozen baseline.
+   * no_claim: complete reads, which still replace an unfrozen baseline (test above).
+   */
+  it('only accumulates a gap read, even while nothing of the emote is frozen', () => {
+    const baseline: EntryBaseline = new Map();
+    mergeIntoBaseline(baseline, 'x', [
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T2 },
+    ]);
+    mergeIntoBaseline(baseline, 'x', [{ alias: 'a', addedAt: T1 }], { gap: true });
+    mergeIntoBaseline(
+      baseline,
+      'x',
+      [
+        { alias: 'a2', addedAt: T1 },
+        { alias: 'c', addedAt: T3 },
+      ],
+      { gap: true },
+    );
+
+    expect(aliasesOf(baseline)).toEqual({ [T1]: ['a2'], [T2]: ['b'], [T3]: ['c'] });
+  });
 });
 
 // Plan-378 4.5 (S5, T-3, T-4): clearing up and checking a slot delete run per entry.
@@ -638,6 +667,41 @@ describe('slot delete settlement', () => {
       expect(settled.unexpectedRemovals).toBeNull();
       expect(settled.result.items[0].status).toBe('unknown');
     }
+  });
+
+  /*
+   * #454: a gap read (7TV lists fewer entries than it counts) proves presence only, never absence.
+   * protects: decision 2 and AC 7 — no unknown row is cleared up and no unexpected removal is
+   *   concluded from a gap read, because `readableEntries` takes only `complete` reads.
+   * fails_when: a gap read settles an unknown id row whose id it does not list, or an unknown entry
+   *   row whose entry it does not list, or yields a non-null `unexpectedRemovals`.
+   * no_claim: who owes the post-check (`entryPostCheckOwed`), the delete service's merge of earlier
+   *   findings.
+   */
+  it('settles nothing against a gap read: an absent id or entry stays unknown, no unexpected removal', () => {
+    const baseline = baselineOf([
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T2 },
+    ]);
+    const idRow = queueItem({ key: 'gone', status: 'unknown' });
+    const gap = setEntries({
+      aliasesById: new Map([['x', []]]),
+      entriesById: new Map([['x', []]]),
+      complete: false,
+      readState: 'gap',
+      omittedCount: 2,
+    });
+
+    const settled = settleEntryDeleteRun(
+      runResult([idRow, entryItem('a', T1, 'unknown')]),
+      gap,
+      baseline,
+    );
+
+    expect(settled.result.items.map((item) => item.status)).toEqual(['unknown', 'unknown']);
+    expect(settled.result.doneKeys).toEqual([]);
+    expect(settled.unexpectedRemovals).toBeNull();
+    expect(settleDeleteResult(runResult([idRow]), gap).items[0]).toBe(idRow);
   });
 
   it('counts without a tie and goes by alias inside one', () => {

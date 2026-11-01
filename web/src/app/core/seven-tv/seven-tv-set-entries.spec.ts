@@ -4,7 +4,15 @@ import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { loadSevenTvSetEntries } from './seven-tv-set-entries';
+import { SevenTvSetReadError, loadSevenTvSetEntries } from './seven-tv-set-entries';
+import {
+  GAP_FIXTURE_TOTAL_COUNT,
+  gapRead496of494Pages,
+  gapRead496of494Response,
+  hiddenEntries,
+  setEntriesResponse,
+  visibleEntries,
+} from './seven-tv-set-entries.testing';
 
 const GQL_ENDPOINT = 'https://7tv.io/v4/gql';
 
@@ -274,6 +282,61 @@ describe('loadSevenTvSetEntries', () => {
     await expect(result$).rejects.toThrow();
   });
 
+  /*
+   * #454 A3 step 1: the slot delete's binding read must tell 7TV's rate limit apart from any other
+   * failed read, so it can wait instead of counting a failure.
+   * protects: the rate-limit numbers survive from 7TV's answer to the caller; the thrown value stays
+   *   an `Error` for every caller that catches a failed read.
+   * fails_when: a rate-limit answer loses its reset, another GraphQL error claims a rate limit, or
+   *   the error stops being an `Error`.
+   * no_claim: header names beyond the parsed numbers; how the delete run uses them.
+   */
+  describe('a GraphQL-level rejection', () => {
+    it("carries 7TV's rate-limit numbers when the rejection is its rate limit", async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      httpMock.expectOne(GQL_ENDPOINT).flush({
+        errors: [
+          {
+            message: 'RATE_LIMIT_EXCEEDED rate limit exceeded',
+            extensions: {
+              code: 'RATE_LIMIT_EXCEEDED',
+              status: 429,
+              headers: {
+                'x-ratelimit-emote_set_change-reset': '7',
+                'x-ratelimit-emote_set_change-limit': '100',
+              },
+            },
+          },
+        ],
+      });
+
+      const error = await result$.catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toBeInstanceOf(SevenTvSetReadError);
+      expect((error as SevenTvSetReadError).rateLimit).toEqual({
+        limit: 100,
+        remaining: null,
+        reset: 7,
+        used: null,
+      });
+    });
+
+    it('carries no rate limit for any other rejection, or an answer without the entries', async () => {
+      const rejected$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      httpMock
+        .expectOne(GQL_ENDPOINT)
+        .flush({ errors: [{ message: 'unknown set', extensions: { code: 'NOT_FOUND' } }] });
+      const empty$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      httpMock.expectOne(GQL_ENDPOINT).flush({ data: { emoteSets: { emoteSet: null } } });
+
+      for (const result$ of [rejected$, empty$]) {
+        const error = await result$.catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(Error);
+        expect((error as SevenTvSetReadError).rateLimit).toBeNull();
+      }
+    });
+  });
+
   // Plan-378 4.1 [E2]: the add date is read only when asked for, so every other reader (import,
   // undo, the id-row delete run) keeps today's query and result.
   describe('with the add date on request', () => {
@@ -538,6 +601,194 @@ describe('loadSevenTvSetEntries', () => {
       httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'rate limited' }] });
 
       await expect(result$).rejects.toThrow();
+    });
+  });
+
+  /*
+   * #454: a read that lists fewer entries than 7TV counts, but is otherwise self-consistent, is a
+   * gap — only for a caller that opts in with `detectGap`.
+   *
+   * protects: decision 1 and AC 1/2/3 of #454 — the gap is told apart from every other incomplete
+   *   read, `complete` keeps its meaning, and a caller without `detectGap` sends and gets exactly
+   *   what it did before.
+   * fails_when: the under-count is reported `complete` or (with `detectGap`) `inconsistent`; an
+   *   over-count, drift, repeat, verify mismatch, page cap or empty list becomes `gap`; a gap read
+   *   has `complete: true`; a read without `detectGap` sends a verification request for an
+   *   under-count or loses its partial maps.
+   * no_claim: how the delete flow or the delete run act on a gap (their own specs); request
+   *   counts of the fail-closed cases.
+   */
+  describe('gap classification (detectGap, #454)', () => {
+    function flushNext(response: object, expectedPage: number) {
+      const req = httpMock.expectOne(GQL_ENDPOINT);
+      expect(req.request.body.variables.page).toBe(expectedPage);
+      req.flush(response);
+    }
+
+    it('classifies the measured 496/494 single page as a gap of 2 with occupiedSlots 496', async () => {
+      const result$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt: true, detectGap: true }),
+      );
+      flushNext(gapRead496of494Response(), 1);
+
+      const result = await result$;
+      expect(result.readState).toBe('gap');
+      expect(result.omittedCount).toBe(2);
+      expect(result.complete).toBe(false);
+      expect(result.occupiedSlots).toBe(GAP_FIXTURE_TOTAL_COUNT);
+      expect(result.aliasesById.size).toBe(494);
+      for (const hidden of hiddenEntries) {
+        expect(result.aliasesById.has(hidden.id)).toBe(false);
+      }
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('stays a gap when one listed entry carries no add date', async () => {
+      const entries = visibleEntries();
+      const page = setEntriesResponse(entries, { totalCount: GAP_FIXTURE_TOTAL_COUNT });
+      (page.data.emoteSets.emoteSet.emotes.items[0] as { addedAt?: string | null }).addedAt = null;
+      const result$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt: true, detectGap: true }),
+      );
+      flushNext(page, 1);
+
+      const result = await result$;
+      expect(result.readState).toBe('gap');
+      expect(result.entriesById?.get(entries[0].id)).toEqual([
+        { alias: entries[0].alias, addedAt: null },
+      ]);
+    });
+
+    it('reports an under-count across two pages as a gap only after the verification re-read came back unchanged', async () => {
+      const pages = gapRead496of494Pages({ pages: 2, omit: 1 });
+      const result$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt: true, detectGap: true }),
+      );
+      flushNext(pages[0], 1);
+      flushNext(pages[1], 2);
+      // The verification re-read of page 1 — without it the read would already have answered.
+      flushNext(pages[0], 1);
+
+      const result = await result$;
+      expect(result.readState).toBe('gap');
+      expect(result.omittedCount).toBe(1);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('fails an under-count across two pages closed when the verification re-read differs', async () => {
+      const pages = gapRead496of494Pages({ pages: 2 });
+      const shifted = setEntriesResponse(visibleEntries().slice(1, 248), {
+        totalCount: GAP_FIXTURE_TOTAL_COUNT,
+        pageCount: 2,
+      });
+      const result$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt: true, detectGap: true }),
+      );
+      flushNext(pages[0], 1);
+      flushNext(pages[1], 2);
+      flushNext(shifted, 1);
+
+      const result = await result$;
+      expect(result.readState).toBe('inconsistent');
+      expect(result.complete).toBe(false);
+      expect(result.omittedCount).toBe(0);
+    });
+
+    it('errors when the verification re-read of a gap fails, as it does for an equal count', async () => {
+      const pages = gapRead496of494Pages({ pages: 2 });
+      const result$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt: true, detectGap: true }),
+      );
+      flushNext(pages[0], 1);
+      flushNext(pages[1], 2);
+      httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 500, statusText: 'Server Error' });
+
+      await expect(result$).rejects.toThrow();
+    });
+
+    it('does not take an empty list under a positive count for a gap', async () => {
+      const result$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt: true, detectGap: true }),
+      );
+      flushNext(page([], 1, 3), 1);
+
+      const result = await result$;
+      expect(result.readState).toBe('inconsistent');
+      expect(result.omittedCount).toBe(0);
+    });
+
+    describe('keeps every other mismatch fail-closed', () => {
+      const A = { id: 'a', alias: 'A' };
+      const B = { id: 'b', alias: 'B' };
+      const C = { id: 'c', alias: 'C' };
+
+      function gapRead() {
+        return firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1', { detectGap: true }));
+      }
+
+      it('an over-count', async () => {
+        const result$ = gapRead();
+        flushNext(page([A, B, C], 1, 2), 1);
+        expect(await result$).toMatchObject({ readState: 'inconsistent', complete: false });
+      });
+
+      it('a totalCount that drifts between pages', async () => {
+        const result$ = gapRead();
+        flushNext(page([A], 2, 5), 1);
+        flushNext(page([B], 2, 4), 2);
+        expect(await result$).toMatchObject({ readState: 'inconsistent', complete: false });
+      });
+
+      it('a member repeated across pages', async () => {
+        const result$ = gapRead();
+        flushNext(page([A, B], 2, 5), 1);
+        flushNext(page([B], 2, 5), 2);
+        expect(await result$).toMatchObject({ readState: 'inconsistent', complete: false });
+      });
+
+      it('the page cap', async () => {
+        const result$ = gapRead();
+        for (let requested = 1; requested <= 10; requested++) {
+          flushNext(page([{ id: `id-${requested}`, alias: `a${requested}` }], 11, 50), requested);
+        }
+        expect(await result$).toMatchObject({ readState: 'inconsistent', complete: false });
+      });
+    });
+
+    it('has complete: true exactly for readState complete', async () => {
+      const result$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { detectGap: true }),
+      );
+      flushNext(page([{ id: 'a', alias: 'A' }]), 1);
+
+      expect(await result$).toMatchObject({
+        readState: 'complete',
+        complete: true,
+        omittedCount: 0,
+      });
+    });
+
+    // Codex P2: without the option an under-count must keep its partial evidence and must not
+    // risk a verification request that could throw the whole read away.
+    it('without detectGap returns a two-page under-count at once as inconsistent with its partial maps', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(page([{ id: 'a', alias: 'A' }], 2, 5), 1);
+      flushNext(page([{ id: 'b', alias: 'B' }], 2, 5), 2);
+
+      const result = await result$;
+      httpMock.expectNone(GQL_ENDPOINT);
+      expect(result).toMatchObject({ readState: 'inconsistent', complete: false, omittedCount: 0 });
+      expect([...result.aliasesById]).toEqual([
+        ['a', ['A']],
+        ['b', ['B']],
+      ]);
+    });
+
+    it('without detectGap reports the measured single-page under-count as inconsistent', async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      flushNext(gapRead496of494Response({ withAddedAt: false }), 1);
+
+      expect(await result$).toMatchObject({ readState: 'inconsistent', complete: false });
     });
   });
 });

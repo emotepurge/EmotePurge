@@ -222,7 +222,9 @@ export class MassDeletePanel {
    * (its rows come from our database, E16), but one `REMOVE` takes *every* entry of a #74 duplicate
    * — without the read, the protocol would record one alias and a restore would silently re-add
    * only one. A failed or incomplete read blocks the run: nothing is deleted, and the reason is shown
-   * (spec 8.3's "a list that only knows half must not delete").
+   * (spec 8.3's "a list that only knows half must not delete"). The one exception is a gap read
+   * (#454, `delete-flow.ts`): it blocks a batch of id rows only, and a batch with entry rows runs,
+   * deciding per row.
    *
    * Opt-in, `false` by default: a non-active set's rows already carry every alias from the live
    * member list the view is built from, so no second read happens there; and the vote-session page

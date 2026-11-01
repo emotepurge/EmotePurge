@@ -147,6 +147,8 @@ function typedRead(entries: LiveEntry[]): SevenTvSetEntries {
     animatedById,
     occupiedSlots: entries.length,
     complete: true,
+    readState: 'complete',
+    omittedCount: 0,
   };
 }
 

@@ -1,6 +1,13 @@
 import { HttpClient } from '@angular/common/http';
 import { defer, map, Observable, of, switchMap, throwError } from 'rxjs';
 
+import {
+  RateLimitInfo,
+  SevenTvGqlError,
+  isRateLimitError,
+  readRateLimitInfo,
+} from './seven-tv-rate-limit';
+
 /** Host-absolute, same endpoint the write mutations already use (`seven-tv-run-engine.ts`) —
  *  reading a set's contents is public on `v4`, so unlike the mutations this needs no
  *  `Authorization` header and no 7TV token. */
@@ -57,6 +64,28 @@ interface SevenTvGqlEmoteSetEntriesResponse {
   errors?: unknown[];
 }
 
+/** What a set read throws when 7TV answers with a GraphQL-level rejection (HTTP 200 + `errors`) or
+ *  without the set's entries. `rateLimit` carries 7TV's rate-limit numbers when one of the errors is
+ *  its rate limit (the same predicate and parser the run engine uses for a mutation), `null`
+ *  otherwise (#454). An `Error`, so every caller that catches a failed read keeps doing so; an
+ *  HTTP-level failure (a real 429 included) still arrives as `HttpErrorResponse`. */
+export class SevenTvSetReadError extends Error {
+  constructor(readonly rateLimit: RateLimitInfo | null) {
+    super('7TV emote set read failed');
+    this.name = 'SevenTvSetReadError';
+  }
+}
+
+function isGqlError(value: unknown): value is SevenTvGqlError {
+  return typeof value === 'object' && value !== null;
+}
+
+/** The rate-limit numbers of the first rate-limit error among `errors`, `null` when there is none. */
+function rateLimitOf(errors: readonly unknown[] | undefined): RateLimitInfo | null {
+  const hit = errors?.filter(isGqlError).find(isRateLimitError);
+  return hit === undefined ? null : readRateLimitInfo(hit);
+}
+
 type EmotesPayload = NonNullable<
   NonNullable<NonNullable<SevenTvGqlEmoteSetEntriesResponse['data']>['emoteSets']>['emoteSet']
 >['emotes'];
@@ -77,7 +106,17 @@ export interface SevenTvSetEntriesOptions {
   /** Also read each entry's add date. Off (the default), the query and the result are exactly what
    *  they were before the option existed — the slot delete run is its only user. */
   withAddedAt?: boolean;
+  /** Tell a self-consistent read that lists fewer entries than 7TV counts (`readState: 'gap'`,
+   *  #454) apart from every other incomplete read. Off (the default), the requests and the result
+   *  are exactly what they were before the option existed: an under-count is returned at once,
+   *  without the verification re-read, as `'inconsistent'`. Only the slot delete's two reads opt in
+   *  (the pre-start read in `delete-flow.ts` and the binding read in `seven-tv-delete.service.ts`). */
+  detectGap?: boolean;
 }
+
+/** Why a read is or is not a faithful snapshot of the set (#454) — see
+ *  {@link SevenTvSetEntries.readState}. */
+export type SevenTvSetReadState = 'complete' | 'gap' | 'inconsistent';
 
 /** What one full read of a set's entries found. */
 export interface SevenTvSetEntries {
@@ -115,17 +154,32 @@ export interface SevenTvSetEntries {
    *  confirm dialog (spec #255) to keep the slot projection current after a live re-read, rather
    *  than only ever showing the number the picker loaded the dialog with. */
   occupiedSlots: number;
-  /** `false` when the read stopped at the runaway guard while 7TV still reported more pages, or
-   *  when the pages do not add up to one consistent snapshot of the set: the cumulative item count
-   *  differs from the query's own `totalCount`, `totalCount` changed between two responses of the
-   *  read, the same (emote id, alias) pair showed up on two different pages, or — for a multi-page
-   *  read — re-reading every page but the last one afterwards returned different members than the
-   *  first pass. Offset pagination shifting between page fetches (another editor changing the set)
-   *  can silently drop or duplicate an entry across a page boundary even when every page
-   *  individually looked complete. The map then only knows part of the set (or misrepresents it).
-   *  A caller for which "part" is not good enough (the delete run's alias read, spec #200 8.3: a
-   *  list that only knows half must not delete) checks this. */
+  /** `true` exactly when {@link readState} is `'complete'` — every other reader (restore, import,
+   *  undo, the already-present filter, the settlement, the import dialog's slot projection) keeps
+   *  reading only this, with the meaning it always had. `false` when the read stopped at the runaway
+   *  guard while 7TV still reported more pages, or when the pages do not add up to one consistent
+   *  snapshot of the set: the cumulative item count differs from the query's own `totalCount`,
+   *  `totalCount` changed between two responses of the read, the same (emote id, alias) pair showed
+   *  up on two different pages, or — for a multi-page read — re-reading every page but the last one
+   *  afterwards returned different members than the first pass. Offset pagination shifting between
+   *  page fetches (another editor changing the set) can silently drop or duplicate an entry across a
+   *  page boundary even when every page individually looked complete. The map then only knows part
+   *  of the set (or misrepresents it). A caller for which "part" is not good enough (spec #200 8.3:
+   *  a list that only knows half must not delete) checks this — or, with `detectGap`, `readState`,
+   *  which tells a stable gap apart from a read that may be wrong. */
   complete: boolean;
+  /** Why the read is or is not a faithful snapshot (#454). `'complete'`: every entry 7TV counts is
+   *  listed, consistently. `'gap'` (only with `detectGap`): every check passed except that 7TV
+   *  listed fewer entries than its own `totalCount` — `totalCount` stable, no member repeated across
+   *  pages, a multi-page read's verification re-read unchanged, at least one entry listed. Every
+   *  listed entry is positively present; nothing can be concluded about absence. `'inconsistent'`:
+   *  everything else that makes `complete` false — an over-count, a drift, a repeat, a verification
+   *  mismatch, the page cap, an empty list under a positive count, and without `detectGap` every
+   *  under-count too. */
+  readState: SevenTvSetReadState;
+  /** `totalCount` minus the entries listed — greater than zero only for `readState: 'gap'`, `0`
+   *  otherwise. */
+  omittedCount: number;
   /** Only with `withAddedAt`: every entry per 7TV emote id, in the order 7TV lists them — two
    *  entries of one id stay two, each with its own alias and add date. Absent without the option. */
   entriesById?: Map<string, SevenTvSetEntry[]>;
@@ -176,7 +230,8 @@ function fetchEmoteSetEntriesPage(
  * rate-limit bucket, not our Api's shared `ForeignEmoteLookup` limiter, so a delete right after a few
  * set switches is not refused by our own budget.
  *
- * Errors (network, HTTP, or a GraphQL-level rejection) all become a thrown error — callers decide
+ * Errors (network, HTTP, or a GraphQL-level rejection — the latter as {@link SevenTvSetReadError},
+ * carrying 7TV's rate-limit numbers when it was its rate limit) all become a thrown error — callers decide
  * whether that fails open (the restore check) or blocks (the delete alias read); this includes the
  * verification re-reads. Stops early once a page reports it was the last one (`page >= pageCount`),
  * and unconditionally at `MAX_SET_ENTRY_PAGES`, reporting `complete: false` if 7TV still promised
@@ -194,6 +249,12 @@ function fetchEmoteSetEntriesPage(
  * With `options.withAddedAt` each entry's add date is read too (`entriesById`), and the dates join
  * the membership key of every consistency check (Plan-378 S4), so an alias swap between two passes
  * ends `complete: false` instead of passing as the same set.
+ *
+ * With `options.detectGap` (#454) an under-count that is otherwise clean — stable `totalCount`, no
+ * repeat across pages, at least one entry listed — is not returned at once but verified like an
+ * equal count (pages 1..n-1 re-read for a multi-page set) and then reported as `readState: 'gap'`
+ * with its `omittedCount`; a verification mismatch or drift stays `'inconsistent'`. Without it an
+ * under-count is `'inconsistent'` straight away, with no verification request, as it always was.
  */
 export function loadSevenTvSetEntries(
   httpClient: HttpClient,
@@ -201,6 +262,7 @@ export function loadSevenTvSetEntries(
   options: SevenTvSetEntriesOptions = {},
 ): Observable<SevenTvSetEntries> {
   const withAddedAt = options.withAddedAt === true;
+  const detectGap = options.detectGap === true;
   // Deferred so every subscription accumulates into its own state.
   return defer(() => {
     const aliasesById = new Map<string, string[]>();
@@ -221,7 +283,7 @@ export function loadSevenTvSetEntries(
         switchMap((response) => {
           const emotes = response.data?.emoteSets?.emoteSet?.emotes;
           if ((response.errors?.length ?? 0) > 0 || !emotes) {
-            return throwError(() => new Error('7TV emote set read failed'));
+            return throwError(() => new SevenTvSetReadError(rateLimitOf(response.errors)));
           }
           totalCounts.add(emotes.totalCount);
           return of(emotes);
@@ -280,30 +342,52 @@ export function loadSevenTvSetEntries(
           members.forEach((key) => seenMembers.add(key));
           emotes.items.forEach(collectItem);
           collected += emotes.items.length;
-          const result = (complete: boolean): SevenTvSetEntries => ({
+          const result = (readState: SevenTvSetReadState): SevenTvSetEntries => ({
             aliasesById,
             aliaslessIds,
             defaultNameById,
             animatedById,
             occupiedSlots: emotes.totalCount,
-            complete,
+            complete: readState === 'complete',
+            readState,
+            omittedCount: readState === 'gap' ? emotes.totalCount - collected : 0,
             ...(withAddedAt ? { entriesById } : {}),
           });
           if (page >= emotes.pageCount) {
-            const consistent =
-              collected === emotes.totalCount && totalCounts.size === 1 && !repeatedAcrossPages;
-            if (!consistent || page === 1) {
-              return of(result(consistent));
-            }
-            return verifyPage(1, page).pipe(
-              map((unchanged) => result(unchanged && totalCounts.size === 1)),
-            );
+            return settle(page, emotes.totalCount, result);
           }
           if (page >= MAX_SET_ENTRY_PAGES) {
-            return of(result(false));
+            return of(result('inconsistent'));
           }
           return loadPage(page + 1);
         }),
+      );
+    }
+
+    // The verdict on the last page. Without `detectGap` exactly the rule that predates #454: any
+    // mismatch returns at once, an equal count is verified. With it an otherwise clean under-count
+    // is verified too and, if unchanged, reported as a gap.
+    function settle(
+      lastPage: number,
+      totalCount: number,
+      result: (readState: SevenTvSetReadState) => SevenTvSetEntries,
+    ): Observable<SevenTvSetEntries> {
+      const clean = totalCounts.size === 1 && !repeatedAcrossPages;
+      const verifiable = detectGap
+        ? clean && collected <= totalCount && !(collected === 0 && totalCount > 0)
+        : clean && collected === totalCount;
+      if (!verifiable) {
+        return of(result('inconsistent'));
+      }
+      const verdict = (): SevenTvSetEntries =>
+        result(collected === totalCount ? 'complete' : 'gap');
+      if (lastPage === 1) {
+        return of(verdict());
+      }
+      return verifyPage(1, lastPage).pipe(
+        map((unchanged) =>
+          unchanged && totalCounts.size === 1 ? verdict() : result('inconsistent'),
+        ),
       );
     }
 

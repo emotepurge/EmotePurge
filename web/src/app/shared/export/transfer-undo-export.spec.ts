@@ -34,6 +34,8 @@ function setEntries(overrides: Partial<SevenTvSetEntries> = {}): SevenTvSetEntri
     animatedById: new Map(),
     occupiedSlots: 0,
     complete: true,
+    readState: 'complete',
+    omittedCount: 0,
     ...overrides,
   };
 }
@@ -271,6 +273,8 @@ function liveRead(entries: { id: string; alias: string | null }[]): SevenTvSetEn
     animatedById: new Map(),
     occupiedSlots: entries.length,
     complete: true,
+    readState: 'complete',
+    omittedCount: 0,
   };
 }
 

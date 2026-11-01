@@ -1308,6 +1308,8 @@
       "departedSinceLoad": "{{name}} has left this set since the page loaded — not deleted.",
       "noAlias": "{{name}} no longer has a name of its own in 7TV and cannot be deleted on its own — not deleted.",
       "skippedUnread": "{{names}} not deleted: {{reason}}",
+      "gapHidden": "7TV currently omits {{count}} of this set’s entries and did not return them.",
+      "gapIdRow": "7TV currently omits {{count}} of this set’s entries — deleting by emote id would also remove entries it does not show.",
       "pendingSync": {
         "one": "{{names}} is being reconciled with 7TV and is left out of the delete — try again in a minute.",
         "other": "{{names}} are being reconciled with 7TV and are left out of the delete — try again in a minute."
@@ -1668,6 +1670,10 @@
       "missingFromSet": {
         "one": "{{names}} is no longer in the set — deselect it and start the run again.",
         "other": "{{names}} are no longer in the set — deselect them and start the run again."
+      },
+      "gap": {
+        "one": "7TV currently omits {{count}} entry of this set, and deleting by emote id would also remove entries it does not show.",
+        "other": "7TV currently omits {{count}} entries of this set, and deleting by emote id would also remove entries it does not show."
       },
       "lock": {
         "unavailable": "Deleting is locked: this set’s member list is not available. Reload the page to try again.",

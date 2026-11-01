@@ -17,7 +17,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import { DeleteRunInfo, SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
-import { RUN_DELAY_MS, RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
+import {
+  RUN_DELAY_MS,
+  RunQueueItem,
+  RunResult,
+  SkipReasonKey,
+} from '../../core/seven-tv/seven-tv-run-engine';
 import { flushApplied } from '../../core/seven-tv/seven-tv-mutation.testing';
 import {
   SevenTvRunArbiter,
@@ -1481,6 +1486,8 @@ describe("DeleteProgressSection — a slot run's skipped rows", () => {
       delete: {
         skippedUnread: '{{names}} nicht gelöscht: {{reason}}',
         renamedSinceLoad: '{{name}} wurde in {{newName}} umbenannt — nicht gelöscht.',
+        gapHidden: '7TV lässt {{count}} aus.',
+        gapIdRow: '7TV lässt {{count}} aus, ID-Löschung gesperrt.',
       },
     },
   };
@@ -1654,6 +1661,37 @@ describe("DeleteProgressSection — a slot run's skipped rows", () => {
     expect(text()).toContain('2 / 3 verarbeitet');
     expect(text()).toContain('1 gelöscht · 0 fehlgeschlagen · 1 abgebrochen');
     expect(text()).toContain('hob44 wurde in hob45 umbenannt — nicht gelöscht.');
+  });
+
+  /*
+   * #454 A4: rows a gap read skipped share one named line per reason.
+   * protects: AC 9 — every `gapHidden` row, and every `gapIdRow` row, is named in one line with the
+   *   reason, in queue order, with the count the first such row carries.
+   * fails_when: a row gets a line of its own, a name is missing, or the order is not the queue's.
+   * no_claim: CSS, the wording of the reason.
+   */
+  it('names every row a gap read skipped in one line per reason, in queue order', async () => {
+    const skipped = (key: string, name: string, reasonKey: SkipReasonKey, count: string) =>
+      row(key, name, {
+        status: 'cancelled',
+        completedSteps: 0,
+        errorMessage: reasonKey,
+        skipReason: {
+          key: reasonKey,
+          params: reasonKey === 'usageStats.delete.gapHidden' ? { name, count } : { count },
+        },
+      });
+    await mount([
+      skipped('slot-brudi', 'brudiWrap2', 'usageStats.delete.gapHidden', '2'),
+      DONE,
+      skipped('id-kekw', 'KEKW', 'usageStats.delete.gapIdRow', '2'),
+      skipped('slot-aggro', 'AGGRO5', 'usageStats.delete.gapHidden', '2'),
+      skipped('id-pogu', 'PogU', 'usageStats.delete.gapIdRow', '2'),
+    ]);
+
+    expect(text()).toContain('brudiWrap2, AGGRO5 nicht gelöscht: 7TV lässt 2 aus.');
+    expect(text()).toContain('KEKW, PogU nicht gelöscht: 7TV lässt 2 aus, ID-Löschung gesperrt.');
+    expect(text().split('nicht gelöscht')).toHaveLength(3);
   });
 });
 

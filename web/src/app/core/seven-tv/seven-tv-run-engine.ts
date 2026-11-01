@@ -22,6 +22,14 @@ import {
 } from 'rxjs';
 
 import { SevenTvEntryGeneration, SevenTvEntryTarget } from './seven-tv-entry-target';
+import {
+  RATE_LIMIT_RESOURCE,
+  RateLimitHit,
+  RateLimitInfo,
+  SevenTvGqlError,
+  isRateLimitError,
+  readRateLimitInfo,
+} from './seven-tv-rate-limit';
 import { SevenTvTokenService } from './seven-tv-token.service';
 
 const SEVEN_TV_GQL_ENDPOINT = 'https://7tv.io/v4/gql';
@@ -31,11 +39,6 @@ const SEVEN_TV_GQL_ENDPOINT = 'https://7tv.io/v4/gql';
 // to learn it is to reach it once. The backoff below makes that safe.
 export const RUN_DELAY_MS = 275;
 
-/** 7TV's rate-limit bucket guarding every emote-set mutation, one ticket per call — REMOVE and ADD
- *  alike, which is why one engine paces both the delete and the restore run.
- *  Source: SevenTV/SevenTV, apps/api/src/http/v3/gql/mutations/emote_sets/mod.rs. */
-const RATE_LIMIT_RESOURCE = 'emote_set_change';
-const RATE_LIMIT_ERROR_CODE = 'RATE_LIMIT_EXCEEDED';
 /** Added on top of the server-reported reset so a clock skew of a few hundred ms cannot make the
  *  first request after the pause land inside the still-closed window. */
 const RATE_LIMIT_BUFFER_MS = 500;
@@ -43,7 +46,10 @@ const RATE_LIMIT_BUFFER_MS = 500;
  *  that one is enforced at the HTTP layer, and its headers are not CORS-exposed). Their windows are
  *  60s, so a full minute is the safe assumption. */
 const RATE_LIMIT_FALLBACK_WAIT_MS = 60_000;
-const MAX_RATE_LIMIT_RETRIES = 5;
+/** Rate-limit waits per step before the row gives up (`rateLimitedGaveUp`). Exported for the slot
+ *  delete's binding read, whose run-wide streak of rate-limited reads is bounded by the same
+ *  number (#454). */
+export const MAX_RATE_LIMIT_RETRIES = 5;
 /** Aim slightly *below* the measured quota. 7TV uses a fixed window, so pacing exactly at the limit
  *  puts every window's last request on the boundary. */
 const RATE_LIMIT_PACING_MARGIN = 1.1;
@@ -144,7 +150,9 @@ export type SkipReasonKey =
   | 'massDelete.errors.beforeStepFailed'
   | 'usageStats.delete.renamedSinceLoad'
   | 'usageStats.delete.noAlias'
-  | 'usageStats.delete.departedSinceLoad';
+  | 'usageStats.delete.departedSinceLoad'
+  | 'usageStats.delete.gapHidden'
+  | 'usageStats.delete.gapIdRow';
 
 export interface SkipReason {
   key: SkipReasonKey;
@@ -154,7 +162,9 @@ export interface SkipReason {
 /** What a `beforeStep` hook returns for one attempt of a step — see the hook's own documentation
  *  on `RunOperation` for what each outcome does. */
 export type StepGate =
-  { kind: 'proceed' } | { kind: 'skip'; errorMessage: string; reason?: SkipReason };
+  | { kind: 'proceed' }
+  | { kind: 'skip'; errorMessage: string; reason?: SkipReason }
+  | { kind: 'rateLimited'; info: RateLimitInfo };
 
 /** What a run does per emote. The engine owns pacing, retries, token handling and the queue; the
  *  operation owns only the mutations — REMOVE for the delete, ADD for the restore and the import.
@@ -186,7 +196,15 @@ export interface RunOperation {
    * `completedSteps` is left exactly as it was — a multi-step row skipped past its first step
    * keeps whatever it already confirmed, a named gap rather than a loss (Plan #254 §T3) —,
    * `abortOn` is not consulted, and the run paces itself for the next row exactly as it does after
-   * any other row.
+   * any other row. `{ kind: 'rateLimited', info }` (#454) — the hook's own read of 7TV ran into a
+   * rate limit — sends no request either and enters the same backoff as a rate-limited mutation:
+   * the run waits `info.reset` (+ 500 ms, or 60 s when `reset` is `null`) with the countdown,
+   * asks this hook again, and — should the hook keep answering `rateLimited` — after
+   * `MAX_RATE_LIMIT_RETRIES` waits ends the row `failed` with `rateLimitedGaveUp`. The slot delete's
+   * hook never gets there: its run-wide streak turns the sixth rate-limited read in a row into a
+   * `massDelete.memberRead.unavailable` skip instead. Unlike a mutation's rate limit it never
+   * re-paces the run and its pause does not reset the mutation window: the read's numbers belong
+   * to another bucket.
    *
    * **Contract: exactly one value, then whatever happens after is ignored.** The engine takes only
    * the first emission (`take(1)`) and unsubscribes right after — a second, synchronous emission
@@ -301,35 +319,11 @@ type RunOneResult =
   | ({ outcome: 'failed' | 'unknown' } & RunStepFailure)
   | { outcome: 'skip'; errorMessage: string; reason?: SkipReason };
 
-/** The rate-limit numbers 7TV mirrors into a rejected mutation's `extensions.headers`. All values
- *  arrive as strings; `reset` is in seconds. Any of them can be missing. */
-interface RateLimitInfo {
-  limit: number | null;
-  remaining: number | null;
-  reset: number | null;
-  used: number | null;
-}
-
-/** Thrown internally so RxJS `retry` can drive the wait. Not an `Error` subclass on purpose — it is
- *  a control-flow signal, never surfaced to the user. */
-class RateLimitHit {
-  constructor(readonly info: RateLimitInfo) {}
-}
-
 /** Thrown internally when an `abortOn` hook asks to stop the run. Caught right after the
  *  `concatMap` (see `start`) so it never reaches the outer subscription's `error:` callback — that
  *  path is the pre-existing one that leaves non-terminal rows behind (see docs/DECISIONS.md). Not an
  *  `Error` subclass, same reasoning as `RateLimitHit`: a control-flow signal, never surfaced. */
 class AbortRequested {}
-
-interface SevenTvGqlError {
-  message?: string;
-  extensions?: {
-    code?: string;
-    status?: number;
-    headers?: Record<string, string>;
-  };
-}
 
 interface SevenTvGqlResponse {
   data?: unknown;
@@ -355,29 +349,6 @@ function holdsMutationResult(
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function parseHeaderNumber(headers: Record<string, string> | undefined, suffix: string) {
-  const raw = headers?.[`x-ratelimit-${RATE_LIMIT_RESOURCE}-${suffix}`];
-  if (raw === undefined) {
-    return null;
-  }
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function isRateLimitError(error: SevenTvGqlError): boolean {
-  return error.extensions?.code === RATE_LIMIT_ERROR_CODE || error.extensions?.status === 429;
-}
-
-function readRateLimitInfo(error: SevenTvGqlError): RateLimitInfo {
-  const headers = error.extensions?.headers;
-  return {
-    limit: parseHeaderNumber(headers, 'limit'),
-    remaining: parseHeaderNumber(headers, 'remaining'),
-    reset: parseHeaderNumber(headers, 'reset'),
-    used: parseHeaderNumber(headers, 'used'),
-  };
 }
 
 /**
@@ -602,8 +573,13 @@ export class SevenTvRunEngine {
           if (!(error instanceof RateLimitHit)) {
             return throwError(() => error);
           }
-          const waitMs = this.onRateLimited(error.info);
-          return timer(waitMs).pipe(tap(() => this.endPause()));
+          const waitMs = this.onRateLimited(error);
+          // A read's hit (#454, `repace: false`) belongs to another bucket: its pause ends the
+          // countdown but must not open a fresh mutation window, or a later mutation 429 would
+          // learn its pace from a window that began when the read's pause ended.
+          return timer(waitMs).pipe(
+            tap(() => (error.repace ? this.endPause() : this.clearCountdown())),
+          );
         },
       }),
       catchError(() =>
@@ -674,15 +650,22 @@ export class SevenTvRunEngine {
             reason: BEFORE_STEP_FAILED,
           });
         }),
-        concatMap((gate) =>
-          gate.kind === 'skip'
-            ? of<RunOneResult>({
+        concatMap((gate) => {
+          switch (gate.kind) {
+            case 'skip':
+              return of<RunOneResult>({
                 outcome: 'skip',
                 errorMessage: gate.errorMessage,
                 reason: gate.reason,
-              })
-            : this.runOne(setId, emote, step, operation, token),
-        ),
+              });
+            case 'rateLimited':
+              // Thrown past the catchError above, into runWithBackoff's retry: the same wait,
+              // countdown and give-up as a rate-limited mutation, without re-pacing (#454).
+              return throwError(() => new RateLimitHit(gate.info, false));
+            case 'proceed':
+              return this.runOne(setId, emote, step, operation, token);
+          }
+        }),
       );
     });
   }
@@ -802,9 +785,11 @@ export class SevenTvRunEngine {
   }
 
   /** Called on every rejection. Logs what 7TV reported (this is how we learn the real quota — the
-   *  numbers exist nowhere else, see docs/DECISIONS.md), re-paces the run once, and returns how long
+   *  numbers exist nowhere else, see docs/DECISIONS.md), re-paces the run once — only from a hit
+   *  that asks for it (`repace`; a `beforeStep` hook's read does not, #454) — and returns how long
    *  to wait. */
-  private onRateLimited(info: RateLimitInfo): number {
+  private onRateLimited(hit: RateLimitHit): number {
+    const info = hit.info;
     const waitMs =
       info.reset !== null ? info.reset * 1000 + RATE_LIMIT_BUFFER_MS : RATE_LIMIT_FALLBACK_WAIT_MS;
     const attemptsThisWindow = this.requestsInWindow;
@@ -813,7 +798,7 @@ export class SevenTvRunEngine {
     // Re-pace only from a rejection that actually carries numbers. A blind HTTP 429 (global bucket,
     // headers not CORS-exposed) would otherwise "teach" us a quota of one request per minute.
     const informative = info.reset !== null && (info.limit !== null || attemptsThisWindow > 1);
-    if (!this.pacingAdapted && informative) {
+    if (hit.repace && !this.pacingAdapted && informative) {
       this.adaptPacing(info, attemptsThisWindow);
     }
 
@@ -922,11 +907,16 @@ export class SevenTvRunEngine {
   /** Ends the pause and opens a fresh accounting window — 7TV's limiter is a fixed window, so once
    *  the reset has passed the previous window's usage is gone. */
   private endPause(): void {
+    this.clearCountdown();
+    this.windowStartedAt = Date.now();
+    this.requestsInWindow = 0;
+  }
+
+  /** Ends the pause's countdown only, leaving the accounting window as it is. */
+  private clearCountdown(): void {
     this.countdownSubscription?.unsubscribe();
     this.countdownSubscription = null;
     this.rateLimitPauseSeconds.set(null);
-    this.windowStartedAt = Date.now();
-    this.requestsInWindow = 0;
   }
 
   private describeHttpError(error: HttpErrorResponse): string {

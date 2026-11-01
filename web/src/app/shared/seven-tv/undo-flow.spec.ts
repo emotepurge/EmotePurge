@@ -124,6 +124,8 @@ function typedRead(entries: LiveEntry[]): SevenTvSetEntries {
     animatedById: new Map(entries.map((entry) => [entry.id, false])),
     occupiedSlots: entries.length,
     complete: true,
+    readState: 'complete',
+    omittedCount: 0,
   };
 }
 

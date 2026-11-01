@@ -235,6 +235,8 @@ describe('filterAlreadyPresent', () => {
         ]),
         occupiedSlots: 2,
         complete: true,
+        readState: 'complete',
+        omittedCount: 0,
       },
     });
   });
@@ -697,6 +699,30 @@ describe('filterAlreadyPresentForRestore', () => {
       available: true,
       complete: false,
     });
+  });
+
+  // #454, Codex P2. protects: the restore filter keeps its partial evidence on a multi-page
+  // under-count — the set read's gap classification is opt-in and this reader does not opt in.
+  // fails_when: the reader verifies the under-count (a third request goes out — answered with an
+  // error here it would throw the read away, and the filter's catchError fails open and offers the
+  // id for ADD). no_claim: single-page sets.
+  it('keeps excluding an id seen under a foreign alias on a two-page under-count, without a verification request', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A'] };
+    const result$ = firstValueFrom(filterAlreadyPresentForRestore(httpClient, 'target-set', [row]));
+    const pageOf = (items: { alias: string; emote: { id: string } }[]) => ({
+      data: { emoteSets: { emoteSet: { emotes: { totalCount: 5, pageCount: 2, items } } } },
+    });
+
+    httpMock.expectOne(GQL_ENDPOINT).flush(pageOf([{ alias: 'Foreign', emote: { id: '7tv-1' } }]));
+    httpMock.expectOne(GQL_ENDPOINT).flush(pageOf([{ alias: 'B', emote: { id: '7tv-2' } }]));
+    // A verification request would land here; none may go out, so none is answered with an error.
+    const verify = httpMock.match(GQL_ENDPOINT);
+    verify.forEach((request) =>
+      request.flush('boom', { status: 500, statusText: 'Internal Server Error' }),
+    );
+
+    expect(verify).toHaveLength(0);
+    expect(await result$).toMatchObject({ rows: [], available: true, complete: false });
   });
 });
 
@@ -1231,6 +1257,8 @@ function setEntries(entries: { id: string; alias: string | null }[]): SevenTvSet
     animatedById: new Map(),
     occupiedSlots: entries.length,
     complete: true,
+    readState: 'complete',
+    omittedCount: 0,
   };
 }
 

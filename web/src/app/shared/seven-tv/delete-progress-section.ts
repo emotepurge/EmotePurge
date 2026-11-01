@@ -161,6 +161,11 @@ const UNNAMED_SKIP_REASON_KEYS: ReadonlySet<SkipReasonKey> = new Set<SkipReasonK
   'massDelete.memberRead.unavailable',
   'massDelete.memberRead.truncated',
   'massDelete.errors.beforeStepFailed',
+  // #454: rows a gap read skipped — 7TV did not list the entry, or an id row could not be removed
+  // without also taking an entry 7TV does not list. The line shows the first row's count; should
+  // the gap size change between two reads of one run, the later count is not shown (accepted).
+  'usageStats.delete.gapHidden',
+  'usageStats.delete.gapIdRow',
 ]);
 
 /** One dock line for the run's skipped rows: the reason (translated when the line renders) and —
