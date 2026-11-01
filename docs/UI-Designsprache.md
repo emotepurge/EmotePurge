@@ -407,9 +407,11 @@ The usage page and the ballot are not lists but **one sheet of uniform cells**. 
   of the group carries a decision) + `NamePreviewList` → alias-mismatch row with its own
   "Resolve" trigger + "resolved: N" + `NamePreviewList` → invalid-names row + `NamePreviewList`
   (non-ASCII characters in the emote name — both rows say "7TV will reject this" and therefore
-  stand next to each other) → **discarded rows before collapsed
-  duplicates** (real data loss weighs more than mere consolidation — the reason is stated at
-  `discardedRows`/`duplicatesCollapsed`) → "nothing to add" banner → "This list comes from
+  stand next to each other) → **source entries 7TV does not list, then discarded rows, then
+  collapsed duplicates** (heaviest first: entries of a gap source the run cannot even see, #457 —
+  only the usage page's channel copy has them; then real data loss, which weighs more than mere
+  consolidation — the reason is stated at `sourceOmittedCount`/`discardedRows`/
+  `duplicatesCollapsed`) → "nothing to add" banner → "This list comes from
   this channel" → the quiet notice about the automatic run → (only in the loading state: the
   loading hint next to the action buttons; only while the live read runs: the verifying hint in the
   same place) → Cancel / the executor. Without a conflict none of the #230 rows exists and the
