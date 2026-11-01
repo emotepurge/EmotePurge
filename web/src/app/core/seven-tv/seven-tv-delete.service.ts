@@ -747,6 +747,8 @@ export class SevenTvDeleteService {
           case 'failed':
             return this.skipEntry(context, emote, readFailureKey(context.lastReadFailure), {});
           case 'rateLimited':
+            // Nothing goes out for this attempt; an earlier attempt of the row recorded here was a
+            // REMOVE 7TV rate-limited, i.e. never applied, so it is no own removal any more.
             context.attempted.delete(emote.key);
             return { kind: 'rateLimited', info: outcome.info };
           case 'read':

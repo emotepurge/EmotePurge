@@ -199,9 +199,12 @@ export interface RunOperation {
    * any other row. `{ kind: 'rateLimited', info }` (#454) — the hook's own read of 7TV ran into a
    * rate limit — sends no request either and enters the same backoff as a rate-limited mutation:
    * the run waits `info.reset` (+ 500 ms, or 60 s when `reset` is `null`) with the countdown,
-   * asks this hook again, and after `MAX_RATE_LIMIT_RETRIES` waits ends the row `failed` with
-   * `rateLimitedGaveUp`. Unlike a mutation's rate limit it never re-paces the run: the read's
-   * numbers belong to another bucket.
+   * asks this hook again, and — should the hook keep answering `rateLimited` — after
+   * `MAX_RATE_LIMIT_RETRIES` waits ends the row `failed` with `rateLimitedGaveUp`. The slot delete's
+   * hook never gets there: its run-wide streak turns the sixth rate-limited read in a row into a
+   * `massDelete.memberRead.unavailable` skip instead. Unlike a mutation's rate limit it never
+   * re-paces the run and its pause does not reset the mutation window: the read's numbers belong
+   * to another bucket.
    *
    * **Contract: exactly one value, then whatever happens after is ignored.** The engine takes only
    * the first emission (`take(1)`) and unsubscribes right after — a second, synchronous emission
