@@ -915,6 +915,35 @@ describe('SevenTvRunEngine', () => {
         expect(engine.queue().map((item) => item.status)).toEqual(['done', 'done']);
       });
 
+      // #454 review: the pause of a read hit must not open a fresh mutation window — a later
+      // mutation 429 would derive its pace from a window that started at the end of that pause.
+      it("keeps the run's mutation window across the pause of a read hit", () => {
+        const beforeStep = vi
+          .fn()
+          .mockReturnValueOnce(of<StepGate>({ kind: 'rateLimited', info: READ_RATE_LIMIT }))
+          .mockReturnValue(of<StepGate>({ kind: 'proceed' }));
+        const third = { ...EMOTES[0], key: 'internal-3', sevenTvEmoteId: '7tv-3' };
+        expect(start([...EMOTES, third], { ...TEST_OPERATION, beforeStep })).toBe(true);
+
+        vi.advanceTimersByTime(7_500);
+        httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        httpMock.expectOne(GQL_ENDPOINT).flush(rateLimitResponse(30));
+
+        const reached = vi
+          .mocked(console.info)
+          .mock.calls.filter(([message]) => message === '[EmotePurge] 7TV rate limit reached');
+        expect(reached.at(-1)?.[1]).toMatchObject({
+          requestsSentThisWindow: 3,
+          msSinceWindowStart: 7_500 + 2 * RUN_DELAY_MS,
+        });
+        vi.advanceTimersByTime(30_500);
+        httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
+        vi.advanceTimersByTime(5_000);
+      });
+
       it('gives the row up as rateLimitedGaveUp after five blind waits, without a request', () => {
         const beforeStep = vi.fn().mockReturnValue(
           of<StepGate>({

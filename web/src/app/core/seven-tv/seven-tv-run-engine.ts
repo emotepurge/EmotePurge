@@ -571,7 +571,12 @@ export class SevenTvRunEngine {
             return throwError(() => error);
           }
           const waitMs = this.onRateLimited(error);
-          return timer(waitMs).pipe(tap(() => this.endPause()));
+          // A read's hit (#454, `repace: false`) belongs to another bucket: its pause ends the
+          // countdown but must not open a fresh mutation window, or a later mutation 429 would
+          // learn its pace from a window that began when the read's pause ended.
+          return timer(waitMs).pipe(
+            tap(() => (error.repace ? this.endPause() : this.clearCountdown())),
+          );
         },
       }),
       catchError(() =>
@@ -899,11 +904,16 @@ export class SevenTvRunEngine {
   /** Ends the pause and opens a fresh accounting window — 7TV's limiter is a fixed window, so once
    *  the reset has passed the previous window's usage is gone. */
   private endPause(): void {
+    this.clearCountdown();
+    this.windowStartedAt = Date.now();
+    this.requestsInWindow = 0;
+  }
+
+  /** Ends the pause's countdown only, leaving the accounting window as it is. */
+  private clearCountdown(): void {
     this.countdownSubscription?.unsubscribe();
     this.countdownSubscription = null;
     this.rateLimitPauseSeconds.set(null);
-    this.windowStartedAt = Date.now();
-    this.requestsInWindow = 0;
   }
 
   private describeHttpError(error: HttpErrorResponse): string {
