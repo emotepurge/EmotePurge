@@ -43,6 +43,8 @@ function setEntries(overrides: Partial<SevenTvSetEntries> = {}): SevenTvSetEntri
     animatedById: new Map(),
     occupiedSlots: 0,
     complete: true,
+    readState: 'complete',
+    omittedCount: 0,
     ...overrides,
   };
 }

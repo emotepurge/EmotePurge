@@ -67,6 +67,8 @@ function setRead(entries: LiveEntry[], options: { complete?: boolean } = {}): Se
     animatedById,
     occupiedSlots: entries.length,
     complete: options.complete ?? true,
+    readState: (options.complete ?? true) ? 'complete' : 'inconsistent',
+    omittedCount: 0,
   };
 }
 
