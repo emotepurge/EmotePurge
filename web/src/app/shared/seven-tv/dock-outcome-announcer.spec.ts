@@ -26,6 +26,7 @@ import {
   START_CHECK_ANNOUNCE_DELAY_MS,
   copiedNotActiveNotice,
   hiddenByFilterNoticeKey,
+  importRefusalNoticeVisible,
   markedCountNoticeKey,
   pendingSyncNoticeKey,
   renamedNotActiveNotice,
@@ -247,6 +248,85 @@ const SPOKEN_STATES = {
   failed: true,
   backendTriggered: true,
 } satisfies Record<Exclude<ResyncTriggerState, 'idle'>, true>;
+
+describe('importRefusalNoticeVisible (#460)', () => {
+  const run = (runId: string) => ({ runId }) as ImportRunInfo;
+  const cases: {
+    name: string;
+    noticeRunId: string | null;
+    run: ImportRunInfo | null;
+    isRunning: boolean;
+    visible: boolean;
+  }[] = [
+    {
+      name: 'no run behind the notice',
+      noticeRunId: null,
+      run: null,
+      isRunning: false,
+      visible: true,
+    },
+    {
+      name: 'no run behind the notice, another run shown',
+      noticeRunId: null,
+      run: run('a'),
+      isRunning: false,
+      visible: true,
+    },
+    {
+      name: 'its run is shown and running',
+      noticeRunId: 'a',
+      run: run('a'),
+      isRunning: true,
+      visible: true,
+    },
+    {
+      name: 'its run is shown and stopped',
+      noticeRunId: 'a',
+      run: run('a'),
+      isRunning: false,
+      visible: false,
+    },
+    {
+      name: 'a different run is shown',
+      noticeRunId: 'a',
+      run: run('b'),
+      isRunning: false,
+      visible: true,
+    },
+    {
+      name: 'a different run is shown and running',
+      noticeRunId: 'a',
+      run: run('b'),
+      isRunning: true,
+      visible: true,
+    },
+    { name: 'no run is shown', noticeRunId: 'a', run: null, isRunning: false, visible: true },
+  ];
+
+  for (const c of cases) {
+    it(`${c.name}: ${c.visible ? 'stands' : 'gives way'}`, () => {
+      expect(
+        importRefusalNoticeVisible({
+          noticePending: true,
+          noticeRunId: c.noticeRunId,
+          run: c.run,
+          isRunning: c.isRunning,
+        }),
+      ).toBe(c.visible);
+    });
+  }
+
+  it('never stands once the notice window is over', () => {
+    expect(
+      importRefusalNoticeVisible({
+        noticePending: false,
+        noticeRunId: null,
+        run: null,
+        isRunning: false,
+      }),
+    ).toBe(false);
+  });
+});
 
 describe('resyncNoticeKey', () => {
   it('has nothing to say while idle, regardless of family', () => {
