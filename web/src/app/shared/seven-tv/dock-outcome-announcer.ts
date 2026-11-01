@@ -1,4 +1,13 @@
-import { Component, Signal, computed, effect, inject, input, signal } from '@angular/core';
+import {
+  Component,
+  Signal,
+  computed,
+  effect,
+  inject,
+  input,
+  linkedSignal,
+  signal,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { pluralKey } from '../../core/i18n/plural';
@@ -333,6 +342,11 @@ export function markedCountNoticeKey(count: number): string {
         }}
       </p>
     }
+    <!-- The rows the last delete run left marked (#453) — the dock line below the pending-sync one.
+         Spoken with the count of the moment it appeared; see retrySpokenCount. -->
+    @if (retrySpokenCount(); as retry) {
+      <p>{{ retryKey() | transloco: { count: retry } }}</p>
+    }
     <!-- #280: a confirmed delete whose live alias read is still out — the marking half's own wait,
          so after the two marking lines and before the restore group; spoken on both pages, since
          both mount the mass-delete panel. -->
@@ -465,11 +479,28 @@ export class DockOutcomeAnnouncer {
    *  gates into this list, as for `hiddenSelectedCount`. */
   readonly pendingSyncNames = input<readonly string[]>([]);
 
+  /** How many rows the last delete run left marked and the dock's retry hint names, or 0 when that
+   *  hint is not on screen (#453). Announced on every 0 → positive transition; see
+   *  `retrySpokenCount`. */
+  readonly retrySelectedCount = input(0);
+
   protected readonly restoreService = inject(SevenTvRestoreService);
   protected readonly importService = inject(SevenTvImportService);
   private readonly undoService = inject(SevenTvUndoService);
   private readonly deleteService = inject(SevenTvDeleteService);
 
+  /** The count the retry sentence was spoken with. It keeps the first positive value until the
+   *  input returns to 0: a prune from 25 to 24 changes the dock's visible line but must not make the
+   *  region speak again, and the next run speaks anew because its in-flight phase passes the count
+   *  through 0. */
+  protected readonly retrySpokenCount = linkedSignal<number, number>({
+    source: () => this.retrySelectedCount(),
+    computation: (count, previous) =>
+      count === 0 ? 0 : previous !== undefined && previous.value > 0 ? previous.value : count,
+  });
+  protected readonly retryKey = computed(() =>
+    pluralKey(this.retrySpokenCount(), 'usageStats.delete.retryHint'),
+  );
   protected readonly markedKey = computed(() => markedCountNoticeKey(this.markedCount()));
   protected readonly hiddenByFilterKey = computed(() =>
     hiddenByFilterNoticeKey(this.hiddenSelectedCount()),

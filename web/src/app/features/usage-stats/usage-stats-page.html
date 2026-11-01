@@ -1181,6 +1181,7 @@
   [markedCount]="dockMarkedCount()"
   [hiddenSelectedCount]="dockHiddenSelectedCount()"
   [pendingSyncNames]="dockPendingSyncNames()"
+  [retrySelectedCount]="dockRetryCount()"
 />
 
 <!-- The action bar. It exists only while there is something to act on, which is what allows the
@@ -1266,6 +1267,14 @@
             }}
           </p>
         }
+        <!-- The rows the last run did not delete stay marked (#453) — said once, here. Created by its
+             own @if, so it is spoken by the permanently mounted app-dock-outcome-announcer
+             (docs/UI-Designsprache.md §4.5) and aria-hidden here. -->
+        @if (dockRetryCount() > 0) {
+          <p aria-hidden="true" class="text-xs text-fg-muted">
+            {{ retryHintKey() | transloco: { count: dockRetryCount() } }}
+          </p>
+        }
         <app-mass-delete-panel
           #massDeletePanel
           [setId]="setId"
@@ -1278,7 +1287,7 @@
           [leadingActionsPresent]="true"
           (deleted)="onDeleted($event)"
           (reloadRequested)="onReloadRequested()"
-          (selectionCleared)="selection.clear()"
+          (selectionCleared)="clearSelection()"
         >
           <!-- Dock shortcut for the header's "Übertragen" (design doc §8.7 — same verb,
                second entry point, not a doubled command). Rendered unconditionally rather than

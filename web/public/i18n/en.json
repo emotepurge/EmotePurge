@@ -1312,6 +1312,10 @@
         "one": "{{names}} is being reconciled with 7TV and is left out of the delete — try again in a minute.",
         "other": "{{names}} are being reconciled with 7TV and are left out of the delete — try again in a minute."
       },
+      "retryHint": {
+        "one": "1 entry was not deleted and is still selected — start the delete again to retry.",
+        "other": "{{count}} entries were not deleted and are still selected — start the delete again to retry."
+      },
       "unexpectedRemoval": {
         "one": "{{names}} is now missing from the set although the run did not delete it — a deletion may have removed this entry as well.",
         "other": "{{names}} are now missing from the set although the run did not delete them — a deletion may have removed these entries as well."

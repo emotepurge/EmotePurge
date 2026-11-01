@@ -66,7 +66,7 @@ import {
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
 import { REFUSED_START_FEEDBACK_MS } from '../../core/seven-tv/seven-tv-run-arbiter';
-import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
 import { EmoteTagEntry, EmoteTagSummary } from '../../core/tags/emote-tag.model';
 import { ImportCoverage } from '../../core/usage/import-coverage.model';
@@ -8927,6 +8927,220 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     expect(component['emotes']().map((row) => row.slotKey)).toEqual(['slot-hob']);
     expect(card('slot-hob').siblingNames).toEqual([]);
     expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 8 });
+  });
+
+  // --- a run consumes only its done rows (#453) ---------------------------------------------------
+
+  /** Publishes a settled delete run of the shown set the way `SevenTvDeleteService` does: `done`
+   *  rows for `doneKeys`, `skipped` (cancelled) rows for `skippedKeys`. */
+  function publishRun(
+    doneKeys: string[],
+    skippedKeys: string[],
+    overrides: { channelName?: string; setId?: string } = {},
+  ): RunResult {
+    const item = (key: string, status: RunQueueItem['status']): RunQueueItem => ({
+      key,
+      sevenTvEmoteId: key.split('#')[0],
+      name: key,
+      status,
+      completedSteps: status === 'done' ? 1 : 0,
+      failedStep: null,
+    });
+    const result: RunResult = {
+      doneKeys,
+      items: [
+        ...doneKeys.map((k) => item(k, 'done')),
+        ...skippedKeys.map((k) => item(k, 'cancelled')),
+      ],
+      startedAt: 0,
+      finishedAt: 1,
+    };
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId: overrides.setId ?? 'set-a',
+      channelName: overrides.channelName ?? 'a',
+      targetOwnerTwitchId: null,
+      result,
+    });
+    return result;
+  }
+
+  /**
+   * protects: AC 1, edge 1 — a settled run deselects exactly its done cards and keeps the skipped one.
+   * fails_when: the selection is emptied (the old clear()) or a skipped key is gone.
+   * no_claim: rendering.
+   */
+  it('keeps a skipped card selected when the run deleted its neighbours', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    click('slot-hob');
+    click('7tv-y');
+    publishRun(['7tv-x#slot-hob', '7tv-y'], ['7tv-x#slot-ome']);
+
+    component['onDeleted'](['7tv-x#slot-hob', '7tv-y']);
+
+    expect(component['selection'].selectedKeys()).toEqual(['slot-ome']);
+    expect(component['emotes']().map((row) => row.slotKey)).toEqual(['slot-ome']);
+  });
+
+  /**
+   * protects: edge 8 — an id row that is done takes every card of that 7TV id out of the selection.
+   * fails_when: a sibling card of the id stays selected.
+   * no_claim: slot bookkeeping.
+   */
+  it('deselects every card of a done id row', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    click('slot-hob');
+    click('7tv-y');
+    publishRun(['7tv-x'], ['7tv-y']);
+
+    component['onDeleted'](['7tv-x']);
+
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-y']);
+  });
+
+  /**
+   * protects: AC 2 — a run that deleted everything and nothing marked since leaves an empty selection.
+   * fails_when: a done key stays selected, or the hint count is positive.
+   * no_claim: —
+   */
+  it('ends with an empty selection and no hint when every row was done', () => {
+    mount([ome(), other()]);
+    click('slot-ome');
+    publishRun(['7tv-x#slot-ome'], []);
+
+    component['onDeleted'](['7tv-x#slot-ome']);
+
+    expect(component['selection'].selectedKeys()).toEqual([]);
+    expect(component['dockRetryCount']()).toBe(0);
+  });
+
+  /**
+   * protects: AC 3, edge 7 — a card marked after the confirmation is not in the run and stays marked.
+   * fails_when: it is dropped with the run's rows.
+   * no_claim: —
+   */
+  it('keeps a card marked while the run was in flight', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    publishRun(['7tv-x#slot-ome'], []);
+    click('7tv-y');
+
+    component['onDeleted'](['7tv-x#slot-ome']);
+
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-y']);
+  });
+
+  /**
+   * protects: AC 4, edge 6 — a reload after a failed/partial report unmarks only the done rows and refreshes.
+   * fails_when: clear() is called (the skipped row is gone) or a done row stays marked.
+   * no_claim: the refresh request itself.
+   */
+  it('deselects the done rows on a reload request and refreshes without clearing', () => {
+    mount([ome(), hob(), other()]);
+    const refresh = vi
+      .spyOn(component as unknown as { refresh(): void }, 'refresh')
+      .mockImplementation(() => {});
+    click('slot-ome');
+    click('slot-hob');
+    publishRun(['7tv-x#slot-hob'], ['7tv-x#slot-ome']);
+
+    component['onReloadRequested']();
+
+    expect(component['selection'].selectedKeys()).toEqual(['slot-ome']);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * protects: AC 4, edge 16 — the restore effect's second reloadRequested for the same delete result
+   * deselects nothing, so a restored and re-marked row keeps its mark.
+   * fails_when: the row is unmarked twice.
+   * no_claim: restore internals.
+   */
+  it('lets a second reload request for the same run only refresh', () => {
+    mount([ome(), hob(), other()]);
+    vi.spyOn(component as unknown as { refresh(): void }, 'refresh').mockImplementation(() => {});
+    click('slot-hob');
+    publishRun(['7tv-x#slot-hob'], []);
+    component['onReloadRequested']();
+    expect(component['selection'].selectedKeys()).toEqual([]);
+
+    click('slot-hob');
+    component['onReloadRequested']();
+
+    expect(component['selection'].selectedKeys()).toEqual(['slot-hob']);
+  });
+
+  /**
+   * protects: edge 9/9a — a run of another channel changes nothing; a run of another set only refreshes.
+   * fails_when: the selection changes in either case, or the other channel's run refreshes.
+   * no_claim: —
+   */
+  it('leaves the selection alone for a run of another channel or set', () => {
+    mount([ome(), hob(), other()]);
+    const refresh = vi
+      .spyOn(component as unknown as { refresh(): void }, 'refresh')
+      .mockImplementation(() => {});
+    click('slot-hob');
+
+    publishRun(['7tv-x#slot-hob'], [], { channelName: 'zz' });
+    component['onDeleted'](['7tv-x#slot-hob']);
+    expect(component['selection'].selectedKeys()).toEqual(['slot-hob']);
+    expect(refresh).not.toHaveBeenCalled();
+
+    publishRun(['7tv-x#slot-hob'], [], { setId: 'set-other' });
+    component['onDeleted'](['7tv-x#slot-hob']);
+    expect(component['selection'].selectedKeys()).toEqual(['slot-hob']);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * protects: AC 5, edge 14/17 — the count is selected ∩ non-done rows of the matching run, with no
+   * panel output needed, and 0 for another channel or set.
+   * fails_when: done rows are counted, the guards are ignored, or an all-skipped run counts 0.
+   * no_claim: wording.
+   */
+  it('counts the marked rows a run left undeleted, from the run alone', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    click('slot-hob');
+    click('7tv-y');
+    expect(component['dockRetryCount']()).toBe(0);
+
+    publishRun(['7tv-x#slot-hob'], ['7tv-x#slot-ome', '7tv-y']);
+    // No onDeleted yet: the done row is still marked but is not counted.
+    expect(component['dockRetryCount']()).toBe(2);
+
+    publishRun([], ['7tv-x#slot-ome', '7tv-x#slot-hob', '7tv-y']);
+    expect(component['dockRetryCount']()).toBe(3);
+
+    publishRun([], ['7tv-y'], { channelName: 'zz' });
+    expect(component['dockRetryCount']()).toBe(0);
+    publishRun([], ['7tv-y'], { setId: 'set-other' });
+    expect(component['dockRetryCount']()).toBe(0);
+  });
+
+  /**
+   * protects: AC 5, edge 10/11 — a selection gesture or a set switch dismisses the hint for that
+   * result for good, while a new run's result is not pre-dismissed.
+   * fails_when: the hint persists after the gesture, comes back when the count stays positive, or the next run is silent.
+   * no_claim: —
+   */
+  it('dismisses the retry hint per run result on a selection gesture', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    click('slot-hob');
+    publishRun([], ['7tv-x#slot-ome', '7tv-x#slot-hob']);
+    expect(component['dockRetryCount']()).toBe(2);
+
+    component['onCellClick'](card('7tv-y'), 2, { shiftKey: false } as MouseEvent);
+    expect(component['dockRetryCount']()).toBe(0);
+    // A prune that leaves the count positive does not bring it back.
+    component['selection'].deselectKeys(['slot-hob']);
+    expect(component['dockRetryCount']()).toBe(0);
+
+    publishRun([], ['7tv-x#slot-ome']);
+    expect(component['dockRetryCount']()).toBe(1);
   });
 
   // --- held out of the run (plan 378, 4.9, A10; spec D11) ----------------------------------------
