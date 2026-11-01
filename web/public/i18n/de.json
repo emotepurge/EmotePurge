@@ -1990,6 +1990,16 @@
         "one": "{{ count }} Ersetzung wurde nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.",
         "other": "{{ count }} Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert."
       },
+      "targetUncheckedSkipped": {
+        "incomplete": {
+          "one": "{{ count }} Emote wurde nicht kopiert — 7TV hat das Zielset nicht vollständig aufgelistet, deshalb ließ sich nicht ausschließen, dass es dort schon ist.",
+          "other": "{{ count }} Emotes wurden nicht kopiert — 7TV hat das Zielset nicht vollständig aufgelistet, deshalb ließ sich nicht ausschließen, dass sie dort schon sind."
+        },
+        "unavailable": {
+          "one": "{{ count }} Emote wurde nicht kopiert — das Zielset ließ sich gerade nicht darauf prüfen. Bitte gleich noch einmal versuchen.",
+          "other": "{{ count }} Emotes wurden nicht kopiert — das Zielset ließ sich gerade nicht darauf prüfen. Bitte gleich noch einmal versuchen."
+        }
+      },
       "unknownRows": {
         "one": "Bei {{ count }} Zeile ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen.",
         "other": "Bei {{ count }} Zeilen ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen."
@@ -2024,8 +2034,7 @@
     "skippedDuplicates": {
       "one": "{{ count }} Emote war beim Start bereits im Zielset und wurde übersprungen.",
       "other": "{{ count }} Emotes waren beim Start bereits im Zielset und wurden übersprungen."
-    },
-    "duplicateCheckUnavailable": "Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen."
+    }
   },
   "undo": {
     "confirm": {

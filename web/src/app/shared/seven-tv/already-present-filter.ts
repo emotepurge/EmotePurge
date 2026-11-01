@@ -47,14 +47,15 @@ export interface AlreadyPresentFilterRow {
  * the duplicate. This became reachable once #149 moved the write surface to `v4`, whose alias
  * validator lets umlaut aliases through where `v3` used to reject them before the push ever ran.
  *
- * Used at the last moment before a run actually starts — import (`import-flow.ts`) calls this, and
- * both restore entry points (`restore-flow.ts`, `delete-progress-section.ts`) call its restore variant
- * `filterAlreadyPresentForRestore` below, right in the confirm-dialog-closed handler, immediately
- * before handing rows to `startRestore`/`startImport` — so the fetch it does is always fresh, never
- * a dialog-open-time snapshot reused later. This one compares the 7TV id alone (spec #200, 7.2: the
- * import and the delete path stay on the id axis), except for a row that names an `entryAlias`
- * (#444: a further alias of a multi-alias source id is an entry of its own). For import
- * this sits *on top of* `buildImportPreview`'s own dialog-time filter (`import-preview.ts`), not
+ * Used at the last moment before a run actually starts — import (`import-flow.ts`'s
+ * `recheckTransferPlan`, which refuses ADDs on a failed or incomplete read, see below) calls this,
+ * and both restore entry points (`restore-flow.ts`, `delete-progress-section.ts`) call its restore
+ * variant `filterAlreadyPresentForRestore` below, right in the confirm-dialog-closed handler,
+ * immediately before handing rows to `startRestore`/`startImport` — so the fetch it does is always
+ * fresh, never a dialog-open-time snapshot reused later. This one compares the 7TV id alone (spec
+ * #200, 7.2: the import and the delete path stay on the id axis), except for a row that names an
+ * `entryAlias` (#444: a further alias of a multi-alias source id is an entry of its own). For
+ * import this sits *on top of* `buildImportPreview`'s own dialog-time filter (`import-preview.ts`), not
  * instead of it: that filter can already be stale by the time the user actually confirms (another
  * editor, another tab, a long-open dialog), so this re-checks right before anything is sent.
  *
@@ -77,10 +78,14 @@ export interface AlreadyPresentFilterRow {
  * `addEmote` call, in which another editor could write to the set. That race cannot be closed
  * without an atomic operation on 7TV's side, and this code does not attempt to close it.
  *
- * Fails open on a failed fetch — every row still passes through unfiltered, rather than blocking a
- * run the user already confirmed; a best-effort safety net, not a hard gate. What changed from the
- * first version of this filter is *only the reporting*: a failed fetch now sets `available: false`
- * instead of the indistinguishable `skipped: 0` a successful, nothing-to-skip check also produces.
+ * Fails open on a failed fetch — every row still passes through unfiltered, and `available: false`
+ * says the check could not run. This is the filter's own result shape, not the import's outcome:
+ * since #457 the import's caller (`recheckTransferPlan` in `import-flow.ts`) refuses every `add` and
+ * `renameSource` row on such a read, and on a successful read that is not `complete` too, so an
+ * import no longer proceeds on an unverified basis. Restore keeps its own fail-open handling in
+ * `filterAlreadyPresentForRestore` below. What changed from the first version of this filter is
+ * *only the reporting*: a failed fetch now sets `available: false` instead of the
+ * indistinguishable `skipped: 0` a successful, nothing-to-skip check also produces.
  * That distinction is the rule `import-target-loader.ts` states explicitly for its own
  * `UNAVAILABLE_WARNING` fallback — "a failed check must read as 'not verified', never as a false
  * all-clear" — which this filter cited as precedent without actually following before this fix. It
