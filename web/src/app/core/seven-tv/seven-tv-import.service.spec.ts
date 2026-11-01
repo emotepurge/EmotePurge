@@ -646,7 +646,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 0, false);
 
       expect(service.duplicateCheckAvailable()).toBe(false);
-      // Fails open, same as always — an unverifiable check does not block the confirmed run.
+      // The service runs whatever plan it is handed — the refusal of add/renameSource rows on an
+      // unchecked read happens before this call, in `recheckTransferPlan` (#457).
       expect(service.isRunning()).toBe(true);
 
       runTwoRowsToDone();
@@ -661,6 +662,68 @@ describe('SevenTvImportService', () => {
       service.reset();
 
       expect(service.duplicateCheckAvailable()).toBe(true);
+    });
+  });
+
+  // #457: the add/renameSource rows the caller's fresh pre-run check refused because its read of
+  // the target could not rule out a duplicate (failed, timed out, or incomplete). The service gets
+  // the plan already trimmed; this pins that the count reaches the notice and that a trimmed plan
+  // puts no ADD on the wire.
+  describe('targetUncheckedSkipped (#457)', () => {
+    it('defaults to 0 when the caller omits it', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([]));
+
+      expect(service.targetUncheckedSkipped()).toBe(0);
+      expect(service.duplicateNoticePending()).toBe(false);
+    });
+
+    it('opens the notice for rows refused on a failed read too', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [] }, 0, false, 0, 1);
+
+      expect(service.duplicateNoticePending()).toBe(true);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('opens the notice for a plan emptied by the refusal, and sends nothing', () => {
+      const started = service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [] }, 0, true, 0, 2);
+
+      expect(started).toBe(false);
+      expect(service.targetUncheckedSkipped()).toBe(2);
+      expect(service.duplicateNoticePending()).toBe(true);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('runs the adopt row the refusal kept as an UPDATE, with no ADD on the wire', () => {
+      service.startImport(
+        TARGET_B,
+        CHANNEL_ORIGIN,
+        { rows: [adoptRow(SOURCE_X, 'KappaOld')] },
+        0,
+        false,
+        1,
+        2,
+      );
+
+      const mutation = nextMutation();
+      const query = (mutation.request.body as { query: string }).query;
+      expect(query).toContain('UpdateEmoteAlias');
+      expect(query).not.toContain('AddEmote');
+      flushApplied(mutation);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(service.isRunning()).toBe(false);
+      expect(service.targetUncheckedSkipped()).toBe(2);
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('is cleared by reset() and by a blocked pre-check', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [] }, 0, true, 0, 2);
+      service.reset();
+      expect(service.targetUncheckedSkipped()).toBe(0);
+
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [] }, 0, true, 0, 2);
+      service.reportTargetCheckBlocked('unavailable');
+      expect(service.targetUncheckedSkipped()).toBe(0);
     });
   });
 
@@ -685,10 +748,12 @@ describe('SevenTvImportService', () => {
       expect(service.duplicateNoticePending()).toBe(true);
     });
 
-    it('becomes true when the call reports the check unavailable, even with nothing skipped', () => {
+    // #457: an unavailable check alone has nothing left to show — it only picks the wording of the
+    // refused-rows line — so it opens no empty notice window (an adopt-only plan on a failed read).
+    it('stays false when the call reports the check unavailable but nothing skipped or refused', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 0, false);
 
-      expect(service.duplicateNoticePending()).toBe(true);
+      expect(service.duplicateNoticePending()).toBe(false);
 
       runTwoRowsToDone();
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });

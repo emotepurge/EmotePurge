@@ -426,18 +426,27 @@ export class SevenTvImportService {
    *  all. Set unconditionally, like `skippedDuplicates`. */
   readonly replaceSkippedDrift = signal(0);
 
+  /** How many `add`/`renameSource` rows the caller's fresh pre-run check refused because its read
+   *  of the target could not rule out a duplicate: the read failed, timed out, or did not list the
+   *  whole set (#457, `recheckTransferPlan`). Set unconditionally, like `skippedDuplicates`. Which
+   *  of its two wordings is shown follows {@link duplicateCheckAvailable}. */
+  readonly targetUncheckedSkipped = signal(0);
+
   /** Whether the caller's fresh pre-send duplicate check (#149/T5, `already-present-filter.ts`)
-   *  actually ran — `false` means its fetch failed, so `rows` passed through unfiltered and an
-   *  undetected duplicate is possible in this run. Same vocabulary as
-   *  `AlreadyPresentFilterResult.available`; see that type's doc for why a failed check must not
-   *  read as a clean `skippedDuplicates: 0`. Defaults to `true` so existing callers/tests that omit
-   *  it keep reading as "checked, nothing to skip". */
+   *  actually ran — `false` means its fetch failed or timed out. Since #457 the caller lets no ADD
+   *  through on such a read (it counts the refused rows in {@link targetUncheckedSkipped}), so this
+   *  only selects the wording of that count: "could not be read" (`false`) vs "listed only partly"
+   *  (`true`). Same vocabulary as `AlreadyPresentFilterResult.available`. Defaults to `true` so
+   *  existing callers/tests that omit it keep reading as "checked, nothing to skip". */
   readonly duplicateCheckAvailable = signal(true);
 
   /** #149 P2 (independent review): whether the notice built from the signals above should
    *  currently be shown — true for `DUPLICATE_NOTICE_MS` after any `startImport` call that had
-   *  something to report (`skippedDuplicates > 0 || !duplicateCheckAvailable || replaceSkippedDrift
-   *  > 0`), including a refused (all-duplicates, or all-drift) call.
+   *  something to show (`skippedDuplicates > 0 || replaceSkippedDrift > 0 ||
+   *  targetUncheckedSkipped > 0`), including a refused (all-duplicates, all-drift, or
+   *  all-unchecked) call. `!duplicateCheckAvailable` alone no longer opens it (#457): it only picks
+   *  the wording of the `targetUncheckedSkipped` line, so with nothing refused (an adopt-only plan
+   *  on a failed read, say) there is no line to show and no empty window to open.
    *  `dockVisible()` (`usage-stats-page.ts`, via `action-dock.ts`) treats this
    *  exactly like an active run, which is what lets `import-progress-section` mount at all in that
    *  refused case — without it the section's own gate (`isRunning() || queue().length > 0`) would
@@ -498,7 +507,8 @@ export class SevenTvImportService {
    *  the caller's own count from the *fresh* re-check it ran just before
    *  this call (see `already-present-filter.ts`) — defaults to 0. `duplicateCheckAvailable` mirrors
    *  the same call's `available` and defaults to `true` for the same reason. `replaceSkippedDrift`
-   *  is the same re-check's count of held-back `replace` rows, default 0.
+   *  is the same re-check's count of held-back `replace` rows, default 0. `targetUncheckedSkipped`
+   *  is its count of `add`/`renameSource` rows refused against an unchecked read (#457), default 0.
    *
    *  No guard against a `replace` row targeting an untracked account any more (#253, spec 4.5
    *  point 16/6.6, DECISIONS "The replace lock for an untracked target falls"): the removal report
@@ -534,6 +544,7 @@ export class SevenTvImportService {
     skippedDuplicates = 0,
     duplicateCheckAvailable = true,
     replaceSkippedDrift = 0,
+    targetUncheckedSkipped = 0,
   ): boolean {
     const deletes = plan.rows.some((row) => row.action === 'replace');
 
@@ -541,11 +552,13 @@ export class SevenTvImportService {
     this.skippedDuplicates.set(skippedDuplicates);
     this.duplicateCheckAvailable.set(duplicateCheckAvailable);
     this.replaceSkippedDrift.set(replaceSkippedDrift);
+    this.targetUncheckedSkipped.set(targetUncheckedSkipped);
     // Also fires for a run held back entirely by drift (every replace row skipped, nothing
-    // queued) — without this, such a run would leave no run/queue behind at all *and* no notice,
-    // which is exactly the silence AK 16's "the protocol appears after every run" exists against.
+    // queued) or by an unchecked target read (every add/renameSource row refused, #457) — without
+    // this, such a run would leave no run/queue behind at all *and* no notice, which is exactly the
+    // silence AK 16's "the protocol appears after every run" exists against.
     this.showDuplicateNotice(
-      skippedDuplicates > 0 || !duplicateCheckAvailable || replaceSkippedDrift > 0,
+      skippedDuplicates > 0 || replaceSkippedDrift > 0 || targetUncheckedSkipped > 0,
     );
     // The source row's `importRowKey` (7TV id and name) is the identity an imported row has — the
     // emote does not exist in our database yet, so there is no internal `emoteId` to mirror the key
@@ -606,7 +619,8 @@ export class SevenTvImportService {
     ) {
       // Refused (already running, empty list, no token) — take the just-opened record back and
       // restore whatever was shown before it, which may be another run still settling its reports.
-      // Every signal above (skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift) stays
+      // Every signal above (skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift,
+      // targetUncheckedSkipped) stays
       // as set: an all-duplicates import is a legitimate "refused" case whose count (and whether it
       // is even trustworthy) the caller still needs to see.
       this.lifecycle.discardUnstarted(started.runId, previousShown);
@@ -640,6 +654,7 @@ export class SevenTvImportService {
     this.lifecycle.detach();
     this.skippedDuplicates.set(0);
     this.replaceSkippedDrift.set(0);
+    this.targetUncheckedSkipped.set(0);
     this.duplicateCheckAvailable.set(true);
     this.targetCheckBlockReason.set(null);
     this.showDuplicateNotice(false);
@@ -649,15 +664,17 @@ export class SevenTvImportService {
    *  with at least one replace row, before `recheckTransferPlan` even runs (spec 4.5 point 17) —
    *  nothing starts, and the reason is shown at the same transient spot a drift abort uses
    *  (`duplicateNoticePending`, plan 0.2): a blocked pre-check leaves no run/queue behind either.
-   *  Final fix wave A7: also resets `skippedDuplicates`, `duplicateCheckAvailable` and
-   *  `replaceSkippedDrift` to their neutral values, same as `startImport` does on every call —
-   *  without this, a still-shown finished run's counts survived into this call's own notice and
-   *  re-announced "N skipped as duplicate" next to a block reason that has nothing to do with it. */
+   *  Final fix wave A7: also resets `skippedDuplicates`, `duplicateCheckAvailable`,
+   *  `replaceSkippedDrift` and `targetUncheckedSkipped` (#457) to their neutral values, same as
+   *  `startImport` does on every call — without this, a still-shown finished run's counts survived
+   *  into this call's own notice and re-announced "N skipped as duplicate" next to a block reason
+   *  that has nothing to do with it. */
   reportTargetCheckBlocked(reason: TargetCheckBlockReason): void {
     this.targetCheckBlockReason.set(reason);
     this.skippedDuplicates.set(0);
     this.duplicateCheckAvailable.set(true);
     this.replaceSkippedDrift.set(0);
+    this.targetUncheckedSkipped.set(0);
     this.showDuplicateNotice(true);
   }
 

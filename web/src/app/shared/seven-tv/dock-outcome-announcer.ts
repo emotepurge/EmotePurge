@@ -45,6 +45,21 @@ export function importTargetCheckBlockedKey(reason: TargetCheckBlockReason | nul
   }
 }
 
+/** Translation key for the count of `add`/`renameSource` rows an import refused because its fresh
+ *  pre-send read of the target could not rule out a duplicate (#457,
+ *  `SevenTvImportService.targetUncheckedSkipped`). One count, two reasons the user can act on:
+ *  `checkAvailable` (the service's `duplicateCheckAvailable`) is `true` when the read succeeded but
+ *  did not list the whole set, and `false` when it failed or timed out. Shared by this announcer
+ *  and `ImportProgressSection`, so the spoken and the shown wording cannot drift apart. */
+export function importTargetUncheckedSkippedKey(count: number, checkAvailable: boolean): string {
+  return pluralKey(
+    count,
+    checkAvailable
+      ? 'import.summary.targetUncheckedSkipped.incomplete'
+      : 'import.summary.targetUncheckedSkipped.unavailable',
+  );
+}
+
 /** Translation key for a run's resync acknowledgement, or `null` while there is nothing to say.
  *  Shared by this announcer and the three visible notices it speaks for (`RestoreProgressSection`,
  *  `ImportProgressSection` — moved out of `MassDeletePanel` in #253/T9 — and
@@ -401,8 +416,13 @@ export function markedCountNoticeKey(count: number): string {
           {{ importSkippedKey() | transloco: { count: importService.skippedDuplicates() } }}
         </p>
       }
-      @if (importService.duplicateNoticePending() && !importService.duplicateCheckAvailable()) {
-        <p>{{ 'import.duplicateCheckUnavailable' | transloco }}</p>
+      @if (importService.duplicateNoticePending() && importService.targetUncheckedSkipped() > 0) {
+        <p>
+          {{
+            importTargetUncheckedSkippedKey()
+              | transloco: { count: importService.targetUncheckedSkipped() }
+          }}
+        </p>
       }
       @if (importService.duplicateNoticePending() && importService.replaceSkippedDrift() > 0) {
         <p>
@@ -517,6 +537,12 @@ export class DockOutcomeAnnouncer {
   );
   protected readonly importSkippedKey = computed(() =>
     pluralKey(this.importService.skippedDuplicates(), 'import.skippedDuplicates'),
+  );
+  protected readonly importTargetUncheckedSkippedKey = computed(() =>
+    importTargetUncheckedSkippedKey(
+      this.importService.targetUncheckedSkipped(),
+      this.importService.duplicateCheckAvailable(),
+    ),
   );
   protected readonly importReplaceSkippedDriftKey = computed(() =>
     pluralKey(this.importService.replaceSkippedDrift(), 'import.summary.replaceSkippedDrift'),

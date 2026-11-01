@@ -100,7 +100,6 @@ const DE_TRANSLATIONS = {
   },
   import: {
     startChecking: 'Übertragung wird geprüft.',
-    duplicateCheckUnavailable: 'Import-Prüfung nicht möglich.',
     errors: {
       targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
       targetNotSelectable: 'Das Zielset ist kein normales Emote-Set.',
@@ -121,6 +120,16 @@ const DE_TRANSLATIONS = {
         "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
       renamedNotActive:
         "In Set ‚{{ setName }}' umbenannt — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
+      targetUncheckedSkipped: {
+        incomplete: {
+          one: '{{ count }} Emote nicht kopiert — Zielset nur teilweise gelistet.',
+          other: '{{ count }} Emotes nicht kopiert — Zielset nur teilweise gelistet.',
+        },
+        unavailable: {
+          one: '{{ count }} Emote nicht kopiert — Zielset gerade nicht prüfbar.',
+          other: '{{ count }} Emotes nicht kopiert — Zielset gerade nicht prüfbar.',
+        },
+      },
       replaceSkippedDrift: {
         one: '{{ count }} Ersetzung wurde nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.',
         other:
@@ -145,6 +154,10 @@ interface FakeOutcomeSource {
   /** Only `SevenTvImportService` actually has this — a restore run never carries a replace row.
    *  Same reasoning as `run` above: shared shape, the restore fake's copy is never read. */
   replaceSkippedDrift: WritableSignal<number>;
+  /** Only `SevenTvImportService` actually has this (#457) — rows refused against an unchecked
+   *  target read. Same reasoning as `replaceSkippedDrift` above: shared shape, the restore fake's
+   *  copy is never read. */
+  targetUncheckedSkipped: WritableSignal<number>;
   /** Only `SevenTvImportService` actually has this (spec 4.5 point 17, AK 32) — the shared
    *  pre-check's block reason on a replace-carrying start has no restore counterpart (the restore
    *  entry's own pre-check has no notice at all, spec E16, 4.6 point 22). Same reasoning as `run`
@@ -169,6 +182,7 @@ function createFakeSource(): FakeOutcomeSource {
     duplicateNoticePending: signal(false),
     run: signal<ImportRunInfo | null>(null),
     replaceSkippedDrift: signal(0),
+    targetUncheckedSkipped: signal(0),
     targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
     startCheckPending: signal(false),
     tagPlacementReport: signal<SyncReportState>('idle'),
@@ -409,6 +423,7 @@ describe('DockOutcomeAnnouncer', () => {
   it('lists several outcomes in the dock reading order: restore before import, skips, check, resync', () => {
     importService.resyncTrigger.set('succeeded');
     importService.skippedDuplicates.set(3);
+    importService.targetUncheckedSkipped.set(2);
     importService.duplicateCheckAvailable.set(false);
     importService.duplicateNoticePending.set(true);
     restoreService.resyncTrigger.set('pending');
@@ -420,9 +435,37 @@ describe('DockOutcomeAnnouncer', () => {
       '1 Emote ist bereits im Zielset und wurde übersprungen.',
       'Synchronisierung wird angestoßen…',
       '3 Emotes waren beim Start bereits im Zielset und wurden übersprungen.',
-      'Import-Prüfung nicht möglich.',
+      '2 Emotes nicht kopiert — Zielset gerade nicht prüfbar.',
       'Abgleich angestoßen.',
     ]);
+  });
+
+  // #457: the import's rows refused against an unchecked target read — one count, the wording
+  // picked by whether the read succeeded (listed only partly) or failed (could not be checked).
+  it('speaks the unchecked-target count in the wording its read picked, only while the window is open', () => {
+    importService.targetUncheckedSkipped.set(1);
+    importService.duplicateCheckAvailable.set(true);
+    importService.duplicateNoticePending.set(true);
+    fixture.detectChanges();
+    expect(spoken()).toEqual(['1 Emote nicht kopiert — Zielset nur teilweise gelistet.']);
+
+    importService.duplicateCheckAvailable.set(false);
+    fixture.detectChanges();
+    expect(spoken()).toEqual(['1 Emote nicht kopiert — Zielset gerade nicht prüfbar.']);
+
+    importService.duplicateNoticePending.set(false);
+    fixture.detectChanges();
+    expect(spoken()).toEqual([]);
+  });
+
+  // #457: the import's "duplicates are possible" line is retired — a failed check no longer lets
+  // any row through that could duplicate, so with nothing refused there is nothing to say.
+  it('says nothing about the import check when it failed but refused no row', () => {
+    importService.duplicateCheckAvailable.set(false);
+    importService.duplicateNoticePending.set(true);
+    fixture.detectChanges();
+
+    expect(spoken()).toEqual([]);
   });
 
   /** Minimal `ImportRunItem` fixture for the copied/renamed-not-active tests below — only

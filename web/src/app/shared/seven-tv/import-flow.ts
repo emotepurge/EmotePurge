@@ -273,13 +273,19 @@ export interface TransferPlanRecheck {
   /** The plan minus every row the fresh read dropped, in the plan's own order. */
   plan: TransferPlan;
   /** Rows dropped because their source id — or, for a multi-alias id (#444), their entry — is
-   *  already in the target set. */
+   *  already in the target set. Only rows a successful read positively showed as present. */
   skippedDuplicates: number;
-  /** Whether the read succeeded — `false` means the duplicate check could not run. */
+  /** Whether the read succeeded — `false` means it failed or timed out. Neither case lets an ADD
+   *  through any more (see `targetUncheckedSkipped`); this only picks the wording of that notice
+   *  ("listed only partly" vs "could not be read"). */
   duplicateCheckAvailable: boolean;
   /** `replace` rows held back because their target drifted from the confirmed state, or because
    *  the read could not vouch for it (failed or incomplete). */
   replaceSkippedDrift: number;
+  /** `add` and `renameSource` rows refused because the read could not rule out that their source
+   *  id is already in the target set: it failed, timed out, or did not list the whole set
+   *  (#457). */
+  targetUncheckedSkipped: number;
 }
 
 /**
@@ -287,21 +293,29 @@ export interface TransferPlanRecheck {
  * duplicate half, docs/plans/Plan-230-Namenskonflikte.md section 2 point 5 for the replace half):
  *
  * - `add`, `renameSource` and `replace` rows whose *source* id is already in the set drop out —
- *   the duplicate filter, failing open on a failed read like it always did. A `replace` row drops
- *   out whole: no REMOVE without its ADD. A row whose source id is in `multiAliasIds` (the source
- *   carries that id under several aliases, #444) is checked per entry instead: it drops out only
+ *   the duplicate filter. A `replace` row drops out whole: no REMOVE without its ADD. A row whose
+ *   source id is in `multiAliasIds` (the source carries that id under several aliases, #444) is
+ *   checked per entry instead: it drops out only
  *   when the set holds the id under the very alias the row writes, so a further alias of an id the
  *   set already has is still added. A single-alias id keeps the id check: an entry that appeared
  *   under another alias since the preview is still not doubled behind the user's back.
+ * - An `add` or `renameSource` row that the read did not show present still drops out when the
+ *   read cannot vouch for the whole set — it failed, timed out, or came back incomplete (any
+ *   `complete: false`: a gap, a mismatch, the page cap). It is counted in `targetUncheckedSkipped`.
+ *   7TV's `addEmote` does not dedupe by id (#149), so an ADD against a partial or missing list can
+ *   append an unrepairable duplicate of an entry the read did not see (#457, superseding #149's
+ *   fail-open for this recheck). `filterAlreadyPresent` itself still fails open; the refusal is
+ *   made here.
  * - `adoptSourceName` rows never go through the duplicate filter: the source id is in the set by
- *   definition, that is the entry the row renames.
+ *   definition, that is the entry the row renames. They are an UPDATE, never an ADD, so they pass
+ *   an unchecked read too.
  * - `replace` rows are verified a second time against the confirmed target (`verifyReplaceTargets`);
  *   one that drifted drops out and is counted. A failed or incomplete read lets **no** `replace` row
  *   through — deleting on an unchecked basis is worse than not deleting.
  *
  * Bounded by {@link LIVE_READ_TIMEOUT_MS} (#280): a read that hangs past it counts as the failed
- * read above — every row through the duplicate filter unfiltered, no `replace` row through — so a
- * confirmed import can never wait for it forever.
+ * read above — no `add`, `renameSource` or `replace` row through — so a confirmed import can never
+ * wait for it forever.
  *
  * Exported on its own so it can be tested apart from the dialogs around it.
  */
@@ -329,7 +343,11 @@ export function recheckTransferPlan(
       const drifted = new Set(
         verification?.available ? verification.drifted.map((drift) => drift.key) : [],
       );
+      // Unchecked: the read failed (or timed out), or it succeeded without seeing the whole set.
+      // Either way it cannot prove that a source id is absent, so no ADD may rely on it.
+      const unchecked = entries === null || !entries.complete;
       let replaceSkippedDrift = 0;
+      let targetUncheckedSkipped = 0;
       const kept = plan.rows.filter((row) => {
         if (row.action === 'adoptSourceName') {
           return true;
@@ -338,6 +356,10 @@ export function recheckTransferPlan(
           return false;
         }
         if (row.action !== 'replace') {
+          if (unchecked) {
+            targetUncheckedSkipped++;
+            return false;
+          }
           return true;
         }
         const passes = verification?.available === true && !drifted.has(importRowKey(row.source));
@@ -351,6 +373,7 @@ export function recheckTransferPlan(
         skippedDuplicates: skipped,
         duplicateCheckAvailable: available,
         replaceSkippedDrift,
+        targetUncheckedSkipped,
       };
     }),
   );
@@ -571,7 +594,14 @@ export function startImportFlow(
       multiAliasIdsOf(source.rows),
     )
       .pipe(finalize(() => deps.importService.startCheckPending.set(false)))
-      .subscribe(({ plan, skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift }) => {
+      .subscribe((recheck) => {
+        const {
+          plan,
+          skippedDuplicates,
+          duplicateCheckAvailable,
+          replaceSkippedDrift,
+          targetUncheckedSkipped,
+        } = recheck;
         // #149 P2 review fix: the arbiter check above ran *before* this fetch, which the mutual
         // exclusion contract (design doc §4.3, the SevenTvRunArbiter paragraph) does not actually
         // cover — a delete or restore can start in that window and this would otherwise start a
@@ -597,9 +627,15 @@ export function startImportFlow(
         // Then the no-op (Codex finding 5): another editor added every remaining row while the
         // dialog was open. `startImport` would refuse the empty plan and drop the record, so no
         // placement report would ever say the tag is played in. A plan emptied by held-back
-        // replace rows is not "everything is already there" — it falls through to `startImport`,
-        // whose drift notice names it, and the tag stays unplayed.
-        if (tagHook !== undefined && plan.rows.length === 0 && replaceSkippedDrift === 0) {
+        // replace rows, or by rows refused against an unchecked target read (#457), is not
+        // "everything is already there" — it falls through to `startImport`, whose notice names
+        // it, and the tag stays unplayed.
+        if (
+          tagHook !== undefined &&
+          plan.rows.length === 0 &&
+          replaceSkippedDrift === 0 &&
+          targetUncheckedSkipped === 0
+        ) {
           tagHook.onNothingToImport();
           return;
         }
@@ -635,6 +671,7 @@ export function startImportFlow(
           skippedDuplicates,
           duplicateCheckAvailable,
           replaceSkippedDrift,
+          targetUncheckedSkipped,
         );
         // Only a run the engine actually started counts as "went ahead": a refused start (a plan
         // emptied by held-back replace rows, a token cleared during the re-check) leaves the
