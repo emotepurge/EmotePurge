@@ -1288,6 +1288,10 @@
       },
       "membersUnavailable": "Die Mitgliederliste dieses Sets ist gerade nicht verfügbar – gezeigt werden nur Emotes mit Zählungen.",
       "truncated": "Die Mitgliederliste dieses Sets ist unvollständig (laut 7TV {{total}} Einträge).",
+      "gap": {
+        "one": "7TV zählt {{total}} Einträge in diesem Set, listet aber {{count}} Eintrag weniger auf. Karten ohne gelisteten Eintrag bleiben beim Löschen, Abstimmen und Übertragen außen vor.",
+        "other": "7TV zählt {{total}} Einträge in diesem Set, listet aber {{count}} Einträge weniger auf. Karten ohne gelisteten Eintrag bleiben beim Löschen, Abstimmen und Übertragen außen vor."
+      },
       "lock": {
         "membersUnavailable": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar.",
         "truncated": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig.",
@@ -1678,6 +1682,7 @@
       "lock": {
         "unavailable": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar. Seite neu laden, um es erneut zu versuchen.",
         "truncated": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig. Seite neu laden, um es erneut zu versuchen.",
+        "gap": "Löschen gesperrt: 7TV listet nicht jeden Eintrag dieses Sets auf, und Löschen aus einer Abstimmung entfernt ein Emote mit all seinen Einträgen.",
         "loading": "Löschen gesperrt, bis die Mitgliederliste dieses Sets geladen ist."
       }
     }
@@ -1828,6 +1833,10 @@
       "invalidNames": {
         "one": "{{ count }} Name enthält Zeichen, die 7TV nicht anlegen kann — 7TV wird dieses Emote ablehnen:",
         "other": "{{ count }} Namen enthalten Zeichen, die 7TV nicht anlegen kann — 7TV wird diese Emotes ablehnen:"
+      },
+      "sourceOmitted": {
+        "one": "7TV listet {{ count }} Eintrag des Quellsets nicht auf; er wird nicht übertragen.",
+        "other": "7TV listet {{ count }} Einträge des Quellsets nicht auf; sie werden nicht übertragen."
       },
       "discardedRows": {
         "one": "{{ count }} ungültige Zeile in der Quelle verworfen.",

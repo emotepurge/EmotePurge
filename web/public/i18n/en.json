@@ -1288,6 +1288,10 @@
       },
       "membersUnavailable": "This set’s member list is unavailable right now – only emotes with counts are shown.",
       "truncated": "This set’s member list is incomplete ({{total}} entries according to 7TV).",
+      "gap": {
+        "one": "7TV counts {{total}} entries in this set but lists {{count}} entry fewer. Cards without a listed entry are left out of deleting, voting and copying.",
+        "other": "7TV counts {{total}} entries in this set but lists {{count}} entries fewer. Cards without a listed entry are left out of deleting, voting and copying."
+      },
       "lock": {
         "membersUnavailable": "Deleting and voting are locked: this set’s member list is unavailable.",
         "truncated": "Deleting and voting are locked: this set’s member list is incomplete.",
@@ -1678,6 +1682,7 @@
       "lock": {
         "unavailable": "Deleting is locked: this set’s member list is not available. Reload the page to try again.",
         "truncated": "Deleting is locked: this set’s member list is incomplete. Reload the page to try again.",
+        "gap": "Deleting is locked: 7TV does not list every entry of this set, and deleting from a vote removes an emote with all of its entries.",
         "loading": "Deleting is locked until this set’s member list has loaded."
       }
     }
@@ -1828,6 +1833,10 @@
       "invalidNames": {
         "one": "{{ count }} name contains characters 7TV cannot create — 7TV will reject this emote:",
         "other": "{{ count }} names contain characters 7TV cannot create — 7TV will reject these emotes:"
+      },
+      "sourceOmitted": {
+        "one": "7TV does not list {{ count }} entry of the source set; it is not copied.",
+        "other": "7TV does not list {{ count }} entries of the source set; they are not copied."
       },
       "discardedRows": {
         "one": "{{ count }} invalid row in the source discarded.",
