@@ -1308,6 +1308,8 @@
       "departedSinceLoad": "{{name}} ist seit dem Laden der Seite nicht mehr in diesem Set — nicht gelöscht.",
       "noAlias": "{{name}} hat in 7TV keinen eigenen Namen mehr und lässt sich nicht einzeln löschen — nicht gelöscht.",
       "skippedUnread": "{{names}} nicht gelöscht: {{reason}}",
+      "gapHidden": "7TV lässt derzeit {{count}} der Einträge dieses Sets aus und hat diese nicht geliefert.",
+      "gapIdRow": "7TV lässt derzeit {{count}} der Einträge dieses Sets aus — ein Löschen nach Emote-ID würde auch Einträge entfernen, die 7TV nicht zeigt.",
       "pendingSync": {
         "one": "{{names}} wird gerade mit 7TV abgeglichen und ist deshalb nicht im Löschlauf — in einer Minute erneut versuchen.",
         "other": "{{names}} werden gerade mit 7TV abgeglichen und sind deshalb nicht im Löschlauf — in einer Minute erneut versuchen."
@@ -1664,6 +1666,10 @@
       "missingFromSet": {
         "one": "{{names}} ist nicht mehr im Set — abwählen und den Lauf erneut starten.",
         "other": "{{names}} sind nicht mehr im Set — abwählen und den Lauf erneut starten."
+      },
+      "gap": {
+        "one": "7TV lässt derzeit {{count}} Eintrag dieses Sets aus, und ein Löschen nach Emote-ID würde auch Einträge entfernen, die 7TV nicht zeigt.",
+        "other": "7TV lässt derzeit {{count}} Einträge dieses Sets aus, und ein Löschen nach Emote-ID würde auch Einträge entfernen, die 7TV nicht zeigt."
       },
       "lock": {
         "unavailable": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar. Seite neu laden, um es erneut zu versuchen.",

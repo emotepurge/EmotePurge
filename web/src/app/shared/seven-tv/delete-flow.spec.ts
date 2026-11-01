@@ -4,6 +4,9 @@ import { TestBed } from '@angular/core/testing';
 import { NEVER, Observable, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import de from '../../../../public/i18n/de.json';
+import en from '../../../../public/i18n/en.json';
+
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
@@ -16,6 +19,7 @@ import {
   LiveAliasReadResult,
   MEMBER_READ_TRUNCATED_REASON_KEY,
   MEMBER_READ_UNAVAILABLE_REASON_KEY,
+  MEMBER_READ_GAP_REASON_KEY,
   readLiveSetAliases,
   resolveDeleteTarget,
   toDeleteQueueEmotes,
@@ -385,5 +389,42 @@ describe('toDeleteQueueEmotes', () => {
         { emoteId: 'local-1', sevenTvEmoteId: '7tv-1', name: 'PogU', aliases: ['Hosted'] },
       ]);
     });
+  });
+});
+
+/*
+ * #454: the gap read's reasons are transloco keys only (no ApiErrorCodes entry), so no other spec
+ * checks that both locales carry them.
+ * protects: AC 10 — every new key exists in de and en and interpolates the count.
+ * fails_when: a locale lacks one of the keys, or a text drops `{{count}}`.
+ * no_claim: the wording.
+ */
+describe('the gap read reasons in both locales (#454)', () => {
+  const KEYS = [
+    `${MEMBER_READ_GAP_REASON_KEY}.one`,
+    `${MEMBER_READ_GAP_REASON_KEY}.other`,
+    'usageStats.delete.gapHidden',
+    'usageStats.delete.gapIdRow',
+  ];
+
+  function lookup(locale: unknown, key: string): unknown {
+    return key
+      .split('.')
+      .reduce<unknown>(
+        (node, part) =>
+          typeof node === 'object' && node !== null
+            ? (node as Record<string, unknown>)[part]
+            : undefined,
+        locale,
+      );
+  }
+
+  it.each([
+    ['de', de],
+    ['en', en],
+  ])('%s carries every key with the count', (_lang, locale) => {
+    for (const key of KEYS) {
+      expect(lookup(locale, key), key).toEqual(expect.stringContaining('{{count}}'));
+    }
   });
 });
