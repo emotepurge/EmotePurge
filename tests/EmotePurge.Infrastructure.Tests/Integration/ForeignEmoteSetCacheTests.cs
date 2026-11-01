@@ -1,4 +1,5 @@
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.SevenTv;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -50,8 +51,8 @@ public class ForeignEmoteSetCacheTests(RedisFixture fixture)
 
         // The version is in the stored envelope, never on the set itself: the set is also the public
         // HTTP answer and must not carry a cache internal.
-        var raw = (string?)await fixture.Connection.GetDatabase().StringGetAsync($"7tvforeign:v2:login:{channel}");
-        Assert.Contains("\"schemaVersion\":2", raw);
+        var raw = (string?)await fixture.Connection.GetDatabase().StringGetAsync($"7tvforeign:v3:login:{channel}");
+        Assert.Contains("\"schemaVersion\":3", raw);
         Assert.DoesNotContain("schemaVersion", System.Text.Json.JsonSerializer.Serialize(stored, System.Text.Json.JsonSerializerOptions.Web));
         foreach (var read in new[] { fromLogin, fromSet })
         {
@@ -62,18 +63,73 @@ public class ForeignEmoteSetCacheTests(RedisFixture fixture)
     }
 
     [Fact]
-    public async Task TheKeysCarryTheV2Prefixes_ForTheLoginAndTheSetIdSpace()
+    public async Task TheKeysCarryTheV3Prefixes_ForTheLoginAndTheSetIdSpace()
     {
-        const string channel = "foreign-cache-v2-keys";
+        const string channel = "foreign-cache-v3-keys";
         var cache = new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance);
-        var set = new ForeignEmoteSet(channel, null, "set-v2", 0, false, []);
+        var set = new ForeignEmoteSet(channel, null, "set-v3", 0, false, []);
 
         await cache.SetAsync(channel, set);
-        await cache.SetBySetIdAsync("set-v2", set);
+        await cache.SetBySetIdAsync("set-v3", set);
 
         var db = fixture.Connection.GetDatabase();
-        Assert.True(await db.KeyExistsAsync($"7tvforeign:v2:login:{channel}"));
-        Assert.True(await db.KeyExistsAsync("7tvforeign:v2:set:set-v2"));
+        Assert.True(await db.KeyExistsAsync($"7tvforeign:v3:login:{channel}"));
+        Assert.True(await db.KeyExistsAsync("7tvforeign:v3:set:set-v3"));
+        Assert.False(await db.KeyExistsAsync($"7tvforeign:v2:login:{channel}"));
+        Assert.False(await db.KeyExistsAsync("7tvforeign:v2:set:set-v3"));
+    }
+
+    /// <summary>
+    /// #457 (AK 4): a round-trip keeps the preview's three-way verdict and omitted count, in both key
+    /// spaces. fails_when: either field is lost, which would turn a gap back into the fail-closed
+    /// state derived from <c>truncated</c> on every cache hit.
+    /// </summary>
+    [Fact]
+    public async Task ARoundTrip_KeepsReadStateAndOmittedCount()
+    {
+        const string channel = "foreign-cache-read-state";
+        var cache = new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance);
+        var stored = new ForeignEmoteSet(
+            channel, null, "set-gap", 496, true,
+            [new ForeignEmoteRow("e1", "A", "A", "https://cdn.example/e1", null, null)],
+            ReadState: SevenTvSetReadState.Gap, OmittedCount: 2);
+
+        await cache.SetAsync(channel, stored);
+        await cache.SetBySetIdAsync("set-gap", stored);
+
+        foreach (var read in new[] { await cache.TryGetAsync(channel), await cache.TryGetBySetIdAsync("set-gap") })
+        {
+            Assert.NotNull(read);
+            Assert.Equal(SevenTvSetReadState.Gap, read.ReadState);
+            Assert.Equal(2, read.OmittedCount);
+            Assert.True(read.Truncated);
+        }
+    }
+
+    /// <summary>
+    /// #457 (AK 4): what the previous code wrote — a schema-2 envelope, which has no read state — is a
+    /// miss, both under its own v2 keys and if it were ever found under a current v3 key. Served, its
+    /// under-count would read as inconsistent where the fresh read might be a gap.
+    /// </summary>
+    [Fact]
+    public async Task AV2Envelope_IsAMiss_UnderItsOwnKeysAndUnderTheCurrentOnes()
+    {
+        const string channel = "foreign-cache-v2-envelope";
+        var cache = new ForeignEmoteSetCache(fixture.Connection, NullLogger<ForeignEmoteSetCache>.Instance);
+        const string v2 =
+            """{"schemaVersion":2,"emoteSet":{"channelName":"x","sevenTvUserId":null,"emoteSetId":"s","totalCount":496,"truncated":true,"emotes":[]}}""";
+        var db = fixture.Connection.GetDatabase();
+        await db.StringSetAsync($"7tvforeign:v2:login:{channel}", v2);
+        await db.StringSetAsync("7tvforeign:v2:set:v2-set", v2);
+
+        Assert.Null(await cache.TryGetAsync(channel));
+        Assert.Null(await cache.TryGetBySetIdAsync("v2-set"));
+
+        await db.StringSetAsync(Key(channel), v2);
+        await db.StringSetAsync("7tvforeign:v3:set:v2-set", v2);
+
+        Assert.Null(await cache.TryGetAsync(channel));
+        Assert.Null(await cache.TryGetBySetIdAsync("v2-set"));
     }
 
     [Fact]
@@ -117,5 +173,5 @@ public class ForeignEmoteSetCacheTests(RedisFixture fixture)
         Assert.Null(await cache.TryGetBySetIdAsync("old-set"));
     }
 
-    private static RedisKey Key(string channel) => $"7tvforeign:v2:login:{channel}";
+    private static RedisKey Key(string channel) => $"7tvforeign:v3:login:{channel}";
 }

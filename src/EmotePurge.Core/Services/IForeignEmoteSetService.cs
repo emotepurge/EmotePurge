@@ -240,6 +240,16 @@ public sealed class ForeignEmoteSetLookupResult
 /// same idiom <see cref="EmotePurge.Core.SevenTv.SevenTvEmoteSet"/> and
 /// <see cref="EmotePurge.Core.SevenTv.SevenTvEmoteSetListEntry"/> already use.
 /// </param>
+/// <param name="ReadState">
+/// The preview read's three-way verdict (#457), a <see cref="EmotePurge.Core.SevenTv.SevenTvSetReadState"/>
+/// value, on the wire as the string <c>readState</c>. <see cref="Truncated"/> keeps its meaning for
+/// every existing reader and is exactly "not complete". Trailing and optional like
+/// <paramref name="EmoteSetName"/>; a construction or cached payload without it reads as
+/// <see cref="EmotePurge.Core.SevenTv.SevenTvSetReadState.FromTruncated"/> of <see cref="Truncated"/>.
+/// </param>
+/// <param name="OmittedCount">
+/// How many counted entries 7TV did not list (<c>omittedCount</c>); above zero only for a gap read.
+/// </param>
 public sealed record ForeignEmoteSet(
     string ChannelName,
     string? SevenTvUserId,
@@ -248,7 +258,13 @@ public sealed record ForeignEmoteSet(
     bool Truncated,
     IReadOnlyList<ForeignEmoteRow> Emotes,
     string? EmoteSetName = null,
-    int? Capacity = null);
+    int? Capacity = null,
+    string? ReadState = null,
+    int OmittedCount = 0)
+{
+    /// <summary>Never <c>null</c>: a missing verdict is derived from <see cref="Truncated"/>.</summary>
+    public string ReadState { get; init; } = ReadState ?? EmotePurge.Core.SevenTv.SevenTvSetReadState.FromTruncated(Truncated);
+}
 
 /// <summary>
 /// One emote in a foreign set preview. <see cref="SevenTvEmoteId"/> is 7TV's own ObjectID, never our

@@ -209,6 +209,58 @@ public class ForeignEmoteSetServiceTests
     }
 
     /// <summary>
+    /// #457: the preview's three-way verdict and its omitted count reach the assembled set in both
+    /// read modes. protects: the non-active view's gap reading needs both fields on the wire.
+    /// fails_when: either mode drops them, or derives the state from <c>Truncated</c> instead.
+    /// </summary>
+    [Fact]
+    public async Task ReadStateAndOmittedCount_AreCopiedFromThePreview_InBothReadModes()
+    {
+        var preview = new SevenTvEmoteSetPreview(496, true,
+            [new SevenTvEmoteSetPreviewItem("emote-1", "PogU", "PogChamp", "https://cdn.example/1.webp", null, null)],
+            ReadState: SevenTvSetReadState.Gap, OmittedCount: 2);
+        var sevenTv = SevenTvClientReturning(SevenTvIdentityResult.Ok(new SevenTvIdentity(SevenTvUserId, EmoteSetId)));
+        sevenTv.GetEmoteSetPreviewAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(SevenTvEmoteSetPreviewResult.Ok(preview));
+        var service = CreateService(FoundIdentityService(), sevenTv);
+
+        var byLogin = await service.GetForeignEmoteSetAsync(Channel);
+        var bySetId = await service.GetForeignEmoteSetBySetIdAsync(Channel, "other-set");
+
+        foreach (var result in new[] { byLogin, bySetId })
+        {
+            Assert.Equal(ForeignEmoteSetLookupStatus.Ok, result.Status);
+            Assert.True(result.EmoteSet!.Truncated);
+            Assert.Equal(SevenTvSetReadState.Gap, result.EmoteSet.ReadState);
+            Assert.Equal(2, result.EmoteSet.OmittedCount);
+        }
+    }
+
+    /// <summary>
+    /// #457 wire contract (AK 4): with the defaults the Api serializes with
+    /// (<see cref="System.Text.Json.JsonSerializerOptions.Web"/>), <c>readState</c> is a lowercase
+    /// string — never an enum number — and <c>omittedCount</c> an int; a set built without them (an
+    /// older construction or payload) derives the fail-closed state from <c>truncated</c>.
+    /// </summary>
+    [Fact]
+    public void TheWireShape_CarriesReadStateAsAString_AndOmittedCount()
+    {
+        var gap = new ForeignEmoteSet(NormalizedChannel, null, EmoteSetId, 496, true, [], ReadState: SevenTvSetReadState.Gap, OmittedCount: 2);
+
+        var json = System.Text.Json.JsonSerializer.Serialize(gap, System.Text.Json.JsonSerializerOptions.Web);
+
+        Assert.Contains("\"readState\":\"gap\"", json);
+        Assert.Contains("\"omittedCount\":2", json);
+        Assert.Contains("\"truncated\":true", json);
+        Assert.Equal(SevenTvSetReadState.Inconsistent, new ForeignEmoteSet(NormalizedChannel, null, EmoteSetId, 3, true, []).ReadState);
+        Assert.Equal(SevenTvSetReadState.Complete, new ForeignEmoteSet(NormalizedChannel, null, EmoteSetId, 0, false, []).ReadState);
+        var oldPayload = System.Text.Json.JsonSerializer.Deserialize<ForeignEmoteSet>(
+            """{"channelName":"x","sevenTvUserId":null,"emoteSetId":"s","totalCount":3,"truncated":true,"emotes":[]}""",
+            System.Text.Json.JsonSerializerOptions.Web)!;
+        Assert.Equal(SevenTvSetReadState.Inconsistent, oldPayload.ReadState);
+        Assert.Equal(0, oldPayload.OmittedCount);
+    }
+
+    /// <summary>
     /// E5b, at this layer: the two upstream calls this class makes itself each cost their own permit.
     /// The pages of the set read cost theirs inside the client, where their number is known
     /// (<c>SevenTvApiClientEmoteSetPreviewTests.EveryPage_ChargesExactlyOneRequestPermit</c>) — which
