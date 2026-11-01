@@ -25,6 +25,7 @@ import { NoticeBanner } from '../ui/notice-banner';
 import {
   copiedNotActiveNotice,
   importTargetCheckBlockedKey,
+  importTargetUncheckedSkippedKey,
   renamedNotActiveNotice,
   resyncNoticeKey,
   tagPlacementDiscardedStaleNoticeKey,
@@ -73,12 +74,16 @@ import { RunProgressPanel } from './run-progress-panel';
         {{ skippedDuplicatesKey() | transloco: { count: importService.skippedDuplicates() } }}
       </p>
     }
-    <!-- The fresh pre-send duplicate check's fetch failed (already-present-filter.ts) — every row
-         still went through, so a duplicate may have slipped in undetected. A quiet notice, not an
-         alarm: the run is still expected to succeed, this only says the guard could not run. -->
-    @if (importService.duplicateNoticePending() && !importService.duplicateCheckAvailable()) {
+    <!-- #457: add/renameSource rows refused because the fresh pre-send read of the target could
+         not rule out a duplicate (SevenTvImportService.targetUncheckedSkipped) — it listed the set
+         only partly, or failed or timed out; duplicateCheckAvailable picks which of the two.
+         Shares duplicateNoticePending's window and gate so it also appears when every row was
+         refused and nothing was queued. -->
+    @if (importService.duplicateNoticePending() && importService.targetUncheckedSkipped() > 0) {
       <p aria-hidden="true" class="text-sm text-fg-secondary">
-        {{ 'import.duplicateCheckUnavailable' | transloco }}
+        {{
+          targetUncheckedSkippedKey() | transloco: { count: importService.targetUncheckedSkipped() }
+        }}
       </p>
     }
     <!-- A replace row held back because its target drifted since confirmation
@@ -86,7 +91,7 @@ import { RunProgressPanel } from './run-progress-panel';
          gate so it also appears for the all-drift case (every replace row held back, nothing
          queued), which would otherwise leave this whole section unmounted and the run silent.
          Mirrored (same gate) in DockOutcomeAnnouncer, which is what actually speaks it — this
-         paragraph is aria-hidden like its skippedDuplicates/duplicateCheckAvailable siblings. -->
+         paragraph is aria-hidden like its skippedDuplicates/targetUncheckedSkipped siblings. -->
     @if (importService.duplicateNoticePending() && importService.replaceSkippedDrift() > 0) {
       <p aria-hidden="true" class="text-sm text-fg-secondary">
         {{ replaceSkippedDriftKey() | transloco: { count: importService.replaceSkippedDrift() } }}
@@ -312,6 +317,16 @@ export class ImportProgressSection {
    *  > 0`), silently swallowing the one thing the user needs to see in that case. */
   protected readonly skippedDuplicatesKey = computed(() =>
     pluralKey(this.importService.skippedDuplicates(), 'import.skippedDuplicates'),
+  );
+
+  /** Wording for how many `add`/`renameSource` rows the fresh pre-send check refused against an
+   *  unchecked target read (#457) — "listed only partly" when the read succeeded incomplete,
+   *  "could not be checked" when it failed or timed out. */
+  protected readonly targetUncheckedSkippedKey = computed(() =>
+    importTargetUncheckedSkippedKey(
+      this.importService.targetUncheckedSkipped(),
+      this.importService.duplicateCheckAvailable(),
+    ),
   );
 
   /** Wording for how many `replace` rows the fresh pre-send drift check

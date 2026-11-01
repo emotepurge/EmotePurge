@@ -1981,6 +1981,16 @@
         "one": "{{ count }} replacement was not carried out — the target had changed since you confirmed.",
         "other": "{{ count }} replacements were not carried out — the target had changed since you confirmed."
       },
+      "targetUncheckedSkipped": {
+        "incomplete": {
+          "one": "{{ count }} emote was not copied — 7TV did not list the target set in full, so it could not rule out that the emote is already there.",
+          "other": "{{ count }} emotes were not copied — 7TV did not list the target set in full, so it could not rule out that the emotes are already there."
+        },
+        "unavailable": {
+          "one": "{{ count }} emote was not copied — the target set could not be checked for it right now. Try again shortly.",
+          "other": "{{ count }} emotes were not copied — the target set could not be checked for them right now. Try again shortly."
+        }
+      },
       "unknownRows": {
         "one": "For {{ count }} row it is unclear whether 7TV applied it — please check the set on 7TV.",
         "other": "For {{ count }} rows it is unclear whether 7TV applied them — please check the set on 7TV."
@@ -2015,8 +2025,7 @@
     "skippedDuplicates": {
       "one": "{{ count }} emote was already in the target set by the time the run started and was skipped.",
       "other": "{{ count }} emotes were already in the target set by the time the run started and were skipped."
-    },
-    "duplicateCheckUnavailable": "We couldn't check right now whether these emotes are already in the target set — duplicate entries are possible."
+    }
   },
   "undo": {
     "confirm": {
