@@ -9143,6 +9143,43 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     expect(component['dockRetryCount']()).toBe(1);
   });
 
+  /**
+   * protects: edge 9a — in a non-active view the hint is 0 and a reload request deselects nothing.
+   * fails_when: the hint shows there or a later reload unmarks the done rows.
+   * no_claim: the non-active view's own loading.
+   */
+  it('shows no hint and deselects nothing for a run seen from a non-active view', () => {
+    mount([ome(), hob(), other()]);
+    vi.spyOn(component as unknown as { refresh(): void }, 'refresh').mockImplementation(() => {});
+    click('slot-ome');
+    click('slot-hob');
+    publishRun(['7tv-x#slot-hob'], ['7tv-x#slot-ome']);
+    component['totalsNonActive'].set(true);
+
+    expect(component['dockRetryCount']()).toBe(0);
+    component['onReloadRequested']();
+    expect(component['selection'].selectedKeys().sort()).toEqual(['slot-hob', 'slot-ome']);
+  });
+
+  /**
+   * protects: AC 5, edge 10 — a set switch dismisses the hint for that result for good.
+   * fails_when: switching away and back brings the hint of the old result back.
+   * no_claim: —
+   */
+  it('does not bring the retry hint back after a set switch and return', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    publishRun([], ['7tv-x#slot-ome']);
+    expect(component['dockRetryCount']()).toBe(1);
+
+    component['totalsSetId'].set('set-b');
+    fixture.detectChanges();
+    component['totalsSetId'].set('set-a');
+    fixture.detectChanges();
+
+    expect(component['dockRetryCount']()).toBe(0);
+  });
+
   // --- held out of the run (plan 378, 4.9, A10; spec D11) ----------------------------------------
 
   it('holds a provisional slot card out of the run before the confirmation and names it in the pending-sync line', () => {

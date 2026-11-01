@@ -489,7 +489,8 @@ export class DockOutcomeAnnouncer {
   private readonly undoService = inject(SevenTvUndoService);
   private readonly deleteService = inject(SevenTvDeleteService);
 
-  /** The count the retry sentence was spoken with. It keeps the first positive value until the
+  /** The count the retry sentence was spoken with. By design the region keeps the count announced at
+   *  the 0-to-positive transition, so it may still say 25 after a prune to 24. It keeps the first positive value until the
    *  input returns to 0: a prune from 25 to 24 changes the dock's visible line but must not make the
    *  region speak again, and the next run speaks anew because its in-flight phase passes the count
    *  through 0. */

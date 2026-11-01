@@ -2328,13 +2328,14 @@ export class UsageStatsPage {
   );
 
   /** The delete run the rows on screen can still be told about: the last one, when it ran in this
-   *  channel and over the set shown. `null` while a run is in flight (`lastRun()` is `null` then) and
+   *  channel and over the set shown, in the active view (a non-active view only refreshes, edge 9a). `null` while a run is in flight (`lastRun()` is `null` then) and
    *  for a run of another channel or set. */
   private readonly shownDeleteRun = computed(() => {
     const run = this.deleteService.lastRun();
     return run !== null &&
       run.channelName === this.totalsChannel() &&
-      run.setId === this.shownSetId()
+      run.setId === this.shownSetId() &&
+      !this.isNonActiveView()
       ? run
       : null;
   });

@@ -595,8 +595,19 @@ export class VoteSessionDetailPage {
     return this.selection.selectedKeys().filter((key) => notDone.has(key) && !done.has(key)).length;
   });
 
+  /** The retry count as shown and spoken: 0 unless the panel the hint belongs to is mounted (the
+   *  template's own gate). */
+  protected readonly shownRetryCount = computed(() =>
+    this.results() &&
+    this.canSelectForDelete() &&
+    !this.isCoarse() &&
+    this.massDeletePanelSetId() !== null
+      ? this.retryCount()
+      : 0,
+  );
+
   protected readonly retryHintKey = computed(() =>
-    pluralKey(this.retryCount(), 'usageStats.delete.retryHint'),
+    pluralKey(this.shownRetryCount(), 'usageStats.delete.retryHint'),
   );
 
   protected readonly emoteCountKey = computed(() =>
