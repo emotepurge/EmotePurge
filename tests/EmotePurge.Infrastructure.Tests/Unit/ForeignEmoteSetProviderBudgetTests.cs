@@ -1,4 +1,9 @@
+using System.Net;
+using System.Text;
+using System.Text.Json;
+using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.SevenTv;
+using EmotePurge.Infrastructure.Tests.Fakes;
 using Microsoft.Extensions.Time.Testing;
 using Xunit;
 
@@ -246,7 +251,80 @@ public class ForeignEmoteSetProviderBudgetTests
         Assert.True(await granted.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
+    /// <summary>
+    /// AK 2b, end to end through the real client: thirty two-page previews (with their verification
+    /// re-reads) against one shared budget take at most 40 permits, and an editor-grants lookup
+    /// (2 permits) and a set-owner lookup (1 permit) still succeed afterwards, with exactly 17
+    /// no-reserve permits left beyond them. The budget's waits are cut to zero here: with every
+    /// permit fresh, the 5 s first-pass wait could not free one anyway, and the point is the count.
+    /// fails_when: previews take permits 41–60, or a permission/ownership read is refused.
+    /// no_claim: multi-replica deployments (the budget is in-process).
+    /// </summary>
+    [Fact]
+    public async Task ThirtyTwoPagePreviews_LeaveTheReserveToTheEditorGrantsAndOwnerLookups()
+    {
+        var clock = NewClock();
+        using var budget = new ForeignEmoteSetProviderBudget(clock.Provider);
+        var handler = new SevenTvGqlRouteHandler()
+            .Answer(SevenTvGqlRouteHandler.Owner, body => Json(body.Contains("owner_id", StringComparison.Ordinal)
+                ? """{"data":{"emote_set":{"owner_id":"01OWNER"}}}"""
+                : TwoPageSet(PageOf(body))))
+            .Answer(SevenTvGqlRouteHandler.Identity, _ => Json(
+                """{"data":{"user_by_connection":{"id":"01ACTOR","connections":[{"platform":"TWITCH","id":"100","emote_set_id":null}]}}}"""))
+            .Answer(SevenTvGqlRouteHandler.EditorOf, _ => Json(
+                """{"data":{"user":{"editor_of":[{"user":{"connections":[{"platform":"TWITCH","id":"200","username":"EditedChannel"}]}}]}}}"""));
+        var client = new SevenTvApiClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") },
+            new RecordingRateLimitTelemetry(),
+            new WaitlessBudget(budget),
+            new RecordingSevenTvSearchBudget(),
+            new RecordingLogger<SevenTvApiClient>());
+
+        var previews = new List<SevenTvEmoteSetPreviewResult>();
+        for (var i = 0; i < 30; i++)
+        {
+            previews.Add(await client.GetEmoteSetPreviewAsync($"set-{i}"));
+        }
+
+        // 13 verified previews (3 permits each) and the first page of a 14th: 40 permits, no more.
+        Assert.Equal(13, previews.Count(p => p.Status == SevenTvPreviewLookupStatus.Ok));
+        Assert.All(previews.Where(p => p.Status == SevenTvPreviewLookupStatus.Ok),
+            p => Assert.Equal(SevenTvSetReadState.Complete, p.Preview!.ReadState));
+        Assert.Equal(17, previews.Count(p => p.Status == SevenTvPreviewLookupStatus.BudgetExhausted));
+        Assert.Equal(SevenTvEditorGrantsLookupStatus.Ok, (await client.LookUpEditorGrantsAsync("100")).Status);
+        Assert.Equal(SevenTvEmoteSetOwnerLookupStatus.Ok, (await client.LookUpEmoteSetOwnerAsync("set-x")).Status);
+        for (var i = 0; i < 17; i++)
+        {
+            Assert.True(await budget.TryChargeRequestAsync(TimeSpan.Zero, CancellationToken.None));
+        }
+
+        Assert.False(await budget.TryChargeRequestAsync(TimeSpan.Zero, CancellationToken.None));
+    }
+
+    private static int PageOf(string body)
+    {
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.GetProperty("variables").GetProperty("page").GetInt32();
+    }
+
+    private static string TwoPageSet(int page) =>
+        "{\"data\":{\"emote_sets\":{\"emote_set\":{\"name\":\"Set\",\"capacity\":1000,\"emotes\":{\"total_count\":2,\"page_count\":2,\"items\":[{\"alias\":\"A"
+        + page + "\",\"emote\":{\"id\":\"e" + page + "\",\"default_name\":\"e" + page + "\"}}]}}}}}";
+
+    private static HttpResponseMessage Json(string body) =>
+        new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+
     private static FakeClock NewClock() => new(new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero));
+
+    // The real budget with every wait cut to zero, reserve passed through unchanged.
+    private sealed class WaitlessBudget(ForeignEmoteSetProviderBudget inner) : IForeignUpstreamRequestBudget
+    {
+        public Task<bool> TryChargeRequestAsync(CancellationToken cancellationToken = default) =>
+            inner.TryChargeRequestAsync(TimeSpan.Zero, cancellationToken);
+
+        public Task<bool> TryChargeRequestAsync(int reserve, TimeSpan timeout, CancellationToken cancellationToken = default) =>
+            inner.TryChargeRequestAsync(reserve, TimeSpan.Zero, cancellationToken);
+    }
 
     private sealed class FakeClock(DateTimeOffset start) : TimeProvider
     {

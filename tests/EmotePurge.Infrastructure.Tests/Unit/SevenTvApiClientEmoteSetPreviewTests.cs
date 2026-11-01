@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.SevenTv;
 using EmotePurge.Infrastructure.Tests.Fakes;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Unit;
@@ -38,7 +39,8 @@ public class SevenTvApiClientEmoteSetPreviewTests
         var result = await client.GetEmoteSetPreviewAsync(SetId);
 
         Assert.Equal(SevenTvPreviewLookupStatus.Ok, result.Status);
-        Assert.Equal([1, 2], handler.RequestedPages);
+        // Both pages, then page 1 once more: the verification re-read of a multi-page read (#457).
+        Assert.Equal([1, 2, 1], handler.RequestedPages);
         Assert.Equal(3, result.Preview!.TotalCount);
         Assert.False(result.Preview.Truncated);
         Assert.Equal(["e1", "e2", "e3"], result.Preview.Items.Select(i => i.SevenTvEmoteId));
@@ -490,7 +492,8 @@ public class SevenTvApiClientEmoteSetPreviewTests
     /// E5b, the unit the provider-wide rate limit is actually counted in: one permit per page, not
     /// one per lookup. A ten-page walk is ten upstream requests, and a budget charged once around the
     /// whole thing would have let all ten travel on a single permit — twelve times the documented
-    /// rate once the two resolution calls are counted too.
+    /// rate once the two resolution calls are counted too. Since #457 a clean multi-page read also
+    /// re-reads pages 1..9 for verification, and each of those requests is charged too: 2p−1.
     /// </summary>
     [Fact]
     public async Task EveryPage_ChargesExactlyOneRequestPermit()
@@ -502,8 +505,9 @@ public class SevenTvApiClientEmoteSetPreviewTests
         var result = await client.GetEmoteSetPreviewAsync(SetId);
 
         Assert.Equal(SevenTvPreviewLookupStatus.Ok, result.Status);
-        Assert.Equal(10, handler.RequestedPages.Count);
-        Assert.Equal(10, budget.Charges);
+        Assert.Equal(SevenTvSetReadState.Complete, result.Preview!.ReadState);
+        Assert.Equal(19, handler.RequestedPages.Count);
+        Assert.Equal(19, budget.Charges);
     }
 
     /// <summary>
@@ -584,6 +588,282 @@ public class SevenTvApiClientEmoteSetPreviewTests
         Assert.Null(result.RetryAfter);
     }
 
+    // ---- #457: the three-way read state (complete | gap | inconsistent) ----
+
+    /// <summary>
+    /// AK 1 / E1 / E8c, the measured shape of set 01HCN0ZBX80009XR48886X5MXJ: one page, 7TV counts
+    /// 496 and lists 494. protects: the gap verdict, and that a single page costs one request.
+    /// fails_when: it reads inconsistent or complete, <c>truncated</c> is false, or a second request
+    /// is sent. no_claim: 7TV's real answer (a stub stands in).
+    /// </summary>
+    [Fact]
+    public async Task TheMeasuredShape_OnePage496Counted494Listed_IsAGap_WithTwoOmitted_InOneRequest()
+    {
+        var handler = new PagedStubHandler(_ => EntryPage(496, 1, Entries(494)));
+
+        var result = await CreateClient(handler).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, SevenTvSetReadState.Gap, 2);
+        Assert.Equal(496, result.Preview!.TotalCount);
+        Assert.Equal(494, result.Preview.Items.Count);
+        Assert.Equal([1], handler.RequestedPages);
+    }
+
+    /// <summary>AK 2 / E2: an under-count that lists nothing at all is not a gap.</summary>
+    [Fact]
+    public async Task AnUnderCountListingNothing_IsInconsistent()
+    {
+        var result = await CreateClient(new PagedStubHandler(_ => EntryPage(5, 1))).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, SevenTvSetReadState.Inconsistent, 0);
+    }
+
+    /// <summary>AK 2 / E3, a tightening: an over-count used to be <c>truncated: false</c>.</summary>
+    [Fact]
+    public async Task AnOverCount_IsInconsistent_AndTruncated()
+    {
+        var result = await CreateClient(new PagedStubHandler(_ => EntryPage(1, 1, Entries(2))))
+            .GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, SevenTvSetReadState.Inconsistent, 0);
+    }
+
+    /// <summary>
+    /// AK 2 / E4: the total changes between pages. The listed count matches the last page's total,
+    /// so only the drift itself can make this fail closed — and no verification is spent on it.
+    /// </summary>
+    [Fact]
+    public async Task ATotalThatDriftsBetweenPages_IsInconsistent_WithoutAVerificationRequest()
+    {
+        var handler = new PagedStubHandler(page => page == 1
+            ? EntryPage(4, 2, ("a", "A", null), ("b", "B", null))
+            : EntryPage(3, 2, ("c", "C", null)));
+
+        var result = await CreateClient(handler).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, SevenTvSetReadState.Inconsistent, 0);
+        Assert.Equal([1, 2], handler.RequestedPages);
+    }
+
+    /// <summary>AK 2 / E5: the same (id, alias) on page 1 and page 2 is a pagination shift.</summary>
+    [Fact]
+    public async Task AnEntryRepeatedOnALaterPage_IsInconsistent()
+    {
+        var handler = new PagedStubHandler(page => page == 1
+            ? EntryPage(3, 2, ("a", "A", null), ("b", "B", null))
+            : EntryPage(3, 2, ("a", "A", null)));
+
+        var result = await CreateClient(handler).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, SevenTvSetReadState.Inconsistent, 0);
+    }
+
+    /// <summary>E6: one emote under two aliases on two pages is two entries, not a repeat (#74).</summary>
+    [Fact]
+    public async Task OneEmoteUnderTwoAliasesOnTwoPages_IsNotARepeat()
+    {
+        var handler = new PagedStubHandler(page => page == 1
+            ? EntryPage(2, 2, ("e1", "A", null))
+            : EntryPage(2, 2, ("e1", "B", null)));
+
+        var result = await CreateClient(handler).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, SevenTvSetReadState.Complete, 0);
+    }
+
+    /// <summary>AK 2 / E7: the page cap is inconsistent, keeps its log line, and is not verified.</summary>
+    [Fact]
+    public async Task ThePageCap_IsInconsistent_WithItsLogLine_AndNoVerification()
+    {
+        var handler = new PagedStubHandler(page => EntryPage(5000, 11, ($"e{page}", $"A{page}", null)));
+        var logger = new RecordingLogger<SevenTvApiClient>();
+
+        var result = await CreateClient(handler, logger: logger).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, SevenTvSetReadState.Inconsistent, 0);
+        Assert.Equal(Enumerable.Range(1, 10), handler.RequestedPages);
+        Assert.Single(logger.Entries, entry => entry.Level == LogLevel.Warning && entry.Message.Contains("Seitendecke"));
+    }
+
+    /// <summary>AK 2 / E8: an empty set is complete (backfill keeps its own <c>SetEmpty</c>).</summary>
+    [Fact]
+    public async Task AnEmptySet_IsComplete()
+    {
+        var result = await CreateClient(new PagedStubHandler(_ => EntryPage(0, 1))).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, SevenTvSetReadState.Complete, 0);
+    }
+
+    /// <summary>
+    /// AK 3: a gap read writes exactly one English Information line — set id, total, listed and
+    /// omitted counts — even across two pages and their verification; a complete read writes none.
+    /// fails_when: the line is missing, written per page, or written for a complete read.
+    /// </summary>
+    [Fact]
+    public async Task AGapRead_WritesExactlyOneInformationLine_ACompleteReadNone()
+    {
+        var gapLogger = new RecordingLogger<SevenTvApiClient>();
+        var gapHandler = new PagedStubHandler(page => page == 1
+            ? EntryPage(4, 2, ("a", "A", null), ("b", "B", null))
+            : EntryPage(4, 2, ("c", "C", null)));
+        var completeLogger = new RecordingLogger<SevenTvApiClient>();
+        var completeHandler = new PagedStubHandler(page => page == 1
+            ? EntryPage(3, 2, ("a", "A", null), ("b", "B", null))
+            : EntryPage(3, 2, ("c", "C", null)));
+
+        var gap = await CreateClient(gapHandler, logger: gapLogger).GetEmoteSetPreviewAsync(SetId);
+        var complete = await CreateClient(completeHandler, logger: completeLogger).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(gap, SevenTvSetReadState.Gap, 1);
+        AssertReadState(complete, SevenTvSetReadState.Complete, 0);
+        var line = Assert.Single(gapLogger.Entries, entry => entry.Level == LogLevel.Information);
+        Assert.Equal(
+            $"7TV lists fewer entries than it counts for emote set {SetId}: totalCount 4, listed 3, omitted 1 (gap read).",
+            line.Message);
+        Assert.DoesNotContain(completeLogger.Entries, entry => entry.Level == LogLevel.Information);
+    }
+
+    // ---- #457: the verification re-read of multi-page reads (AK 2a) ----
+
+    /// <summary>
+    /// AK 2a / E8a, Codex Sol's boundary-shift counterexample: between reading page 1 and page 2 an
+    /// early entry (a) is removed and another (d) appended. The total stays 3, nothing repeats, three
+    /// entries are collected — and c, which slid onto page 1, was never seen. Only the re-read of
+    /// page 1 shows it. protects: no unverified multi-page complete. fails_when: this reads complete.
+    /// no_claim: a shift contained between a page's first read and its re-read (#454's limit).
+    /// </summary>
+    [Fact]
+    public async Task TheBoundaryShiftCounterexample_IsInconsistent_NotComplete()
+    {
+        var handler = ScriptedHandler((page, call) => (page, call) switch
+        {
+            (1, 1) => EntryPage(3, 2, ("a", "A", null), ("b", "B", null)),
+            (2, _) => EntryPage(3, 2, ("d", "D", null)),
+            _ => EntryPage(3, 2, ("b", "B", null), ("c", "C", null)),
+        });
+
+        var result = await CreateClient(handler).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, SevenTvSetReadState.Inconsistent, 0);
+        Assert.Equal([1, 2, 1], handler.RequestedPages);
+    }
+
+    /// <summary>
+    /// The member key carries the entry's date (Plan-378 S4, as in #454): two entries of one emote
+    /// that swap aliases between the two reads leave the (id, alias) set equal, but not the dates.
+    /// </summary>
+    [Fact]
+    public async Task AnAliasSwapBetweenTwoEntriesOfOneEmote_IsCaughtByTheEntryDates()
+    {
+        const string Early = "2026-01-01T10:00:00.123+00:00";
+        const string Late = "2026-02-01T10:00:00.456+00:00";
+        var handler = ScriptedHandler((page, call) => (page, call) switch
+        {
+            (1, 1) => EntryPage(3, 2, ("e1", "A", Early), ("e1", "B", Late)),
+            (2, _) => EntryPage(3, 2, ("e2", "C", Early)),
+            _ => EntryPage(3, 2, ("e1", "A", Late), ("e1", "B", Early)),
+        });
+
+        var result = await CreateClient(handler).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, SevenTvSetReadState.Inconsistent, 0);
+    }
+
+    /// <summary>
+    /// AK 2a: a clean two-page read costs exactly three requests (2 + 1 re-read) and is complete;
+    /// a clean two-page under-count likewise, and is a gap. The re-read may list page 1 in another
+    /// order — membership, not order, is compared.
+    /// </summary>
+    [Theory]
+    [InlineData(3, SevenTvSetReadState.Complete, 0)]
+    [InlineData(5, SevenTvSetReadState.Gap, 2)]
+    public async Task ACleanTwoPageRead_IsVerifiedInExactlyThreeRequests(int totalCount, string readState, int omitted)
+    {
+        var handler = ScriptedHandler((page, call) => (page, call) switch
+        {
+            (1, 1) => EntryPage(totalCount, 2, ("a", "A", "2026-01-01T10:00:00Z"), ("b", "B", null)),
+            (1, _) => EntryPage(totalCount, 2, ("b", "B", null), ("a", "A", "2026-01-01T10:00:00Z")),
+            _ => EntryPage(totalCount, 2, ("c", "C", null)),
+        });
+
+        var result = await CreateClient(handler).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, readState, omitted);
+        Assert.Equal([1, 2, 1], handler.RequestedPages);
+    }
+
+    /// <summary>A total that only the re-read sees change is drift too.</summary>
+    [Fact]
+    public async Task ADriftOnlyTheReReadSees_IsInconsistent()
+    {
+        var handler = ScriptedHandler((page, call) => (page, call) switch
+        {
+            (1, 1) => EntryPage(3, 2, ("a", "A", null), ("b", "B", null)),
+            (1, _) => EntryPage(4, 2, ("a", "A", null), ("b", "B", null)),
+            _ => EntryPage(3, 2, ("c", "C", null)),
+        });
+
+        var result = await CreateClient(handler).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, SevenTvSetReadState.Inconsistent, 0);
+    }
+
+    /// <summary>
+    /// AK 2a / E8b: a failing re-read fails the whole preview with its status, exactly like a failing
+    /// first-pass page — a half-verified read is never reported as complete or gap.
+    /// </summary>
+    [Theory]
+    [InlineData(true, SevenTvPreviewLookupStatus.RateLimited)]
+    [InlineData(false, SevenTvPreviewLookupStatus.Unavailable)]
+    public async Task AFailingReRead_FailsThePreview_WithThatStatus(bool rateLimited, SevenTvPreviewLookupStatus expected)
+    {
+        var failure = rateLimited
+            ? RateLimitedPayload(resetHintSeconds: null)
+            : """{"data":null,"errors":[{"message":"boom"}]}""";
+        var handler = ScriptedHandler((page, call) => (page, call) switch
+        {
+            (1, 1) => EntryPage(3, 2, ("a", "A", null), ("b", "B", null)),
+            (1, _) => failure,
+            _ => EntryPage(3, 2, ("c", "C", null)),
+        });
+
+        var result = await CreateClient(handler).GetEmoteSetPreviewAsync(SetId);
+
+        Assert.Equal(expected, result.Status);
+        Assert.Null(result.Preview);
+        Assert.Equal([1, 2, 1], handler.RequestedPages);
+    }
+
+    /// <summary>
+    /// AK 2a / E8d and the charging contract of AK 2b: first-pass pages are charged with the preview
+    /// reserve and the budget's default wait, the re-read with the reserve and no wait. A refused
+    /// re-read permit sends nothing and makes the read inconsistent, not failed, with one log line.
+    /// fails_when: a refused permit yields complete or gap, a request is sent without a permit, or a
+    /// re-read waits.
+    /// </summary>
+    [Fact]
+    public async Task ARefusedVerificationPermit_IsInconsistent_WithoutWaitingOrSending()
+    {
+        var handler = new PagedStubHandler(page => page == 1
+            ? EntryPage(3, 2, ("a", "A", null), ("b", "B", null))
+            : EntryPage(3, 2, ("c", "C", null)));
+        var budget = new RecordingForeignUpstreamRequestBudget(grantCount: 2);
+        var logger = new RecordingLogger<SevenTvApiClient>();
+
+        var result = await CreateClient(handler, budget, logger).GetEmoteSetPreviewAsync(SetId);
+
+        AssertReadState(result, SevenTvSetReadState.Inconsistent, 0);
+        Assert.Equal([1, 2], handler.RequestedPages);
+        Assert.Equal(
+            [
+                (ForeignEmoteSetProviderBudget.PreviewReserve, (TimeSpan?)ForeignEmoteSetProviderBudget.DefaultRequestWaitTimeout),
+                (ForeignEmoteSetProviderBudget.PreviewReserve, ForeignEmoteSetProviderBudget.DefaultRequestWaitTimeout),
+                (ForeignEmoteSetProviderBudget.PreviewReserve, TimeSpan.Zero),
+            ],
+            budget.Requests);
+        Assert.Single(logger.Entries, entry => entry.Message.Contains("verification re-read", StringComparison.Ordinal));
+    }
+
     // The semantic-429 payload, optionally carrying the unverified extensions.headers reset hint.
     private static string RateLimitedPayload(int? resetHintSeconds)
     {
@@ -601,7 +881,9 @@ public class SevenTvApiClientEmoteSetPreviewTests
     }
 
     private static SevenTvApiClient CreateClient(
-        HttpMessageHandler handler, IForeignUpstreamRequestBudget? requestBudget = null)
+        HttpMessageHandler handler,
+        IForeignUpstreamRequestBudget? requestBudget = null,
+        RecordingLogger<SevenTvApiClient>? logger = null)
     {
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://7tv.io/v3/") };
         return new SevenTvApiClient(
@@ -609,7 +891,72 @@ public class SevenTvApiClientEmoteSetPreviewTests
             new RecordingRateLimitTelemetry(),
             requestBudget ?? new RecordingForeignUpstreamRequestBudget(),
             new RecordingSevenTvSearchBudget(),
-            new RecordingLogger<SevenTvApiClient>());
+            logger ?? new RecordingLogger<SevenTvApiClient>());
+    }
+
+    // A page of set entries as the read-state tests need them: id, alias and the entry's date
+    // (null = field absent), nothing else that matters to the classification.
+    private static string EntryPage(int totalCount, int pageCount, params (string Id, string Alias, string? AddedAt)[] items)
+    {
+        var itemsArray = new JsonArray();
+        foreach (var item in items)
+        {
+            var entry = new JsonObject
+            {
+                ["alias"] = item.Alias,
+                ["emote"] = new JsonObject { ["id"] = item.Id, ["default_name"] = item.Id },
+            };
+            if (item.AddedAt is { } addedAt)
+            {
+                entry["added_at"] = addedAt;
+            }
+
+            itemsArray.Add(entry);
+        }
+
+        return new JsonObject
+        {
+            ["data"] = new JsonObject
+            {
+                ["emote_sets"] = new JsonObject
+                {
+                    ["emote_set"] = new JsonObject
+                    {
+                        ["name"] = "Set",
+                        ["capacity"] = 1000,
+                        ["emotes"] = new JsonObject
+                        {
+                            ["total_count"] = totalCount,
+                            ["page_count"] = pageCount,
+                            ["items"] = itemsArray,
+                        },
+                    },
+                },
+            },
+        }.ToJsonString();
+    }
+
+    private static (string Id, string Alias, string? AddedAt)[] Entries(int count, string prefix = "e") =>
+        [.. Enumerable.Range(1, count).Select(i => ($"{prefix}{i}", $"Alias{prefix}{i}", (string?)null))];
+
+    // Answers each page with the function of (page, how often that page has been asked for so far,
+    // 1-based) — the first pass is call 1, the verification re-read call 2.
+    private static PagedStubHandler ScriptedHandler(Func<int, int, string> responseForPageAndCall)
+    {
+        var calls = new Dictionary<int, int>();
+        return new PagedStubHandler(page =>
+        {
+            calls[page] = calls.GetValueOrDefault(page) + 1;
+            return responseForPageAndCall(page, calls[page]);
+        });
+    }
+
+    private static void AssertReadState(SevenTvEmoteSetPreviewResult result, string readState, int omittedCount)
+    {
+        Assert.Equal(SevenTvPreviewLookupStatus.Ok, result.Status);
+        Assert.Equal(readState, result.Preview!.ReadState);
+        Assert.Equal(omittedCount, result.Preview.OmittedCount);
+        Assert.Equal(readState != SevenTvSetReadState.Complete, result.Preview.Truncated);
     }
 
     /// <summary>Answers every POST with the response the given function derives from the request's
