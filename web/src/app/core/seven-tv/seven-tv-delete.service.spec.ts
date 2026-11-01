@@ -3056,6 +3056,25 @@ describe('SevenTvDeleteService', () => {
         httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
       });
 
+      // #454 review: a gap read before the emote's first removal must not replace the baseline a
+      // complete read established — otherwise bbb drops out and the post-check is silently off.
+      it('keeps a sibling a complete read established when a gap read misses it before the removal', () => {
+        service.startDelete('set-1', 'sensitron', [Y, A], 'sensitron', null);
+
+        answerRead([{ id: '7tv-y', alias: 'yyy', addedAt: T3 }, X_AAA, X_BBB]);
+        answerRemove();
+        answerGapRead([X_AAA], 1);
+        answerRemove();
+        expect(service.run()?.phase).toBe('settling');
+        answerRead([]);
+
+        expect(service.run()).toMatchObject({
+          unexpectedRemovals: [{ sevenTvEmoteId: '7tv-x', alias: 'bbb', addedAt: T2 }],
+          postCheckUnavailable: false,
+        });
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+
       it('does not note an entry missing only from a gap binding read as an unexpected removal', () => {
         service.startDelete('set-1', 'sensitron', [A, C], 'sensitron', null);
 

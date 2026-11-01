@@ -758,10 +758,10 @@ export class SevenTvDeleteService {
 
   /** One read of the set with add dates and gap detection (#454), bounded by
    *  `ENTRY_BINDING_READ_TIMEOUT_MS`. A usable read — complete or gap — resets the failure count,
-   *  joins the baseline (every entry it lists is present) and becomes the held read; only a
-   *  complete one is checked against the baseline for entries gone without an own removal (4.4
-   *  step 6), because a gap read proves no absence, and a gap read records the run's first gap for
-   *  the id rows. An inconsistent, failed or timed-out read counts as a failure. 7TV's rate limit
+   *  joins the baseline (every entry it lists is present; a gap read only adds, never replaces)
+   *  and becomes the held read; only a complete one is checked against the baseline for entries
+   *  gone without an own removal (4.4 step 6), because a gap read proves no absence, and a gap read
+   *  records the run's first gap for the id rows. An inconsistent, failed or timed-out read counts as a failure. 7TV's rate limit
    *  (a GraphQL rate-limit answer or an HTTP 429) answers `rateLimited` without touching the count
    *  or the held read, up to `MAX_RATE_LIMIT_RETRIES` in a row across the run; beyond that it
    *  counts as an `unavailable` failure. */
@@ -786,10 +786,12 @@ export class SevenTvDeleteService {
             context.idRowGap ??= read.omittedCount;
           }
           for (const sevenTvEmoteId of context.entryEmoteIds) {
+            // A gap read only accumulates: what it does not list may be hidden, not gone.
             mergeIntoBaseline(
               context.baseline,
               sevenTvEmoteId,
               read.entriesById?.get(sevenTvEmoteId) ?? [],
+              { gap: read.readState === 'gap' },
             );
           }
           context.held = { read, startedAt };

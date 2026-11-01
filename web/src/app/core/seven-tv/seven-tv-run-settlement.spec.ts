@@ -532,6 +532,33 @@ describe('mergeIntoBaseline', () => {
 
     expect(aliasesOf(baseline)).toEqual({ [T1]: ['a', 'b'], [T2]: ['cc'] });
   });
+
+  /*
+   * #454 review: a gap read proves presence only, so it must never replace the baseline — an entry
+   * it does not list may be hidden, not gone.
+   * protects: the collateral check after a removal keeps an entry a complete read established.
+   * fails_when: merging a gap read drops a date of an unfrozen baseline.
+   * no_claim: complete reads, which still replace an unfrozen baseline (test above).
+   */
+  it('only accumulates a gap read, even while nothing of the emote is frozen', () => {
+    const baseline: EntryBaseline = new Map();
+    mergeIntoBaseline(baseline, 'x', [
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T2 },
+    ]);
+    mergeIntoBaseline(baseline, 'x', [{ alias: 'a', addedAt: T1 }], { gap: true });
+    mergeIntoBaseline(
+      baseline,
+      'x',
+      [
+        { alias: 'a2', addedAt: T1 },
+        { alias: 'c', addedAt: T3 },
+      ],
+      { gap: true },
+    );
+
+    expect(aliasesOf(baseline)).toEqual({ [T1]: ['a2'], [T2]: ['b'], [T3]: ['c'] });
+  });
 });
 
 // Plan-378 4.5 (S5, T-3, T-4): clearing up and checking a slot delete run per entry.

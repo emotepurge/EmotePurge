@@ -143,15 +143,24 @@ export function entryTimeKey(addedAt: string | null): string {
  * entries even when the read no longer shows them (that is exactly what the run must not forget),
  * and a known, not yet frozen date with at least as many entries as before takes the read's aliases
  * — a rename after the fact, not a new entry.
+ *
+ * A gap read (`options.gap`, #454) always takes the accumulating path, frozen or not: it proves the
+ * presence of what it lists and nothing about the rest, so replacing the baseline with it would
+ * drop an entry that may only be hidden — and with it the collateral check for that entry.
  */
 export function mergeIntoBaseline(
   baseline: EntryBaseline,
   sevenTvEmoteId: string,
   entries: readonly SevenTvSetEntry[],
+  options: { gap?: boolean } = {},
 ): void {
   const read = groupByTime(entries);
   const known = baseline.get(sevenTvEmoteId);
-  if (known === undefined || ![...known.values()].some((group) => group.frozen)) {
+  // A gap read (#454) only ever accumulates: an entry it does not list may be hidden, not gone, so
+  // replacing the baseline with it would be an absence conclusion.
+  const replace =
+    known === undefined || (!options.gap && ![...known.values()].some((group) => group.frozen));
+  if (replace) {
     baseline.set(sevenTvEmoteId, read);
     return;
   }
