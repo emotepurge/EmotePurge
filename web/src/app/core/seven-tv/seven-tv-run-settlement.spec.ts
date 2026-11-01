@@ -642,6 +642,41 @@ describe('slot delete settlement', () => {
     }
   });
 
+  /*
+   * #454: a gap read (7TV lists fewer entries than it counts) proves presence only, never absence.
+   * protects: decision 2 and AC 7 — no unknown row is cleared up and no unexpected removal is
+   *   concluded from a gap read, because `readableEntries` takes only `complete` reads.
+   * fails_when: a gap read settles an unknown id row whose id it does not list, or an unknown entry
+   *   row whose entry it does not list, or yields a non-null `unexpectedRemovals`.
+   * no_claim: who owes the post-check (`entryPostCheckOwed`), the delete service's merge of earlier
+   *   findings.
+   */
+  it('settles nothing against a gap read: an absent id or entry stays unknown, no unexpected removal', () => {
+    const baseline = baselineOf([
+      { alias: 'a', addedAt: T1 },
+      { alias: 'b', addedAt: T2 },
+    ]);
+    const idRow = queueItem({ key: 'gone', status: 'unknown' });
+    const gap = setEntries({
+      aliasesById: new Map([['x', []]]),
+      entriesById: new Map([['x', []]]),
+      complete: false,
+      readState: 'gap',
+      omittedCount: 2,
+    });
+
+    const settled = settleEntryDeleteRun(
+      runResult([idRow, entryItem('a', T1, 'unknown')]),
+      gap,
+      baseline,
+    );
+
+    expect(settled.result.items.map((item) => item.status)).toEqual(['unknown', 'unknown']);
+    expect(settled.result.doneKeys).toEqual([]);
+    expect(settled.unexpectedRemovals).toBeNull();
+    expect(settleDeleteResult(runResult([idRow]), gap).items[0]).toBe(idRow);
+  });
+
   it('counts without a tie and goes by alias inside one', () => {
     const groups = baselineOf([
       { alias: 'a', addedAt: T1 },
