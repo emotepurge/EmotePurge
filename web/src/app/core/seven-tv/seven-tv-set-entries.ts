@@ -1,6 +1,13 @@
 import { HttpClient } from '@angular/common/http';
 import { defer, map, Observable, of, switchMap, throwError } from 'rxjs';
 
+import {
+  RateLimitInfo,
+  SevenTvGqlError,
+  isRateLimitError,
+  readRateLimitInfo,
+} from './seven-tv-rate-limit';
+
 /** Host-absolute, same endpoint the write mutations already use (`seven-tv-run-engine.ts`) —
  *  reading a set's contents is public on `v4`, so unlike the mutations this needs no
  *  `Authorization` header and no 7TV token. */
@@ -55,6 +62,28 @@ interface SevenTvGqlEmoteSetEntriesResponse {
   // 7TV can answer a GraphQL-level rejection (e.g. an unknown set id, or its rate limit) with HTTP
   // 200 — presence of this array, regardless of content, is treated as "no usable data".
   errors?: unknown[];
+}
+
+/** What a set read throws when 7TV answers with a GraphQL-level rejection (HTTP 200 + `errors`) or
+ *  without the set's entries. `rateLimit` carries 7TV's rate-limit numbers when one of the errors is
+ *  its rate limit (the same predicate and parser the run engine uses for a mutation), `null`
+ *  otherwise (#454). An `Error`, so every caller that catches a failed read keeps doing so; an
+ *  HTTP-level failure (a real 429 included) still arrives as `HttpErrorResponse`. */
+export class SevenTvSetReadError extends Error {
+  constructor(readonly rateLimit: RateLimitInfo | null) {
+    super('7TV emote set read failed');
+    this.name = 'SevenTvSetReadError';
+  }
+}
+
+function isGqlError(value: unknown): value is SevenTvGqlError {
+  return typeof value === 'object' && value !== null;
+}
+
+/** The rate-limit numbers of the first rate-limit error among `errors`, `null` when there is none. */
+function rateLimitOf(errors: readonly unknown[] | undefined): RateLimitInfo | null {
+  const hit = errors?.filter(isGqlError).find(isRateLimitError);
+  return hit === undefined ? null : readRateLimitInfo(hit);
 }
 
 type EmotesPayload = NonNullable<
@@ -201,7 +230,8 @@ function fetchEmoteSetEntriesPage(
  * rate-limit bucket, not our Api's shared `ForeignEmoteLookup` limiter, so a delete right after a few
  * set switches is not refused by our own budget.
  *
- * Errors (network, HTTP, or a GraphQL-level rejection) all become a thrown error — callers decide
+ * Errors (network, HTTP, or a GraphQL-level rejection — the latter as {@link SevenTvSetReadError},
+ * carrying 7TV's rate-limit numbers when it was its rate limit) all become a thrown error — callers decide
  * whether that fails open (the restore check) or blocks (the delete alias read); this includes the
  * verification re-reads. Stops early once a page reports it was the last one (`page >= pageCount`),
  * and unconditionally at `MAX_SET_ENTRY_PAGES`, reporting `complete: false` if 7TV still promised
@@ -253,7 +283,7 @@ export function loadSevenTvSetEntries(
         switchMap((response) => {
           const emotes = response.data?.emoteSets?.emoteSet?.emotes;
           if ((response.errors?.length ?? 0) > 0 || !emotes) {
-            return throwError(() => new Error('7TV emote set read failed'));
+            return throwError(() => new SevenTvSetReadError(rateLimitOf(response.errors)));
           }
           totalCounts.add(emotes.totalCount);
           return of(emotes);

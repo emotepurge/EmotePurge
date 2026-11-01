@@ -46,7 +46,10 @@ const RATE_LIMIT_BUFFER_MS = 500;
  *  that one is enforced at the HTTP layer, and its headers are not CORS-exposed). Their windows are
  *  60s, so a full minute is the safe assumption. */
 const RATE_LIMIT_FALLBACK_WAIT_MS = 60_000;
-const MAX_RATE_LIMIT_RETRIES = 5;
+/** Rate-limit waits per step before the row gives up (`rateLimitedGaveUp`). Exported for the slot
+ *  delete's binding read, whose run-wide streak of rate-limited reads is bounded by the same
+ *  number (#454). */
+export const MAX_RATE_LIMIT_RETRIES = 5;
 /** Aim slightly *below* the measured quota. 7TV uses a fixed window, so pacing exactly at the limit
  *  puts every window's last request on the boundary. */
 const RATE_LIMIT_PACING_MARGIN = 1.1;
@@ -147,7 +150,9 @@ export type SkipReasonKey =
   | 'massDelete.errors.beforeStepFailed'
   | 'usageStats.delete.renamedSinceLoad'
   | 'usageStats.delete.noAlias'
-  | 'usageStats.delete.departedSinceLoad';
+  | 'usageStats.delete.departedSinceLoad'
+  | 'usageStats.delete.gapHidden'
+  | 'usageStats.delete.gapIdRow';
 
 export interface SkipReason {
   key: SkipReasonKey;
@@ -157,7 +162,9 @@ export interface SkipReason {
 /** What a `beforeStep` hook returns for one attempt of a step — see the hook's own documentation
  *  on `RunOperation` for what each outcome does. */
 export type StepGate =
-  { kind: 'proceed' } | { kind: 'skip'; errorMessage: string; reason?: SkipReason };
+  | { kind: 'proceed' }
+  | { kind: 'skip'; errorMessage: string; reason?: SkipReason }
+  | { kind: 'rateLimited'; info: RateLimitInfo };
 
 /** What a run does per emote. The engine owns pacing, retries, token handling and the queue; the
  *  operation owns only the mutations — REMOVE for the delete, ADD for the restore and the import.
@@ -189,7 +196,12 @@ export interface RunOperation {
    * `completedSteps` is left exactly as it was — a multi-step row skipped past its first step
    * keeps whatever it already confirmed, a named gap rather than a loss (Plan #254 §T3) —,
    * `abortOn` is not consulted, and the run paces itself for the next row exactly as it does after
-   * any other row.
+   * any other row. `{ kind: 'rateLimited', info }` (#454) — the hook's own read of 7TV ran into a
+   * rate limit — sends no request either and enters the same backoff as a rate-limited mutation:
+   * the run waits `info.reset` (+ 500 ms, or 60 s when `reset` is `null`) with the countdown,
+   * asks this hook again, and after `MAX_RATE_LIMIT_RETRIES` waits ends the row `failed` with
+   * `rateLimitedGaveUp`. Unlike a mutation's rate limit it never re-paces the run: the read's
+   * numbers belong to another bucket.
    *
    * **Contract: exactly one value, then whatever happens after is ignored.** The engine takes only
    * the first emission (`take(1)`) and unsubscribes right after — a second, synchronous emission
@@ -558,7 +570,7 @@ export class SevenTvRunEngine {
           if (!(error instanceof RateLimitHit)) {
             return throwError(() => error);
           }
-          const waitMs = this.onRateLimited(error.info);
+          const waitMs = this.onRateLimited(error);
           return timer(waitMs).pipe(tap(() => this.endPause()));
         },
       }),
@@ -630,15 +642,22 @@ export class SevenTvRunEngine {
             reason: BEFORE_STEP_FAILED,
           });
         }),
-        concatMap((gate) =>
-          gate.kind === 'skip'
-            ? of<RunOneResult>({
+        concatMap((gate) => {
+          switch (gate.kind) {
+            case 'skip':
+              return of<RunOneResult>({
                 outcome: 'skip',
                 errorMessage: gate.errorMessage,
                 reason: gate.reason,
-              })
-            : this.runOne(setId, emote, step, operation, token),
-        ),
+              });
+            case 'rateLimited':
+              // Thrown past the catchError above, into runWithBackoff's retry: the same wait,
+              // countdown and give-up as a rate-limited mutation, without re-pacing (#454).
+              return throwError(() => new RateLimitHit(gate.info, false));
+            case 'proceed':
+              return this.runOne(setId, emote, step, operation, token);
+          }
+        }),
       );
     });
   }
@@ -758,9 +777,11 @@ export class SevenTvRunEngine {
   }
 
   /** Called on every rejection. Logs what 7TV reported (this is how we learn the real quota — the
-   *  numbers exist nowhere else, see docs/DECISIONS.md), re-paces the run once, and returns how long
+   *  numbers exist nowhere else, see docs/DECISIONS.md), re-paces the run once — only from a hit
+   *  that asks for it (`repace`; a `beforeStep` hook's read does not, #454) — and returns how long
    *  to wait. */
-  private onRateLimited(info: RateLimitInfo): number {
+  private onRateLimited(hit: RateLimitHit): number {
+    const info = hit.info;
     const waitMs =
       info.reset !== null ? info.reset * 1000 + RATE_LIMIT_BUFFER_MS : RATE_LIMIT_FALLBACK_WAIT_MS;
     const attemptsThisWindow = this.requestsInWindow;
@@ -769,7 +790,7 @@ export class SevenTvRunEngine {
     // Re-pace only from a rejection that actually carries numbers. A blind HTTP 429 (global bucket,
     // headers not CORS-exposed) would otherwise "teach" us a quota of one request per minute.
     const informative = info.reset !== null && (info.limit !== null || attemptsThisWindow > 1);
-    if (!this.pacingAdapted && informative) {
+    if (hit.repace && !this.pacingAdapted && informative) {
       this.adaptPacing(info, attemptsThisWindow);
     }
 

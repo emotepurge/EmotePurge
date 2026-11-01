@@ -19,9 +19,14 @@ export interface RateLimitInfo {
 }
 
 /** Thrown internally so RxJS `retry` can drive the wait. Not an `Error` subclass on purpose — it is
- *  a control-flow signal, never surfaced to the user. */
+ *  a control-flow signal, never surfaced to the user. `repace` is `false` for a hit a `beforeStep`
+ *  hook's read ran into (#454): its numbers belong to another bucket than the mutations' and must
+ *  not re-pace them. */
 export class RateLimitHit {
-  constructor(readonly info: RateLimitInfo) {}
+  constructor(
+    readonly info: RateLimitInfo,
+    readonly repace = true,
+  ) {}
 }
 
 export interface SevenTvGqlError {

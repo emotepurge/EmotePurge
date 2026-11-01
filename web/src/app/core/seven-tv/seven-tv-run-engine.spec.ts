@@ -861,6 +861,84 @@ describe('SevenTvRunEngine', () => {
 
       expect(engine.queue().map((item) => item.status)).toEqual(['done', 'done']);
     });
+
+    /*
+     * #454: a hook whose own read ran into 7TV's rate limit answers `rateLimited`.
+     * protects: A3 step 2 and edge 18c — the answer enters the existing rate-limit retry (pause with
+     *   countdown, hook asked again, give-up after MAX_RATE_LIMIT_RETRIES) and never re-paces the
+     *   mutations.
+     * fails_when: the gate is turned into a `beforeStepFailed` skip, no pause or countdown happens,
+     *   the hook is not asked again, the retries are unbounded, or a read's hit changes the pace of
+     *   the next row.
+     * no_claim: the delete run's run-wide bound on such answers (its own spec); a mutation's own
+     *   rate limit (the cases above, unmodified).
+     */
+    describe('a rateLimited answer', () => {
+      const READ_RATE_LIMIT = { limit: 100, remaining: 0, reset: 7, used: 101 };
+
+      it('waits reset + 500 ms with the countdown, asks the hook again and sends the request then', () => {
+        const beforeStep = vi
+          .fn()
+          .mockReturnValueOnce(of<StepGate>({ kind: 'rateLimited', info: READ_RATE_LIMIT }))
+          .mockReturnValue(of<StepGate>({ kind: 'proceed' }));
+        expect(start([EMOTES[0]], { ...TEST_OPERATION, beforeStep })).toBe(true);
+
+        httpMock.expectNone(GQL_ENDPOINT);
+        expect(engine.rateLimitPauseSeconds()).toBe(8);
+        vi.advanceTimersByTime(7_499);
+        expect(beforeStep).toHaveBeenCalledTimes(1);
+        vi.advanceTimersByTime(1);
+
+        expect(beforeStep).toHaveBeenCalledTimes(2);
+        expect(engine.rateLimitPauseSeconds()).toBeNull();
+        httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        expect(engine.queue()[0].status).toBe('done');
+      });
+
+      it('does not re-pace the run from a read that hit the limit', () => {
+        const beforeStep = vi
+          .fn()
+          .mockReturnValueOnce(of<StepGate>({ kind: 'rateLimited', info: READ_RATE_LIMIT }))
+          .mockReturnValue(of<StepGate>({ kind: 'proceed' }));
+        expect(start(EMOTES, { ...TEST_OPERATION, beforeStep })).toBe(true);
+
+        vi.advanceTimersByTime(7_500);
+        httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
+        // Re-paced from limit 100 per ~7 s the next row would go out after ~77 ms; unpaced it
+        // waits the starting RUN_DELAY_MS.
+        vi.advanceTimersByTime(RUN_DELAY_MS - 1);
+        httpMock.expectNone(GQL_ENDPOINT);
+        vi.advanceTimersByTime(1);
+        httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        expect(engine.queue().map((item) => item.status)).toEqual(['done', 'done']);
+      });
+
+      it('gives the row up as rateLimitedGaveUp after five blind waits, without a request', () => {
+        const beforeStep = vi.fn().mockReturnValue(
+          of<StepGate>({
+            kind: 'rateLimited',
+            info: { limit: null, remaining: null, reset: null, used: null },
+          }),
+        );
+        expect(start([EMOTES[0]], { ...TEST_OPERATION, beforeStep })).toBe(true);
+
+        for (let wait = 1; wait <= 5; wait++) {
+          expect(engine.rateLimitPauseSeconds()).toBe(60);
+          vi.advanceTimersByTime(60_000);
+        }
+
+        httpMock.expectNone(GQL_ENDPOINT);
+        expect(beforeStep).toHaveBeenCalledTimes(6);
+        expect(engine.queue()[0]).toMatchObject({
+          status: 'failed',
+          errorMessage: DE_TRANSLATIONS.massDelete.errors.rateLimitedGaveUp,
+        });
+        vi.advanceTimersByTime(RUN_DELAY_MS);
+        expect(engine.isRunning()).toBe(false);
+      });
+    });
   });
 
   describe('multi-step rows', () => {

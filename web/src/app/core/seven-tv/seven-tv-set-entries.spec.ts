@@ -4,7 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { loadSevenTvSetEntries } from './seven-tv-set-entries';
+import { SevenTvSetReadError, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import {
   GAP_FIXTURE_TOTAL_COUNT,
   gapRead496of494Pages,
@@ -280,6 +280,61 @@ describe('loadSevenTvSetEntries', () => {
     httpMock.expectOne(GQL_ENDPOINT).flush({ errors: [{ message: 'rate limited' }] });
 
     await expect(result$).rejects.toThrow();
+  });
+
+  /*
+   * #454 A3 step 1: the slot delete's binding read must tell 7TV's rate limit apart from any other
+   * failed read, so it can wait instead of counting a failure.
+   * protects: the rate-limit numbers survive from 7TV's answer to the caller; the thrown value stays
+   *   an `Error` for every caller that catches a failed read.
+   * fails_when: a rate-limit answer loses its reset, another GraphQL error claims a rate limit, or
+   *   the error stops being an `Error`.
+   * no_claim: header names beyond the parsed numbers; how the delete run uses them.
+   */
+  describe('a GraphQL-level rejection', () => {
+    it("carries 7TV's rate-limit numbers when the rejection is its rate limit", async () => {
+      const result$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      httpMock.expectOne(GQL_ENDPOINT).flush({
+        errors: [
+          {
+            message: 'RATE_LIMIT_EXCEEDED rate limit exceeded',
+            extensions: {
+              code: 'RATE_LIMIT_EXCEEDED',
+              status: 429,
+              headers: {
+                'x-ratelimit-emote_set_change-reset': '7',
+                'x-ratelimit-emote_set_change-limit': '100',
+              },
+            },
+          },
+        ],
+      });
+
+      const error = await result$.catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toBeInstanceOf(SevenTvSetReadError);
+      expect((error as SevenTvSetReadError).rateLimit).toEqual({
+        limit: 100,
+        remaining: null,
+        reset: 7,
+        used: null,
+      });
+    });
+
+    it('carries no rate limit for any other rejection, or an answer without the entries', async () => {
+      const rejected$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      httpMock
+        .expectOne(GQL_ENDPOINT)
+        .flush({ errors: [{ message: 'unknown set', extensions: { code: 'NOT_FOUND' } }] });
+      const empty$ = firstValueFrom(loadSevenTvSetEntries(httpClient, 'set-1'));
+      httpMock.expectOne(GQL_ENDPOINT).flush({ data: { emoteSets: { emoteSet: null } } });
+
+      for (const result$ of [rejected$, empty$]) {
+        const error = await result$.catch((caught: unknown) => caught);
+        expect(error).toBeInstanceOf(Error);
+        expect((error as SevenTvSetReadError).rateLimit).toBeNull();
+      }
+    });
   });
 
   // Plan-378 4.1 [E2]: the add date is read only when asked for, so every other reader (import,
