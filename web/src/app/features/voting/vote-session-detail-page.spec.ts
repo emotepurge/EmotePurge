@@ -24,7 +24,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
+import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { VoteSessionResult, VoteSessionResults } from '../../core/voting/vote-session.model';
 import { ImportCoverage } from '../../core/usage/import-coverage.model';
 import { ALL_EMOTE_SETS } from '../../core/usage-stats/usage-stat.model';
@@ -335,10 +337,105 @@ describe('VoteSessionDetailPage — selection reconciliation on a silent reload 
     component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
     expect(component['selection'].selectedKeys()).toEqual(['a']);
 
+    publishRun(['7tv-a'], []);
     component['onDeleted'](['7tv-a']);
 
     expect(component['results']()?.emotes.map((emote) => emote.emoteId)).toEqual(['b']);
     expect(component['selection'].selectedKeys()).toEqual([]);
+  });
+
+  /** Publishes a settled delete run of the panel's set (the null-session falls back to the active
+   *  set 'set-1') the way `SevenTvDeleteService` does. */
+  function publishRun(
+    doneKeys: string[],
+    skippedKeys: string[],
+    overrides: { channelName?: string; setId?: string } = {},
+  ): RunResult {
+    const item = (key: string, status: RunQueueItem['status']): RunQueueItem => ({
+      key,
+      sevenTvEmoteId: key,
+      name: key,
+      status,
+      completedSteps: status === 'done' ? 1 : 0,
+      failedStep: null,
+    });
+    const result: RunResult = {
+      doneKeys,
+      items: [
+        ...doneKeys.map((key) => item(key, 'done')),
+        ...skippedKeys.map((key) => item(key, 'cancelled')),
+      ],
+      startedAt: 0,
+      finishedAt: 1,
+    };
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId: overrides.setId ?? 'set-1',
+      channelName: overrides.channelName ?? CHANNEL,
+      targetOwnerTwitchId: null,
+      result,
+    });
+    return result;
+  }
+
+  /**
+   * protects: AC 7, edge 15 — the deleted 7TV ids map to ballot Guids and only those are deselected.
+   * fails_when: the selection is cleared or a skipped row loses its mark.
+   * no_claim: the hint wording.
+   */
+  it('keeps a skipped ballot row selected and counts it for the retry hint', () => {
+    const [a, b, c] = [resultEmote('a'), resultEmote('b'), resultEmote('c')];
+    mount(results([a, b, c]));
+    for (const row of [a, b, c]) {
+      component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    }
+    publishRun(['7tv-a'], ['7tv-b']);
+    expect(component['retryCount']()).toBe(1);
+
+    component['onDeleted'](['7tv-a']);
+
+    expect(component['selection'].selectedKeys().sort()).toEqual(['b', 'c']);
+    expect(component['retryCount']()).toBe(1);
+  });
+
+  /**
+   * protects: AC 7 — a run of another set or channel deselects nothing and counts nothing.
+   * fails_when: the guards are missing and the other run's ids unmark rows.
+   * no_claim: —
+   */
+  it('ignores a run of another set or channel', () => {
+    mount(results([resultEmote('a'), resultEmote('b')]));
+    component['selection'].onRowClick(resultEmote('a'), { shiftKey: false } as MouseEvent);
+
+    publishRun(['7tv-a'], ['7tv-b'], { setId: 'set-other' });
+    component['onDeleted'](['7tv-a']);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['retryCount']()).toBe(0);
+
+    publishRun(['7tv-a'], ['7tv-b'], { channelName: 'zz' });
+    component['onReloadRequested']();
+    httpMock.match(() => true);
+    expect(component['selection'].selectedKeys()).toEqual(['a']);
+  });
+
+  /**
+   * protects: AC 4 on this host — a restore-triggered reload (a second reloadRequested for the same
+   * delete result) keeps a restored, re-marked row marked.
+   * fails_when: the row is unmarked by the second reload, or the first reload clear()s.
+   * no_claim: the reload payload.
+   */
+  it('lets a restore reload keep a re-marked row selected', () => {
+    const [a, b] = [resultEmote('a'), resultEmote('b')];
+    mount(results([a, b]));
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['selection'].onRowClick(b, { shiftKey: false } as MouseEvent);
+    publishRun(['7tv-a'], ['7tv-b']);
+
+    component['onReloadRequested']();
+    expect(component['selection'].selectedKeys()).toEqual(['b']);
+
+    component['selection'].onRowClick(a, { shiftKey: false } as MouseEvent);
+    component['onReloadRequested']();
+    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
   });
 
   it('a silent reload that loses nothing selected leaves the selection alone', () => {
