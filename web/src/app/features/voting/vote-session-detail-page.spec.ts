@@ -1192,6 +1192,93 @@ describe('VoteSessionDetailPage — departed set-session members are excluded fr
     expect(component['massDeleteLockReasonKey']()).toBe('massDelete.memberRead.lock.truncated');
   });
 
+  /*
+   * #457, AK 14.
+   * protects: no false "No longer in the set" for a ballot id 7TV counts but does not list, and an
+   *   honest lock reason for a gap; departure is still concluded from a complete read.
+   * fails_when: a hidden id counts as departed under a gap or an inconsistent read, the gap lifts
+   *   the delete lock, or a complete read stops marking a missing id as departed.
+   * no_claim: rendering (the badge and the row exclusion read this one set).
+   */
+  describe('a gap read of the session set (#457)', () => {
+    function flushMembers(
+      sevenTvEmoteIds: string[],
+      verdict: {
+        totalCount: number;
+        truncated: boolean;
+        readState?: string;
+        omittedCount?: number;
+      },
+    ): void {
+      flushByPath(httpMock, EMOTE_SET_PATH, {
+        channelName: CHANNEL,
+        sevenTvUserId: null,
+        emoteSetId: 'halloween-1',
+        emoteSetName: 'Halloween 2026',
+        capacity: 500,
+        ...verdict,
+        emotes: sevenTvEmoteIds.map((id) => ({
+          sevenTvEmoteId: id,
+          name: id,
+          defaultName: id,
+          imageUrl: '',
+          topAllTime: null,
+          trending: null,
+        })),
+      });
+    }
+
+    it('locks deleting with the gap reason and marks no hidden ballot id as departed', async () => {
+      const hidden = resultEmote('hidden', { totalUseCount: null });
+      const listed = resultEmote('listed', { totalUseCount: null });
+      await mount(results([hidden, listed], { emoteSetId: 'halloween-1' }), true);
+
+      flushMembers(['7tv-listed'], {
+        totalCount: 2,
+        truncated: true,
+        readState: 'gap',
+        omittedCount: 1,
+      });
+      await settle();
+
+      expect(component['massDeleteLockReasonKey']()).toBe('massDelete.memberRead.lock.gap');
+      expect(component['departedSevenTvEmoteIds']().size).toBe(0);
+    });
+
+    it('marks no ballot id as departed under an inconsistent read either', async () => {
+      const a = resultEmote('a', { totalUseCount: null });
+      await mount(results([a], { emoteSetId: 'halloween-1' }), true);
+
+      flushMembers([], {
+        totalCount: 900,
+        truncated: true,
+        readState: 'inconsistent',
+        omittedCount: 0,
+      });
+      await settle();
+
+      expect(component['massDeleteLockReasonKey']()).toBe('massDelete.memberRead.lock.truncated');
+      expect(component['departedSevenTvEmoteIds']().size).toBe(0);
+    });
+
+    it('still marks a missing ballot id as departed under a complete read', async () => {
+      const gone = resultEmote('gone', { totalUseCount: null });
+      const stays = resultEmote('stays', { totalUseCount: null });
+      await mount(results([gone, stays], { emoteSetId: 'halloween-1' }), true);
+
+      flushMembers(['7tv-stays'], {
+        totalCount: 1,
+        truncated: false,
+        readState: 'complete',
+        omittedCount: 0,
+      });
+      await settle();
+
+      expect(component['massDeleteLockReasonKey']()).toBeNull();
+      expect([...component['departedSevenTvEmoteIds']()]).toEqual(['7tv-gone']);
+    });
+  });
+
   it('makes no live-membership read at all for a null-session', async () => {
     const a = resultEmote('a');
     await mount(results([a]), true);
