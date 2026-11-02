@@ -1257,7 +1257,7 @@ test.describe('emote tag runs', () => {
 // at the two-column widths where the header is tightest, with a short, a middling and a maximal
 // (40 characters) tag name — the first measurement found the middling one wrapping at 1024 px.
 test.describe('emote tag header while marking', () => {
-  for (const width of [1024, 1280]) {
+  for (const width of [1024, 1064, 1112, 1280]) {
     for (const name of ['Halo', 'Halloween 2026', 'Highlights aus dem Herbst-Stream 2026 ab']) {
       test(`keeps the grid where it is across the first marking click at ${width} px, tag "${name}"`, async ({
         page,
@@ -1275,6 +1275,7 @@ test.describe('emote tag header while marking', () => {
         // Both header groups stand: the set actions and the tag actions.
         await expect(playIn(page)).toBeVisible();
         await expect(clearOut(page)).toBeVisible();
+        await expect(page.getByRole('button', { name: 'In anderes Set holen …' })).toBeVisible();
         await expect(page.getByRole('button', { name: 'Tag löschen' })).toBeVisible();
 
         const grid = page.getByRole('group', { name: `Emotes in ${name}` });

@@ -195,7 +195,7 @@
                 </h3>
                 <!-- Header actions (spec 9.4, plan 3.8): two groups, each naming its target — the set
                      actions (the tag runs), then after a gap the tag actions (rename, delete; §8.7). The runs exist where they can run — switched on, a fine
-                     pointer, a known active set — and need no management right (E9); rename and
+                     pointer (the two active-set actions also a known active set) — and need no management right (E9); rename and
                      delete need one. TagRunActions is mounted on gates that a live reload does not
                      move — a reload that tore it down would read as a set switch and abort an open
                      dialog — and gets the live active set, which its flows' confirm-time guard
@@ -236,7 +236,11 @@
                       />
                     }
                     @if (canManage()) {
-                      <div class="flex flex-wrap items-start gap-2">
+                      <div
+                        [class]="
+                          'flex flex-wrap items-start gap-2' + (tagRunsShown() ? ' basis-full' : '')
+                        "
+                      >
                         <button
                           type="button"
                           appButton="neutral"
