@@ -498,6 +498,8 @@ export class TagRunActions {
       return;
     }
     const request = this.request();
+    // Frozen with the click, like the request: what "Ins Set holen" could do right now.
+    const playInUsable = this.playInShown() && !this.markingLocked();
     const marked = request.markedIds?.length ?? 0;
     openImportTargetDialog(this.dialog, {
       currentChannelName: request.channelName,
@@ -511,7 +513,10 @@ export class TagRunActions {
       }
       this.started.emit();
       this.noticeSink.clear();
-      routeTagIntoChosenSet(this.deps, request, choice);
+      routeTagIntoChosenSet(this.deps, request, choice, {
+        playInUsable,
+        entryCount: this.tag().entryCount,
+      });
     });
   }
 

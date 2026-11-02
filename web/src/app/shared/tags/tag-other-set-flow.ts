@@ -44,14 +44,33 @@ import { TagRunNotice } from './tag-run-notice-sink';
  * Routes the picker's answer: the tag channel's current active set runs the existing play-in
  * (registration, placements), any other set — including another account's active set — this flow.
  * The comparison reads the host's live view of the active set at the moment the picker closes.
+ *
+ * The play-in is taken only when "Add to set" would itself be usable (`playInUsable`): an empty
+ * play-in reports an activation, which would mark the tag as played in with no dialog and no choice
+ * by the person. Otherwise the active set is told to be complete as it is, with no request at all.
+ * `entryCount` is the tag's entry count, for the feedback when nothing is marked.
  */
 export function routeTagIntoChosenSet(
   deps: TagRunFlowDeps,
   request: TagRunRequest,
   choice: ImportTargetChoice,
+  active: { playInUsable: boolean; entryCount: number },
 ): void {
   if (choice.emoteSetId === request.activeEmoteSetId()) {
-    startTagPlayInFlow(deps, request);
+    if (active.playInUsable) {
+      startTagPlayInFlow(deps, request);
+      return;
+    }
+    const marking = request.markedIds?.length ?? 0;
+    const count = marking > 0 ? marking : active.entryCount;
+    tellFeedback(
+      request,
+      pluralKey(
+        count,
+        marking > 0 ? 'tags.feedback.otherSetAllMarkedPresent' : 'tags.feedback.otherSetAllPresent',
+      ),
+      { count, tag: request.tag.name, set: choice.setName },
+    );
     return;
   }
   startTagOtherSetFlow(deps, request, choice);

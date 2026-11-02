@@ -82,8 +82,9 @@ export type ImportFlowTarget =
       kind: 'chosen';
       choice: Omit<ImportTargetChoice, 'scope'>;
       /** A tag play-in (#201 T-C, spec E29 rev. 3): read exactly `choice.emoteSetId`, even when it is
-       *  the account's active set — see {@link toTargetSelection}. Absent for every other caller,
-       *  which then resolves byte-identically to before. */
+       *  the account's active set — see {@link toTargetSelection}. The tag run into another set
+       *  (#328) sets it too, without a tag hook. Absent for every other caller, which then resolves
+       *  byte-identically to before. */
       pinSetId?: true;
     };
 

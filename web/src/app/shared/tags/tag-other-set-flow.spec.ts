@@ -114,7 +114,7 @@ interface Harness {
   dialogOpen: ReturnType<typeof vi.fn>;
   startImport: ReturnType<typeof vi.fn>;
   run(picked?: ImportTargetChoice): void;
-  route(picked: ImportTargetChoice): void;
+  route(picked: ImportTargetChoice, active: { playInUsable: boolean; entryCount: number }): void;
   confirmData(): ImportConfirmDialogData;
   confirm(outcome: ImportConfirmOutcome | undefined): void;
 }
@@ -238,7 +238,7 @@ function setup(
     dialogOpen,
     startImport,
     run: (picked = choice()) => startTagOtherSetFlow(deps, request, picked),
-    route: (picked) => routeTagIntoChosenSet(deps, request, picked),
+    route: (picked, active) => routeTagIntoChosenSet(deps, request, picked, active),
     confirmData: () =>
       (dialogOpen.mock.calls[confirmCall()][1] as { data: ImportConfirmDialogData }).data,
     confirm: (outcome) => dialogOpen.mock.results[confirmCall()].value.closed.next(outcome),
@@ -370,7 +370,8 @@ describe('startTagOtherSetFlow', () => {
 
   // protects=the marking is released exactly when the run was started, not for a dismissed dialog;
   // fails_when=a cancelled confirmation clears the marking, or a started run keeps it;
-  // no_claim=a refused start (the fake `startImport` returns true) — the hook's own tests cover it.
+  // no_claim=a refused start (the fake `startImport` returns true); `import-flow.spec.ts` covers
+  //   `runHooks.onStarted` for a refused start.
   it('lets go of the marking once the run started, not when the confirmation is dismissed', () => {
     const dismissed = setup();
     dismissed.run();
@@ -388,6 +389,8 @@ describe('startTagOtherSetFlow', () => {
   });
 });
 
+const USABLE = { playInUsable: true, entryCount: 3 };
+
 describe('routeTagIntoChosenSet', () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -398,16 +401,51 @@ describe('routeTagIntoChosenSet', () => {
   // no_claim=the rest of the play-in, which `tag-play-in-flow.spec.ts` covers.
   it('sends the active set to the play-in and every other set to the plain add', () => {
     const active = setup({ entries: of(entriesFor(['new-1'], { emoteSetId: ACTIVE })) });
-    active.route(choice({ emoteSetId: ACTIVE, activeEmoteSetId: ACTIVE }));
+    active.route(choice({ emoteSetId: ACTIVE, activeEmoteSetId: ACTIVE }), USABLE);
     expect(active.listEntries).toHaveBeenCalledWith(CHANNEL, TAG.id, ACTIVE);
     // The play-in's set check fails on the fake's non-active entries — what matters is that it
     // took the play-in path, whose first act is the entries read for the frozen active set.
     expect(active.notice()).toEqual({ key: 'tags.errors.setChanged' });
 
     const other = setup();
-    other.route(choice());
+    other.route(choice(), USABLE);
     expect(other.listEntries).toHaveBeenCalledExactlyOnceWith(CHANNEL, TAG.id, TARGET);
     expect(other.registerOperation).not.toHaveBeenCalled();
     expect(other.confirmData().targetIsActiveSet).toBe(false);
+  });
+
+  // protects=picking the active set while "Ins Set holen" is hidden or locked (nothing missing, or
+  //   a marking with nothing missing) sends no request, so no empty report can activate the tag;
+  //   it says the set already holds them, naming the set;
+  // fails_when=the pick reaches the play-in (entries read, registration, empty placement report) or
+  //   the feedback is missing or uses the "counts as added" wording;
+  // no_claim=that the host computes `playInUsable` right (tag-run-actions.spec.ts).
+  it('sends no request and says it is complete when the active set is picked without a usable play-in', () => {
+    const plain = setup();
+    plain.route(choice({ emoteSetId: ACTIVE, activeEmoteSetId: ACTIVE }), {
+      playInUsable: false,
+      entryCount: 3,
+    });
+    expect(plain.onFeedback).toHaveBeenCalledExactlyOnceWith(
+      'tags.feedback.otherSetAllPresent.other',
+      { count: 3, tag: TAG.name, set: 'Halloween' },
+    );
+
+    const marked = setup({ markedIds: ['a', 'b'] });
+    marked.route(choice({ emoteSetId: ACTIVE, activeEmoteSetId: ACTIVE }), {
+      playInUsable: false,
+      entryCount: 3,
+    });
+    expect(marked.onFeedback).toHaveBeenCalledExactlyOnceWith(
+      'tags.feedback.otherSetAllMarkedPresent.other',
+      { count: 2, tag: TAG.name, set: 'Halloween' },
+    );
+
+    for (const harness of [plain, marked]) {
+      expect(harness.listEntries).not.toHaveBeenCalled();
+      expect(harness.registerOperation).not.toHaveBeenCalled();
+      expect(harness.reportPlacements).not.toHaveBeenCalled();
+      expect(harness.dialogOpen).not.toHaveBeenCalled();
+    }
   });
 });

@@ -428,6 +428,40 @@ describe('TagRunActions', () => {
       });
     });
 
+    // protects=picking the active set while "Ins Set holen" is hidden (all entries in the set) or
+    //   locked by the marking reads nothing and registers nothing, and says so;
+    // fails_when=the pick reaches the play-in and its empty report would activate the tag;
+    // no_claim=the feedback wording or the flow itself.
+    it('does not route the active set to the play-in when "Ins Set holen" is not usable', () => {
+      const dialog = TestBed.inject(Dialog);
+      const open = dialog.open as unknown as ReturnType<typeof vi.fn>;
+      const pick = {
+        scope: 'selection',
+        emoteSetId: 'set-active',
+        channelName: 'handofblood',
+        ownerDisplayName: 'HandOfBlood',
+        ownerTwitchChannelId: null,
+        setName: 'Main',
+        isTracked: true,
+        twitchLogin: 'handofblood',
+        activeEmoteSetId: 'set-active',
+      } as ImportTargetChoice;
+
+      for (const marking of [false, true]) {
+        const picker = new Subject<ImportTargetChoice | undefined>();
+        open.mockReturnValue({ closed: picker });
+        fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3 }));
+        fixture.componentRef.setInput('markedIds', marking ? ['a'] : []);
+        fixture.componentRef.setInput('markedMissingCount', 0);
+        fixture.detectChanges();
+        button(marking ? `${OTHER} (1)` : OTHER)!.click();
+        picker.next(pick);
+      }
+
+      expect(listEntries).not.toHaveBeenCalled();
+      expect(feedback).toHaveLength(2);
+    });
+
     // protects=the picker's answer decides the flow: dismissing starts nothing, the channel's
     //   active set takes the ordinary play-in, another set the plain add, and a 7TV run elsewhere
     //   locks the button;
