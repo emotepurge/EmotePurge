@@ -61,6 +61,9 @@ export function routeTagIntoChosenSet(
       startTagPlayInFlow(deps, request);
       return;
     }
+    // As both real entry points do: a banner (and its retry) of an earlier attempt must not stay
+    // next to this feedback.
+    clearNotice(request);
     const marking = request.markedIds?.length ?? 0;
     const count = marking > 0 ? marking : active.entryCount;
     tellFeedback(

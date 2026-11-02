@@ -462,6 +462,41 @@ describe('TagRunActions', () => {
       expect(feedback).toHaveLength(2);
     });
 
+    // protects=the play-in decision is read when the picker answers: a reload that completes the set
+    //   while the picker is open hides "Ins Set holen", and picking the active set then sends nothing;
+    // fails_when=`playInUsable` is frozen at the click (true then), so the pick registers and reports
+    //   an empty play-in that activates the tag;
+    // no_claim=the reload itself (the input change stands in for the host's live reload).
+    it('re-reads whether "Ins Set holen" is usable when the picker answers', () => {
+      const dialog = TestBed.inject(Dialog);
+      const open = dialog.open as unknown as ReturnType<typeof vi.fn>;
+      const picker = new Subject<ImportTargetChoice | undefined>();
+      open.mockReturnValue({ closed: picker });
+      fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 2 }));
+      fixture.detectChanges();
+      const registerSpy = vi.fn(() => of({ registeredAtUtc: '2026-11-02T10:00:00Z' }));
+      registration = registerSpy;
+
+      button(OTHER)!.click();
+      fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3 }));
+      fixture.detectChanges();
+      picker.next({
+        scope: 'selection',
+        emoteSetId: 'set-active',
+        channelName: 'handofblood',
+        ownerDisplayName: 'HandOfBlood',
+        ownerTwitchChannelId: null,
+        setName: 'Main',
+        isTracked: true,
+        twitchLogin: 'handofblood',
+        activeEmoteSetId: 'set-active',
+      });
+
+      expect(registerSpy).not.toHaveBeenCalled();
+      expect(listEntries).not.toHaveBeenCalled();
+      expect(feedback).toHaveLength(1);
+    });
+
     // protects=the picker's answer decides the flow: dismissing starts nothing, the channel's
     //   active set takes the ordinary play-in, another set the plain add, and a 7TV run elsewhere
     //   locks the button;

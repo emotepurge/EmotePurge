@@ -441,6 +441,15 @@ describe('routeTagIntoChosenSet', () => {
       { count: 2, tag: TAG.name, set: 'Halloween' },
     );
 
+    // An old banner from an earlier attempt goes away with the feedback.
+    const stale = setup();
+    stale.notice.set({ key: 'tags.errors.setReadUnavailable', retry: () => undefined });
+    stale.route(choice({ emoteSetId: ACTIVE, activeEmoteSetId: ACTIVE }), {
+      playInUsable: false,
+      entryCount: 3,
+    });
+    expect(stale.notice()).toBeNull();
+
     for (const harness of [plain, marked]) {
       expect(harness.listEntries).not.toHaveBeenCalled();
       expect(harness.registerOperation).not.toHaveBeenCalled();

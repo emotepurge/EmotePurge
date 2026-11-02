@@ -498,8 +498,6 @@ export class TagRunActions {
       return;
     }
     const request = this.request();
-    // Frozen with the click, like the request: what "Ins Set holen" could do right now.
-    const playInUsable = this.playInShown() && !this.markingLocked();
     const marked = request.markedIds?.length ?? 0;
     openImportTargetDialog(this.dialog, {
       currentChannelName: request.channelName,
@@ -513,8 +511,10 @@ export class TagRunActions {
       }
       this.started.emit();
       this.noticeSink.clear();
+      // Read when the answer is consumed, not at the click: a live reload while the picker was open
+      // may have hidden "Ins Set holen", and an empty play-in would then activate the tag.
       routeTagIntoChosenSet(this.deps, request, choice, {
-        playInUsable,
+        playInUsable: this.playInShown() && !this.markingLocked(),
         entryCount: this.tag().entryCount,
       });
     });
