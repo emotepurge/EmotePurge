@@ -32,6 +32,8 @@ import { EmoteTagSummary } from '../../core/tags/emote-tag.model';
 import { EmoteTagService } from '../../core/tags/emote-tag.service';
 import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
+import { openImportTargetDialog } from '../seven-tv/import-target-dialog';
+import { routeTagIntoChosenSet } from './tag-other-set-flow';
 import { TagRunFlowDeps, TagRunRequest, startTagPlayInFlow } from './tag-play-in-flow';
 import { startTagRemovalFlow } from './tag-removal-flow';
 import { TagRunNotice, TagRunNoticeSink } from './tag-run-notice-sink';
@@ -71,6 +73,13 @@ export function runButtonFocusTarget(state: {
     return 'none';
   }
   return state.otherUsable ? 'other' : 'fallback';
+}
+
+/** Whether the tag offers "In anderes Set holen …" (#328): it has entries, nothing else. Neither a
+ *  missing emote nor an active set is needed — the target is whatever set the picker offers, and
+ *  what that set lacks is only known after the live read. */
+export function tagOffersOtherSet(tag: Pick<EmoteTagSummary, 'entryCount'>): boolean {
+  return tag.entryCount > 0;
 }
 
 /** Whether the tag has an emote missing from the set — where "Ins Set holen" exists at all (spec
@@ -116,8 +125,10 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
  * only surface that starts tag runs (operator feedback 2026-10-05: the usage page shows what is in
  * the set, not what is missing).
  *
- * Renders nothing unless the host says so (`enabled`: runs switched on, fine pointer, a known
- * active set). "Ins Set holen" exists only while the tag has an emote missing from the set,
+ * Renders nothing unless the host says so (`enabled`: runs switched on, fine pointer). The two
+ * active-set actions also need a known active set (`activeEmoteSetId`); "In anderes Set holen …"
+ * (#328, `tag-other-set-flow.ts`) does not — it exists for every tag with entries and opens the
+ * target picker. "Ins Set holen" exists only while the tag has an emote missing from the set,
  * "Aus dem Set entfernen" while one of its emotes is in the set or it is played in there (`removeShown`; spec
  * 7.2: missing, not locked — there is nothing to explain beyond the state the host shows next to
  * it). Both lock
@@ -173,6 +184,22 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
                   {{ 'tags.actions.playInCount' | transloco: { count: markedMissingCount() } }}
                 } @else {
                   {{ 'tags.actions.playIn' | transloco }}
+                }
+              </button>
+            }
+            @if (otherSetShown()) {
+              <button
+                type="button"
+                appButton="neutral"
+                class="disabled:cursor-not-allowed"
+                [disabled]="locked()"
+                [attr.aria-describedby]="otherRunKey() ? otherRunReasonId : null"
+                (click)="playInOtherSet()"
+              >
+                @if (markedCount() > 0) {
+                  {{ 'tags.actions.playInOtherSetCount' | transloco: { count: markedCount() } }}
+                } @else {
+                  {{ 'tags.actions.playInOtherSet' | transloco }}
                 }
               </button>
             }
@@ -237,7 +264,8 @@ export class TagRunActions {
   readonly activeEmoteSetId = input<string | null>(null);
   /** The active set's display name, `null` to fall back to its id. */
   readonly setName = input<string | null>(null);
-  /** The host's gate: tag runs switched on, a fine pointer, a known active set. */
+  /** The host's gate: tag runs switched on and a fine pointer. The two active-set actions
+   *  additionally need a known `activeEmoteSetId`; "In anderes Set holen …" does not (#328). */
   readonly enabled = input(false);
   /** Run kinds whose surface (dock section) this host does not mount — a lock by one of them is
    *  explained in text here, since nothing else on the page would (plan 3.8). */
@@ -297,14 +325,23 @@ export class TagRunActions {
    *  not locked) — read off the summary the host already holds. Without a count (`inSetCount:
    *  null`, no set to count in) nothing is known to be present, so a tag with entries offers it. A
    *  click that outraces a change of the set still lands in the flow's own "all present" path. */
-  protected readonly playInShown = computed(() => tagMissesAnEmote(this.tag()));
+  protected readonly playInShown = computed(
+    () => this.activeSetKnown() && tagMissesAnEmote(this.tag()),
+  );
+  /** The two active-set actions need an active set to act on; a null one never reaches their
+   *  flows. */
+  private readonly activeSetKnown = computed(() => this.activeEmoteSetId() !== null);
+  /** "In anderes Set holen …" (#328) exists for every tag with entries, whatever the active set. */
+  protected readonly otherSetShown = computed(() => tagOffersOtherSet(this.tag()));
   /** "Aus dem Set entfernen" exists while there is something to clear out (operator decision 2026-10-05,
    *  superseding spec 7.2's "only for a played-in tag"): an emote of the tag in the set — whether
    *  the tag was played in or its emotes were all there already, which leaves it no way to become
    *  active — or the tag being played in at all. The latter keeps a played-in tag with nothing in
    *  the set clearable (an undo of its play-in, entries taken out of it): the clear-out with nothing
    *  ticked is what deactivates it (13.2). */
-  protected readonly removeShown = computed(() => tagHasSomethingToClear(this.tag()));
+  protected readonly removeShown = computed(
+    () => this.activeSetKnown() && tagHasSomethingToClear(this.tag()),
+  );
   /** How many emotes the host's grid has marked — whether a marking exists; each run button then
    *  carries the number of marked emotes it is about. */
   protected readonly markedCount = computed(() => this.markedIds().length);
@@ -318,7 +355,9 @@ export class TagRunActions {
     removeMarkingLocked(this.markedCount(), this.markedInSetCount()),
   );
   /** At least one run button stands; the button row and the lock reason exist only then. */
-  protected readonly anyButton = computed(() => this.playInShown() || this.removeShown());
+  protected readonly anyButton = computed(
+    () => this.playInShown() || this.otherSetShown() || this.removeShown(),
+  );
   protected readonly locked = computed(() => this.arbiter.startLocked() || this.pending());
   /** The run-kind noun key of a lock the host has no surface for, `null` otherwise — a lock by a
    *  run whose dock the page shows stays without text (§4.2). */
@@ -449,6 +488,31 @@ export class TagRunActions {
     this.claimFocus('playIn');
     startTagPlayInFlow(this.deps, this.request());
     this.releaseFocusOwnerIfEndedAtOnce();
+  }
+
+  /** Opens the target picker for the marked entries (or all of the tag's), then runs the flow for
+   *  the answer: the tag channel's active set takes the ordinary play-in, any other set the plain
+   *  add of `tag-other-set-flow.ts`. The request is frozen at the click, before the picker. */
+  protected playInOtherSet(): void {
+    if (this.locked()) {
+      return;
+    }
+    const request = this.request();
+    const marked = request.markedIds?.length ?? 0;
+    openImportTargetDialog(this.dialog, {
+      currentChannelName: request.channelName,
+      visibleCount: this.tag().entryCount,
+      selectionCount: marked > 0 ? marked : this.tag().entryCount,
+      forcedScope: 'selection',
+      sourceEmoteSetId: null,
+    }).closed.subscribe((choice) => {
+      if (choice === undefined || this.destroyRef.destroyed || this.locked()) {
+        return;
+      }
+      this.started.emit();
+      this.noticeSink.clear();
+      routeTagIntoChosenSet(this.deps, request, choice);
+    });
   }
 
   protected remove(): void {

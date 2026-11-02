@@ -31,11 +31,11 @@
       </div>
     </div>
     <!-- What a tag is, and what its two buttons do — the second sentence only where the buttons can
-         exist (`tagRunsShown`, the host's own gate for them), so it never promises a control the
+         exist (`activeRunsShown`, the host's own gate for them), so it never promises a control the
          page does not show. -->
     <p class="text-sm text-fg-muted">
       {{ 'tags.page.intro' | transloco }}
-      @if (tagRunsShown()) {
+      @if (activeRunsShown()) {
         {{ 'tags.page.introRuns' | transloco }}
       }
     </p>

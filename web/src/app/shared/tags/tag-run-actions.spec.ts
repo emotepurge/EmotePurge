@@ -23,6 +23,7 @@ import {
   settledTagRemoval,
 } from './tag-run-actions';
 import { TagRunNoticeSink } from './tag-run-notice-sink';
+import { ImportTargetChoice } from '../seven-tv/import-target-dialog';
 
 const DE = {
   sevenTvRun: { kind: { undo: 'Rückgängig', import: 'Kopieren' } },
@@ -30,6 +31,8 @@ const DE = {
     actions: {
       playIn: 'Ins Set holen',
       playInCount: 'Ins Set holen ({{count}})',
+      playInOtherSet: 'In anderes Set holen …',
+      playInOtherSetCount: 'In anderes Set holen … ({{count}})',
       playInLockReason: { allMarkedInSet: 'Alle markierten Emotes sind schon im Set.' },
       remove: 'Aus dem Set entfernen',
       removeCount: 'Aus dem Set entfernen ({{count}})',
@@ -367,6 +370,112 @@ describe('TagRunActions', () => {
       fixture.detectChanges();
 
       expect(button('Ins Set holen')).toBeDefined();
+    });
+  });
+
+  // #328: "In anderes Set holen …" depends on neither the in-set counts nor an active set.
+  describe('"In anderes Set holen …" (#328)', () => {
+    const OTHER = 'In anderes Set holen …';
+
+    // protects=the action stays while the active set already holds every entry, and while the
+    //   channel has no active set at all (then it is the only action); it is gone for a tag
+    //   without entries;
+    // fails_when=it follows "Ins Set holen"'s missing-emote gate or needs an active set, or a null
+    //   active set lets either active-set action through;
+    // no_claim=coarse pointer, `tagRunsEnabled` and the layout — those are the host page's gates.
+    it('is offered whatever the active set holds, also without an active set, and not for an empty tag', () => {
+      fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3, active: true }));
+      fixture.detectChanges();
+      expect(button('Ins Set holen')).toBeUndefined();
+      expect(button(OTHER)).toBeDefined();
+
+      fixture.componentRef.setInput('activeEmoteSetId', null);
+      fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: null }));
+      fixture.detectChanges();
+      expect(button(OTHER)).toBeDefined();
+      expect(button('Ins Set holen')).toBeUndefined();
+      expect(button('Aus dem Set entfernen')).toBeUndefined();
+
+      fixture.componentRef.setInput('tag', summary({ entryCount: 0, inSetCount: 0 }));
+      fixture.detectChanges();
+      expect(button(OTHER)).toBeUndefined();
+    });
+
+    // protects=with a marking the button carries the number of marked entries (not the missing
+    //   count) and the picker is told so; it is never locked by the marking;
+    // fails_when=it shows `markedMissingCount`, locks on a marking that misses nothing in the
+    //   active set, or the picker is not forced to the selection scope without a source set;
+    // no_claim=what the picker then offers (its own spec) or that the flow runs.
+    it('carries the number of marked entries, never locks on the marking, and opens the picker for them', () => {
+      const dialog = TestBed.inject(Dialog);
+      const open = dialog.open as unknown as ReturnType<typeof vi.fn>;
+      open.mockReturnValue({ closed: new Subject<unknown>() });
+      fixture.componentRef.setInput('tag', summary({ entryCount: 4, inSetCount: 4 }));
+      fixture.componentRef.setInput('markedIds', ['a', 'b', 'c']);
+      fixture.componentRef.setInput('markedMissingCount', 0);
+      fixture.detectChanges();
+
+      const other = button(`${OTHER} (3)`)!;
+      expect(other.disabled).toBe(false);
+      other.click();
+
+      expect(open).toHaveBeenCalledOnce();
+      expect(open.mock.calls[0][1].data).toMatchObject({
+        currentChannelName: 'handofblood',
+        selectionCount: 3,
+        forcedScope: 'selection',
+        sourceEmoteSetId: null,
+      });
+    });
+
+    // protects=the picker's answer decides the flow: dismissing starts nothing, the channel's
+    //   active set takes the ordinary play-in, another set the plain add, and a 7TV run elsewhere
+    //   locks the button;
+    // fails_when=a dismissed picker reads entries, the active set skips the play-in's
+    //   registration, or another set registers an operation;
+    // no_claim=the flows' own behaviour (tag-other-set-flow.spec.ts, tag-play-in-flow.spec.ts).
+    it('routes the picker answer and respects the run lock', () => {
+      const dialog = TestBed.inject(Dialog);
+      const open = dialog.open as unknown as ReturnType<typeof vi.fn>;
+      const picker = new Subject<ImportTargetChoice | undefined>();
+      open.mockReturnValue({ closed: picker });
+      const pick = (emoteSetId: string): ImportTargetChoice => ({
+        scope: 'selection',
+        emoteSetId,
+        channelName: 'handofblood',
+        ownerDisplayName: 'HandOfBlood',
+        ownerTwitchChannelId: null,
+        setName: 'Picked',
+        isTracked: true,
+        twitchLogin: 'handofblood',
+        activeEmoteSetId: 'set-active',
+      });
+
+      button(OTHER)!.click();
+      picker.next(undefined);
+      expect(listEntries).not.toHaveBeenCalled();
+
+      // The ordinary play-in registers; the fake registration is the observable.
+      const registerSpy = vi.fn(() => of({ registeredAtUtc: '2026-11-02T10:00:00Z' }));
+      registration = registerSpy;
+      const second = new Subject<ImportTargetChoice | undefined>();
+      open.mockReturnValue({ closed: second });
+      button(OTHER)!.click();
+      second.next(pick('set-active'));
+      expect(listEntries).toHaveBeenLastCalledWith('handofblood', 7, 'set-active');
+      expect(registerSpy).toHaveBeenCalledOnce();
+
+      const third = new Subject<ImportTargetChoice | undefined>();
+      open.mockReturnValue({ closed: third });
+      registerSpy.mockClear();
+      button(OTHER)!.click();
+      third.next(pick('set-halloween'));
+      expect(listEntries).toHaveBeenLastCalledWith('handofblood', 7, 'set-halloween');
+      expect(registerSpy).not.toHaveBeenCalled();
+
+      startLocked.set(true);
+      fixture.detectChanges();
+      expect(button(OTHER)!.disabled).toBe(true);
     });
   });
 

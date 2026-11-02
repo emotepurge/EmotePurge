@@ -1170,6 +1170,85 @@ test.describe('emote tag runs', () => {
     expect(sevenTv.adds).toEqual([]);
     expect(syncImported).toEqual([]);
   });
+  // protects=a tag whose emotes the active set already holds can still be added to another set via
+  //   the picker, and the run leaves no trace of the tag: no registration, no placement report, the
+  //   write goes to the picked set, and the only report is the plain import one;
+  // fails_when=the run registers an operation or reports placements, writes to the active set, or
+  //   the action is hidden because nothing is missing from the active set;
+  // no_claim=real 7TV, the server's audit entry and the later "Aus dem Set entfernen" proposal
+  //   (the live run); the dialog texts beyond the target and count.
+  test('adds the missing emotes to another set picked in the picker, with no registration and no placement report', async ({
+    page,
+  }) => {
+    await page.clock.install();
+    await mockChannel(page);
+    await mockTags(page, CHANNEL, [
+      { id: TAG_ID, name: 'Favoriten', entryCount: 2, inSetCount: 2 },
+    ]);
+    await mockTagEntries(page, CHANNEL, TAG_ID, [
+      { sevenTvEmoteId: '7tv-1', alias: 'catJAM' },
+      { sevenTvEmoteId: '7tv-2', alias: 'monkaW' },
+    ]);
+    const operations = await mockTagOperations(page, CHANNEL, TAG_ID);
+    const placements = await mockTagPlacements(page, CHANNEL, TAG_ID);
+    // The Halloween set holds only the first emote; the live read and the GQL answer for it.
+    const { sevenTv, syncImported } = await mockRunBackend(page, [
+      { id: '7tv-1', alias: 'catJAM' },
+    ]);
+    await mockEmoteSetTargets(page, [
+      {
+        twitchChannelId: OWNER_TWITCH_ID,
+        twitchLogin: CHANNEL,
+        isOwnAccount: true,
+        trackedChannelName: CHANNEL,
+        activeEmoteSetId: ACTIVE_SET_ID,
+        sets: [
+          { id: ACTIVE_SET_ID, name: 'Hauptset', isActive: true },
+          { id: OTHER_SET_ID, name: 'Halloween' },
+        ],
+      },
+    ]);
+    await mockForeignEmoteSetPreview(page, CHANNEL, {
+      channelName: CHANNEL,
+      emoteSetId: OTHER_SET_ID,
+      emoteSetName: 'Halloween',
+      emotes: [{ sevenTvEmoteId: '7tv-1', name: 'catJAM' }],
+    });
+    await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
+    await expect(page.getByRole('heading', { name: 'Favoriten', level: 3 })).toBeVisible();
+    // Nothing is missing from the active set: only the other-set action is there to add with.
+    await expect(playIn(page)).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'In anderes Set holen …' }).click();
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Halloween' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByText('Aus Tag Favoriten')).toBeVisible();
+    await expect(dialog.getByText('1 ist schon im Set')).toBeVisible();
+    // Nothing is registered, and nothing is written before the confirmation.
+    expect(operations.requests).toEqual([]);
+    expect(sevenTv.adds).toEqual([]);
+    await dialog.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(3_000);
+    await expect(page.getByText('1 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+    await expect.poll(() => syncImported.length).toBe(1);
+
+    expect(sevenTv.adds).toEqual(['7tv-2']);
+    expect(syncImported).toEqual([
+      expect.objectContaining({
+        sevenTvEmoteIds: ['7tv-2'],
+        sourceKind: 'tag',
+        sourceChannelName: null,
+        targetEmoteSetId: OTHER_SET_ID,
+      }),
+    ]);
+    expect(operations.requests).toEqual([]);
+    expect(placements.requests).toEqual([]);
+  });
 });
 
 // Final review O3 ("keine Layout-Sprünge"): the first click on the grid adds a count to both set

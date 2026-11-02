@@ -419,7 +419,7 @@ export class TagsPage {
     const tag = this.selectedTag();
     return (
       tag !== null &&
-      this.tagRunsShown() &&
+      this.activeRunsShown() &&
       tagMissesAnEmote(tag) &&
       playInMarkingLocked(this.markedCount(), this.markedMissingCount())
     );
@@ -437,7 +437,7 @@ export class TagsPage {
     const tag = this.selectedTag();
     return (
       tag !== null &&
-      this.tagRunsShown() &&
+      this.activeRunsShown() &&
       tagHasSomethingToClear(tag) &&
       removeMarkingLocked(this.markedCount(), this.markedInSetCount())
     );
@@ -446,10 +446,15 @@ export class TagsPage {
   /** The small dock in the flow under the grid (spec 9.4, §8.7) — only while something is marked. */
   protected readonly dockShown = computed(() => this.selectable() && this.markedCount() > 0);
 
-  /** Where "Ins Set holen"/"Aus dem Set entfernen" exist at all (spec 8, 9.4): runs switched on, a fine pointer and
-   *  a known active set. Rename and delete do not depend on it. */
-  protected readonly tagRunsShown = computed(
-    () => this.tagRunsEnabled() && !this.isCoarse() && this.activeEmoteSetId() !== null,
+  /** Where the tag run actions are mounted at all (spec 8, 9.4): runs switched on and a fine
+   *  pointer. Rename and delete do not depend on it. "In anderes Set holen …" (#328) needs nothing
+   *  more; the two active-set actions also need `activeRunsShown`. Because the header layout reads
+   *  this gate, it does not move between tags or with the active set. */
+  protected readonly tagRunsShown = computed(() => this.tagRunsEnabled() && !this.isCoarse());
+  /** Where "Ins Set holen"/"Aus dem Set entfernen" can exist: `tagRunsShown` and a known active
+   *  set. Gates what only they explain (the intro sentence, the marking-lock lines). */
+  protected readonly activeRunsShown = computed(
+    () => this.tagRunsShown() && this.activeEmoteSetId() !== null,
   );
 
   /**

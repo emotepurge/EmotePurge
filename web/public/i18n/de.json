@@ -2327,6 +2327,8 @@
       },
       "playIn": "Ins Set holen",
       "playInCount": "Ins Set holen ({{count}})",
+      "playInOtherSet": "In anderes Set holen …",
+      "playInOtherSetCount": "In anderes Set holen … ({{count}})",
       "playInLockReason": {
         "allMarkedInSet": "Alle markierten Emotes sind schon im Set."
       },
@@ -2364,6 +2366,14 @@
       "allMarkedPresent": {
         "one": "Das markierte Emote ist schon im Set — der Tag gilt als ins Set geholt.",
         "other": "Alle {{count}} markierten Emotes sind schon im Set — der Tag gilt als ins Set geholt."
+      },
+      "otherSetAllPresent": {
+        "one": "Das einzige Emote von {{tag}} ist schon in {{set}}.",
+        "other": "Alle {{count}} Emotes von {{tag}} sind schon in {{set}}."
+      },
+      "otherSetAllMarkedPresent": {
+        "one": "Das markierte Emote ist schon in {{set}}.",
+        "other": "Alle {{count}} markierten Emotes sind schon in {{set}}."
       },
       "removedNothing": "Bei {{tag}} war nichts aus dem Set zu entfernen."
     },
@@ -2415,6 +2425,7 @@
     },
     "errors": {
       "setChanged": "Das aktive Set hat gewechselt — Seite neu laden.",
+      "otherSetChanged": "Die Einträge passen nicht mehr zum gewählten Set — es wurde nichts geändert.",
       "entriesUnavailable": "Die Einträge des Tags konnten gerade nicht geladen werden.",
       "markedGone": "Keines der markierten Emotes gehört noch zum Tag — es wurde nichts geändert.",
       "changedDuringConfirm": "Der Tag hat sich inzwischen geändert — öffne „Aus dem Set entfernen“ bitte erneut.",

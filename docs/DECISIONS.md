@@ -10,6 +10,26 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-11-02 — Tags: "Add to another set" is a one-shot add that records nothing about the tag (#328)
+
+**Betrifft:** `web/src/app/shared/tags/tag-other-set-flow.ts` · `web/src/app/shared/tags/tag-play-in-flow.ts` · `web/src/app/shared/tags/tag-run-actions.ts` · `web/src/app/features/tags/tags-page.ts` · `web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/shared/seven-tv/import-target-dialog.ts`
+
+**(a) The decision.** Decided by the operator on 2026-11-02: managers and 7TV editors prepare sets (a Halloween set) before they go live, and "Add to set" only reached the active one. The tags page gets a second action next to it, "Add to another set …", which opens the import target picker (every editable set, personal sets hidden) and adds the tag's missing emotes to the picked set. One-shot add only: no tracking of non-active sets, no extra EventAPI subscriptions, no per-set counts or set switcher on the page. The action exists for every tag with entries, whatever the active set holds, and a channel with no active set shows only this one. Tags page and fine pointer only, as the other two actions.
+
+**(b) What the run records, and what it does not.** No registration (`POST .../operations`), no placement report, no `tag.playedIn`. The active-set protections exist to judge later "Remove from set" proposals against leave observations the sync records for the active set only; in a set the sync does not watch, placements would go stale unnoticed (the unbounded residual risk R1 of #201). The run is the ordinary import flow **without a `tagHook`**: `target.tag` stays unset, so `SevenTvImportService` sends no placements, and the one report is the plain `emotes.syncImported` (`sourceKind: "tag"`, `targetEmoteSetId`, no tag name). Write rights are the picker's `editable` flag at pick time and then 7TV itself; the import's own pre-check still runs for a plan with replace rows. The live read and the already-present filter stay (by id, so the same emote under another alias counts as present); a read that fails or is incomplete blocks with the play-in's notices.
+
+**(c) The pin is required.** The chosen target carries `pinSetId: true`. Without it, a tracked account whose picked set is its active one takes the loader's `trackedActive` fast path, which drops the chosen id and loads whichever set is active by then; the partition would describe the picked set while the writes went to another, and without a hook no set guard stops that. A regression test (`tag-other-set-flow.spec.ts`) fails when the pin is removed.
+
+**(d) Routing.** Picking the tag channel's current active set runs the existing `startTagPlayInFlow` (registration, placements, same requests as "Add to set"); any other set, including another account's active set, runs the new flow. The comparison is by set id against the host's live active set at the moment the picker closes.
+
+**(e) The removal rules do not change.** A set the tag was never played into, activated later: "Remove from set" proposes every in-set emote (`reason: 'tagged'`) except those another active tag needs. A set the tag was played into earlier and activated again: the activation persists per tag and set, so the emotes this flow added have no placement and show unchecked as `alreadyPresent`; the person ticks them or marks them in the grid first. Accepted: it errs towards removing too little, in line with "placements are a proposal, not a guarantee". `tag-removal.spec.ts` pins this.
+
+**(f) Code shape.** `prepareTagRun` includes registration and the active-set requirement, so the new flow does not use it whole; the entries read (`readTagEntries`) and the live read (`readTagRunLive`) were extracted from it and are shared, with the play-in's behaviour unchanged. `startImportFlow` got an optional fifth parameter (`ImportFlowRunHooks.onStarted`) so a hook-less run can still release the grid marking when it starts; `emptyConfirmAllowed` stays tied to the tag hook. `ImportTargetDialogData.sourceEmoteSetId` is nullable (no set is disabled as the source). The page's `tagRunsShown` no longer requires an active set (it drives the header layout, so the header does not move between tags or with the active set); `activeRunsShown` keeps the old meaning for the intro sentence and the marking-lock lines, and the two active-set actions test the active set themselves.
+
+**(g) Rollback.** Revert the change; there is no migration. `Tags:RunsEnabled` switches all tag runs off.
+
+---
+
 ### 2026-11-01 — Import: the rows the last recheck refused stay in the settled run summary (#460)
 
 **Betrifft:** `web/src/app/core/seven-tv/seven-tv-import.service.ts` · `web/src/app/shared/seven-tv/import-progress-section.ts` · `web/src/app/shared/seven-tv/dock-outcome-announcer.ts` · `docs/UI-Designsprache.md` (§4.5)
