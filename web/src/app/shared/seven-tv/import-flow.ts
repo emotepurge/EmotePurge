@@ -115,6 +115,18 @@ export interface ImportFlowTagHook {
   onStarted?(): void;
 }
 
+/**
+ * What a caller without a {@link ImportFlowTagHook} can still ask of the flow — the tag run into
+ * another set (#328) has no hook (no registration, no placements) but still lets go of the grid
+ * marking once its run went ahead.
+ *
+ * `onStarted` is called under the same condition as the hook's: right after `startImport` reported
+ * the run as started, never for a dismissed dialog, a cancelled token prompt or a refused start.
+ */
+export interface ImportFlowRunHooks {
+  onStarted?(): void;
+}
+
 /** `loadImportTarget`'s own input (spec F5) from an `ImportFlowTarget` — the one place this flow
  *  decides *how* to resolve a target, so every caller below shares the same rule.
  *
@@ -400,6 +412,7 @@ export function startImportFlow(
   source: ImportSource,
   target: ImportFlowTarget,
   tagHook?: ImportFlowTagHook,
+  runHooks: ImportFlowRunHooks = {},
 ): void {
   const targetState = signal<ImportTargetLoadState>({ status: 'loading' });
   const targetChannelName = toTargetChannelName(target);
@@ -678,6 +691,7 @@ export function startImportFlow(
         // marking standing for another attempt.
         if (started) {
           tagHook?.onStarted?.();
+          runHooks.onStarted?.();
         }
       });
   };

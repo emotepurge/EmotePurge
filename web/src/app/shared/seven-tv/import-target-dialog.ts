@@ -32,8 +32,10 @@ export interface ImportTargetDialogData {
   forcedScope?: ExportScope;
   /** `CapturedImportScope.emoteSetId` (spec 8.6) — the run's own source set. Disabled wherever it
    *  appears in the offer list ("das ist die Quelle"); the source *channel* otherwise stays fully
-   *  in the list (spec 8.6, third bullet) — only this one set is off limits. */
-  sourceEmoteSetId: string;
+   *  in the list (spec 8.6, third bullet) — only this one set is off limits. `null` for a caller
+   *  whose rows do not come out of a set (the tag run into another set, #328): then no row is
+   *  disabled as "the source". */
+  sourceEmoteSetId: string | null;
 }
 
 /** What was chosen: a scope over the source rows, plus the set they should go into (spec 8.6,
