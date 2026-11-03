@@ -207,67 +207,6 @@ services:
       redis:
         condition: service_healthy
 
-  # #69: the accuracy probe of the chat-log backfill, a second entry point of the same
-  # Worker image, not a hosted service (see DECISIONS "Der Harness ist ein zweiter Einstiegspunkt
-  # des Worker-Images, kein Hosted Service"). Never runs through `up`, only through
-  # `docker compose -f docker-compose.prod.yml --profile harness run --rm harness <channel> [--days <n>] [--diagnostic]`,
-  # or, to recompute an existing run's report with zero archive requests (#119),
-  # `docker compose -f docker-compose.prod.yml --profile harness run --rm harness <channel> --report-only <file>` —
-  # after a prior `pull harness` (otherwise `:latest` quietly keeps running the old one).
-  harness:
-    image: ghcr.io/emotepurge/emotepurge-worker:latest
-    profiles: ["harness"]
-    restart: "no"
-    # `docker compose run` appends its arguments to the entrypoint, not to command — a
-    # `command` here would be replaced, and a `run` without arguments would land at the full worker
-    # startup instead of in HarnessCommandLine.Parse's invalid branch (Codex adversarial "Fail-open CLI").
-    entrypoint: ["dotnet", "EmotePurge.Worker.dll", "harness"]
-    healthcheck:
-      # The image's heartbeat check measures WorkerHealthPublisher; that doesn't exist here.
-      disable: true
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 512M
-    environment:
-      - ConnectionStrings__DefaultConnection=Host=postgres;Database=emotepurge;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
-      # The harness itself never publishes or subscribes to anything over Redis (Rule 4) — but
-      # IChannelService hangs, via IRedisPublisher, off the same eagerly-connecting
-      # IConnectionMultiplexer singleton as the Worker (ServiceCollectionExtensions, no
-      # abortConnect=false); without reachable Redis at startup, resolving HarnessRunner already
-      # fails before the actual run begins.
-      - Redis__ConnectionString=redis:6379,password=${REDIS_PASSWORD}
-      - SevenTv__EventApi__Enabled=${SEVENTV_EVENTAPI_ENABLED:-false}
-      - SevenTv__ResyncIntervalSeconds=${SEVENTV_RESYNC_INTERVAL_SECONDS:-60}
-      - Auth__Twitch__ClientId=${TWITCH_CLIENT_ID}
-      - Auth__Twitch__ClientSecret=${TWITCH_CLIENT_SECRET}
-      - Twitch__LivePollIntervalSeconds=${TWITCH_LIVE_POLL_INTERVAL_SECONDS:-300}
-      # Unlike the other lines above (SevenTv__*, Twitch__LivePollIntervalSeconds,
-      # Auth__Twitch__*), this line is NOT dead for the harness: BotChatterDetector reads it
-      # in, and the set flows directly into the run identity via KnownBotAccountIds
-      # (HarnessRunIdentity.BotAccountIds). A later cleanup round that removes the dead lines
-      # would silently change the bot classification here, and thus the measured number.
-      - Twitch__AdditionalBotAccountIds=${TWITCH_ADDITIONAL_BOT_ACCOUNT_IDS:-}
-      # Same objection gate as the Worker (GDPR Art. 21, issue #252/#260): HarnessRunner reads it via
-      # the same IExcludedChatterFilter and drops an excluded chatter's archived messages before they
-      # reach the counter, so a replay cannot resurface what the live path no longer counts.
-      - Twitch__ExcludedChatterIds=${TWITCH_EXCLUDED_CHATTER_IDS:-}
-      - Harness__OutputDirectory=/data/harness
-      - Harness__MaxMegabytesPerRun=${HARNESS_MAX_MEGABYTES_PER_RUN:-200}
-      - Harness__SharedChatCutover=${HARNESS_SHARED_CHAT_CUTOVER:-}
-      # Same archive as the backfill, from the same .env value (the code default is identical).
-      - ChatLogArchive__BaseUrl=${CHAT_LOG_ARCHIVE_BASE_URL:-https://logs.cyex.app/}
-    volumes:
-      - ./harness-reports:/data/harness
-    networks:
-      - emotepurge-network
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
 volumes:
   postgres-data:
     driver: local
