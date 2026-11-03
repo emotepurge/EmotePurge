@@ -259,7 +259,7 @@ test.describe('emote tags', () => {
   test('the usage page never offers tag runs, in the active set or in another one', async ({
     page,
   }) => {
-    // Tag runs are on, and still not here: "Ins aktive Set holen"/"Aus dem Set entfernen" live on the tags page only
+    // Tag runs are on, and still not here: "Ins aktive Set holen"/"Aus dem aktiven Set entfernen" live on the tags page only
     // (operator feedback 2026-10-05).
     await mockChannel(page, { tagRunsEnabled: true });
     await mockTags(page, CHANNEL, [{ id: 7, name: 'Favoriten', entryCount: 1, inSetCount: 1 }]);
@@ -278,7 +278,9 @@ test.describe('emote tags', () => {
     await expect(page.getByRole('button', { name: 'Tag zuweisen', exact: true })).toBeVisible();
     await page.getByRole('combobox', { name: 'Tag' }).selectOption({ label: 'Favoriten' });
     await expect(page.getByRole('button', { name: 'Ins aktive Set holen' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Aus dem Set entfernen' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Aus dem aktiven Set entfernen' })).toHaveCount(
+      0,
+    );
 
     // Deep-link to the other set (the URL is what carries the view); the tag filter set above is
     // page state, so choose it again there.
@@ -289,7 +291,9 @@ test.describe('emote tags', () => {
     await cell(page, 'catJAM').click();
 
     await expect(page.getByRole('button', { name: 'Ins aktive Set holen' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Aus dem Set entfernen' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Aus dem aktiven Set entfernen' })).toHaveCount(
+      0,
+    );
   });
 
   test('assigns from a complete view of another set: the request names that set, the feedback is shown', async ({
@@ -511,7 +515,8 @@ async function gotoTagWithMissing(page: Page): Promise<void> {
 }
 
 const playIn = (page: Page) => page.getByRole('button', { name: 'Ins aktive Set holen' });
-const clearOut = (page: Page) => page.getByRole('button', { name: 'Aus dem Set entfernen' });
+const clearOut = (page: Page) =>
+  page.getByRole('button', { name: 'Aus dem aktiven Set entfernen' });
 
 test.describe('emote tag runs', () => {
   test('plays a tag in: one emote is added, and the report and the placement carry the tag', async ({
@@ -627,7 +632,7 @@ test.describe('emote tag runs', () => {
     await expect(page.getByText(/über den Tag ins Set geholt/)).toHaveCount(0);
   });
 
-  test('offers no "Ins aktive Set holen" for a tag whose emotes are all in the set — only "Aus dem Set entfernen", played in or not', async ({
+  test('offers no "Ins aktive Set holen" for a tag whose emotes are all in the set — only "Aus dem aktiven Set entfernen", played in or not', async ({
     page,
   }) => {
     await mockChannel(page);
@@ -735,7 +740,7 @@ test.describe('emote tag runs', () => {
       expect.objectContaining({ kind: 'removal', emoteSetId: ACTIVE_SET_ID }),
     );
     // The protocol of the run is offered, and the reloaded tag is no longer played in. monkaW is
-    // still in the set, so "Aus dem Set entfernen" stays — now for a tag that is not played in.
+    // still in the set, so "Aus dem aktiven Set entfernen" stays — now for a tag that is not played in.
     await expect(page.getByRole('button', { name: 'Protokoll herunterladen' })).toBeVisible();
     await expect(page.getByText(/über den Tag ins Set geholt am/)).toHaveCount(0);
     await expect(clearOut(page)).toBeVisible();
@@ -802,7 +807,7 @@ test.describe('emote tag runs', () => {
     ).toBeVisible();
     await expect(page.getByText(/über den Tag ins Set geholt am/)).toHaveCount(0);
     // Nothing reached 7TV, and nothing was reported as deleted. catJAM is still in the set, so
-    // "Aus dem Set entfernen" stays for the tag that is no longer played in.
+    // "Aus dem aktiven Set entfernen" stays for the tag that is no longer played in.
     expect(sevenTv.removes).toEqual([]);
     expect(sevenTv.adds).toEqual([]);
     expect(syncDeleted).toEqual([]);
@@ -888,7 +893,7 @@ test.describe('emote tag runs', () => {
       keptIds: [],
     });
     expect([...body.removedIds].sort()).toEqual(['7tv-2', '7tv-3']);
-    // catJAM is still in the set and the tag still names it: "Aus dem Set entfernen" stays for that one.
+    // catJAM is still in the set and the tag still names it: "Aus dem aktiven Set entfernen" stays for that one.
     await expect(clearOut(page)).toBeVisible();
     await expect(page.getByText(/über den Tag ins Set geholt am/)).toHaveCount(0);
   });
@@ -1175,7 +1180,7 @@ test.describe('emote tag runs', () => {
   //   write goes to the picked set, and the only report is the plain import one;
   // fails_when=the run registers an operation or reports placements, writes to the active set, or
   //   the action is hidden because nothing is missing from the active set;
-  // no_claim=real 7TV, the server's audit entry and the later "Aus dem Set entfernen" proposal
+  // no_claim=real 7TV, the server's audit entry and the later "Aus dem aktiven Set entfernen" proposal
   //   (the live run); the dialog texts beyond the target and count.
   test('adds the missing emotes to another set picked in the picker, with no registration and no placement report', async ({
     page,
@@ -1252,7 +1257,7 @@ test.describe('emote tag runs', () => {
 });
 
 // Final review O3 ("keine Layout-Sprünge"): the first click on the grid adds a count to all three set
-// buttons in the tag header ("Ins aktive Set holen (0)", "In anderes Set holen (1)", "Aus dem Set entfernen (1)"). If that made the
+// buttons in the tag header ("Ins aktive Set holen (0)", "In anderes Set holen (1)", "Aus dem aktiven Set entfernen (1)"). If that made the
 // header wrap, the grid would move down under the pointer on the very click that marks it. Measured
 // at the two-column widths where the header is tightest, with a short, a middling and a maximal
 // (40 characters) tag name — the first measurement found the middling one wrapping at 1024 px.
@@ -1284,7 +1289,9 @@ test.describe('emote tag header while marking', () => {
         const before = await gridTop();
 
         await grid.getByRole('button', { name: 'catJAM' }).click();
-        await expect(page.getByRole('button', { name: 'Aus dem Set entfernen (1)' })).toBeVisible();
+        await expect(
+          page.getByRole('button', { name: 'Aus dem aktiven Set entfernen (1)' }),
+        ).toBeVisible();
         await expect(page.getByRole('button', { name: 'Ins aktive Set holen (0)' })).toBeVisible();
         // All three set buttons carry their count at once — the longest German header.
         await expect(page.getByRole('button', { name: 'In anderes Set holen (1)' })).toBeVisible();

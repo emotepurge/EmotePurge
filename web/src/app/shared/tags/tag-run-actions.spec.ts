@@ -34,8 +34,8 @@ const DE = {
       playInOtherSet: 'In anderes Set holen',
       playInOtherSetCount: 'In anderes Set holen ({{count}})',
       playInLockReason: { allMarkedInSet: 'Alle markierten Emotes sind schon im Set.' },
-      remove: 'Aus dem Set entfernen',
-      removeCount: 'Aus dem Set entfernen ({{count}})',
+      remove: 'Aus dem aktiven Set entfernen',
+      removeCount: 'Aus dem aktiven Set entfernen ({{count}})',
       removeLockReason: { noneMarkedInSet: 'Keines der markierten Emotes ist im Set.' },
     },
     errors: {
@@ -219,35 +219,35 @@ describe('TagRunActions', () => {
   });
 
   // Operator decision 2026-10-05: something to clear out, not "played in", decides.
-  describe('"Aus dem Set entfernen" exists while an emote of the tag is in the set, or the tag is played in', () => {
+  describe('"Aus dem aktiven Set entfernen" exists while an emote of the tag is in the set, or the tag is played in', () => {
     it('is missing for a tag that is not played in and has nothing in the set', () => {
       expect(button('Ins aktive Set holen')).toBeDefined();
-      expect(button('Aus dem Set entfernen')).toBeUndefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeUndefined();
     });
 
     it('is there for a tag that was never played in once one of its emotes is in the set', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 1 }));
       fixture.detectChanges();
 
-      expect(button('Aus dem Set entfernen')).toBeDefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeDefined();
       expect(button('Ins aktive Set holen')).toBeDefined();
     });
 
     it('is there for a played-in tag, also with nothing of it left in the set', () => {
       fixture.componentRef.setInput('tag', summary({ inSetCount: 1, active: true }));
       fixture.detectChanges();
-      expect(button('Aus dem Set entfernen')).toBeDefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeDefined();
 
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0, active: true }));
       fixture.detectChanges();
-      expect(button('Aus dem Set entfernen')).toBeDefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeDefined();
     });
 
     it('is missing when the counts have no set to refer to and the tag is not played in', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 2, inSetCount: null }));
       fixture.detectChanges();
 
-      expect(button('Aus dem Set entfernen')).toBeUndefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeUndefined();
     });
   });
 
@@ -261,23 +261,23 @@ describe('TagRunActions', () => {
     });
 
     it('names no number without a marking', () => {
-      expect(button('Aus dem Set entfernen')).toBeDefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeDefined();
     });
 
     it('shows how many marked emotes are in the set, and follows the marking', () => {
       fixture.componentRef.setInput('markedIds', ['a', 'b', 'c']);
       fixture.componentRef.setInput('markedInSetCount', 2);
       fixture.detectChanges();
-      const remove = button('Aus dem Set entfernen (2)')!;
+      const remove = button('Aus dem aktiven Set entfernen (2)')!;
       expect(remove.disabled).toBe(false);
       expect(remove.hasAttribute('aria-describedby')).toBe(false);
       expect(remove.hasAttribute('title')).toBe(false);
-      expect(button('Aus dem Set entfernen')).toBeUndefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeUndefined();
 
       fixture.componentRef.setInput('markedIds', []);
       fixture.componentRef.setInput('markedInSetCount', 0);
       fixture.detectChanges();
-      expect(button('Aus dem Set entfernen')).toBeDefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeDefined();
     });
 
     it('stays, locked and explained, when none of the marked emotes is in the set', () => {
@@ -285,7 +285,7 @@ describe('TagRunActions', () => {
       fixture.componentRef.setInput('markedInSetCount', 0);
       fixture.detectChanges();
 
-      const remove = button('Aus dem Set entfernen (0)')!;
+      const remove = button('Aus dem aktiven Set entfernen (0)')!;
       expect(remove.disabled).toBe(true);
       expect(remove.getAttribute('aria-describedby')).toBe('host-remove-reason');
       expect(remove.getAttribute('title')).toBe('Keines der markierten Emotes ist im Set.');
@@ -303,11 +303,11 @@ describe('TagRunActions', () => {
     it('locks a played-in tag with nothing in the set only by a marking — without one it stays usable', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0, active: true }));
       fixture.detectChanges();
-      expect(button('Aus dem Set entfernen')!.disabled).toBe(false);
+      expect(button('Aus dem aktiven Set entfernen')!.disabled).toBe(false);
 
       fixture.componentRef.setInput('markedIds', ['a']);
       fixture.detectChanges();
-      expect(button('Aus dem Set entfernen (0)')!.disabled).toBe(true);
+      expect(button('Aus dem aktiven Set entfernen (0)')!.disabled).toBe(true);
     });
 
     it('links both reasons when a hidden run locks it as well', () => {
@@ -317,7 +317,9 @@ describe('TagRunActions', () => {
       activeRun.set('undo');
       fixture.detectChanges();
 
-      const ids = button('Aus dem Set entfernen (0)')!.getAttribute('aria-describedby')!.split(' ');
+      const ids = button('Aus dem aktiven Set entfernen (0)')!
+        .getAttribute('aria-describedby')!
+        .split(' ');
       expect(ids).toHaveLength(2);
       expect(ids).toContain('host-remove-reason');
     });
@@ -340,19 +342,19 @@ describe('TagRunActions', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 2, active: true }));
       fixture.detectChanges();
       expect(button('Ins aktive Set holen')).toBeDefined();
-      expect(button('Aus dem Set entfernen')).toBeDefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeDefined();
     });
 
-    it('is missing, not locked, when nothing is missing — only "Aus dem Set entfernen" stays, played in or not', () => {
+    it('is missing, not locked, when nothing is missing — only "Aus dem aktiven Set entfernen" stays, played in or not', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3 }));
       fixture.detectChanges();
       expect(button('Ins aktive Set holen')).toBeUndefined();
-      expect(button('Aus dem Set entfernen')).toBeDefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeDefined();
 
       fixture.componentRef.setInput('tag', summary({ entryCount: 3, inSetCount: 3, active: true }));
       fixture.detectChanges();
       expect(button('Ins aktive Set holen')).toBeUndefined();
-      expect(button('Aus dem Set entfernen')).toBeDefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeDefined();
     });
 
     it('is missing for a tag without entries, and there again once one is not in the set', () => {
@@ -394,7 +396,7 @@ describe('TagRunActions', () => {
       fixture.detectChanges();
       expect(button(OTHER)).toBeDefined();
       expect(button('Ins aktive Set holen')).toBeUndefined();
-      expect(button('Aus dem Set entfernen')).toBeUndefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeUndefined();
 
       fixture.componentRef.setInput('tag', summary({ entryCount: 0, inSetCount: 0 }));
       fixture.detectChanges();
@@ -590,7 +592,7 @@ describe('TagRunActions', () => {
       expect(playIn.getAttribute('aria-describedby')).toBe('host-reason');
       expect(playIn.getAttribute('title')).toBe('Alle markierten Emotes sind schon im Set.');
       // The lock is the marking's, not a run's: the set-removal button stays usable.
-      expect(button('Aus dem Set entfernen (1)')!.disabled).toBe(false);
+      expect(button('Aus dem aktiven Set entfernen (1)')!.disabled).toBe(false);
     });
 
     it('links both reasons when a hidden run locks it as well', () => {
@@ -649,7 +651,7 @@ describe('TagRunActions', () => {
     fixture.detectChanges();
 
     expect(button('Ins aktive Set holen')!.disabled).toBe(true);
-    expect(button('Aus dem Set entfernen')!.disabled).toBe(true);
+    expect(button('Aus dem aktiven Set entfernen')!.disabled).toBe(true);
     expect(button('Ins aktive Set holen')!.hasAttribute('aria-describedby')).toBe(false);
   });
 
@@ -664,7 +666,7 @@ describe('TagRunActions', () => {
       activeRun.set('undo');
       fixture.detectChanges();
 
-      for (const name of ['Ins aktive Set holen', 'Aus dem Set entfernen']) {
+      for (const name of ['Ins aktive Set holen', 'Aus dem aktiven Set entfernen']) {
         const locked = button(name)!;
         expect(locked.disabled).toBe(true);
         const reason = (fixture.nativeElement as HTMLElement).querySelector(
@@ -716,20 +718,20 @@ describe('TagRunActions', () => {
       fixture.detectChanges();
     });
 
-    it('moves to "Aus dem Set entfernen" when the tag is played in now', () => {
+    it('moves to "Aus dem aktiven Set entfernen" when the tag is played in now', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 1, active: true }));
       fixture.detectChanges();
 
       expect(button('Ins aktive Set holen')).toBeUndefined();
-      expect(document.activeElement).toBe(button('Aus dem Set entfernen'));
+      expect(document.activeElement).toBe(button('Aus dem aktiven Set entfernen'));
       expect(focusLost).toBe(0);
     });
 
-    it('moves to "Aus dem Set entfernen" also when the reloaded tag reads as not played in', () => {
+    it('moves to "Aus dem aktiven Set entfernen" also when the reloaded tag reads as not played in', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 1 }));
       fixture.detectChanges();
 
-      expect(document.activeElement).toBe(button('Aus dem Set entfernen'));
+      expect(document.activeElement).toBe(button('Aus dem aktiven Set entfernen'));
       expect(focusLost).toBe(0);
     });
 
@@ -747,13 +749,13 @@ describe('TagRunActions', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 1, active: true }));
       fixture.detectChanges();
 
-      expect(button('Aus dem Set entfernen')!.disabled).toBe(true);
-      expect(document.activeElement).not.toBe(button('Aus dem Set entfernen'));
+      expect(button('Aus dem aktiven Set entfernen')!.disabled).toBe(true);
+      expect(document.activeElement).not.toBe(button('Aus dem aktiven Set entfernen'));
       expect(focusLost).toBe(1);
     });
   });
 
-  describe('focus when a clear-out takes "Aus dem Set entfernen" away', () => {
+  describe('focus when a clear-out takes "Aus dem aktiven Set entfernen" away', () => {
     let focusLost: number;
     let removalClosed: Subject<unknown>;
 
@@ -778,10 +780,10 @@ describe('TagRunActions', () => {
 
       focusLost = 0;
       fixture.componentInstance.focusLost.subscribe(() => focusLost++);
-      // Not played in, its one emote in the set: "Aus dem Set entfernen" only.
+      // Not played in, its one emote in the set: "Aus dem aktiven Set entfernen" only.
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 1 }));
       fixture.detectChanges();
-      button('Aus dem Set entfernen')!.click();
+      button('Aus dem aktiven Set entfernen')!.click();
       fixture.detectChanges();
     });
 
@@ -791,7 +793,7 @@ describe('TagRunActions', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0 }));
       fixture.detectChanges();
 
-      expect(button('Aus dem Set entfernen')).toBeUndefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeUndefined();
       expect(document.activeElement).toBe(button('Ins aktive Set holen'));
       expect(focusLost).toBe(0);
     });
@@ -812,7 +814,7 @@ describe('TagRunActions', () => {
       fixture.componentRef.setInput('tag', summary({ entryCount: 1, inSetCount: 0 }));
       fixture.detectChanges();
 
-      expect(button('Aus dem Set entfernen')).toBeUndefined();
+      expect(button('Aus dem aktiven Set entfernen')).toBeUndefined();
       expect(document.activeElement).toBe(document.body);
       expect(focusLost).toBe(0);
     });

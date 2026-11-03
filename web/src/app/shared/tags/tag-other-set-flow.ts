@@ -22,7 +22,7 @@ import { TagRunNotice } from './tag-run-notice-sink';
  * What this flow deliberately does **not** do, against the active-set play-in
  * (`tag-play-in-flow.ts`):
  *
- * - **No registration, no placement report.** Both exist to judge later "Remove from set" proposals
+ * - **No registration, no placement report.** Both exist to judge later "Remove from active set" proposals
  *   against leave observations the sync records for the active set only; a set it does not watch
  *   would only collect placements that go stale unnoticed. The run therefore starts the ordinary
  *   import flow **without a tag hook** (`target.tag` stays unset, so `SevenTvImportService` reports

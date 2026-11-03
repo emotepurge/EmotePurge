@@ -60,7 +60,7 @@ export function settledTagPlayIn(run: ImportRunInfo | null): string | null {
 export type TagRunButton = 'playIn' | 'remove';
 
 /** Where focus goes when the run button the user clicked leaves the DOM under them ("Ins aktive Set holen"
- *  after a play-in left nothing missing, "Aus dem Set entfernen" after a clear-out left nothing to clear): the
+ *  after a play-in left nothing missing, "Aus dem aktiven Set entfernen" after a clear-out left nothing to clear): the
  *  other run button if it is there and usable, otherwise the host's stable fallback (the detail
  *  heading). A disabled button ignores `focus()` — the run that removed the clicked one can still be
  *  settling and lock the other — so `otherUsable` is "shown *and* not disabled".
@@ -96,7 +96,7 @@ export function playInMarkingLocked(markedCount: number, markedMissingCount: num
   return markedCount > 0 && markedMissingCount === 0;
 }
 
-/** Whether the tag has something to clear out — where "Aus dem Set entfernen" exists at all
+/** Whether the tag has something to clear out — where "Aus dem aktiven Set entfernen" exists at all
  *  (operator decision 2026-10-05, superseding spec 7.2's "only for a played-in tag"): an emote of the
  *  tag in the set, or the tag being played in at all (13.2: the clear-out with nothing ticked is what
  *  ends an activation with nothing left in the set). */
@@ -106,7 +106,7 @@ export function tagHasSomethingToClear(
   return tag.active || (tag.inSetCount ?? 0) > 0;
 }
 
-/** "Aus dem Set entfernen" with a grid marking none of whose entries is in the set — the mirror of
+/** "Aus dem aktiven Set entfernen" with a grid marking none of whose entries is in the set — the mirror of
  *  {@link playInMarkingLocked}: shown, locked, explained (operator decision 2026-10-05). Without a
  *  marking the button stays usable, also for an active tag with nothing in the set. */
 export function removeMarkingLocked(markedCount: number, markedInSetCount: number): boolean {
@@ -121,7 +121,7 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
 }
 
 /**
- * "Ins aktive Set holen" and "Aus dem Set entfernen" for one tag (#201 T-C, spec 9.4) — hosted by the tags page, the
+ * "Ins aktive Set holen" and "Aus dem aktiven Set entfernen" for one tag (#201 T-C, spec 9.4) — hosted by the tags page, the
  * only surface that starts tag runs (operator feedback 2026-10-05: the usage page shows what is in
  * the set, not what is missing).
  *
@@ -129,7 +129,7 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
  * active-set actions also need a known active set (`activeEmoteSetId`); "In anderes Set holen"
  * (#328, `tag-other-set-flow.ts`) does not — it exists for every tag with entries and opens the
  * target picker. "Ins aktive Set holen" exists only while the tag has an emote missing from the set,
- * "Aus dem Set entfernen" while one of its emotes is in the set or it is played in there (`removeShown`; spec
+ * "Aus dem aktiven Set entfernen" while one of its emotes is in the set or it is played in there (`removeShown`; spec
  * 7.2: missing, not locked — there is nothing to explain beyond the state the host shows next to
  * it). Both lock
  * while any 7TV run holds the start (`startLocked`, without a hint: the run's dock is the hint,
@@ -144,7 +144,7 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
  * marked emotes, the play-in adds only the marked ones that are missing, and each button carries the
  * number of marked emotes it is about (missing for one, in the set for the other). A marking that
  * misses nothing locks "Ins aktive Set holen" without removing it (`playInMarkingLocked`), one with nothing
- * in the set locks "Aus dem Set entfernen" the same way (`removeMarkingLocked`); the host shows each
+ * in the set locks "Aus dem aktiven Set entfernen" the same way (`removeMarkingLocked`); the host shows each
  * reason under `markedLockReasonId` / `removeMarkedLockReasonId`. `runCommitted` tells
  * the host when either run went ahead, so it drops the marking.
  *
@@ -284,9 +284,9 @@ export class TagRunActions {
    *  (`playInMarkingLocked`); the button points `aria-describedby` at it and repeats it as its title. */
   readonly markedLockReasonId = input<string | null>(null);
   /** How many of the marked entries the host shows as in the set (`markedInSetCount`) — the number
-   *  "Aus dem Set entfernen" carries with a marking. A label, not a decision, like its mirror above. */
+   *  "Aus dem aktiven Set entfernen" carries with a marking. A label, not a decision, like its mirror above. */
   readonly markedInSetCount = input(0);
-  /** The id of the host's visible text saying why "Aus dem Set entfernen" is locked by the marking —
+  /** The id of the host's visible text saying why "Aus dem aktiven Set entfernen" is locked by the marking —
    *  rendered like `markedLockReasonId`, under `removeMarkingLocked`. */
   readonly removeMarkedLockReasonId = input<string | null>(null);
 
@@ -333,7 +333,7 @@ export class TagRunActions {
   private readonly activeSetKnown = computed(() => this.activeEmoteSetId() !== null);
   /** "In anderes Set holen" (#328) exists for every tag with entries, whatever the active set. */
   protected readonly otherSetShown = computed(() => tagOffersOtherSet(this.tag()));
-  /** "Aus dem Set entfernen" exists while there is something to clear out (operator decision 2026-10-05,
+  /** "Aus dem aktiven Set entfernen" exists while there is something to clear out (operator decision 2026-10-05,
    *  superseding spec 7.2's "only for a played-in tag"): an emote of the tag in the set — whether
    *  the tag was played in or its emotes were all there already, which leaves it no way to become
    *  active — or the tag being played in at all. The latter keeps a played-in tag with nothing in
@@ -349,7 +349,7 @@ export class TagRunActions {
   protected readonly markingLocked = computed(() =>
     playInMarkingLocked(this.markedCount(), this.markedMissingCount()),
   );
-  /** "Aus dem Set entfernen" with a marking none of whose emotes is in the set — shown, locked,
+  /** "Aus dem aktiven Set entfernen" with a marking none of whose emotes is in the set — shown, locked,
    *  explained. */
   protected readonly removeLocked = computed(() =>
     removeMarkingLocked(this.markedCount(), this.markedInSetCount()),
@@ -376,7 +376,7 @@ export class TagRunActions {
     );
     return ids.length > 0 ? ids.join(' ') : null;
   });
-  /** Both reasons "Aus dem Set entfernen" can be locked for, as one `aria-describedby`. */
+  /** Both reasons "Aus dem aktiven Set entfernen" can be locked for, as one `aria-describedby`. */
   protected readonly removeDescribedBy = computed(() => {
     const markedReason = this.removeLocked() ? this.removeMarkedLockReasonId() : null;
     const ids = [this.otherRunKey() ? this.otherRunReasonId : null, markedReason].filter(

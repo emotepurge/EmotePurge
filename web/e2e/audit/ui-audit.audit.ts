@@ -1958,11 +1958,15 @@ const SCENARIOS: Scenario[] = [
     },
     afterLoad: async (page) => {
       await page
-        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .getByRole('button', {
+          name: /^(Aus dem aktiven Set entfernen|Remove from active set)( \(\d+\))?$/,
+        })
         .click();
       const dialog = page.getByRole('dialog');
       await dialog
-        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .getByRole('button', {
+          name: /^(Aus dem aktiven Set entfernen|Remove from active set)( \(\d+\))?$/,
+        })
         .click();
       await page.locator('.app-dock').waitFor();
       await page
@@ -1988,7 +1992,9 @@ const SCENARIOS: Scenario[] = [
     },
     afterLoad: async (page) => {
       await page
-        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .getByRole('button', {
+          name: /^(Aus dem aktiven Set entfernen|Remove from active set)( \(\d+\))?$/,
+        })
         .click();
       await page.getByRole('dialog').waitFor();
     },

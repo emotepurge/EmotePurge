@@ -306,12 +306,12 @@ describe('TagsPage', () => {
     return (harness.routeNativeElement as HTMLElement).textContent ?? '';
   }
 
-  /** The set-removal button whether or not a marking adds its count ("Aus dem Set entfernen (2)"). */
+  /** The set-removal button whether or not a marking adds its count ("Aus dem aktiven Set entfernen (2)"). */
   function removeButton(harness: RouterTestingHarness): HTMLButtonElement {
     return Array.from(
       (harness.routeNativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('button'),
     ).find((button) =>
-      /^Aus dem Set entfernen( \(\d+\))?$/.test(button.textContent?.trim() ?? ''),
+      /^Aus dem aktiven Set entfernen( \(\d+\))?$/.test(button.textContent?.trim() ?? ''),
     )!;
   }
 
@@ -1001,40 +1001,40 @@ describe('TagsPage', () => {
     }
 
     describe('the run buttons (spec 9.4, 8)', () => {
-      it('offers "Ins aktive Set holen" in the detail head, without "Aus dem Set entfernen" for a tag not played in with nothing in the set', async () => {
+      it('offers "Ins aktive Set holen" in the detail head, without "Aus dem aktiven Set entfernen" for a tag not played in with nothing in the set', async () => {
         const { harness } = await openTag(tag(1, 'Stronghold', 2, 0));
 
         expect(buttonByName(harness, 'Ins aktive Set holen')).not.toBeNull();
-        expect(buttonByName(harness, 'Aus dem Set entfernen')).toBeNull();
+        expect(buttonByName(harness, 'Aus dem aktiven Set entfernen')).toBeNull();
       });
 
       // Operator decision 2026-10-05: something of the tag in the set is enough to clear it out.
-      it('offers "Aus dem Set entfernen" for a tag not played in once one of its emotes is in the set', async () => {
+      it('offers "Aus dem aktiven Set entfernen" for a tag not played in once one of its emotes is in the set', async () => {
         const { harness } = await openTag(tag(1, 'Stronghold', 2, 1));
 
         expect(buttonByName(harness, 'Ins aktive Set holen')).not.toBeNull();
-        expect(buttonByName(harness, 'Aus dem Set entfernen')).not.toBeNull();
+        expect(buttonByName(harness, 'Aus dem aktiven Set entfernen')).not.toBeNull();
       });
 
-      it('offers "Aus dem Set entfernen" for a played-in tag', async () => {
+      it('offers "Aus dem aktiven Set entfernen" for a played-in tag', async () => {
         const { harness } = await openTag(activeTag(1, 'Stronghold'));
 
         expect(buttonByName(harness, 'Ins aktive Set holen')).not.toBeNull();
-        expect(buttonByName(harness, 'Aus dem Set entfernen')).not.toBeNull();
+        expect(buttonByName(harness, 'Aus dem aktiven Set entfernen')).not.toBeNull();
       });
 
-      it('hides "Ins aktive Set holen" for a tag whose emotes are all in the set — an inactive one keeps "Aus dem Set entfernen"', async () => {
+      it('hides "Ins aktive Set holen" for a tag whose emotes are all in the set — an inactive one keeps "Aus dem aktiven Set entfernen"', async () => {
         const full = { ...tag(1, 'Stronghold', 2, 2) };
         const { harness } = await openTag(full);
         expect(buttonByName(harness, 'Ins aktive Set holen')).toBeNull();
-        expect(buttonByName(harness, 'Aus dem Set entfernen')).not.toBeNull();
+        expect(buttonByName(harness, 'Aus dem aktiven Set entfernen')).not.toBeNull();
       });
 
-      it('keeps only "Aus dem Set entfernen" for a played-in tag with nothing missing', async () => {
+      it('keeps only "Aus dem aktiven Set entfernen" for a played-in tag with nothing missing', async () => {
         const { harness } = await openTag({ ...activeTag(1, 'Stronghold'), inSetCount: 2 });
 
         expect(buttonByName(harness, 'Ins aktive Set holen')).toBeNull();
-        expect(buttonByName(harness, 'Aus dem Set entfernen')).not.toBeNull();
+        expect(buttonByName(harness, 'Aus dem aktiven Set entfernen')).not.toBeNull();
       });
 
       it('takes focus onto the detail heading when the run buttons lose it with no button left', async () => {
@@ -1068,7 +1068,7 @@ describe('TagsPage', () => {
         const { harness } = await openTag(activeTag(1, 'Stronghold'));
 
         expect(buttonByName(harness, 'Ins aktive Set holen')).toBeNull();
-        expect(buttonByName(harness, 'Aus dem Set entfernen')).toBeNull();
+        expect(buttonByName(harness, 'Aus dem aktiven Set entfernen')).toBeNull();
         expect(buttonByName(harness, 'Tag löschen')).not.toBeNull();
       });
 
@@ -1516,7 +1516,7 @@ describe('TagsPage', () => {
         entries: ENTRIES,
       };
 
-      /** Clicks "Aus dem Set entfernen" and answers the flow's reads; `meanwhile` runs between the click and the
+      /** Clicks "Aus dem aktiven Set entfernen" and answers the flow's reads; `meanwhile` runs between the click and the
        *  dialog, while the flow is still reading. */
       async function clickClearOut(
         harness: RouterTestingHarness,
@@ -1735,14 +1735,14 @@ describe('TagsPage', () => {
         ).toBe(false);
       });
 
-      it('counts the marked emotes in the set on "Aus dem Set entfernen", and locks it with the reason beside the marking when none is', async () => {
+      it('counts the marked emotes in the set on "Aus dem aktiven Set entfernen", and locks it with the reason beside the marking when none is', async () => {
         const { harness } = await openTag(tag(1, 'Stronghold', 4, 1), ENTRIES);
         // e2 and e3 are not in the set.
         cells(harness)[1].click();
         cells(harness)[2].click();
         await settle(harness);
 
-        const remove = buttonByName(harness, 'Aus dem Set entfernen (0)')!;
+        const remove = buttonByName(harness, 'Aus dem aktiven Set entfernen (0)')!;
         expect(remove.disabled).toBe(true);
         const reason = (harness.routeNativeElement as HTMLElement).querySelector(
           `#${remove.getAttribute('aria-describedby')}`,
@@ -1753,7 +1753,7 @@ describe('TagsPage', () => {
         // e1 is in the set: the count follows, the lock and its reason go.
         cells(harness)[0].click();
         await settle(harness);
-        const unlocked = buttonByName(harness, 'Aus dem Set entfernen (1)')!;
+        const unlocked = buttonByName(harness, 'Aus dem aktiven Set entfernen (1)')!;
         expect(unlocked.disabled).toBe(false);
         expect(unlocked.hasAttribute('aria-describedby')).toBe(false);
         expect(text(harness)).not.toContain(de.tags.actions.removeLockReason.noneMarkedInSet);

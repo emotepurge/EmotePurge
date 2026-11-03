@@ -139,7 +139,7 @@ export function parseTagParam(raw: string | null): number | null {
  * selection-bound action in T-B is not worth a selection mode of its own there.
  *
  * T-C (#201, spec 9.4/9.5) adds the tag's played-in state and the tag runs:
- * "Ins aktive Set holen"/"Aus dem Set entfernen" (`TagRunActions`) in the detail head, and — at page level, outside the
+ * "Ins aktive Set holen"/"Aus dem aktiven Set entfernen" (`TagRunActions`) in the detail head, and — at page level, outside the
  * detail, so a run stays visible whichever tag (or the list) is on screen — the run dock with the
  * import, delete and restore sections, the permanently mounted `DockOutcomeAnnouncer` and the
  * page's run status region. The page follows `channel.synced` for its channel (the usage page's
@@ -426,12 +426,12 @@ export class TagsPage {
   });
   /** The reason's element id, for the button's `aria-describedby`; one detail at a time. */
   protected readonly playInMarkingLockReasonId = 'tag-play-in-marking-lock-reason';
-  /** How many marked entries this page shows as in the set — the number "Aus dem Set entfernen"
+  /** How many marked entries this page shows as in the set — the number "Aus dem aktiven Set entfernen"
    *  carries with a marking, the mirror of `markedMissingCount` (operator decision 2026-10-05). */
   protected readonly markedInSetCount = computed(() =>
     markedInSetCount(this.entries(), this.selection.selectedKeys()),
   );
-  /** Whether the marking locks "Aus dem Set entfernen" (nothing marked is in the set while the tag
+  /** Whether the marking locks "Aus dem aktiven Set entfernen" (nothing marked is in the set while the tag
    *  has something to clear out) — explained in the same dock line, for the same reason. */
   protected readonly removeMarkingLockShown = computed(() => {
     const tag = this.selectedTag();
@@ -451,7 +451,7 @@ export class TagsPage {
    *  more; the two active-set actions also need `activeRunsShown`. Because the header layout reads
    *  this gate, it does not move between tags or with the active set. */
   protected readonly tagRunsShown = computed(() => this.tagRunsEnabled() && !this.isCoarse());
-  /** Where "Ins aktive Set holen"/"Aus dem Set entfernen" can exist: `tagRunsShown` and a known active
+  /** Where "Ins aktive Set holen"/"Aus dem aktiven Set entfernen" can exist: `tagRunsShown` and a known active
    *  set. Gates what only they explain (the intro sentence, the marking-lock lines). */
   protected readonly activeRunsShown = computed(
     () => this.tagRunsShown() && this.activeEmoteSetId() !== null,
