@@ -21,25 +21,28 @@ namespace EmotePurge.Infrastructure.SevenTv;
 public class ForeignEmoteSetCache(IConnectionMultiplexer connectionMultiplexer, ILogger<ForeignEmoteSetCache> logger)
     : IForeignEmoteSetCache
 {
-    // v2 prefixes since the payload gained ForeignEmoteRow.AddedAt (#346, D43): an entry written by
-    // the previous code can never be read, whatever its remaining TTL. Belt and braces with the
-    // payload's SchemaVersion check in TryGetByKeyAsync.
-    private const string KeyPrefix = "7tvforeign:v2:login:";
+    // v3 prefixes since the payload gained ForeignEmoteSet.ReadState/OmittedCount (#457); v2 came
+    // with ForeignEmoteRow.AddedAt (#346, D43). An entry written by the previous code can never be
+    // read, whatever its remaining TTL, and old and new code never share a key. Belt and braces with
+    // the payload's SchemaVersion check in TryGetByKeyAsync.
+    private const string KeyPrefix = "7tvforeign:v3:login:";
 
     /// <summary>
     /// The payload shape this code writes and requires when reading (#346, D43). Version 2 introduced
-    /// <see cref="ForeignEmoteRow.AddedAt"/>; a cached payload below it is a miss and is refetched, so
-    /// a row's <c>AddedAt == null</c> on a current payload always means "7TV reported none", never "the
-    /// field did not exist yet".
+    /// <see cref="ForeignEmoteRow.AddedAt"/>, version 3 <see cref="ForeignEmoteSet.ReadState"/> and
+    /// <see cref="ForeignEmoteSet.OmittedCount"/> (#457); a cached payload below it is a miss and is
+    /// refetched, so a row's <c>AddedAt == null</c> on a current payload always means "7TV reported
+    /// none", never "the field did not exist yet", and a v2 payload's under-count is never read back
+    /// as the fail-closed <c>inconsistent</c> it would derive to instead of the gap it may have been.
     /// </summary>
-    internal const int CurrentSchemaVersion = 2;
+    internal const int CurrentSchemaVersion = 3;
 
     // The set-ID read mode's own namespace (spec 2026-09-20, E12): nested under the same prefix as
     // the login-keyed entries above but never colliding with one — a channel login can never contain
     // a colon, so "set:{id}" and any normalized login are disjoint strings by construction. An entry
     // here for channel A's currently-inactive set must never be overwritten by, or overwrite, the
     // "{login}"-keyed entry for A's active set.
-    private const string SetIdKeyPrefix = "7tvforeign:v2:set:";
+    private const string SetIdKeyPrefix = "7tvforeign:v3:set:";
 
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(60);
 

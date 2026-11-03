@@ -147,7 +147,8 @@ function resolveOwnerTwitchChannelId(
  * `import-target-options.ts`'s `importTargetOptions` — the picker chooses *sets*, not *channels*,
  * so the unit of selection changed, not just the data source.
  *
- * `sourceEmoteSetId` is `CapturedImportScope.emoteSetId` — the run's own source set. It disables that
+ * `sourceEmoteSetId` is `CapturedImportScope.emoteSetId` — the run's own source set (`null`: the rows
+ * come from no set, nothing is disabled as the source). It disables that
  * one set wherever it appears in the offer list (normally under the account whose `channelName`
  * equals the page's `currentChannelName`, but this function does not need to know that: matching by
  * id alone is exactly what makes "the source account isn't in the response at all" — a caller with
@@ -163,7 +164,7 @@ function resolveOwnerTwitchChannelId(
  */
 export function importTargetChoices(
   response: EmoteSetTargetsResponse,
-  sourceEmoteSetId: string,
+  sourceEmoteSetId: string | null,
   unknownOwnerLabel: string,
 ): ImportTargetChoices {
   const groups = response.accounts.map((account) =>
@@ -178,7 +179,7 @@ export function importTargetChoices(
 function toAccountGroup(
   account: EmoteSetTargetAccount,
   allAccounts: readonly EmoteSetTargetAccount[],
-  sourceEmoteSetId: string,
+  sourceEmoteSetId: string | null,
   unknownOwnerLabel: string,
 ): ImportTargetAccountGroup {
   // Spec addendum 39 (#217): `PERSONAL` sets never reach the picker at all, not even disabled —

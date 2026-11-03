@@ -5,10 +5,27 @@ import {
   dedupeImportRows,
   importOriginLeaderboardSort,
   importOriginSourceChannelName,
+  importRowKey,
 } from './import-source';
 
 describe('dedupeImportRows', () => {
-  it('collapses a duplicate sevenTvEmoteId and keeps the first occurrence', () => {
+  it('collapses an exact repeat of id and name and keeps the first occurrence', () => {
+    const rows: ImportRow[] = [
+      { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: 'first' },
+      { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
+      { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: 'second' },
+    ];
+
+    const result = dedupeImportRows(rows);
+
+    expect(result.duplicatesCollapsed).toBe(1);
+    expect(result.rows).toEqual([
+      { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: 'first' },
+      { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
+    ]);
+  });
+
+  it('keeps one id under two names as two entries (#444)', () => {
     const rows: ImportRow[] = [
       { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: null },
       { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
@@ -17,11 +34,29 @@ describe('dedupeImportRows', () => {
 
     const result = dedupeImportRows(rows);
 
-    expect(result.duplicatesCollapsed).toBe(1);
-    expect(result.rows).toEqual([
+    expect(result.duplicatesCollapsed).toBe(0);
+    expect(result.rows).toEqual(rows);
+  });
+
+  it('keeps two rows whose id and name only join to the same text apart (unvalidated file ids)', () => {
+    const rows: ImportRow[] = [
+      { sevenTvEmoteId: 'a1#foo', name: 'bar', imageUrl: null },
+      { sevenTvEmoteId: 'a1', name: 'foo#bar', imageUrl: null },
+    ];
+
+    const result = dedupeImportRows(rows);
+
+    expect(result.rows).toEqual(rows);
+    expect(result.duplicatesCollapsed).toBe(0);
+  });
+
+  it('compares the name case-sensitively, as 7TV does', () => {
+    const rows: ImportRow[] = [
+      { sevenTvEmoteId: 'a1', name: 'pogu', imageUrl: null },
       { sevenTvEmoteId: 'a1', name: 'PogU', imageUrl: null },
-      { sevenTvEmoteId: 'a2', name: 'Kappa', imageUrl: null },
-    ]);
+    ];
+
+    expect(dedupeImportRows(rows).rows).toEqual(rows);
   });
 
   it('reports zero collapsed and preserves order when there are no duplicates', () => {
@@ -42,6 +77,21 @@ describe('dedupeImportRows', () => {
 
     expect(result.rows).toEqual([]);
     expect(result.duplicatesCollapsed).toBe(0);
+  });
+});
+
+describe('importRowKey', () => {
+  it('keeps an id ending in # apart from a name containing one', () => {
+    expect(importRowKey({ sevenTvEmoteId: 'a1#foo', name: 'bar' })).not.toBe(
+      importRowKey({ sevenTvEmoteId: 'a1', name: 'foo#bar' }),
+    );
+  });
+
+  it('joins the id and the name, so two aliases of one id are two keys', () => {
+    expect(importRowKey({ sevenTvEmoteId: 'a1', name: 'PogU' })).toBe('2:a1#PogU');
+    expect(importRowKey({ sevenTvEmoteId: 'a1', name: 'PogU' })).not.toBe(
+      importRowKey({ sevenTvEmoteId: 'a1', name: 'Pog' }),
+    );
   });
 });
 

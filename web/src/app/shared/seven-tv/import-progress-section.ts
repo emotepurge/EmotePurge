@@ -24,7 +24,9 @@ import { Button } from '../ui/button';
 import { NoticeBanner } from '../ui/notice-banner';
 import {
   copiedNotActiveNotice,
+  importRefusalNoticeVisible,
   importTargetCheckBlockedKey,
+  importTargetUncheckedSkippedKey,
   renamedNotActiveNotice,
   resyncNoticeKey,
   tagPlacementDiscardedStaleNoticeKey,
@@ -73,12 +75,17 @@ import { RunProgressPanel } from './run-progress-panel';
         {{ skippedDuplicatesKey() | transloco: { count: importService.skippedDuplicates() } }}
       </p>
     }
-    <!-- The fresh pre-send duplicate check's fetch failed (already-present-filter.ts) — every row
-         still went through, so a duplicate may have slipped in undetected. A quiet notice, not an
-         alarm: the run is still expected to succeed, this only says the guard could not run. -->
-    @if (importService.duplicateNoticePending() && !importService.duplicateCheckAvailable()) {
+    <!-- #457: add/renameSource rows refused because the fresh pre-send read of the target could
+         not rule out a duplicate (SevenTvImportService.targetUncheckedSkipped) — it listed the set
+         only partly, or failed or timed out; duplicateCheckAvailable picks which of the two.
+         Shares duplicateNoticePending's window so it also appears when every row was refused and
+         nothing was queued; gated on importRefusalNoticeVisible (#460), so it gives way once the run
+         it started has stopped running — the settled summary names the rows from the run record. -->
+    @if (refusalNoticeVisible() && importService.targetUncheckedSkipped() > 0) {
       <p aria-hidden="true" class="text-sm text-fg-secondary">
-        {{ 'import.duplicateCheckUnavailable' | transloco }}
+        {{
+          targetUncheckedSkippedKey() | transloco: { count: importService.targetUncheckedSkipped() }
+        }}
       </p>
     }
     <!-- A replace row held back because its target drifted since confirmation
@@ -86,8 +93,8 @@ import { RunProgressPanel } from './run-progress-panel';
          gate so it also appears for the all-drift case (every replace row held back, nothing
          queued), which would otherwise leave this whole section unmounted and the run silent.
          Mirrored (same gate) in DockOutcomeAnnouncer, which is what actually speaks it — this
-         paragraph is aria-hidden like its skippedDuplicates/duplicateCheckAvailable siblings. -->
-    @if (importService.duplicateNoticePending() && importService.replaceSkippedDrift() > 0) {
+         paragraph is aria-hidden like its skippedDuplicates/targetUncheckedSkipped siblings. -->
+    @if (refusalNoticeVisible() && importService.replaceSkippedDrift() > 0) {
       <p aria-hidden="true" class="text-sm text-fg-secondary">
         {{ replaceSkippedDriftKey() | transloco: { count: importService.replaceSkippedDrift() } }}
       </p>
@@ -166,6 +173,24 @@ import { RunProgressPanel } from './run-progress-panel';
                 <app-notice-banner variant="warning">
                   {{ 'import.summary.insufficientPrivileges' | transloco }}
                 </app-notice-banner>
+              }
+              <!-- #460: the rows the last recheck refused before this run started, named for as long
+                   as the run is shown (the run record's own counts, not the transient notice's
+                   signals). Spoken by the panel's role="status" region this block mounts in —
+                   mounted since the run started — so no aria-hidden and no DockOutcomeAnnouncer
+                   twin (docs/UI-Designsprache.md §4.5). -->
+              @if (run.targetUncheckedSkipped > 0) {
+                <span class="text-xs text-fg-muted">
+                  {{
+                    runTargetUncheckedSkippedKey()
+                      | transloco: { count: run.targetUncheckedSkipped }
+                  }}
+                </span>
+              }
+              @if (run.replaceSkippedDrift > 0) {
+                <span class="text-xs text-fg-muted">
+                  {{ runReplaceSkippedDriftKey() | transloco: { count: run.replaceSkippedDrift } }}
+                </span>
               }
               @if (run.removedCount > 0) {
                 <span class="text-xs text-fg-muted">
@@ -314,6 +339,27 @@ export class ImportProgressSection {
     pluralKey(this.importService.skippedDuplicates(), 'import.skippedDuplicates'),
   );
 
+  /** Whether the transient `targetUncheckedSkipped`/`replaceSkippedDrift` lines stand (#460) —
+   *  gives way to the run's own summary lines once the run stops running. */
+  protected readonly refusalNoticeVisible = computed(() =>
+    importRefusalNoticeVisible({
+      noticePending: this.importService.duplicateNoticePending(),
+      noticeRunId: this.importService.refusalNoticeRunId(),
+      run: this.importService.run(),
+      isRunning: this.importService.isRunning(),
+    }),
+  );
+
+  /** Wording for how many `add`/`renameSource` rows the fresh pre-send check refused against an
+   *  unchecked target read (#457) — "listed only partly" when the read succeeded incomplete,
+   *  "could not be checked" when it failed or timed out. */
+  protected readonly targetUncheckedSkippedKey = computed(() =>
+    importTargetUncheckedSkippedKey(
+      this.importService.targetUncheckedSkipped(),
+      this.importService.duplicateCheckAvailable(),
+    ),
+  );
+
   /** Wording for how many `replace` rows the fresh pre-send drift check
    *  (`already-present-filter.ts`'s `verifyReplaceTargets`) held back — same reasoning as
    *  `skippedDuplicatesKey` above, and the same all-drift-leaves-nothing-queued concern. */
@@ -328,6 +374,24 @@ export class ImportProgressSection {
     this.importService.duplicateNoticePending()
       ? importTargetCheckBlockedKey(this.importService.targetCheckBlockReason())
       : null,
+  );
+
+  /** Wording of the settled run's own `targetUncheckedSkipped` line (#460) — read off the run
+   *  record, so a later start's service-level signals cannot change it. */
+  protected readonly runTargetUncheckedSkippedKey = computed(() => {
+    const run = this.importService.run();
+    return importTargetUncheckedSkippedKey(
+      run?.targetUncheckedSkipped ?? 0,
+      run?.duplicateCheckAvailable ?? true,
+    );
+  });
+
+  /** Wording of the settled run's own `replaceSkippedDrift` line (#460). */
+  protected readonly runReplaceSkippedDriftKey = computed(() =>
+    pluralKey(
+      this.importService.run()?.replaceSkippedDrift ?? 0,
+      'import.summary.replaceSkippedDrift',
+    ),
   );
 
   /** Wording for the settled run's confirmed REMOVEs (`ImportRunInfo.removedCount`). */
@@ -421,7 +485,7 @@ export class ImportProgressSection {
    *  engine's queue, so a superseded run cannot leak its rows into a newer one's file. */
   protected openProtocolExport(): void {
     const run = this.importService.run();
-    if (!run || run.settlement !== 'settled' || run.result === null) {
+    if (run?.settlement !== 'settled' || run.result === null) {
       return;
     }
     const protocol = buildTransferRunProtocol({

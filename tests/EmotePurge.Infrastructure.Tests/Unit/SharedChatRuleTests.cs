@@ -4,9 +4,8 @@ using Xunit;
 namespace EmotePurge.Infrastructure.Tests.Unit;
 
 // Pure, dependency-free — no container needed. Exercises the exact rule shared by
-// TwitchChatManager.OnMessageReceived (via FromTags, Task 3) and the #69 backfill harness's
-// ReplayDayCounter.Count (via Classify, Task 5), extracted from ReplayDayCounter.cs rather than
-// rewritten (DECISIONS.md, "Shared Chat", 2026-09-06). TwitchLib-bound coverage of FromTags
+// TwitchChatManager.OnMessageReceived (via FromTags, Task 3) and the chat-log backfill's
+// ChatLogBackfillBlockCounter.Count (via Classify), extracted rather than rewritten (DECISIONS.md, "Shared Chat", 2026-09-06). TwitchLib-bound coverage of FromTags
 // against a real, library-parsed ChatMessage lives in SharedChatRuleTwitchLibTests
 // (EmotePurge.Worker.Tests) instead — this class never touches TwitchLib.
 public class SharedChatRuleTests

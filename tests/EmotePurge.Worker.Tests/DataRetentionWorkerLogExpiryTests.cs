@@ -13,6 +13,7 @@ namespace EmotePurge.Worker.Tests;
 public sealed class DataRetentionWorkerLogExpiryTests
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan LogExpiryFirstRunDelay = TimeSpan.FromMinutes(1);
     private static readonly DateTimeOffset StartAt = new(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
@@ -20,9 +21,9 @@ public sealed class DataRetentionWorkerLogExpiryTests
     {
         var clock = new FakeTimeProvider(StartAt);
         var retention = RetentionWithSignals(out var logCalls, out _);
-        var (worker, provider, _) = CreateWorker(clock, retention, new BootRecoveryGate());
+        var (worker, provider, observed) = CreateWorker(clock, retention, new BootRecoveryGate());
 
-        await StartAsync(worker);
+        await StartAsync(worker, observed);
         try
         {
             await retention.DidNotReceive().ExpireLogsAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>());
@@ -61,9 +62,9 @@ public sealed class DataRetentionWorkerLogExpiryTests
             });
         var gate = new BootRecoveryGate();
         var logger = new RecordingLogger();
-        var (worker, provider, _) = CreateWorker(clock, retention, gate, logger);
+        var (worker, provider, observed) = CreateWorker(clock, retention, gate, logger);
 
-        await StartAsync(worker);
+        await StartAsync(worker, observed);
         try
         {
             clock.Advance(TimeSpan.FromMinutes(1));
@@ -96,9 +97,9 @@ public sealed class DataRetentionWorkerLogExpiryTests
             });
         var gate = new BootRecoveryGate();
         gate.MarkCompleted();
-        var (worker, provider, _) = CreateWorker(clock, retention, gate);
+        var (worker, provider, observed) = CreateWorker(clock, retention, gate);
 
-        await StartAsync(worker);
+        await StartAsync(worker, observed);
         try
         {
             await WaitForCallsAsync(dailyCalls, 1);
@@ -120,20 +121,27 @@ public sealed class DataRetentionWorkerLogExpiryTests
         var clock = new FakeTimeProvider(new DateTimeOffset(2026, 10, 15, 22, 30, 0, TimeSpan.Zero));
         var retention = RetentionWithSignals(out var logCalls, out _, clock);
         var logger = new RecordingLogger();
-        var (worker, provider, _) = CreateWorker(clock, retention, new BootRecoveryGate(), logger, enforce: false);
+        var (worker, provider, observed) = CreateWorker(clock, retention, new BootRecoveryGate(), logger, enforce: false);
 
-        await StartAsync(worker);
+        await StartAsync(worker, observed);
         try
         {
-            clock.Advance(TimeSpan.FromMinutes(1));
+            clock.Advance(TimeSpan.FromMinutes(1)); // pass 1 at 22:31
             await WaitForCallsAsync(logCalls, 1);
-            clock.Advance(TimeSpan.FromHours(1)); // 23:31, same UTC day
+            clock.Advance(TimeSpan.FromHours(1)); // pass 2 at 23:31, same UTC day
             await WaitForCallsAsync(logCalls, 2);
-            Assert.Equal(1, logger.Count(LogLevel.Warning));
-
-            clock.Advance(TimeSpan.FromHours(1)); // 00:31 next day
+            clock.Advance(TimeSpan.FromHours(1)); // pass 3 at 00:31, next UTC day
             await WaitForCallsAsync(logCalls, 3);
-            Assert.Equal(2, logger.Count(LogLevel.Warning));
+
+            // The call counter moves inside ExpireLogsAsync, before the worker logs the pass's summary.
+            // Stopping waits for ExecuteAsync, so every pass has logged once StopAsync returns.
+            await worker.StopAsync(CancellationToken.None);
+
+            // Each pass reports its own number as the would-delete count, so a warning names its pass.
+            var warnings = logger.LogExpiryMessages(LogLevel.Warning);
+            Assert.Equal(2, warnings.Count);
+            Assert.Contains(warnings, m => m.Contains("Would delete 1 log entries", StringComparison.Ordinal));
+            Assert.Contains(warnings, m => m.Contains("Would delete 3 log entries", StringComparison.Ordinal));
         }
         finally
         {
@@ -142,20 +150,27 @@ public sealed class DataRetentionWorkerLogExpiryTests
         }
     }
 
-    // BackgroundService.StartAsync may return before ExecuteAsync has armed its first timer; advancing
-    // the fake clock earlier would miss it (same precedent as SystemLoadRollupWorkerTests).
-    private static async Task StartAsync(DataRetentionWorker worker)
+    // BackgroundService.StartAsync returns before ExecuteAsync has run (since .NET 10 it starts on the
+    // thread pool), so the log loop's first-run delay may not exist yet. Advancing the fake clock first
+    // moves "now" past a timer that is then armed relative to the new "now" and never fires; a fixed
+    // real-time pause was not enough on a loaded CI runner. Wait for that very timer instead.
+    private static async Task StartAsync(DataRetentionWorker worker, TimerObservingTimeProvider observed)
     {
         await worker.StartAsync(CancellationToken.None);
-        await Task.Delay(50);
+        await WaitUntilAsync(
+            () => observed.HasTimer(LogExpiryFirstRunDelay),
+            () => $"The log loop never armed its {LogExpiryFirstRunDelay} first-run delay.");
     }
 
-    private static async Task WaitForCallsAsync(CallCounter counter, int expected)
+    private static Task WaitForCallsAsync(CallCounter counter, int expected) =>
+        WaitUntilAsync(() => counter.Value >= expected, () => $"Expected {expected} calls, saw {counter.Value}.");
+
+    private static async Task WaitUntilAsync(Func<bool> condition, Func<string> failure)
     {
         var deadline = DateTime.UtcNow + TestTimeout;
-        while (counter.Value < expected)
+        while (!condition())
         {
-            Assert.True(DateTime.UtcNow < deadline, $"Expected {expected} calls, saw {counter.Value}.");
+            Assert.True(DateTime.UtcNow < deadline, failure());
             await Task.Delay(5);
         }
     }
@@ -168,8 +183,11 @@ public sealed class DataRetentionWorkerLogExpiryTests
         retention.ExpireLogsAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(call =>
             {
+                // Read the clock before signalling: once the counter moves, the test may advance it.
+                var pass = log.Value + 1;
+                var summary = new LogRetentionSummary(call.ArgAt<bool>(0), (clock?.GetUtcNow() ?? StartAt).UtcDateTime, pass, 0);
                 log.Increment();
-                return Task.FromResult(new LogRetentionSummary(call.ArgAt<bool>(0), (clock?.GetUtcNow() ?? StartAt).UtcDateTime, 0, 0));
+                return Task.FromResult(summary);
             });
         retention.RunAsync(Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(_ =>
@@ -182,7 +200,7 @@ public sealed class DataRetentionWorkerLogExpiryTests
         return retention;
     }
 
-    private static (DataRetentionWorker Worker, ServiceProvider Provider, RecordingLogger Logger) CreateWorker(
+    private static (DataRetentionWorker Worker, ServiceProvider Provider, TimerObservingTimeProvider Observed) CreateWorker(
         FakeTimeProvider clock,
         IDataRetentionService retention,
         BootRecoveryGate gate,
@@ -193,15 +211,16 @@ public sealed class DataRetentionWorkerLogExpiryTests
         services.AddSingleton(retention);
         var provider = services.BuildServiceProvider();
         logger ??= new RecordingLogger();
+        var observed = new TimerObservingTimeProvider(clock);
         return (
             new DataRetentionWorker(
                 logger,
                 provider.GetRequiredService<IServiceScopeFactory>(),
                 new RetentionOptions { Enforce = enforce, StartupDelayMinutes = 0 },
                 gate,
-                clock),
+                observed),
             provider,
-            logger);
+            observed);
     }
 
     private sealed class CallCounter
@@ -228,7 +247,10 @@ public sealed class DataRetentionWorkerLogExpiryTests
             }
         }
 
-        public int Count(LogLevel level) => Entries.Count(e => e.Level == level && e.Message.Contains("log", StringComparison.OrdinalIgnoreCase) && e.Message.Contains("expiry", StringComparison.OrdinalIgnoreCase));
+        public IReadOnlyList<string> LogExpiryMessages(LogLevel level) =>
+            [.. Entries
+                .Where(e => e.Level == level && e.Message.Contains("log expiry", StringComparison.OrdinalIgnoreCase))
+                .Select(e => e.Message)];
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -239,6 +261,40 @@ public sealed class DataRetentionWorkerLogExpiryTests
             lock (_entries)
             {
                 _entries.Add((logLevel, formatter(state, exception)));
+            }
+        }
+    }
+
+    // Delegates to the FakeTimeProvider the test advances and records the due time of every timer the
+    // worker arms, so a test can wait for a timer to exist before it moves the clock.
+    private sealed class TimerObservingTimeProvider(FakeTimeProvider inner) : TimeProvider
+    {
+        private readonly List<TimeSpan> _dueTimes = [];
+
+        public override TimeZoneInfo LocalTimeZone => inner.LocalTimeZone;
+
+        public override long TimestampFrequency => inner.TimestampFrequency;
+
+        public override DateTimeOffset GetUtcNow() => inner.GetUtcNow();
+
+        public override long GetTimestamp() => inner.GetTimestamp();
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = inner.CreateTimer(callback, state, dueTime, period);
+            lock (_dueTimes)
+            {
+                _dueTimes.Add(dueTime);
+            }
+
+            return timer;
+        }
+
+        public bool HasTimer(TimeSpan dueTime)
+        {
+            lock (_dueTimes)
+            {
+                return _dueTimes.Contains(dueTime);
             }
         }
     }

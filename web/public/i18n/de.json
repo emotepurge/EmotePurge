@@ -1288,6 +1288,10 @@
       },
       "membersUnavailable": "Die Mitgliederliste dieses Sets ist gerade nicht verfügbar – gezeigt werden nur Emotes mit Zählungen.",
       "truncated": "Die Mitgliederliste dieses Sets ist unvollständig (laut 7TV {{total}} Einträge).",
+      "gap": {
+        "one": "7TV zählt {{total}} Einträge in diesem Set, listet aber {{count}} Eintrag weniger auf. Karten ohne gelisteten Eintrag bleiben beim Löschen, Abstimmen und Übertragen außen vor.",
+        "other": "7TV zählt {{total}} Einträge in diesem Set, listet aber {{count}} Einträge weniger auf. Karten ohne gelisteten Eintrag bleiben beim Löschen, Abstimmen und Übertragen außen vor."
+      },
       "lock": {
         "membersUnavailable": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar.",
         "truncated": "Löschen und Abstimmen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig.",
@@ -1308,9 +1312,15 @@
       "departedSinceLoad": "{{name}} ist seit dem Laden der Seite nicht mehr in diesem Set — nicht gelöscht.",
       "noAlias": "{{name}} hat in 7TV keinen eigenen Namen mehr und lässt sich nicht einzeln löschen — nicht gelöscht.",
       "skippedUnread": "{{names}} nicht gelöscht: {{reason}}",
+      "gapHidden": "7TV lässt derzeit {{count}} der Einträge dieses Sets aus und hat diese nicht geliefert.",
+      "gapIdRow": "7TV lässt derzeit {{count}} der Einträge dieses Sets aus — ein Löschen nach Emote-ID würde auch Einträge entfernen, die 7TV nicht zeigt.",
       "pendingSync": {
         "one": "{{names}} wird gerade mit 7TV abgeglichen und ist deshalb nicht im Löschlauf — in einer Minute erneut versuchen.",
         "other": "{{names}} werden gerade mit 7TV abgeglichen und sind deshalb nicht im Löschlauf — in einer Minute erneut versuchen."
+      },
+      "retryHint": {
+        "one": "1 Eintrag wurde nicht gelöscht und ist weiterhin ausgewählt — Löschen erneut starten, um es noch einmal zu versuchen.",
+        "other": "{{count}} Einträge wurden nicht gelöscht und sind weiterhin ausgewählt — Löschen erneut starten, um es noch einmal zu versuchen."
       },
       "unexpectedRemoval": {
         "one": "{{names}} fehlt jetzt im Set, ohne dass der Lauf es gelöscht hat — möglicherweise hat eine Löschung diesen Eintrag mit entfernt.",
@@ -1665,9 +1675,14 @@
         "one": "{{names}} ist nicht mehr im Set — abwählen und den Lauf erneut starten.",
         "other": "{{names}} sind nicht mehr im Set — abwählen und den Lauf erneut starten."
       },
+      "gap": {
+        "one": "7TV lässt derzeit {{count}} Eintrag dieses Sets aus, und ein Löschen nach Emote-ID würde auch Einträge entfernen, die 7TV nicht zeigt.",
+        "other": "7TV lässt derzeit {{count}} Einträge dieses Sets aus, und ein Löschen nach Emote-ID würde auch Einträge entfernen, die 7TV nicht zeigt."
+      },
       "lock": {
         "unavailable": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist nicht verfügbar. Seite neu laden, um es erneut zu versuchen.",
         "truncated": "Löschen gesperrt: Die Mitgliederliste dieses Sets ist unvollständig. Seite neu laden, um es erneut zu versuchen.",
+        "gap": "Löschen gesperrt: 7TV listet nicht jeden Eintrag dieses Sets auf, und Löschen aus einer Abstimmung entfernt ein Emote mit all seinen Einträgen.",
         "loading": "Löschen gesperrt, bis die Mitgliederliste dieses Sets geladen ist."
       }
     }
@@ -1819,6 +1834,10 @@
         "one": "{{ count }} Name enthält Zeichen, die 7TV nicht anlegen kann — 7TV wird dieses Emote ablehnen:",
         "other": "{{ count }} Namen enthalten Zeichen, die 7TV nicht anlegen kann — 7TV wird diese Emotes ablehnen:"
       },
+      "sourceOmitted": {
+        "one": "7TV listet {{ count }} Eintrag des Quellsets nicht auf; er wird nicht übertragen.",
+        "other": "7TV listet {{ count }} Einträge des Quellsets nicht auf; sie werden nicht übertragen."
+      },
       "discardedRows": {
         "one": "{{ count }} ungültige Zeile in der Quelle verworfen.",
         "other": "{{ count }} ungültige Zeilen in der Quelle verworfen."
@@ -1933,7 +1952,8 @@
         "invalidTypedAlias": "Name, den 7TV nicht annimmt: {{ rows }}.",
         "duplicateReplaceTarget": "Dasselbe Ziel wird mehrfach ersetzt: {{ rows }}.",
         "targetTouchedByReplaceAndAdopt": "Dasselbe Ziel wird ersetzt und umbenannt: {{ rows }}.",
-        "adoptBlocked": "Namen übernehmen ist hier nicht möglich: {{ rows }}."
+        "adoptBlocked": "Namen übernehmen ist hier nicht möglich: {{ rows }}.",
+        "replaceRemovesPlannedSource": "Ein Ersetzen entfernt ein Emote, das eine andere Zeile gerade hinzufügt — eine der beiden überspringen oder umbenennen: {{ rows }}."
       },
       "back": "Zurück",
       "apply": "Übernehmen"
@@ -1970,6 +1990,16 @@
         "one": "{{ count }} Ersetzung wurde nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.",
         "other": "{{ count }} Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert."
       },
+      "targetUncheckedSkipped": {
+        "incomplete": {
+          "one": "{{ count }} Emote wurde nicht kopiert — 7TV hat das Zielset nicht vollständig aufgelistet, deshalb ließ sich nicht ausschließen, dass es dort schon ist.",
+          "other": "{{ count }} Emotes wurden nicht kopiert — 7TV hat das Zielset nicht vollständig aufgelistet, deshalb ließ sich nicht ausschließen, dass sie dort schon sind."
+        },
+        "unavailable": {
+          "one": "{{ count }} Emote wurde nicht kopiert — das Zielset ließ sich gerade nicht darauf prüfen. Bitte gleich noch einmal versuchen.",
+          "other": "{{ count }} Emotes wurden nicht kopiert — das Zielset ließ sich gerade nicht darauf prüfen. Bitte gleich noch einmal versuchen."
+        }
+      },
       "unknownRows": {
         "one": "Bei {{ count }} Zeile ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen.",
         "other": "Bei {{ count }} Zeilen ist unklar, ob 7TV sie übernommen hat — bitte das Set bei 7TV prüfen."
@@ -2004,8 +2034,7 @@
     "skippedDuplicates": {
       "one": "{{ count }} Emote war beim Start bereits im Zielset und wurde übersprungen.",
       "other": "{{ count }} Emotes waren beim Start bereits im Zielset und wurden übersprungen."
-    },
-    "duplicateCheckUnavailable": "Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen."
+    }
   },
   "undo": {
     "confirm": {
@@ -2216,7 +2245,7 @@
       "title": "Tags",
       "listLabel": "Tags",
       "intro": "Ein Tag merkt sich Emotes, auch wenn sie gerade nicht im Set sind.",
-      "introRuns": "„Ins Set holen“ fügt sie hinzu, „Aus dem Set entfernen“ nimmt sie wieder heraus – der Tag selbst bleibt dabei erhalten.",
+      "introRuns": "„Ins aktive Set holen“ fügt sie hinzu, „Aus dem aktiven Set entfernen“ nimmt sie wieder heraus – der Tag selbst bleibt dabei erhalten.",
       "setLine": "Die Zahlen beziehen sich auf das aktive Set {{set}}.",
       "noActiveSet": "Dieser Channel hat kein aktives Set; Zahlen „im Set“ gibt es deshalb nicht.",
       "empty": {
@@ -2289,20 +2318,22 @@
       "rename": "Umbenennen",
       "delete": "Tag löschen",
       "clearSelection": "Auswahl aufheben",
-      "assign": "Tag zuweisen…",
+      "assign": "Tag zuweisen",
       "unassign": "Aus dem Tag entfernen ({{count}})",
       "unassignNamed": "Aus dem Tag entfernen ({{count}}) – {{tag}}",
       "unassignTitle": "Nimmt die markierten Emotes aus dem Tag. Sie bleiben im Set; der Tag nimmt sie danach auch nicht mehr aus dem Set.",
       "unassignLockReason": {
         "noneInTag": "Keins der markierten Emotes gehört zu {{tag}}."
       },
-      "playIn": "Ins Set holen",
-      "playInCount": "Ins Set holen ({{count}})",
+      "playIn": "Ins aktive Set holen",
+      "playInCount": "Ins aktive Set holen ({{count}})",
+      "playInOtherSet": "In anderes Set holen",
+      "playInOtherSetCount": "In anderes Set holen ({{count}})",
       "playInLockReason": {
         "allMarkedInSet": "Alle markierten Emotes sind schon im Set."
       },
-      "remove": "Aus dem Set entfernen",
-      "removeCount": "Aus dem Set entfernen ({{count}})",
+      "remove": "Aus dem aktiven Set entfernen",
+      "removeCount": "Aus dem aktiven Set entfernen ({{count}})",
       "removeLockReason": {
         "noneMarkedInSet": "Keines der markierten Emotes ist im Set."
       }
@@ -2335,6 +2366,14 @@
       "allMarkedPresent": {
         "one": "Das markierte Emote ist schon im Set — der Tag gilt als ins Set geholt.",
         "other": "Alle {{count}} markierten Emotes sind schon im Set — der Tag gilt als ins Set geholt."
+      },
+      "otherSetAllPresent": {
+        "one": "Das einzige Emote von {{tag}} ist schon in {{set}}.",
+        "other": "Alle {{count}} Emotes von {{tag}} sind schon in {{set}}."
+      },
+      "otherSetAllMarkedPresent": {
+        "one": "Das markierte Emote ist schon in {{set}}.",
+        "other": "Alle {{count}} markierten Emotes sind schon in {{set}}."
       },
       "removedNothing": "Bei {{tag}} war nichts aus dem Set zu entfernen."
     },
@@ -2386,9 +2425,10 @@
     },
     "errors": {
       "setChanged": "Das aktive Set hat gewechselt — Seite neu laden.",
+      "otherSetChanged": "Die Einträge passen nicht mehr zum gewählten Set — es wurde nichts geändert.",
       "entriesUnavailable": "Die Einträge des Tags konnten gerade nicht geladen werden.",
       "markedGone": "Keines der markierten Emotes gehört noch zum Tag — es wurde nichts geändert.",
-      "changedDuringConfirm": "Der Tag hat sich inzwischen geändert — öffne „Aus dem Set entfernen“ bitte erneut.",
+      "changedDuringConfirm": "Der Tag hat sich inzwischen geändert — öffne „Aus dem aktiven Set entfernen“ bitte erneut.",
       "setReadIncomplete": "Die Einträge des Sets konnten nur teilweise von 7TV gelesen werden — es wurde nichts geändert.",
       "setReadUnavailable": "Die Einträge des Sets konnten nicht von 7TV gelesen werden — es wurde nichts geändert.",
       "noWriteRight": "Du darfst dieses Set bei 7TV nicht bearbeiten.",

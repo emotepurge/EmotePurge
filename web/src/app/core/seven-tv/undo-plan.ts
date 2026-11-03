@@ -288,8 +288,11 @@ export function classifyUndoRow(
 
 /**
  * Every candidate against one read (spec 4.3 steps 0–6, 6.2). Step 0 first: candidates sharing a
- * source id or a target id — only a manipulated file can have them, the writer deduplicates both —
- * are all skipped `duplicateInFile`, the target untouched, before any of them is looked at further.
+ * source id or a target id are all skipped `duplicateInFile`, the target untouched, before any of
+ * them is looked at further. A shared target id only comes from a manipulated file (the conflict
+ * resolution never lets two replace rows take one target). A shared source id no longer does: since
+ * #444 a copy can carry two replace rows of one emote, one per alias, and the undo skips both —
+ * fail-closed, a REMOVE of that source would take both entries (follow-up #445).
  * Fail-closed beyond the table: a candidate whose source is its own target, or whose source id is
  * another candidate's target id (and that other candidate with it), is skipped the same way — one
  * row's REMOVE would pull the emote another row restores.

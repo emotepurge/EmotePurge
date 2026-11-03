@@ -748,7 +748,7 @@ export class AdminMonitoringPage {
   private readonly rawUtilizationPercent = computed<number | null>(() => {
     const sevenTv = this.health()?.sevenTv;
     const desired = sevenTv?.desiredSubscriptionCount;
-    if (desired === null || desired === undefined || !sevenTv || !sevenTv.subscriptionLimit) {
+    if (desired === null || desired === undefined || !sevenTv?.subscriptionLimit) {
       return null;
     }
     return (desired / sevenTv.subscriptionLimit) * 100;

@@ -55,6 +55,7 @@ import {
   ForeignEmoteRow,
   ForeignEmoteSetResponse,
 } from '../../core/seven-tv/foreign-emote-set.model';
+import { ImportSource } from '../../core/seven-tv/import-source';
 import {
   EmoteSetListResponse,
   EmoteSetSummary,
@@ -66,7 +67,7 @@ import {
   SevenTvRestoreService,
 } from '../../core/seven-tv/seven-tv-restore.service';
 import { REFUSED_START_FEEDBACK_MS } from '../../core/seven-tv/seven-tv-run-arbiter';
-import { RunQueueItem } from '../../core/seven-tv/seven-tv-run-engine';
+import { RunQueueItem, RunResult } from '../../core/seven-tv/seven-tv-run-engine';
 import { SevenTvUndoService, UndoRunInfo } from '../../core/seven-tv/seven-tv-undo.service';
 import { EmoteTagEntry, EmoteTagSummary } from '../../core/tags/emote-tag.model';
 import { ImportCoverage } from '../../core/usage/import-coverage.model';
@@ -83,6 +84,7 @@ import { CSV_MIME } from '../../shared/export/csv';
 import { ExportDialogData } from '../../shared/export/export-dialog';
 import { JSON_MIME } from '../../shared/export/export-envelope';
 import { ExportPurposeId } from '../../shared/export/usage-export-purposes';
+import { MassDeletePanel } from '../../shared/seven-tv/mass-delete-panel';
 import { TagAssignDialogData, TagAssignDialogResult } from '../../shared/tags/tag-assign-dialog';
 import { CreateVoteSessionDialogData } from './create-vote-session-dialog';
 import { UsageStatsPage } from './usage-stats-page';
@@ -5790,6 +5792,212 @@ describe('UsageStatsPage — set view: row identity, non-active loading, classes
       expect(liveListRequests().length).toBeGreaterThan(0);
     });
   });
+
+  /*
+   * #457: a gap read of the member list (7TV lists fewer entries than it counts, consistently).
+   * protects: AK 7/8/11 and E13 — exactly the gap-safe actions (delete, vote, copy) unlock, tags
+   *   stay locked, the caption names the gap; a counted card 7TV does not list stays visible and
+   *   outside every action; the copy captures the omitted count with the rows. An inconsistent
+   *   list keeps every lock and sentence it had.
+   * fails_when: tags unlock under a gap, delete/vote/copy stay locked, the truncated sentence
+   *   shows for a gap, a `'left'` card reaches a ballot, a delete or a copy, or anything unlocks
+   *   for an inconsistent list.
+   * no_claim: template rendering (rule 12); what the run does per row (#454's specs).
+   */
+  describe('a gap read of the member list (#457)', () => {
+    function gapList(listed: ForeignEmoteRow[], omitted: number): ForeignEmoteSetResponse {
+      return memberList(listed, {
+        totalCount: listed.length + omitted,
+        truncated: true,
+        readState: 'gap',
+        omittedCount: omitted,
+      });
+    }
+
+    it('unlocks deleting, voting and copying, keeps tags locked, and says what 7TV does not list (AK 7)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('a', 'Alpha', 12), emote('b', 'Beta', 3)],
+        members: gapList([member('7tv-a', 'Alpha'), member('7tv-b', 'Beta')], 2),
+      });
+      component['markAll']();
+      expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-b']);
+
+      expect(component['deleteLockReasonKey']()).toBeNull();
+      expect(component['voteLockReasonKey']()).toBeNull();
+      expect(component['importLockReasonKey']()).toBeNull();
+      expect(component['transferButtonDisabled']()).toBe(false);
+      expect(component['importShortcutLocked']()).toBe(false);
+      expect(component['tagAssignShown']()).toBe(false);
+
+      const captions = component['setViewCaptions']();
+      expect(captions).toContainEqual({
+        key: 'usageStats.setView.gap.other',
+        params: { count: '2', total: '4' },
+      });
+      expect(captionKeys()).not.toContain('usageStats.setView.truncated');
+    });
+
+    it('offers tags on the same view once the list is complete — the gap alone is what hides them', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('a', 'Alpha', 12)],
+        members: memberList([member('7tv-a', 'Alpha')], { readState: 'complete', omittedCount: 0 }),
+      });
+      component['markAll']();
+
+      expect(component['tagAssignShown']()).toBe(true);
+    });
+
+    it('picks the singular caption for one omitted entry', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('a', 'Alpha', 12)],
+        members: gapList([member('7tv-a', 'Alpha')], 1),
+      });
+
+      expect(component['setViewCaptions']()).toContainEqual({
+        key: 'usageStats.setView.gap.one',
+        params: { count: '1', total: '2' },
+      });
+    });
+
+    it('keeps an inconsistent list locked exactly as before, with the truncated wording (AK 8)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('a', 'Alpha', 12)],
+        members: memberList([member('7tv-a', 'Alpha')], {
+          totalCount: 900,
+          truncated: true,
+          readState: 'inconsistent',
+          omittedCount: 0,
+        }),
+      });
+      component['markAll']();
+
+      expect(component['deleteLockReasonKey']()).toBe('usageStats.setView.lock.truncated');
+      expect(component['voteLockReasonKey']()).toBe('usageStats.setView.lock.truncated');
+      expect(component['importLockReasonKey']()).toBe('usageStats.setView.importLock.truncated');
+      expect(component['transferButtonDisabled']()).toBe(true);
+      expect(component['importShortcutLocked']()).toBe(true);
+      expect(component['tagAssignShown']()).toBe(false);
+      expect(captionKeys()).toContain('usageStats.setView.truncated');
+      expect(captionKeys().some((key) => key.startsWith('usageStats.setView.gap'))).toBe(false);
+    });
+
+    it('keeps a counted card 7TV does not list visible, and out of deleting, voting and copying (E13)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('hidden', 'MaybeHidden', 30), emote('a', 'Alpha', 70)],
+        members: gapList([member('7tv-a', 'Alpha')], 1),
+      });
+
+      const rows = component['emotes']();
+      expect(rows.map((row) => [row.sevenTvEmoteId, row.membership])).toEqual(
+        expect.arrayContaining([
+          ['7tv-hidden', 'left'],
+          ['7tv-a', 'live'],
+        ]),
+      );
+      component['markAll']();
+      expect(component['selection'].selectedKeys().sort()).toEqual(['7tv-a', '7tv-hidden']);
+
+      expect(component['selectedForDelete']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+      expect([...component['voteBallotSevenTvEmoteIds']()]).toEqual(['7tv-a']);
+      expect(component['importableSelection']().map((row) => row.sevenTvEmoteId)).toEqual([
+        '7tv-a',
+      ]);
+      expect(component['importableVisible']().map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+    });
+
+    it('keeps the dock copy shortcut disabled when only unlisted cards are marked (E21)', async () => {
+      await openView({
+        emoteSetId: 'set-b',
+        totals: [emote('hidden', 'MaybeHidden', 30), emote('a', 'Alpha', 70)],
+        members: gapList([member('7tv-fresh', 'Fresh')], 1),
+      });
+      const hidden = component['emotes']().filter((row) => row.membership === 'left');
+      expect(hidden.length).toBeGreaterThan(0);
+      for (const row of hidden) {
+        component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+      }
+      expect(component['selection'].selectedItems().every((row) => row.membership === 'left')).toBe(
+        true,
+      );
+      expect(component['importShortcutLocked']()).toBe(true);
+    });
+
+    describe('the copy captures the omitted count with the rows (AK 11)', () => {
+      const CHOICE = {
+        scope: 'selection',
+        emoteSetId: 'target-set',
+        channelName: 'b',
+        ownerDisplayName: 'b',
+        ownerTwitchChannelId: null,
+        setName: 'Target',
+        isTracked: true,
+        twitchLogin: 'b',
+        activeEmoteSetId: 'target-set',
+      };
+
+      function copyAndCaptureSource(): { source: () => ImportSource | undefined } {
+        const pickerClosed = new Subject<unknown>();
+        const openSpy = vi.spyOn(TestBed.inject(Dialog), 'open').mockReturnValue({
+          closed: pickerClosed,
+        } as unknown as ReturnType<Dialog['open']>);
+        component['openImportTarget']('selection');
+        expect(openSpy).toHaveBeenCalledTimes(1);
+        return {
+          source: () => {
+            pickerClosed.next(CHOICE);
+            // The confirmation is the second dialog the flow opens; its data carries the source.
+            const confirmCall = openSpy.mock.calls[1];
+            return (confirmCall?.[1]?.data as { source: ImportSource } | undefined)?.source;
+          },
+        };
+      }
+
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      it('hands the confirmation the gap count and only the listed rows', async () => {
+        await openView({
+          emoteSetId: 'set-b',
+          totals: [emote('hidden', 'MaybeHidden', 30), emote('a', 'Alpha', 70)],
+          members: gapList([member('7tv-a', 'Alpha')], 2),
+        });
+        component['markAll']();
+        const copy = copyAndCaptureSource();
+
+        // A reload behind the open picker turns the list complete — the capture keeps its count.
+        component['liveMembersResource'].set(memberList([member('7tv-a', 'Alpha')]));
+
+        const source = copy.source();
+        expect(source?.sourceOmittedCount).toBe(2);
+        expect(source?.rows.map((row) => row.sevenTvEmoteId)).toEqual(['7tv-a']);
+      });
+
+      it('leaves the count unset for a complete source and for the active view', async () => {
+        await openView({
+          emoteSetId: 'set-b',
+          totals: [emote('a', 'Alpha', 70)],
+          members: memberList([member('7tv-a', 'Alpha')]),
+        });
+        component['markAll']();
+        let source = copyAndCaptureSource().source();
+        expect(source).toBeDefined();
+        expect(source).not.toHaveProperty('sourceOmittedCount');
+
+        vi.restoreAllMocks();
+        await openView({ totals: [emote('a', 'Alpha', 70)] });
+        component['markAll']();
+        source = copyAndCaptureSource().source();
+        expect(source).toBeDefined();
+        expect(source).not.toHaveProperty('sourceOmittedCount');
+      });
+    });
+  });
 });
 
 /**
@@ -6094,6 +6302,170 @@ describe('UsageStatsPage — the locked vote button shares the delete lock reaso
     // The positive a11y assertion: the locked button still points at the SAME paragraph the
     // delete button uses, in the one case that still locks both together.
     expect(button!.getAttribute('aria-describedby')).toBe(reasonParagraph!.id);
+  });
+});
+
+/*
+ * #457, AK 9 (operator decision 2026-11-01, superseding spec #200 §37 / K5 round (k)).
+ * protects: every delete started from the usage page reads its set live before the run — the
+ *   panel's own-set read is bound in the active view, in a non-active view with a complete or a
+ *   gap member list, and mid-switch — so no id `REMOVE` goes out on a member list of any age, and
+ *   a confirmation opened on a non-active set that turns active keeps its read.
+ * fails_when: the binding is false in any of these states.
+ * no_claim: what the read decides per row (#454's mass-delete-panel and delete-service specs).
+ * Real template: the binding only exists there.
+ */
+describe('UsageStatsPage — the delete panel reads the shown set live in every view state (#457, AK 9)', () => {
+  let fixture: ComponentFixture<UsageStatsPage>;
+  let component: UsageStatsPage;
+  let httpMock: HttpTestingController;
+
+  const IMAGE = 'https://cdn.7tv.app/emote/x/1x.webp';
+  const SERIES = { from: '2026-01-01', to: '2026-09-08', liveDays: [], emotes: [] };
+
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+    TestBed.configureTestingModule({
+      imports: [
+        TranslocoTestingModule.forRoot({
+          langs: { de: {} },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        {
+          provide: EVENT_SOURCE_FACTORY,
+          useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        },
+      ],
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function settle(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fixture.detectChanges();
+  }
+
+  function members(overrides: Partial<ForeignEmoteSetResponse>): ForeignEmoteSetResponse {
+    return {
+      channelName: 'a',
+      sevenTvUserId: null,
+      emoteSetId: 'set-b',
+      emoteSetName: 'Halloween',
+      capacity: 1000,
+      totalCount: 1,
+      truncated: false,
+      emotes: [
+        {
+          sevenTvEmoteId: '7tv-a',
+          name: 'Alpha',
+          defaultName: 'Alpha',
+          imageUrl: IMAGE,
+          topAllTime: null,
+          trending: null,
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  async function mount(emoteSetId: string | null): Promise<void> {
+    if (emoteSetId) {
+      await TestBed.inject(Router).navigate([], { queryParams: { emoteSetId } });
+    }
+    fixture = TestBed.createComponent(UsageStatsPage);
+    component = fixture.componentInstance;
+    httpMock = TestBed.inject(HttpTestingController);
+    fixture.componentRef.setInput('channelName', 'a');
+    fixture.detectChanges();
+    httpMock
+      .expectOne('/api/channels/a/permissions')
+      .flush({ canManage: true, canViewUsageStats: true });
+    httpMock
+      .expectOne('/api/channels/a/emotes/active-set')
+      .flush(setStatus({ activeEmoteSetId: 'set-a', trackedSince: '2026-01-01T00:00:00Z' }));
+    fixture.detectChanges();
+    fixture.detectChanges();
+    httpMock
+      .match((request) => request.url === '/api/channels/a/emote-sets')
+      .forEach((request) =>
+        request.flush(
+          emoteSetList([
+            emoteSet({
+              id: 'set-a',
+              isActive: true,
+              observations: [{ fromUtc: '2026-01-01T00:00:00Z', toUtc: null }],
+            }),
+            emoteSet({ id: 'set-b', name: 'Halloween', isActive: false, observations: [] }),
+          ]),
+        ),
+      );
+    await settle();
+  }
+
+  function flushRows(memberList: ForeignEmoteSetResponse | null): void {
+    flushByPath(httpMock, '/api/channels/a/usage-stats/totals', [
+      { ...emote('a', 'Alpha', 12), imageUrl: IMAGE },
+    ]);
+    flushByPath(httpMock, '/api/channels/a/usage-stats/series', SERIES);
+    if (memberList) {
+      httpMock
+        .match((request) => LIVE_LIST_URL.test(request.url))
+        .forEach((request) => request.flush(memberList));
+    }
+  }
+
+  async function markFirstRow(): Promise<void> {
+    const [row] = component['emotes']();
+    component['selection'].onRowClick(row, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+    await settle();
+  }
+
+  function panelReadsOwnSet(): boolean {
+    const panel = fixture.debugElement.query(By.directive(MassDeletePanel));
+    expect(panel).not.toBeNull();
+    return (panel.componentInstance as MassDeletePanel).readLiveAliasesFromSet();
+  }
+
+  it('binds the read in the active view, mid-switch, and once the non-active gap list has landed', async () => {
+    await mount(null);
+    flushRows(null);
+    await settle();
+    await markFirstRow();
+    expect(component['isNonActiveView']()).toBe(false);
+    expect(panelReadsOwnSet()).toBe(true);
+
+    component['onEmoteSetSelected']('set-b');
+    await settle();
+    expect(component['viewSwitching']()).toBe(true);
+    expect(panelReadsOwnSet()).toBe(true);
+
+    flushRows(members({ totalCount: 3, truncated: true, readState: 'gap', omittedCount: 2 }));
+    await settle();
+    expect(component['isNonActiveView']()).toBe(true);
+    expect(component['viewSwitching']()).toBe(false);
+    expect(component['deleteLockReasonKey']()).toBeNull();
+    expect(panelReadsOwnSet()).toBe(true);
+  });
+
+  it('binds the read in a non-active view whose member list is complete', async () => {
+    await mount('set-b');
+    flushRows(members({ readState: 'complete', omittedCount: 0 }));
+    await settle();
+    await markFirstRow();
+
+    expect(component['isNonActiveView']()).toBe(true);
+    expect(component['deleteLockReasonKey']()).toBeNull();
+    expect(panelReadsOwnSet()).toBe(true);
   });
 });
 
@@ -7178,7 +7550,7 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(component['filteredEmotes']()).toHaveLength(3);
   });
 
-  it('offers "Tag zuweisen…" for a manager on a fine pointer with a selection in the active view', async () => {
+  it('offers "Tag zuweisen" for a manager on a fine pointer with a selection in the active view', async () => {
     await open({ tags: [] });
     expect(component['tagAssignShown']()).toBe(false);
 
@@ -7243,7 +7615,7 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     component['onEmoteSetSelected']('set-b');
     await settle();
 
-    expect(component['sharedSetViewLockReasonKey']()).not.toBeNull();
+    expect(component['strictSetViewLockReasonKey']()).not.toBeNull();
     expect(component['selection'].selectedItems().length).toBeGreaterThan(0);
     expect(component['tagAssignShown']()).toBe(false);
   });
@@ -7294,7 +7666,7 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(component['tagUnassignCount']()).toBe(1);
   });
 
-  it('after "Tag zuweisen…": hands the dialog the marked ids, acknowledges for 4 s, reloads the tags and keeps the selection', async () => {
+  it('after "Tag zuweisen": hands the dialog the marked ids, acknowledges for 4 s, reloads the tags and keeps the selection', async () => {
     await open({ tags: [tag(4, 'Stronghold')] });
     mark('7tv-a', '7tv-b');
     const result: TagAssignDialogResult = {
@@ -8758,7 +9130,7 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     expect(component['isUnderObservation'](resumed!)).toBe(true);
   });
 
-  // --- 7TV ids, once each (plan 377, 2.5/2.6) ----------------------------------------------------
+  // --- 7TV ids, once each (plan 377, 2.5/2.6) — except the copy, which goes per entry (#444) ------
 
   it('puts an emote on a null-session ballot once when both its slot cards are marked, and counts it once', () => {
     mount([ome(), hob(), other()]);
@@ -8769,18 +9141,23 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     expect(component['voteBallotSize']()).toBe(1);
   });
 
-  it('captures an emote once for the copy flow, so the dialog counts what the run copies (A6)', () => {
+  it('captures both slot cards of an emote for the copy flow, one row per alias (#444)', () => {
     mount([ome(), hob(), other()]);
     click('slot-ome');
     click('slot-hob');
 
-    expect(component['importShortcutSelectionCount']()).toBe(1);
+    expect(component['importShortcutSelectionCount']()).toBe(2);
     expect(component['importableSelection']().map((row) => [row.sevenTvEmoteId, row.name])).toEqual(
-      [['7tv-x', 'ome44']],
+      [
+        ['7tv-x', 'ome44'],
+        ['7tv-x', 'hob44'],
+      ],
     );
-    expect(component['importableVisible']().map((row) => row.sevenTvEmoteId)).toEqual([
-      '7tv-x',
-      '7tv-y',
+    // Grid order: the visible scope copies every card, each under its own alias.
+    expect(component['importableVisible']().map((row) => [row.sevenTvEmoteId, row.name])).toEqual([
+      ['7tv-x', 'ome44'],
+      ['7tv-y', 'Other'],
+      ['7tv-x', 'hob44'],
     ]);
   });
 
@@ -8922,6 +9299,257 @@ describe('UsageStatsPage — slot cards (plan 377, T3)', () => {
     expect(component['emotes']().map((row) => row.slotKey)).toEqual(['slot-hob']);
     expect(card('slot-hob').siblingNames).toEqual([]);
     expect(component['slotBudget']()).toEqual({ capacity: 600, occupied: 8 });
+  });
+
+  // --- a run consumes only its done rows (#453) ---------------------------------------------------
+
+  /** Publishes a settled delete run of the shown set the way `SevenTvDeleteService` does: `done`
+   *  rows for `doneKeys`, `skipped` (cancelled) rows for `skippedKeys`. */
+  function publishRun(
+    doneKeys: string[],
+    skippedKeys: string[],
+    overrides: { channelName?: string; setId?: string } = {},
+  ): RunResult {
+    const item = (key: string, status: RunQueueItem['status']): RunQueueItem => ({
+      key,
+      sevenTvEmoteId: key.split('#')[0],
+      name: key,
+      status,
+      completedSteps: status === 'done' ? 1 : 0,
+      failedStep: null,
+    });
+    const result: RunResult = {
+      doneKeys,
+      items: [
+        ...doneKeys.map((k) => item(k, 'done')),
+        ...skippedKeys.map((k) => item(k, 'cancelled')),
+      ],
+      startedAt: 0,
+      finishedAt: 1,
+    };
+    TestBed.inject(SevenTvDeleteService).lastRun.set({
+      setId: overrides.setId ?? 'set-a',
+      channelName: overrides.channelName ?? 'a',
+      targetOwnerTwitchId: null,
+      result,
+    });
+    return result;
+  }
+
+  /**
+   * protects: AC 1, edge 1 — a settled run deselects exactly its done cards and keeps the skipped one.
+   * fails_when: the selection is emptied (the old clear()) or a skipped key is gone.
+   * no_claim: rendering.
+   */
+  it('keeps a skipped card selected when the run deleted its neighbours', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    click('slot-hob');
+    click('7tv-y');
+    publishRun(['7tv-x#slot-hob', '7tv-y'], ['7tv-x#slot-ome']);
+
+    component['onDeleted'](['7tv-x#slot-hob', '7tv-y']);
+
+    expect(component['selection'].selectedKeys()).toEqual(['slot-ome']);
+    expect(component['emotes']().map((row) => row.slotKey)).toEqual(['slot-ome']);
+  });
+
+  /**
+   * protects: edge 8 — an id row that is done takes every card of that 7TV id out of the selection.
+   * fails_when: a sibling card of the id stays selected.
+   * no_claim: slot bookkeeping.
+   */
+  it('deselects every card of a done id row', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    click('slot-hob');
+    click('7tv-y');
+    publishRun(['7tv-x'], ['7tv-y']);
+
+    component['onDeleted'](['7tv-x']);
+
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-y']);
+  });
+
+  /**
+   * protects: AC 2 — a run that deleted everything and nothing marked since leaves an empty selection.
+   * fails_when: a done key stays selected, or the hint count is positive.
+   * no_claim: —
+   */
+  it('ends with an empty selection and no hint when every row was done', () => {
+    mount([ome(), other()]);
+    click('slot-ome');
+    publishRun(['7tv-x#slot-ome'], []);
+
+    component['onDeleted'](['7tv-x#slot-ome']);
+
+    expect(component['selection'].selectedKeys()).toEqual([]);
+    expect(component['dockRetryCount']()).toBe(0);
+  });
+
+  /**
+   * protects: AC 3, edge 7 — a card marked after the confirmation is not in the run and stays marked.
+   * fails_when: it is dropped with the run's rows.
+   * no_claim: —
+   */
+  it('keeps a card marked while the run was in flight', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    publishRun(['7tv-x#slot-ome'], []);
+    click('7tv-y');
+
+    component['onDeleted'](['7tv-x#slot-ome']);
+
+    expect(component['selection'].selectedKeys()).toEqual(['7tv-y']);
+  });
+
+  /**
+   * protects: AC 4, edge 6 — a reload after a failed/partial report unmarks only the done rows and refreshes.
+   * fails_when: clear() is called (the skipped row is gone) or a done row stays marked.
+   * no_claim: the refresh request itself.
+   */
+  it('deselects the done rows on a reload request and refreshes without clearing', () => {
+    mount([ome(), hob(), other()]);
+    const refresh = vi
+      .spyOn(component as unknown as { refresh(): void }, 'refresh')
+      .mockImplementation(() => {});
+    click('slot-ome');
+    click('slot-hob');
+    publishRun(['7tv-x#slot-hob'], ['7tv-x#slot-ome']);
+
+    component['onReloadRequested']();
+
+    expect(component['selection'].selectedKeys()).toEqual(['slot-ome']);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * protects: AC 4, edge 16 — the restore effect's second reloadRequested for the same delete result
+   * deselects nothing, so a restored and re-marked row keeps its mark.
+   * fails_when: the row is unmarked twice.
+   * no_claim: restore internals.
+   */
+  it('lets a second reload request for the same run only refresh', () => {
+    mount([ome(), hob(), other()]);
+    vi.spyOn(component as unknown as { refresh(): void }, 'refresh').mockImplementation(() => {});
+    click('slot-hob');
+    publishRun(['7tv-x#slot-hob'], []);
+    component['onReloadRequested']();
+    expect(component['selection'].selectedKeys()).toEqual([]);
+
+    click('slot-hob');
+    component['onReloadRequested']();
+
+    expect(component['selection'].selectedKeys()).toEqual(['slot-hob']);
+  });
+
+  /**
+   * protects: edge 9/9a — a run of another channel changes nothing; a run of another set only refreshes.
+   * fails_when: the selection changes in either case, or the other channel's run refreshes.
+   * no_claim: —
+   */
+  it('leaves the selection alone for a run of another channel or set', () => {
+    mount([ome(), hob(), other()]);
+    const refresh = vi
+      .spyOn(component as unknown as { refresh(): void }, 'refresh')
+      .mockImplementation(() => {});
+    click('slot-hob');
+
+    publishRun(['7tv-x#slot-hob'], [], { channelName: 'zz' });
+    component['onDeleted'](['7tv-x#slot-hob']);
+    expect(component['selection'].selectedKeys()).toEqual(['slot-hob']);
+    expect(refresh).not.toHaveBeenCalled();
+
+    publishRun(['7tv-x#slot-hob'], [], { setId: 'set-other' });
+    component['onDeleted'](['7tv-x#slot-hob']);
+    expect(component['selection'].selectedKeys()).toEqual(['slot-hob']);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * protects: AC 5, edge 14/17 — the count is selected ∩ non-done rows of the matching run, with no
+   * panel output needed, and 0 for another channel or set.
+   * fails_when: done rows are counted, the guards are ignored, or an all-skipped run counts 0.
+   * no_claim: wording.
+   */
+  it('counts the marked rows a run left undeleted, from the run alone', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    click('slot-hob');
+    click('7tv-y');
+    expect(component['dockRetryCount']()).toBe(0);
+
+    publishRun(['7tv-x#slot-hob'], ['7tv-x#slot-ome', '7tv-y']);
+    // No onDeleted yet: the done row is still marked but is not counted.
+    expect(component['dockRetryCount']()).toBe(2);
+
+    publishRun([], ['7tv-x#slot-ome', '7tv-x#slot-hob', '7tv-y']);
+    expect(component['dockRetryCount']()).toBe(3);
+
+    publishRun([], ['7tv-y'], { channelName: 'zz' });
+    expect(component['dockRetryCount']()).toBe(0);
+    publishRun([], ['7tv-y'], { setId: 'set-other' });
+    expect(component['dockRetryCount']()).toBe(0);
+  });
+
+  /**
+   * protects: AC 5, edge 10/11 — a selection gesture or a set switch dismisses the hint for that
+   * result for good, while a new run's result is not pre-dismissed.
+   * fails_when: the hint persists after the gesture, comes back when the count stays positive, or the next run is silent.
+   * no_claim: —
+   */
+  it('dismisses the retry hint per run result on a selection gesture', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    click('slot-hob');
+    publishRun([], ['7tv-x#slot-ome', '7tv-x#slot-hob']);
+    expect(component['dockRetryCount']()).toBe(2);
+
+    component['onCellClick'](card('7tv-y'), 2, { shiftKey: false } as MouseEvent);
+    expect(component['dockRetryCount']()).toBe(0);
+    // A prune that leaves the count positive does not bring it back.
+    component['selection'].deselectKeys(['slot-hob']);
+    expect(component['dockRetryCount']()).toBe(0);
+
+    publishRun([], ['7tv-x#slot-ome']);
+    expect(component['dockRetryCount']()).toBe(1);
+  });
+
+  /**
+   * protects: edge 9a — in a non-active view the hint is 0 and a reload request deselects nothing.
+   * fails_when: the hint shows there or a later reload unmarks the done rows.
+   * no_claim: the non-active view's own loading.
+   */
+  it('shows no hint and deselects nothing for a run seen from a non-active view', () => {
+    mount([ome(), hob(), other()]);
+    vi.spyOn(component as unknown as { refresh(): void }, 'refresh').mockImplementation(() => {});
+    click('slot-ome');
+    click('slot-hob');
+    publishRun(['7tv-x#slot-hob'], ['7tv-x#slot-ome']);
+    component['totalsNonActive'].set(true);
+
+    expect(component['dockRetryCount']()).toBe(0);
+    component['onReloadRequested']();
+    expect(component['selection'].selectedKeys().sort()).toEqual(['slot-hob', 'slot-ome']);
+  });
+
+  /**
+   * protects: AC 5, edge 10 — a set switch dismisses the hint for that result for good.
+   * fails_when: switching away and back brings the hint of the old result back.
+   * no_claim: —
+   */
+  it('does not bring the retry hint back after a set switch and return', () => {
+    mount([ome(), hob(), other()]);
+    click('slot-ome');
+    publishRun([], ['7tv-x#slot-ome']);
+    expect(component['dockRetryCount']()).toBe(1);
+
+    component['totalsSetId'].set('set-b');
+    fixture.detectChanges();
+    component['totalsSetId'].set('set-a');
+    fixture.detectChanges();
+
+    expect(component['dockRetryCount']()).toBe(0);
   });
 
   // --- held out of the run (plan 378, 4.9, A10; spec D11) ----------------------------------------

@@ -34,7 +34,7 @@ import { NavigationEnd, NavigationStart, Router } from '@angular/router';
  *   `'imperative'`, not some special "boot" value.
  * - An `'imperative'` trigger (`router.navigate()`/`navigateByUrl()`, including a `RouterLink`
  *   click) advances by one UNLESS the in-flight navigation's own extras say `replaceUrl` or
- *   `skipLocationChange` — read via `router.getCurrentNavigation()?.extras`, which is populated
+ *   `skipLocationChange` — read via `router.currentNavigation()?.extras`, which is populated
  *   before `NavigationStart` fires and thus safe to read synchronously from this subscriber. A
  *   guard redirect (e.g. `homeGuard` sending `/` to `/welcome`) is NOT a special case here: the
  *   original, cancelled attempt never reaches `NavigationEnd` (so it never advances anything) and
@@ -103,7 +103,7 @@ export class NavigationHistoryService {
       return this.currentIndex;
     }
 
-    const extras = this.router.getCurrentNavigation()?.extras;
+    const extras = this.router.currentNavigation()?.extras;
     const staysOnCurrentEntry = extras?.replaceUrl === true || extras?.skipLocationChange === true;
     return staysOnCurrentEntry ? this.currentIndex : this.currentIndex + 1;
   }

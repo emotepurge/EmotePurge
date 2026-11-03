@@ -19,6 +19,7 @@ import { ImportConfirmDialogData, ImportConfirmOutcome } from './import-confirm-
 import {
   ImportFlowDeps,
   ImportFlowTagHook,
+  multiAliasIdsOf,
   recheckTransferPlan,
   startImportFlow,
 } from './import-flow';
@@ -116,6 +117,57 @@ function aliasedSetPage(entries: { id: string; alias: string | null }[]) {
     },
   };
 }
+
+/** Like `aliasedSetPage`, but with 7TV's own `totalCount` set apart from what it lists: above the
+ *  listed entries for a read that hides some (#454's gap), below them for an over-count. Either way
+ *  the read is incomplete (`complete: false`). */
+function partialSetPage(entries: { id: string; alias: string | null }[], totalCount: number) {
+  const page = aliasedSetPage(entries);
+  page.data.emoteSets.emoteSet.emotes.totalCount = totalCount;
+  return page;
+}
+
+/** #457 (AK 13a): one row per action against a target where 7TV hides an entry. The target holds
+ *  the add row's source id `src-x` under another alias (`XdOld`) that 7TV does not list, so only
+ *  a read of the whole set could show the add would duplicate it. The replace row's target and the
+ *  adopt row's own entry are listed. */
+const HIDDEN_X: ImportRow = { sevenTvEmoteId: 'src-x', name: 'Xd', imageUrl: null };
+const UNCHECKED_PLAN_ROWS = {
+  addX: { action: 'add', source: HIDDEN_X, alias: 'Xd' },
+  renamePog: {
+    action: 'renameSource',
+    source: { sevenTvEmoteId: 'src-p', name: 'Pog', imageUrl: null },
+    alias: 'PogNew',
+  },
+  replaceKappa: {
+    action: 'replace',
+    source: { sevenTvEmoteId: 'src-k', name: 'Kappa', imageUrl: null },
+    alias: 'Kappa',
+    target: {
+      sevenTvEmoteId: 'tgt-k',
+      aliases: ['Kappa'],
+      hasAliaslessEntry: false,
+      defaultName: null,
+    },
+  },
+  adoptSadge: {
+    action: 'adoptSourceName',
+    source: { sevenTvEmoteId: 'src-s', name: 'Sadge', imageUrl: null },
+    alias: 'Sadge',
+    target: {
+      sevenTvEmoteId: 'src-s',
+      aliases: ['SadgeOld'],
+      hasAliaslessEntry: false,
+      defaultName: null,
+    },
+  },
+} satisfies Record<string, TransferRow>;
+const UNCHECKED_PLAN: TransferPlan = { rows: Object.values(UNCHECKED_PLAN_ROWS) };
+/** What 7TV lists of that target: everything except the hidden `src-x`/`XdOld` entry. */
+const LISTED_TARGET_ENTRIES = [
+  { id: 'tgt-k', alias: 'Kappa' },
+  { id: 'src-s', alias: 'SadgeOld' },
+];
 
 /** The plan a confirmation that resolved nothing hands to the run: one `add` row per row. */
 function addPlan(rows: ImportRow[]): TransferPlan {
@@ -442,6 +494,7 @@ describe('startImportFlow', () => {
       0,
       true,
       0,
+      0,
     );
     // No second dialog — the token prompt is only for a missing token.
     expect(dialogOpen).toHaveBeenCalledTimes(1);
@@ -481,6 +534,7 @@ describe('startImportFlow', () => {
       plan,
       0,
       true,
+      0,
       0,
     );
   });
@@ -682,6 +736,7 @@ describe('startImportFlow', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
+        0,
       );
     });
 
@@ -707,6 +762,7 @@ describe('startImportFlow', () => {
         expect.anything(),
         expect.anything(),
         expect.anything(),
+        0,
       );
     });
 
@@ -852,8 +908,9 @@ describe('startImportFlow', () => {
 
         expect(h.importStartCheckPending()).toBe(false);
         expect(h.startImport).toHaveBeenCalledTimes(1);
-        // duplicateCheckAvailable false, the replace row held back and counted.
-        expect(h.startImport.mock.calls[0].slice(2)).toEqual([{ rows: [] }, 0, false, 1]);
+        // duplicateCheckAvailable false, the replace row held back and counted, nothing else to
+        // refuse (a replace-only plan).
+        expect(h.startImport.mock.calls[0].slice(2)).toEqual([{ rows: [] }, 0, false, 1, 0]);
       } finally {
         vi.useRealTimers();
       }
@@ -934,13 +991,15 @@ describe('startImportFlow', () => {
         1,
         true,
         0,
+        0,
       );
     });
 
-    // #149: a failed check must fail open (every row still goes through, the run still starts) but
-    // must not read as a clean all-clear — the flow forwards `available: false` from the filter
-    // straight into `startImport`'s fifth argument rather than swallowing it.
-    it('fails open on a failed duplicate check and reports it as unavailable rather than a clean skip', () => {
+    // #457, superseding #149's fail-open for the import: a failed check lets no add row through —
+    // 7TV's `addEmote` does not dedupe by id, so an unverified ADD can push an unrepairable
+    // duplicate. The refused row is counted (seventh argument) and `available: false` (fifth) picks
+    // the "could not be checked" wording; it never reads as a clean all-clear.
+    it('refuses the add row on a failed duplicate check and counts it as unchecked rather than a clean skip', () => {
       const { deps, dialogOpen, startImport, httpPost } = setup();
       startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
 
@@ -962,12 +1021,43 @@ describe('startImportFlow', () => {
           targetOwnerTwitchId: null,
         },
         source().origin,
-        addPlan([{ sevenTvEmoteId: '7tv-1', name: 'Kappa', imageUrl: null }]),
+        addPlan([]),
         0,
         false,
         0,
+        1,
       );
     });
+
+    // #457 (AK 13a): an `'activeSet'` target is loaded from our database, so the dialog-time
+    // preview never saw the entry 7TV hides; the fresh read at confirm is the last chance, and an
+    // incomplete one hands the run no ADD at all — neither the add row for the hidden id nor the
+    // rename. The adopt row (an UPDATE) still runs.
+    it.each([
+      ['an incomplete read', () => of(partialSetPage(LISTED_TARGET_ENTRIES, 3)), true],
+      ['a failed read', () => throwError(() => new Error('network error')), false],
+    ] as const)(
+      'hands the run no add or rename row after %s, only the adopt row, with the refused count',
+      (_label, answer, available) => {
+        const { deps, dialogOpen, startImport, httpPost } = setup();
+        startImportFlow(deps, source(), { kind: 'activeSet', channelName: 'target-channel' });
+        httpPost.mockReturnValue(answer());
+
+        confirmClosed(dialogOpen).next({
+          targetSetId: 'set-1',
+          targetSetName: 'set-1',
+          plan: UNCHECKED_PLAN,
+        });
+
+        expect(startImport).toHaveBeenCalledOnce();
+        const handed = startImport.mock.calls[0][2] as TransferPlan;
+        expect(handed).toEqual({ rows: [UNCHECKED_PLAN_ROWS.adoptSadge] });
+        expect(
+          handed.rows.some((row) => row.action === 'add' || row.action === 'renameSource'),
+        ).toBe(false);
+        expect(startImport.mock.calls[0].slice(3)).toEqual([0, available, 1, 2]);
+      },
+    );
   });
 
   // #149 P2 (independent review): the arbiter's mutual-exclusion check ran before the fresh
@@ -1213,6 +1303,7 @@ describe('startImportFlow', () => {
         0,
         true,
         0,
+        0,
       );
     });
 
@@ -1340,6 +1431,7 @@ describe('startImportFlow', () => {
         0,
         true,
         0,
+        0,
       );
     });
   });
@@ -1459,6 +1551,7 @@ describe('startImportFlow', () => {
         0,
         true,
         0,
+        0,
       );
       expect(onSetChanged).not.toHaveBeenCalled();
       expect(onNothingToImport).not.toHaveBeenCalled();
@@ -1533,6 +1626,29 @@ describe('startImportFlow', () => {
       expect(onSetChanged).not.toHaveBeenCalled();
     });
 
+    // protects=`runHooks.onStarted` (a run without a tag hook, #328) fires only for a run the engine
+    //   started, never for one it refused;
+    // fails_when=a refused start still lets go of the caller's marking, or a started run does not;
+    // no_claim=the tag hook's own `onStarted` (tested above) and any tag-less caller other than this seam.
+    it('calls runHooks.onStarted for a started run and not for a refused one, without a tag hook', () => {
+      const started = setupPinned();
+      started.startImport.mockReturnValue(true);
+      const onStarted = vi.fn();
+      startImportFlow(started.deps, source([KAPPA]), pinnedTarget(), undefined, { onStarted });
+      confirmAdd(started.dialogOpen);
+      expect(onStarted).toHaveBeenCalledOnce();
+
+      const refused = setupPinned();
+      refused.startImport.mockReturnValue(false);
+      const onRefusedStarted = vi.fn();
+      startImportFlow(refused.deps, source([KAPPA]), pinnedTarget(), undefined, {
+        onStarted: onRefusedStarted,
+      });
+      confirmAdd(refused.dialogOpen);
+      expect(refused.startImport).toHaveBeenCalledOnce();
+      expect(onRefusedStarted).not.toHaveBeenCalled();
+    });
+
     it('still hands the plan to startImport when held-back replace rows, not presence, emptied it — and calls no onStarted when the engine refuses it', () => {
       const { deps, dialogOpen, startImport, httpPost } = setupPinned();
       // The real engine refuses an empty queue (`SevenTvRunEngine.start`).
@@ -1567,6 +1683,30 @@ describe('startImportFlow', () => {
       // Refused: the play-in did not go ahead, so the marking stays.
       expect(onStarted).not.toHaveBeenCalled();
     });
+
+    // #457 (AK 13b, E20c): a plan emptied because the last read could not vouch for the set is not
+    // "everything is already there" either — never reported as played in.
+    it.each([
+      ['an incomplete read', () => of(partialSetPage([{ id: 'other', alias: 'Other' }], 2)), true],
+      ['a failed read', () => throwError(() => new Error('network error')), false],
+    ] as const)(
+      'never reports a play-in as played in when %s refused every row',
+      (_label, answer, available) => {
+        const { deps, dialogOpen, startImport, httpPost } = setupPinned();
+        startImport.mockReturnValue(false);
+        const { hook, onNothingToImport, onStarted } = tagHook();
+        httpPost.mockReturnValue(answer());
+
+        startImportFlow(deps, source([KAPPA]), pinnedTarget(), hook);
+        confirmAdd(dialogOpen);
+
+        expect(onNothingToImport).not.toHaveBeenCalled();
+        expect(startImport).toHaveBeenCalledOnce();
+        // Empty plan, nothing skipped as present, the wording's flag, no drift, one row refused.
+        expect(startImport.mock.calls[0].slice(2)).toEqual([{ rows: [] }, 0, available, 0, 1]);
+        expect(onStarted).not.toHaveBeenCalled();
+      },
+    );
 
     it('hands a confirmed nothing-to-add straight to onNothingToImport — no token, no re-check, no run', () => {
       const { deps, dialogOpen, startImport, httpPost, hasToken } = setupPinned();
@@ -1711,6 +1851,37 @@ describe('recheckTransferPlan', () => {
     return { post: vi.fn(() => response) } as unknown as HttpClient;
   }
 
+  it('checks a multi-alias source id per entry: a further alias still goes, the held one drops (#444)', async () => {
+    const ome: ImportRow = { sevenTvEmoteId: 'src-x', name: 'ome44', imageUrl: null };
+    const hob: ImportRow = { sevenTvEmoteId: 'src-x', name: 'hob44', imageUrl: null };
+    const addOme: TransferRow = { action: 'add', source: ome, alias: 'ome44' };
+    const addHob: TransferRow = { action: 'add', source: hob, alias: 'hob44' };
+    const http = httpAnswering(of(aliasedSetPage([{ id: 'src-x', alias: 'hob44' }])));
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(
+        http,
+        'set-1',
+        { rows: [addOme, addHob, addPog] },
+        multiAliasIdsOf([ome, hob, pog]),
+      ),
+    );
+
+    expect(result.plan).toEqual({ rows: [addOme, addPog] });
+    expect(result.skippedDuplicates).toBe(1);
+  });
+
+  it('keeps the id check for a single-alias source id that turned up under another alias', async () => {
+    const http = httpAnswering(of(aliasedSetPage([{ id: 'src-p', alias: 'PogOther' }])));
+
+    const result = await firstValueFrom(
+      recheckTransferPlan(http, 'set-1', { rows: [addPog] }, multiAliasIdsOf([pog])),
+    );
+
+    expect(result.plan).toEqual({ rows: [] });
+    expect(result.skippedDuplicates).toBe(1);
+  });
+
   it('keeps an adopt row even though its source id is in the target set by definition', async () => {
     const adoptKappa: TransferRow = {
       action: 'adoptSourceName',
@@ -1734,6 +1905,7 @@ describe('recheckTransferPlan', () => {
       skippedDuplicates: 0,
       duplicateCheckAvailable: true,
       replaceSkippedDrift: 0,
+      targetUncheckedSkipped: 0,
     });
   });
 
@@ -1756,6 +1928,7 @@ describe('recheckTransferPlan', () => {
       skippedDuplicates: 1,
       duplicateCheckAvailable: true,
       replaceSkippedDrift: 0,
+      targetUncheckedSkipped: 0,
     });
   });
 
@@ -1778,10 +1951,13 @@ describe('recheckTransferPlan', () => {
       skippedDuplicates: 0,
       duplicateCheckAvailable: true,
       replaceSkippedDrift: 1,
+      targetUncheckedSkipped: 0,
     });
   });
 
-  it('holds back every replace row on an incomplete read, which still filters duplicates', async () => {
+  // #457: an incomplete read cannot prove absence, so the add row it did not see present (Pog) is
+  // refused as well, not only the replace row.
+  it('holds back every replace and add row on an incomplete read, which still filters duplicates', async () => {
     // Matches the confirmed target exactly — but the read vouches for only part of the set. What
     // it did see still counts for duplicates: the Sadge row's source id is already there.
     const sadge: ImportRow = { sevenTvEmoteId: 'src-s', name: 'Sadge', imageUrl: null };
@@ -1798,14 +1974,16 @@ describe('recheckTransferPlan', () => {
     );
 
     expect(result).toEqual({
-      plan: { rows: [addPog] },
+      plan: { rows: [] },
       skippedDuplicates: 1,
       duplicateCheckAvailable: true,
       replaceSkippedDrift: 1,
+      targetUncheckedSkipped: 1,
     });
   });
 
-  it('holds back every replace row on a failed read while the duplicate check fails open', async () => {
+  // #457, superseding #149's fail-open for the import recheck: a failed read lets no ADD through.
+  it('holds back every replace and add row on a failed read, and reports the check unavailable', async () => {
     const http = httpAnswering(throwError(() => new Error('network error')));
 
     const result = await firstValueFrom(
@@ -1813,10 +1991,11 @@ describe('recheckTransferPlan', () => {
     );
 
     expect(result).toEqual({
-      plan: { rows: [addPog] },
+      plan: { rows: [] },
       skippedDuplicates: 0,
       duplicateCheckAvailable: false,
       replaceSkippedDrift: 1,
+      targetUncheckedSkipped: 1,
     });
   });
 
@@ -1837,10 +2016,88 @@ describe('recheckTransferPlan', () => {
 
       expect(answers).toEqual([
         {
-          plan: { rows: [addPog] },
+          plan: { rows: [] },
           skippedDuplicates: 0,
           duplicateCheckAvailable: false,
           replaceSkippedDrift: 1,
+          targetUncheckedSkipped: 1,
+        },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // #457 (AK 13a): Codex Sol's P1 — an incomplete read used to pass as an all-clear, and the add
+  // row for an id the target holds under a hidden alias went out as an unrepairable duplicate. Any
+  // `complete: false` read refuses every add and rename row: a gap (7TV counts more than it
+  // lists) and an over-count alike.
+  it.each([
+    ['a gap read (7TV counts one entry more than it lists)', 3],
+    ['an over-counting read (7TV lists more than it counts)', 1],
+  ])(
+    'refuses every add and rename row on %s, keeping only the adopt row',
+    async (_label, totalCount) => {
+      const http = httpAnswering(of(partialSetPage(LISTED_TARGET_ENTRIES, totalCount)));
+
+      const result = await firstValueFrom(recheckTransferPlan(http, 'set-1', UNCHECKED_PLAN));
+
+      expect(result).toEqual({
+        plan: { rows: [UNCHECKED_PLAN_ROWS.adoptSadge] },
+        skippedDuplicates: 0,
+        duplicateCheckAvailable: true,
+        replaceSkippedDrift: 1,
+        targetUncheckedSkipped: 2,
+      });
+    },
+  );
+
+  it('keeps every row of the same plan on a complete read, exactly as before (#457)', async () => {
+    const http = httpAnswering(of(aliasedSetPage(LISTED_TARGET_ENTRIES)));
+
+    const result = await firstValueFrom(recheckTransferPlan(http, 'set-1', UNCHECKED_PLAN));
+
+    expect(result).toEqual({
+      plan: UNCHECKED_PLAN,
+      skippedDuplicates: 0,
+      duplicateCheckAvailable: true,
+      replaceSkippedDrift: 0,
+      targetUncheckedSkipped: 0,
+    });
+  });
+
+  it('refuses every add and rename row of the same plan on a failed read, keeping the adopt row (#457)', async () => {
+    const http = httpAnswering(throwError(() => new Error('network error')));
+
+    const result = await firstValueFrom(recheckTransferPlan(http, 'set-1', UNCHECKED_PLAN));
+
+    expect(result).toEqual({
+      plan: { rows: [UNCHECKED_PLAN_ROWS.adoptSadge] },
+      skippedDuplicates: 0,
+      duplicateCheckAvailable: false,
+      replaceSkippedDrift: 1,
+      targetUncheckedSkipped: 2,
+    });
+  });
+
+  it('refuses every add and rename row of the same plan on a read that times out (#457)', () => {
+    vi.useFakeTimers();
+    try {
+      const http = httpAnswering(new Subject<unknown>());
+      const answers: unknown[] = [];
+
+      recheckTransferPlan(http, 'set-1', UNCHECKED_PLAN).subscribe((result) =>
+        answers.push(result),
+      );
+      vi.advanceTimersByTime(LIVE_READ_TIMEOUT_MS);
+
+      expect(answers).toEqual([
+        {
+          plan: { rows: [UNCHECKED_PLAN_ROWS.adoptSadge] },
+          skippedDuplicates: 0,
+          duplicateCheckAvailable: false,
+          replaceSkippedDrift: 1,
+          targetUncheckedSkipped: 2,
         },
       ]);
     } finally {

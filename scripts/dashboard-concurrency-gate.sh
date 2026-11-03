@@ -94,10 +94,11 @@ OUT_WRITTEN=0
 SAMPLER_STARTED=0
 
 write_csv() {
+  local out=$1
   {
     echo "$CSV_HEADER"
     sort -t, -k5,5n "$RAW"
-  } > "$1"
+  } > "$out"
 }
 
 cleanup() {
@@ -118,12 +119,14 @@ cleanup() {
 trap cleanup EXIT
 
 die() {
-  echo "$2" >&2
-  exit "$1"
+  local code=$1 message=$2
+  echo "$message" >&2
+  exit "$code"
 }
 
 is_int() {
-  [[ "$1" =~ ^-?[0-9]+$ ]]
+  local value=$1
+  [[ "$value" =~ ^-?[0-9]+$ ]]
 }
 
 now_ms() {

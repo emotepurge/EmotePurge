@@ -65,6 +65,16 @@ public class RateLimitTelemetryStore(
 
     private const string ProviderFieldPrefix = "provider|";
 
+    // The counter names that end a hash field. Writer and reader share them, so a typo on one side
+    // would silently zero a counter instead of failing.
+    private const string AcceptedCounter = "accepted";
+
+    private const string RejectedCounter = "rejected";
+
+    private const string RequestsCounter = "requests";
+
+    private const string RateLimitedCounter = "rate-limited";
+
     private const int FineBucketSeconds = 5;
 
     private const int FineBucketsPerWindow = 12;
@@ -91,7 +101,7 @@ public class RateLimitTelemetryStore(
         try
         {
             var db = connectionMultiplexer.GetDatabase();
-            var field = PolicyField(decision.PolicyName, decision.Accepted ? "accepted" : "rejected");
+            var field = PolicyField(decision.PolicyName, decision.Accepted ? AcceptedCounter : RejectedCounter);
             var writes = new List<Task>(BucketWrites(db, now, field));
 
             if (!decision.Accepted)
@@ -122,13 +132,13 @@ public class RateLimitTelemetryStore(
         {
             var db = connectionMultiplexer.GetDatabase();
             var dimension = ProviderDimension(observation.ProviderName, observation.CallSource);
-            var writes = new List<Task>(BucketWrites(db, now, ProviderField(dimension, "requests")));
+            var writes = new List<Task>(BucketWrites(db, now, ProviderField(dimension, RequestsCounter)));
 
             // Only a real 429 counts. A 500 is a provider failure, not a budget signal, and lumping the
             // two together would make the one number an operator acts on unreadable.
             if (observation.StatusCode == 429)
             {
-                writes.AddRange(BucketWrites(db, now, ProviderField(dimension, "rate-limited")));
+                writes.AddRange(BucketWrites(db, now, ProviderField(dimension, RateLimitedCounter)));
                 var incident = new ProviderRateLimitIncident(now.UtcDateTime, observation.RetryAfterSeconds);
                 writes.Add(db.StringSetAsync(ProviderIncidentKey(dimension), Serialize(incident), IncidentTtl));
             }
@@ -254,15 +264,15 @@ public class RateLimitTelemetryStore(
                         continue;
                     }
 
-                    if (parts is ["policy", _, "rejected"])
+                    if (parts is ["policy", _, RejectedCounter])
                     {
                         rejected += value;
                     }
-                    else if (parts is ["provider", var provider, var source, var counter] && counter is "requests" or "rate-limited")
+                    else if (parts is ["provider", var provider, var source, var counter] && counter is RequestsCounter or RateLimitedCounter)
                     {
                         var dimension = $"{provider}{DimensionSeparator}{source}";
                         providerSeen.Add(dimension);
-                        if (counter == "rate-limited")
+                        if (counter == RateLimitedCounter)
                         {
                             if (!providerSeries.TryGetValue(dimension, out var series))
                             {
@@ -321,10 +331,10 @@ public class RateLimitTelemetryStore(
             counters.Add(new RateLimitProviderCounters(
                 parts[0],
                 parts[1],
-                minute.GetValueOrDefault(ProviderField(dimension, "requests")),
-                day.GetValueOrDefault(ProviderField(dimension, "requests")),
-                minute.GetValueOrDefault(ProviderField(dimension, "rate-limited")),
-                day.GetValueOrDefault(ProviderField(dimension, "rate-limited")),
+                minute.GetValueOrDefault(ProviderField(dimension, RequestsCounter)),
+                day.GetValueOrDefault(ProviderField(dimension, RequestsCounter)),
+                minute.GetValueOrDefault(ProviderField(dimension, RateLimitedCounter)),
+                day.GetValueOrDefault(ProviderField(dimension, RateLimitedCounter)),
                 incident?.RetryAfterSeconds,
                 incident?.ObservedAtUtc,
                 headers));
@@ -400,10 +410,10 @@ public class RateLimitTelemetryStore(
         Dimensions(minute, day, PolicyFieldPrefix, partsPerDimension: 1)
             .Select(name => new RateLimitPolicyCounters(
                 name,
-                minute.GetValueOrDefault(PolicyField(name, "accepted")),
-                minute.GetValueOrDefault(PolicyField(name, "rejected")),
-                day.GetValueOrDefault(PolicyField(name, "accepted")),
-                day.GetValueOrDefault(PolicyField(name, "rejected"))))
+                minute.GetValueOrDefault(PolicyField(name, AcceptedCounter)),
+                minute.GetValueOrDefault(PolicyField(name, RejectedCounter)),
+                day.GetValueOrDefault(PolicyField(name, AcceptedCounter)),
+                day.GetValueOrDefault(PolicyField(name, RejectedCounter))))
             .ToList();
 
     private static IReadOnlyList<RateLimitCacheCounters> BuildCacheCounters(

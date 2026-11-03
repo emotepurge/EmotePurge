@@ -1186,7 +1186,7 @@ export async function mockPurgeOwnData(
   options: { status?: number; body?: unknown } = {},
 ): Promise<string[]> {
   const seen: string[] = [];
-  await page.route(new RegExp(`/api/channels/${channelName}/data(\\?|$)`), (route) => {
+  await page.route(new RegExp(String.raw`/api/channels/${channelName}/data(\?|$)`), (route) => {
     if (route.request().method() !== 'DELETE') {
       return route.fallback();
     }
@@ -2089,7 +2089,7 @@ export async function mockTagEntries(
   const state = tagMockState(page, channelName);
   state.entries.set(tagId, entries);
   state.activationOperationIds.set(tagId, options.activationOperationId ?? null);
-  const pattern = new RegExp(`^/api/channels/${channelName}/tags/(\\d+)/entries$`);
+  const pattern = new RegExp(String.raw`^/api/channels/${channelName}/tags/(\d+)/entries$`);
   await page.route(
     (url) => pattern.test(url.pathname),
     (route) => {

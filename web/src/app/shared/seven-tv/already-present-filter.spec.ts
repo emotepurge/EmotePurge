@@ -117,6 +117,36 @@ describe('filterAlreadyPresent', () => {
     });
   });
 
+  it('checks a row with an entryAlias per entry: only the same alias makes it present (#444)', async () => {
+    const rows = [
+      { sevenTvEmoteId: '7tv-1', entryAlias: 'ome44' },
+      { sevenTvEmoteId: '7tv-1', entryAlias: 'hob44' },
+      { sevenTvEmoteId: '7tv-2' },
+    ];
+
+    const result$ = firstValueFrom(filterAlreadyPresent(httpClient, 'target-set', rows));
+    httpMock.expectOne(GQL_ENDPOINT).flush({
+      data: {
+        emoteSets: {
+          emoteSet: {
+            emotes: {
+              totalCount: 2,
+              pageCount: 1,
+              items: [
+                { alias: 'hob44', emote: { id: '7tv-1' } },
+                { alias: 'Other', emote: { id: '7tv-2' } },
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    // 'ome44' is a further alias of an id the set holds: an entry of its own, so it stays. The id
+    // row without an entryAlias keeps the id check and drops although its alias differs.
+    expect((await result$).rows).toEqual([rows[0]]);
+  });
+
   it('drops every row when all are already present, without erroring on the empty result', async () => {
     const rows: Row[] = [
       { sevenTvEmoteId: '7tv-1', name: 'PogU' },
@@ -205,6 +235,8 @@ describe('filterAlreadyPresent', () => {
         ]),
         occupiedSlots: 2,
         complete: true,
+        readState: 'complete',
+        omittedCount: 0,
       },
     });
   });
@@ -667,6 +699,30 @@ describe('filterAlreadyPresentForRestore', () => {
       available: true,
       complete: false,
     });
+  });
+
+  // #454, Codex P2. protects: the restore filter keeps its partial evidence on a multi-page
+  // under-count — the set read's gap classification is opt-in and this reader does not opt in.
+  // fails_when: the reader verifies the under-count (a third request goes out — answered with an
+  // error here it would throw the read away, and the filter's catchError fails open and offers the
+  // id for ADD). no_claim: single-page sets.
+  it('keeps excluding an id seen under a foreign alias on a two-page under-count, without a verification request', async () => {
+    const row: RestoreRow = { sevenTvEmoteId: '7tv-1', name: 'A', aliases: ['A'] };
+    const result$ = firstValueFrom(filterAlreadyPresentForRestore(httpClient, 'target-set', [row]));
+    const pageOf = (items: { alias: string; emote: { id: string } }[]) => ({
+      data: { emoteSets: { emoteSet: { emotes: { totalCount: 5, pageCount: 2, items } } } },
+    });
+
+    httpMock.expectOne(GQL_ENDPOINT).flush(pageOf([{ alias: 'Foreign', emote: { id: '7tv-1' } }]));
+    httpMock.expectOne(GQL_ENDPOINT).flush(pageOf([{ alias: 'B', emote: { id: '7tv-2' } }]));
+    // A verification request would land here; none may go out, so none is answered with an error.
+    const verify = httpMock.match(GQL_ENDPOINT);
+    verify.forEach((request) =>
+      request.flush('boom', { status: 500, statusText: 'Internal Server Error' }),
+    );
+
+    expect(verify).toHaveLength(0);
+    expect(await result$).toMatchObject({ rows: [], available: true, complete: false });
   });
 });
 
@@ -1201,6 +1257,8 @@ function setEntries(entries: { id: string; alias: string | null }[]): SevenTvSet
     animatedById: new Map(),
     occupiedSlots: entries.length,
     complete: true,
+    readState: 'complete',
+    omittedCount: 0,
   };
 }
 
@@ -1244,7 +1302,7 @@ describe('verifyReplaceTargets', () => {
       available: true,
       drifted: [
         {
-          key: 'src-1',
+          key: '5:src-1#Kappa',
           reason: 'aliasesChanged',
           live: { aliases: ['Kappa', 'KappaNew'], hasAliaslessEntry: false },
         },
@@ -1262,7 +1320,7 @@ describe('verifyReplaceTargets', () => {
       available: true,
       drifted: [
         {
-          key: 'src-1',
+          key: '5:src-1#Kappa',
           reason: 'nameHeldElsewhere',
           live: { aliases: ['KappaRenamed'], hasAliaslessEntry: false },
         },
@@ -1286,7 +1344,7 @@ describe('verifyReplaceTargets', () => {
       available: true,
       drifted: [
         {
-          key: 'src-1',
+          key: '5:src-1#Kappa',
           reason: 'aliaslessEntryChanged',
           live: { aliases: ['Kappa'], hasAliaslessEntry: true },
         },
@@ -1297,7 +1355,7 @@ describe('verifyReplaceTargets', () => {
       available: true,
       drifted: [
         {
-          key: 'src-1',
+          key: '5:src-1#Kappa',
           reason: 'aliaslessEntryChanged',
           live: { aliases: ['Kappa'], hasAliaslessEntry: false },
         },
@@ -1312,7 +1370,7 @@ describe('verifyReplaceTargets', () => {
     expect(verifyReplaceTargets(incomplete, replacePlan(['Kappa']))).toEqual({ available: false });
     expect(verifyReplaceTargets(gone, replacePlan(['Kappa']))).toEqual({
       available: true,
-      drifted: [{ key: 'src-1', reason: 'targetGone', live: null }],
+      drifted: [{ key: '5:src-1#Kappa', reason: 'targetGone', live: null }],
     });
   });
 });

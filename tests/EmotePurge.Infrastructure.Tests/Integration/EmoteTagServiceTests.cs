@@ -2704,6 +2704,30 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         Assert.False(await verify.EmoteTagEntries.AnyAsync(e => e.TagId == tag.Id));
     }
 
+    /// <summary>
+    /// #457 (AK 5): a gap read of the source set — every listed entry present, two counted entries
+    /// not listed — is still refused with the existing code. Tags stay fail-closed under a gap: the
+    /// server would report the hidden ids as "not in the set", and the oldest-alias choice could shift.
+    /// </summary>
+    [Fact]
+    public async Task AddFromANonActiveSet_WithAGapRead_IsStillRefused_AndWritesNothing()
+    {
+        var channel = await SeedChannelAsync("tagforeigngap");
+        var tag = await SeedTagAsync(channel.Id, "Game");
+        var source = new ForeignSource(OtherSetId, [Row("EM1", "A", "https://img/1")])
+        {
+            Truncated = true,
+            ReadState = SevenTvSetReadState.Gap,
+            OmittedCount = 2,
+        };
+
+        var result = await source.AddAsync(fixture.CreateDbContext, "tagforeigngap", tag.Id, ["EM1"]);
+
+        Assert.Equal(EmoteTagAddEntriesStatus.SourceSetIncomplete, result.Status);
+        await using var verify = fixture.CreateDbContext();
+        Assert.False(await verify.EmoteTagEntries.AnyAsync(e => e.TagId == tag.Id));
+    }
+
     [Fact]
     public async Task AddFromANonActiveSet_MembershipAndReadHappenBeforeTheTransaction_NeverUnderTheChannelLock()
     {
@@ -2789,6 +2813,11 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
         public ForeignEmoteSetLookupStatus ReadStatus { get; init; } = ForeignEmoteSetLookupStatus.Ok;
         public bool Truncated { get; init; }
 
+        // #457: null derives the state from Truncated, as every construction before the field did.
+        public string? ReadState { get; init; }
+
+        public int OmittedCount { get; init; }
+
         public async Task<EmoteTagAddEntriesResult> AddAsync(
             Func<AppDbContext> createDb, string channelName, long tagId, IReadOnlyList<string> ids, string? emoteSetId = OtherSetId,
             Func<Task>? beforeLock = null)
@@ -2809,7 +2838,8 @@ public class EmoteTagServiceTests(PostgresFixture fixture)
                 {
                     Events.Add(Mark("read"));
                     return ReadStatus == ForeignEmoteSetLookupStatus.Ok
-                        ? ForeignEmoteSetLookupResult.Ok(new ForeignEmoteSet(channelName, null, setId, rows.Count, Truncated, rows))
+                        ? ForeignEmoteSetLookupResult.Ok(new ForeignEmoteSet(
+                            channelName, null, setId, rows.Count + OmittedCount, Truncated, rows, ReadState: ReadState, OmittedCount: OmittedCount))
                         : ForeignEmoteSetLookupResult.Failed(ReadStatus);
                 });
 

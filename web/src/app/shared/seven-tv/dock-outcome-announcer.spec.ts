@@ -26,6 +26,7 @@ import {
   START_CHECK_ANNOUNCE_DELAY_MS,
   copiedNotActiveNotice,
   hiddenByFilterNoticeKey,
+  importRefusalNoticeVisible,
   markedCountNoticeKey,
   pendingSyncNoticeKey,
   renamedNotActiveNotice,
@@ -54,6 +55,10 @@ const DE_TRANSLATIONS = {
       },
     },
     delete: {
+      retryHint: {
+        one: '{{ count }} Eintrag nicht gelöscht, weiter ausgewählt.',
+        other: '{{ count }} Einträge nicht gelöscht, weiter ausgewählt.',
+      },
       pendingSync: {
         one: '{{ names }} wird abgeglichen, nicht im Löschlauf.',
         other: '{{ names }} werden abgeglichen, nicht im Löschlauf.',
@@ -96,7 +101,6 @@ const DE_TRANSLATIONS = {
   },
   import: {
     startChecking: 'Übertragung wird geprüft.',
-    duplicateCheckUnavailable: 'Import-Prüfung nicht möglich.',
     errors: {
       targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
       targetNotSelectable: 'Das Zielset ist kein normales Emote-Set.',
@@ -117,6 +121,16 @@ const DE_TRANSLATIONS = {
         "In Set ‚{{ setName }}' kopiert — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
       renamedNotActive:
         "In Set ‚{{ setName }}' umbenannt — es ist nicht das aktive Set von {{ channel }}, die Kanalseite zeigt es deshalb nicht.",
+      targetUncheckedSkipped: {
+        incomplete: {
+          one: '{{ count }} Emote nicht kopiert — Zielset nur teilweise gelistet.',
+          other: '{{ count }} Emotes nicht kopiert — Zielset nur teilweise gelistet.',
+        },
+        unavailable: {
+          one: '{{ count }} Emote nicht kopiert — Zielset gerade nicht prüfbar.',
+          other: '{{ count }} Emotes nicht kopiert — Zielset gerade nicht prüfbar.',
+        },
+      },
       replaceSkippedDrift: {
         one: '{{ count }} Ersetzung wurde nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.',
         other:
@@ -134,6 +148,9 @@ interface FakeOutcomeSource {
   skippedNameTaken: WritableSignal<number>;
   duplicateCheckAvailable: WritableSignal<boolean>;
   duplicateNoticePending: WritableSignal<boolean>;
+  refusalNoticeRunId: WritableSignal<string | null>;
+  /** Only `SevenTvImportService` has this — the refusal lines' give-way gate reads it (#460). */
+  isRunning: WritableSignal<boolean>;
   /** Only `SevenTvImportService` actually has this (finding 3, Live-Verifikation K2 2026-09-21,
    *  `copiedNotActiveNotice`) — carried on the shared fake shape anyway since both services are
    *  built from the same factory; the restore fake's copy is simply never read. */
@@ -141,6 +158,10 @@ interface FakeOutcomeSource {
   /** Only `SevenTvImportService` actually has this — a restore run never carries a replace row.
    *  Same reasoning as `run` above: shared shape, the restore fake's copy is never read. */
   replaceSkippedDrift: WritableSignal<number>;
+  /** Only `SevenTvImportService` actually has this (#457) — rows refused against an unchecked
+   *  target read. Same reasoning as `replaceSkippedDrift` above: shared shape, the restore fake's
+   *  copy is never read. */
+  targetUncheckedSkipped: WritableSignal<number>;
   /** Only `SevenTvImportService` actually has this (spec 4.5 point 17, AK 32) — the shared
    *  pre-check's block reason on a replace-carrying start has no restore counterpart (the restore
    *  entry's own pre-check has no notice at all, spec E16, 4.6 point 22). Same reasoning as `run`
@@ -163,8 +184,11 @@ function createFakeSource(): FakeOutcomeSource {
     skippedNameTaken: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
+    refusalNoticeRunId: signal<string | null>(null),
+    isRunning: signal(false),
     run: signal<ImportRunInfo | null>(null),
     replaceSkippedDrift: signal(0),
+    targetUncheckedSkipped: signal(0),
     targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
     startCheckPending: signal(false),
     tagPlacementReport: signal<SyncReportState>('idle'),
@@ -204,6 +228,7 @@ function createFakeUndoSource(): FakeUndoSource {
     [markedCount]="markedCount()"
     [hiddenSelectedCount]="hiddenSelectedCount()"
     [pendingSyncNames]="pendingSyncNames()"
+    [retrySelectedCount]="retrySelectedCount()"
   />`,
 })
 class HostPage {
@@ -211,6 +236,7 @@ class HostPage {
   readonly markedCount = signal(0);
   readonly hiddenSelectedCount = signal(0);
   readonly pendingSyncNames = signal<readonly string[]>([]);
+  readonly retrySelectedCount = signal(0);
 }
 
 // Keyed by the type rather than hand-listed, so a new ResyncTriggerState member (other than
@@ -222,6 +248,85 @@ const SPOKEN_STATES = {
   failed: true,
   backendTriggered: true,
 } satisfies Record<Exclude<ResyncTriggerState, 'idle'>, true>;
+
+describe('importRefusalNoticeVisible (#460)', () => {
+  const run = (runId: string) => ({ runId }) as ImportRunInfo;
+  const cases: {
+    name: string;
+    noticeRunId: string | null;
+    run: ImportRunInfo | null;
+    isRunning: boolean;
+    visible: boolean;
+  }[] = [
+    {
+      name: 'no run behind the notice',
+      noticeRunId: null,
+      run: null,
+      isRunning: false,
+      visible: true,
+    },
+    {
+      name: 'no run behind the notice, another run shown',
+      noticeRunId: null,
+      run: run('a'),
+      isRunning: false,
+      visible: true,
+    },
+    {
+      name: 'its run is shown and running',
+      noticeRunId: 'a',
+      run: run('a'),
+      isRunning: true,
+      visible: true,
+    },
+    {
+      name: 'its run is shown and stopped',
+      noticeRunId: 'a',
+      run: run('a'),
+      isRunning: false,
+      visible: false,
+    },
+    {
+      name: 'a different run is shown',
+      noticeRunId: 'a',
+      run: run('b'),
+      isRunning: false,
+      visible: true,
+    },
+    {
+      name: 'a different run is shown and running',
+      noticeRunId: 'a',
+      run: run('b'),
+      isRunning: true,
+      visible: true,
+    },
+    { name: 'no run is shown', noticeRunId: 'a', run: null, isRunning: false, visible: true },
+  ];
+
+  for (const c of cases) {
+    it(`${c.name}: ${c.visible ? 'stands' : 'gives way'}`, () => {
+      expect(
+        importRefusalNoticeVisible({
+          noticePending: true,
+          noticeRunId: c.noticeRunId,
+          run: c.run,
+          isRunning: c.isRunning,
+        }),
+      ).toBe(c.visible);
+    });
+  }
+
+  it('never stands once the notice window is over', () => {
+    expect(
+      importRefusalNoticeVisible({
+        noticePending: false,
+        noticeRunId: null,
+        run: null,
+        isRunning: false,
+      }),
+    ).toBe(false);
+  });
+});
 
 describe('resyncNoticeKey', () => {
   it('has nothing to say while idle, regardless of family', () => {
@@ -353,6 +458,46 @@ describe('DockOutcomeAnnouncer', () => {
     ]);
   });
 
+  // #460: the settled run's summary names the refused rows from its own record, in the panel's
+  // status region — so the announcer drops its transient twin once that run has stopped running.
+  describe('import refusal lines and the run their start began (#460)', () => {
+    const UNCHECKED = '2 Emotes nicht kopiert — Zielset gerade nicht prüfbar.';
+    const DRIFT =
+      '3 Ersetzungen wurden nicht ausgeführt — das Ziel hatte sich seit der Bestätigung verändert.';
+
+    function openNotice(runId: string | null, isRunning: boolean): void {
+      importService.run.set(nonActiveRun([]));
+      importService.isRunning.set(isRunning);
+      importService.targetUncheckedSkipped.set(2);
+      importService.duplicateCheckAvailable.set(false);
+      importService.replaceSkippedDrift.set(3);
+      importService.duplicateNoticePending.set(true);
+      importService.refusalNoticeRunId.set(runId);
+      fixture.detectChanges();
+    }
+
+    it('speaks both while the run its start began is still running', () => {
+      openNotice('import-1', true);
+
+      expect(spoken()).toEqual([UNCHECKED, DRIFT]);
+    });
+
+    it('speaks neither once that run has stopped running', () => {
+      openNotice('import-1', true);
+
+      importService.isRunning.set(false);
+      fixture.detectChanges();
+
+      expect(spoken()).toEqual([]);
+    });
+
+    it('speaks both for a start that began no run, shown run or not', () => {
+      openNotice(null, false);
+
+      expect(spoken()).toEqual([UNCHECKED, DRIFT]);
+    });
+  });
+
   // #253, spec 4.5 point 17, AK 32: the shared pre-check blocked a replace-carrying start before
   // anything ran — same reachable-with-no-run shape as the drift notice above, same window.
   it('fills the region that was already standing when the shared pre-check blocks a replace-carrying start', () => {
@@ -403,6 +548,7 @@ describe('DockOutcomeAnnouncer', () => {
   it('lists several outcomes in the dock reading order: restore before import, skips, check, resync', () => {
     importService.resyncTrigger.set('succeeded');
     importService.skippedDuplicates.set(3);
+    importService.targetUncheckedSkipped.set(2);
     importService.duplicateCheckAvailable.set(false);
     importService.duplicateNoticePending.set(true);
     restoreService.resyncTrigger.set('pending');
@@ -414,9 +560,37 @@ describe('DockOutcomeAnnouncer', () => {
       '1 Emote ist bereits im Zielset und wurde übersprungen.',
       'Synchronisierung wird angestoßen…',
       '3 Emotes waren beim Start bereits im Zielset und wurden übersprungen.',
-      'Import-Prüfung nicht möglich.',
+      '2 Emotes nicht kopiert — Zielset gerade nicht prüfbar.',
       'Abgleich angestoßen.',
     ]);
+  });
+
+  // #457: the import's rows refused against an unchecked target read — one count, the wording
+  // picked by whether the read succeeded (listed only partly) or failed (could not be checked).
+  it('speaks the unchecked-target count in the wording its read picked, only while the window is open', () => {
+    importService.targetUncheckedSkipped.set(1);
+    importService.duplicateCheckAvailable.set(true);
+    importService.duplicateNoticePending.set(true);
+    fixture.detectChanges();
+    expect(spoken()).toEqual(['1 Emote nicht kopiert — Zielset nur teilweise gelistet.']);
+
+    importService.duplicateCheckAvailable.set(false);
+    fixture.detectChanges();
+    expect(spoken()).toEqual(['1 Emote nicht kopiert — Zielset gerade nicht prüfbar.']);
+
+    importService.duplicateNoticePending.set(false);
+    fixture.detectChanges();
+    expect(spoken()).toEqual([]);
+  });
+
+  // #457: the import's "duplicates are possible" line is retired — a failed check no longer lets
+  // any row through that could duplicate, so with nothing refused there is nothing to say.
+  it('says nothing about the import check when it failed but refused no row', () => {
+    importService.duplicateCheckAvailable.set(false);
+    importService.duplicateNoticePending.set(true);
+    fixture.detectChanges();
+
+    expect(spoken()).toEqual([]);
   });
 
   /** Minimal `ImportRunItem` fixture for the copied/renamed-not-active tests below — only
@@ -459,6 +633,9 @@ describe('DockOutcomeAnnouncer', () => {
       tagPlacementReportReason: null,
       tagPlacementDiscardedStaleCount: 0,
       origin: { kind: 'channel', channelName: 'quellkanal' },
+      targetUncheckedSkipped: 0,
+      duplicateCheckAvailable: true,
+      replaceSkippedDrift: 0,
       plan: { rows: [] },
       settlement: 'settled',
       removedCount: 0,
@@ -716,6 +893,34 @@ describe('DockOutcomeAnnouncer', () => {
       '2 davon durch den Filter ausgeblendet',
       'Synchronisierung angestoßen.',
     ]);
+  });
+
+  /**
+   * protects: the retry hint (#453) is spoken on each 0 -> positive transition of the host's count.
+   * fails_when: a positive -> positive change (a prune from 25 to 24) speaks again, the return to 0
+   *   speaks, or a second run with the same count stays silent.
+   * no_claim: the DOM nesting of the paragraph, the wording of the translation.
+   */
+  it('speaks the retry hint once per 0 -> positive transition and stays silent on prunes', () => {
+    const host = fixture.componentInstance;
+    const regionAtRest = regions()[0];
+
+    host.retrySelectedCount.set(25);
+    fixture.detectChanges();
+    expect(spoken()).toEqual(['25 Einträge nicht gelöscht, weiter ausgewählt.']);
+
+    host.retrySelectedCount.set(24);
+    fixture.detectChanges();
+    expect(spoken()).toEqual(['25 Einträge nicht gelöscht, weiter ausgewählt.']);
+
+    host.retrySelectedCount.set(0);
+    fixture.detectChanges();
+    expect(spoken()).toEqual([]);
+
+    host.retrySelectedCount.set(25);
+    fixture.detectChanges();
+    expect(spoken()).toEqual(['25 Einträge nicht gelöscht, weiter ausgewählt.']);
+    expect(regions()).toEqual([regionAtRest]);
   });
 
   // #201 T-C: a tag play-in's placement report — its end state only, never the pending line.

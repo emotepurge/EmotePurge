@@ -70,7 +70,8 @@ export class EmoteAdminService {
   }
 
   /** The import dialog's own picture of the target set — no time range, no usage numbers — so it
-   *  can answer "already there?" and "name collision?" without pulling in the full usage grid.
+   *  can answer "already there?" and "name collision?" without pulling in the full usage grid. One
+   *  item per set entry (#444): an emote under two aliases arrives twice, once per alias.
    *  Fetched once per dialog open, not cached: the server has already reduced it to ~50 KB. */
   listEmotes(channelName: string): Observable<EmoteListItem[]> {
     return this.http

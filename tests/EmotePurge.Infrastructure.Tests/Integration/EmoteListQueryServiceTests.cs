@@ -117,6 +117,78 @@ public class EmoteListQueryServiceTests(PostgresFixture fixture)
         Assert.All(emotes, e => Assert.Equal("Dup", e.Name));
     }
 
+    [Fact]
+    public async Task ListActiveAsync_ListsOneRowPerActiveSlot_SoAnEmoteUnderTwoAliasesIsTwoRows()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "emotelist8", ("7tv-a", "ome44", false));
+        var emote = db.Emotes.Local.Single(e => e.ChannelId == channel.Id);
+        AddSlot(db, emote, "ome44");
+        AddSlot(db, emote, "hob44");
+        await db.SaveChangesAsync();
+
+        var emotes = await new EmoteListQueryService(db).ListActiveAsync("emotelist8");
+
+        Assert.NotNull(emotes);
+        Assert.Equal(
+            [("7tv-a", "hob44"), ("7tv-a", "ome44")],
+            emotes.Select(e => (e.SevenTvEmoteId, e.Name)));
+        Assert.All(emotes, e => Assert.Equal("https://cdn.7tv.app/emote/7tv-a/2x.webp", e.ImageUrl));
+    }
+
+    [Fact]
+    public async Task ListActiveAsync_LeavesOutArchivedAndBackfillOnlySlots_AndUnsettledSeeds()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "emotelist9", ("7tv-a", "Current", false));
+        var emote = db.Emotes.Local.Single(e => e.ChannelId == channel.Id);
+        AddSlot(db, emote, "Current");
+        AddSlot(db, emote, "LeftTheSet", archived: true, archivedAt: DateTime.UtcNow);
+        // A chat-log backfill slot: archived without an ArchivedAt, "was never in".
+        AddSlot(db, emote, "FromTheArchive", archived: true);
+        AddSlot(db, emote, "Seeded", seedUnsettled: true);
+        await db.SaveChangesAsync();
+
+        var emotes = await new EmoteListQueryService(db).ListActiveAsync("emotelist9");
+
+        Assert.NotNull(emotes);
+        var only = Assert.Single(emotes);
+        Assert.Equal(("7tv-a", "Current"), (only.SevenTvEmoteId, only.Name));
+    }
+
+    [Fact]
+    public async Task ListActiveAsync_LeavesOutTheActiveSlotsOfAnArchivedEmote()
+    {
+        await using var db = fixture.CreateDbContext();
+        var channel = await SeedChannelAsync(db, "emotelist10", ("7tv-a", "Gone", true));
+        var emote = db.Emotes.Local.Single(e => e.ChannelId == channel.Id);
+        AddSlot(db, emote, "Gone");
+        await db.SaveChangesAsync();
+
+        var emotes = await new EmoteListQueryService(db).ListActiveAsync("emotelist10");
+
+        Assert.NotNull(emotes);
+        Assert.Empty(emotes);
+    }
+
+    private static void AddSlot(
+        Persistence.AppDbContext db,
+        Emote emote,
+        string name,
+        bool archived = false,
+        DateTime? archivedAt = null,
+        bool seedUnsettled = false)
+    {
+        db.EmoteSlots.Add(new EmoteSlot
+        {
+            EmoteId = emote.Id,
+            Name = name,
+            IsArchived = archived,
+            ArchivedAt = archivedAt,
+            SeedUnsettled = seedUnsettled,
+        });
+    }
+
     private static async Task<Channel> SeedChannelAsync(
         Persistence.AppDbContext db,
         string name,

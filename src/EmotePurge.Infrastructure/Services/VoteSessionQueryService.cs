@@ -121,11 +121,11 @@ public class VoteSessionQueryService(
         // no set: its usage is what the emote got in the channel during the session's window,
         // summed across every set — the channel's active set may have changed since (or be empty),
         // and the rows behind the window sit under whichever set was active at chat time.
+        var usageScope = session.EmoteSetId is null ? EmoteSetScope.AllSets : EmoteSetScope.Set(session.EmoteSetId);
         var usageByEmoteId = !includeRawUsage || candidateEmotes.Count == 0
             ? new Dictionary<string, int>()
             : await usageStatQueryService.GetTotalsByEmoteIdsAsync(
-                candidateEmotes.Select(e => e.Id).ToList(), from, to,
-                session.EmoteSetId is null ? EmoteSetScope.AllSets : EmoteSetScope.Set(session.EmoteSetId), cancellationToken);
+                candidateEmotes.Select(e => e.Id).ToList(), from, to, usageScope, cancellationToken);
 
         // Same as the usage totals above: not computed at all for a viewer who may not see them.
         var voteTallies = !includeTallies
@@ -225,15 +225,27 @@ public class VoteSessionQueryService(
         // under this set at all, in any date" (GetTotalsByEmoteIdsAsync's own doc comment) and
         // reports null rather than a fabricated 0; a row that exists but falls outside the session's
         // own window is present with its in-range sum, which is legitimately 0 (spec section 9, AK 80).
-        int? useCount = !includeRawUsage
-            ? null
-            : isSetSession
-                ? usageByEmoteId.TryGetValue(emote.Id, out var setUseCount) ? setUseCount : null
-                : !emote.IsArchived ? usageByEmoteId.GetValueOrDefault(emote.Id, 0) : null;
+        var useCount = UseCountOf(emote, includeRawUsage, isSetSession, usageByEmoteId);
 
         return new VoteSessionResultDto(
             emote.Id, emote.Name, emote.SevenTvEmoteId, emote.ImageUrl, useCount, keep, delete, keep - delete,
             emote.IsArchived, eligible, myVote, ListAliases(emote, slotAliases));
+    }
+
+    private static int? UseCountOf(
+        CandidateEmote emote, bool includeRawUsage, bool isSetSession, IReadOnlyDictionary<string, int> usageByEmoteId)
+    {
+        if (!includeRawUsage)
+        {
+            return null;
+        }
+
+        if (isSetSession)
+        {
+            return usageByEmoteId.TryGetValue(emote.Id, out var setUseCount) ? setUseCount : null;
+        }
+
+        return !emote.IsArchived ? usageByEmoteId.GetValueOrDefault(emote.Id, 0) : null;
     }
 
     /// <summary>

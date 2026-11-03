@@ -700,7 +700,7 @@ public partial class ChatLogBackfillServiceTests
         await using (var swap = new NpgsqlCommand(
             "SELECT pg_advisory_unlock(hashtext('emotepurge:chatlog-backfill')) AND pg_try_advisory_lock(hashtext('another-key'))", lockConnection))
         {
-            Assert.Equal(true, await swap.ExecuteScalarAsync());
+            Assert.True(Assert.IsType<bool>(await swap.ExecuteScalarAsync()));
         }
 
         Assert.False(await holderA.HoldsLoopLockAsync());

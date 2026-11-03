@@ -1,6 +1,10 @@
 namespace EmotePurge.Core.Services;
 
-/// <summary>An active emote, reduced to the fields a cross-channel comparison needs.</summary>
+/// <summary>
+/// One entry of a channel's active set, reduced to the fields a cross-channel comparison needs —
+/// one per slot (#444): an emote under two aliases is two items with the same
+/// <c>SevenTvEmoteId</c>, each under its own <c>Name</c>.
+/// </summary>
 /// <remarks>
 /// Deliberately no <c>Emote.Id</c>: that guid is channel-scoped (rule 8) and would be meaningless
 /// when this list is compared against emotes from another channel, which is the whole point of an
@@ -12,6 +16,9 @@ public record EmoteListItemDto(string SevenTvEmoteId, string Name, string ImageU
 
 public interface IEmoteListQueryService
 {
-    /// <summary>Returns <c>null</c> for a channel that is not tracked at all.</summary>
+    /// <summary>
+    /// One item per entry of the channel's active set (per slot, not per emote), sorted ordinally by
+    /// name. Returns <c>null</c> for a channel that is not tracked at all.
+    /// </summary>
     Task<IReadOnlyList<EmoteListItemDto>?> ListActiveAsync(string channelName, CancellationToken cancellationToken = default);
 }

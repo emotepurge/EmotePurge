@@ -1,4 +1,13 @@
-import { Component, Signal, computed, effect, inject, input, signal } from '@angular/core';
+import {
+  Component,
+  Signal,
+  computed,
+  effect,
+  inject,
+  input,
+  linkedSignal,
+  signal,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { pluralKey } from '../../core/i18n/plural';
@@ -34,6 +43,21 @@ export function importTargetCheckBlockedKey(reason: TargetCheckBlockReason | nul
     case 'unavailable':
       return 'import.errors.targetCheckUnavailable';
   }
+}
+
+/** Translation key for the count of `add`/`renameSource` rows an import refused because its fresh
+ *  pre-send read of the target could not rule out a duplicate (#457,
+ *  `SevenTvImportService.targetUncheckedSkipped`). One count, two reasons the user can act on:
+ *  `checkAvailable` (the service's `duplicateCheckAvailable`) is `true` when the read succeeded but
+ *  did not list the whole set, and `false` when it failed or timed out. Shared by this announcer
+ *  and `ImportProgressSection`, so the spoken and the shown wording cannot drift apart. */
+export function importTargetUncheckedSkippedKey(count: number, checkAvailable: boolean): string {
+  return pluralKey(
+    count,
+    checkAvailable
+      ? 'import.summary.targetUncheckedSkipped.incomplete'
+      : 'import.summary.targetUncheckedSkipped.unavailable',
+  );
 }
 
 /** Translation key for a run's resync acknowledgement, or `null` while there is nothing to say.
@@ -144,6 +168,27 @@ export function undoSkippedNotice(state: {
   return undoSkippedLines(counts);
 }
 
+/**
+ * Whether the import's transient `targetUncheckedSkipped` and `replaceSkippedDrift` lines stand
+ * (#460) — shared by `ImportProgressSection` (visible, aria-hidden) and this announcer (spoken).
+ * They give way once the run their start began has stopped running: the run's settled summary
+ * names the same rows from its own record, and showing both would name each row twice (and speak
+ * it twice). Like the undo's {@link undoSkippedNotice}, neither stands while the run is
+ * `settling`. A start that began no run — everything refused, the engine refused — leaves no
+ * summary, so its notice is the only voice and stands for its whole window.
+ */
+export function importRefusalNoticeVisible(state: {
+  noticePending: boolean;
+  noticeRunId: string | null;
+  run: ImportRunInfo | null;
+  isRunning: boolean;
+}): boolean {
+  if (!state.noticePending) {
+    return false;
+  }
+  return state.noticeRunId === null || state.run?.runId !== state.noticeRunId || state.isRunning;
+}
+
 /** The two settled-run notices below (`copiedNotActiveNotice`, `renamedNotActiveNotice`) share this
  *  gate: a *settled* (`settlement === 'settled'`) run into a tracked, non-active set — the case
  *  `SevenTvImportService.onRunComplete`'s resync never fires for at all (there is nothing for
@@ -161,12 +206,7 @@ export function undoSkippedNotice(state: {
 function notActiveNoticeParams(
   run: ImportRunInfo | null,
 ): { channel: string; setName: string } | null {
-  if (
-    run === null ||
-    run.settlement !== 'settled' ||
-    run.targetChannelName === null ||
-    run.targetIsActiveSet
-  ) {
+  if (run?.settlement !== 'settled' || run.targetChannelName === null || run.targetIsActiveSet) {
     return null;
   }
   return { channel: run.targetChannelName, setName: run.targetSetName };
@@ -333,6 +373,11 @@ export function markedCountNoticeKey(count: number): string {
         }}
       </p>
     }
+    <!-- The rows the last delete run left marked (#453) — the dock line below the pending-sync one.
+         Spoken with the count of the moment it appeared; see retrySpokenCount. -->
+    @if (retrySpokenCount(); as retry) {
+      <p>{{ retryKey() | transloco: { count: retry } }}</p>
+    }
     <!-- #280: a confirmed delete whose live alias read is still out — the marking half's own wait,
          so after the two marking lines and before the restore group; spoken on both pages, since
          both mount the mass-delete panel. -->
@@ -387,10 +432,17 @@ export function markedCountNoticeKey(count: number): string {
           {{ importSkippedKey() | transloco: { count: importService.skippedDuplicates() } }}
         </p>
       }
-      @if (importService.duplicateNoticePending() && !importService.duplicateCheckAvailable()) {
-        <p>{{ 'import.duplicateCheckUnavailable' | transloco }}</p>
+      @if (importRefusalNoticeVisible() && importService.targetUncheckedSkipped() > 0) {
+        <p>
+          {{
+            importTargetUncheckedSkippedKey()
+              | transloco: { count: importService.targetUncheckedSkipped() }
+          }}
+        </p>
       }
-      @if (importService.duplicateNoticePending() && importService.replaceSkippedDrift() > 0) {
+      <!-- #460: both refusal counts give way once the run their start began has stopped running; the
+           settled summary names them from the run record, spoken by the panel's own status region. -->
+      @if (importRefusalNoticeVisible() && importService.replaceSkippedDrift() > 0) {
         <p>
           {{
             importReplaceSkippedDriftKey()
@@ -465,11 +517,29 @@ export class DockOutcomeAnnouncer {
    *  gates into this list, as for `hiddenSelectedCount`. */
   readonly pendingSyncNames = input<readonly string[]>([]);
 
+  /** How many rows the last delete run left marked and the dock's retry hint names, or 0 when that
+   *  hint is not on screen (#453). Announced on every 0 → positive transition; see
+   *  `retrySpokenCount`. */
+  readonly retrySelectedCount = input(0);
+
   protected readonly restoreService = inject(SevenTvRestoreService);
   protected readonly importService = inject(SevenTvImportService);
   private readonly undoService = inject(SevenTvUndoService);
   private readonly deleteService = inject(SevenTvDeleteService);
 
+  /** The count the retry sentence was spoken with. By design the region keeps the count announced at
+   *  the 0-to-positive transition, so it may still say 25 after a prune to 24. It keeps the first positive value until the
+   *  input returns to 0: a prune from 25 to 24 changes the dock's visible line but must not make the
+   *  region speak again, and the next run speaks anew because its in-flight phase passes the count
+   *  through 0. */
+  protected readonly retrySpokenCount = linkedSignal<number, number>({
+    source: () => this.retrySelectedCount(),
+    computation: (count, previous) =>
+      count === 0 ? 0 : previous !== undefined && previous.value > 0 ? previous.value : count,
+  });
+  protected readonly retryKey = computed(() =>
+    pluralKey(this.retrySpokenCount(), 'usageStats.delete.retryHint'),
+  );
   protected readonly markedKey = computed(() => markedCountNoticeKey(this.markedCount()));
   protected readonly hiddenByFilterKey = computed(() =>
     hiddenByFilterNoticeKey(this.hiddenSelectedCount()),
@@ -485,6 +555,20 @@ export class DockOutcomeAnnouncer {
   );
   protected readonly importSkippedKey = computed(() =>
     pluralKey(this.importService.skippedDuplicates(), 'import.skippedDuplicates'),
+  );
+  protected readonly importRefusalNoticeVisible = computed(() =>
+    importRefusalNoticeVisible({
+      noticePending: this.importService.duplicateNoticePending(),
+      noticeRunId: this.importService.refusalNoticeRunId(),
+      run: this.importService.run(),
+      isRunning: this.importService.isRunning(),
+    }),
+  );
+  protected readonly importTargetUncheckedSkippedKey = computed(() =>
+    importTargetUncheckedSkippedKey(
+      this.importService.targetUncheckedSkipped(),
+      this.importService.duplicateCheckAvailable(),
+    ),
   );
   protected readonly importReplaceSkippedDriftKey = computed(() =>
     pluralKey(this.importService.replaceSkippedDrift(), 'import.summary.replaceSkippedDrift'),

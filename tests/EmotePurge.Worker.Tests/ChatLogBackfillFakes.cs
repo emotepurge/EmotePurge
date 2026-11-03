@@ -534,7 +534,7 @@ internal sealed class FakeArchive(TimeProvider clock) : IChatLogArchiveClient
         new(status, bytes, 0, 0, 0, http, retryAfter);
 
     /// <summary>A read that only ends when its token is cancelled, then answers like the real client mid-body.</summary>
-    public static async Task<ChatLogRangeResult> UntilCancelled(CancellationToken ct, Action onCancelled)
+    public static async Task<ChatLogRangeResult> UntilCancelled(Action onCancelled, CancellationToken ct)
     {
         try
         {
@@ -547,10 +547,6 @@ internal sealed class FakeArchive(TimeProvider clock) : IChatLogArchiveClient
         onCancelled();
         return new ChatLogRangeResult(ChatLogDayStatus.Cancelled, 4096, 7, 0, 0, 200, null);
     }
-
-    public Task<ChatLogDayResult> ReadDayAsync(
-        string twitchChannelId, DateOnly day, long maxBytes, Func<ChatLogMessage, ValueTask> onMessage, CancellationToken ct) =>
-        throw new NotSupportedException("The backfill reads ranges.");
 
     public Task<ChatLogRangeResult> ReadRangeAsync(
         string twitchChannelId, DateTime fromUtc, DateTime toUtcExclusive, long maxBytes, Func<ChatLogMessage, ValueTask> onMessage,

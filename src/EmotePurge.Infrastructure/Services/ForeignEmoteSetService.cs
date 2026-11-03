@@ -143,7 +143,7 @@ public class ForeignEmoteSetService(
 
         return ForeignEmoteSetLookupResult.Ok(new ForeignEmoteSet(
             normalized, identity.SevenTvUserId, identity.ActiveEmoteSetId, preview.TotalCount, preview.Truncated, emotes,
-            preview.Name, preview.Capacity));
+            preview.Name, preview.Capacity, preview.ReadState, preview.OmittedCount));
     }
 
     // Set-ID mode (spec 2026-09-20, 6.4/E8): no identity resolution at all — neither Helix nor the
@@ -200,7 +200,7 @@ public class ForeignEmoteSetService(
         // no role in at all.
         return ForeignEmoteSetLookupResult.Ok(new ForeignEmoteSet(
             normalized, null, emoteSetId, preview.TotalCount, preview.Truncated, emotes,
-            preview.Name, preview.Capacity));
+            preview.Name, preview.Capacity, preview.ReadState, preview.OmittedCount));
     }
 
     // The K3 source-set list (spec 2026-09-20, 6.3): step 1 is a byte-for-byte repeat of

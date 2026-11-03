@@ -191,12 +191,40 @@ describe('ForeignEmoteGrid', () => {
 
     component['onCellClick'](a, { shiftKey: false } as MouseEvent);
     component['onCellClick'](b, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b']);
+    expect(
+      component['selection']
+        .selectedItems()
+        .map((each) => each.sevenTvEmoteId)
+        .sort(),
+    ).toEqual(['a', 'b']);
 
     component['clearSelection']();
 
     expect(component['selection'].selectedKeys()).toEqual([]);
     expect(emitted.at(-1)).toEqual([]);
+  });
+
+  it('keeps two aliases of one emote apart as two cells: one click selects only its own (#444)', async () => {
+    const ome = row({ sevenTvEmoteId: 'e1', name: 'ome44' });
+    const hob = row({ sevenTvEmoteId: 'e1', name: 'hob44' });
+    render([ome, hob]);
+    const cells = () => host.querySelectorAll<HTMLButtonElement>('button[aria-pressed]');
+    // jsdom renders the virtual rows on an animation frame — see the animation cases below.
+    for (let attempt = 0; attempt < 50 && cells().length < 2; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await fixture.whenStable();
+    }
+    const emitted: ForeignEmoteRow[][] = [];
+    component.selectionChange.subscribe((rows) => emitted.push(rows));
+
+    component['onCellClick'](hob, { shiftKey: false } as MouseEvent);
+    fixture.detectChanges();
+
+    expect(emitted.at(-1)).toEqual([hob]);
+    expect([...cells()].map((cell) => cell.getAttribute('aria-pressed'))).toEqual([
+      'false',
+      'true',
+    ]);
   });
 
   // K3 follow-up fix: a host (ForeignChannelStep) can now serve a switch straight from its own
@@ -209,7 +237,9 @@ describe('ForeignEmoteGrid', () => {
     const b = row({ sevenTvEmoteId: 'b' });
     render([a]);
     component['onCellClick'](a, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedItems().map((each) => each.sevenTvEmoteId)).toEqual([
+      'a',
+    ]);
 
     const emitted: ForeignEmoteRow[][] = [];
     component.selectionChange.subscribe((rows) => emitted.push(rows));
@@ -238,7 +268,9 @@ describe('ForeignEmoteGrid', () => {
     const emotes = [a];
     render(emotes);
     component['onCellClick'](a, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedItems().map((each) => each.sevenTvEmoteId)).toEqual([
+      'a',
+    ]);
 
     const emitted: ForeignEmoteRow[][] = [];
     component.selectionChange.subscribe((rows) => emitted.push(rows));
@@ -248,7 +280,9 @@ describe('ForeignEmoteGrid', () => {
     fixture.componentRef.setInput('emotes', emotes);
     fixture.detectChanges();
 
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedItems().map((each) => each.sevenTvEmoteId)).toEqual([
+      'a',
+    ]);
     expect(emitted).toEqual([]);
   });
 
@@ -298,7 +332,12 @@ describe('ForeignEmoteGrid', () => {
     component['onCellClick'](rows[0], { shiftKey: false } as MouseEvent);
     component['onCellClick'](rows[3], { shiftKey: true } as MouseEvent);
 
-    expect(component['selection'].selectedKeys().sort()).toEqual(['a', 'b', 'c', 'd']);
+    expect(
+      component['selection']
+        .selectedItems()
+        .map((each) => each.sevenTvEmoteId)
+        .sort(),
+    ).toEqual(['a', 'b', 'c', 'd']);
     // 'e' was never part of the range — the whole point of a per-row selection (spec F4).
     expect(component['selection'].isSelected(rows[4])).toBe(false);
   });
@@ -309,14 +348,18 @@ describe('ForeignEmoteGrid', () => {
     render([a, b]);
 
     component['onCellClick'](a, { shiftKey: false } as MouseEvent);
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedItems().map((each) => each.sevenTvEmoteId)).toEqual([
+      'a',
+    ]);
 
     component['sortMode'].set('topAllTime');
     fixture.detectChanges();
 
     // Still selected, and still resolves to the very same row object even though the display
     // order flipped — ListSelection is keyed, not positional (spec F4 / list-selection.ts).
-    expect(component['selection'].selectedKeys()).toEqual(['a']);
+    expect(component['selection'].selectedItems().map((each) => each.sevenTvEmoteId)).toEqual([
+      'a',
+    ]);
     expect(component['selection'].isSelected(a)).toBe(true);
     expect(component['selection'].selectedItems()).toEqual([a]);
   });

@@ -110,7 +110,7 @@ describe('parseImportSource', () => {
     expect(result.source.origin.kind === 'file' && result.source.origin.envelopeKind).toBe('usage');
   });
 
-  it('dedupes a usage file with two slot-card rows of one 7TV id to one entry, first row wins (D25)', () => {
+  it('keeps both slot-card rows of one 7TV id as two entries, so a re-import copies both aliases (#444)', () => {
     const result = parseImportSource(
       envelope({
         kind: 'usage',
@@ -127,8 +127,9 @@ describe('parseImportSource', () => {
     if (!result.ok) return;
     expect(result.source.rows).toEqual([
       { sevenTvEmoteId: '7tv-1', name: 'ome44', imageUrl: null },
+      { sevenTvEmoteId: '7tv-1', name: 'hob44', imageUrl: null },
     ]);
-    expect(result.source.duplicatesCollapsed).toBe(1);
+    expect(result.source.duplicatesCollapsed).toBe(0);
     expect(result.source.discardedRows).toBe(0);
   });
 
@@ -186,7 +187,7 @@ describe('parseImportSource', () => {
         rows: [
           { sevenTvEmoteId: '7tv-1', name: 'PogU' },
           { sevenTvEmoteId: '', name: 'broken' }, // empty id — discarded
-          { sevenTvEmoteId: '7tv-1', name: 'PogU-again' }, // duplicate of row 1 — collapsed
+          { sevenTvEmoteId: '7tv-1', name: 'PogU' }, // exact repeat of row 1 — collapsed
           { sevenTvEmoteId: '7tv-2', name: 'Kappa' },
         ],
       }),

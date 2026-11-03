@@ -47,21 +47,21 @@ describe('NamePreviewList', () => {
   it('caps at 50 by default and names the rest', () => {
     const host = render(names(60));
 
-    expect(host.querySelectorAll('li').length).toBe(51); // 50 names + the "and more" row
+    expect(host.querySelectorAll('li')).toHaveLength(51); // 50 names + the "and more" row
     expect(host.textContent).toContain('… und 10 weitere');
   });
 
   it('shows every name under the default cap without an overflow row', () => {
     const host = render(names(3));
 
-    expect(host.querySelectorAll('li').length).toBe(3);
+    expect(host.querySelectorAll('li')).toHaveLength(3);
     expect(host.textContent).not.toContain('weitere');
   });
 
   it('shows all names when cap is null, however many there are', () => {
     const host = render(names(60), null);
 
-    expect(host.querySelectorAll('li').length).toBe(60);
+    expect(host.querySelectorAll('li')).toHaveLength(60);
     expect(host.textContent).not.toContain('weitere');
   });
 });

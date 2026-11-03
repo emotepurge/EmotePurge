@@ -137,7 +137,8 @@ export function buildUsageExportPurposeDownload(
         return null;
       }
       // Same dedupe, envelope and filename the target dialog's file destination used before #141
-      // moved it here — the written file is unchanged, only the way in.
+      // moved it here. The dedupe is per set entry since #444: two slot cards of one emote are two
+      // rows of the file, so a re-import copies both aliases.
       const deduped = dedupeImportRows(scope.rows.map(toImportRow));
       const envelope = buildEmoteListEnvelope({
         channelName: scope.channelName,

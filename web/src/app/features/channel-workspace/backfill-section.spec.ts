@@ -424,7 +424,7 @@ describe('BackfillSection', () => {
 
     expect(section['status']()?.activeRun).toBeNull();
     expect(section['starting']()).toBe(false);
-    expect(getStatus.mock.calls.length).toBe(callsBefore);
+    expect(getStatus.mock.calls).toHaveLength(callsBefore);
   });
 
   it('does not show the error of a start issued for a channel the user has since left', async () => {
@@ -878,7 +878,7 @@ describe('BackfillSection', () => {
       pending.error(httpError(403));
 
       expect(fixture.componentInstance['cancelErrorKey']()).toBeNull();
-      expect(getStatus.mock.calls.length).toBe(callsBefore);
+      expect(getStatus.mock.calls).toHaveLength(callsBefore);
     });
   });
 
@@ -903,7 +903,7 @@ describe('BackfillSection', () => {
       pending.complete();
 
       expect(section['status']()?.activeRun).toBeNull();
-      expect(getStatus.mock.calls.length).toBe(callsBefore);
+      expect(getStatus.mock.calls).toHaveLength(callsBefore);
     });
 
     it('A → B → A: a stale error neither shows nor unlocks a newer start', async () => {
@@ -1393,7 +1393,7 @@ describe('BackfillSection', () => {
 
       expect(section['removalAnnouncement']()).toBeNull();
       expect(section.importedIntervals()).toHaveLength(2);
-      expect(getStatus.mock.calls.length).toBe(callsBefore);
+      expect(getStatus.mock.calls).toHaveLength(callsBefore);
     });
 
     it('does not show the error of a removal issued for a channel the user has since left', async () => {

@@ -411,7 +411,7 @@ describe('AdminLogsPage', () => {
       await settle();
     }
 
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(LOG_LIST_LIMIT);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(LOG_LIST_LIMIT);
     expect(root().querySelector('[data-testid="log-limit"]')?.textContent).toContain(
       'narrow the time range or the filter',
     );
@@ -421,13 +421,13 @@ describe('AdminLogsPage', () => {
 
   it('clears rows and histogram when the URL turns invalid after a valid load', async () => {
     await openAndLoad('/admin/logs');
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(4);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(4);
 
     await router.navigateByUrl('/admin/logs?range=2d');
     await settle();
     statusRequest().flush(healthyStatus());
 
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(0);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(0);
     expect(root().querySelector('app-time-histogram')).toBeNull();
     expect(root().textContent).toContain('The time range in the address is not valid');
   });
@@ -447,7 +447,7 @@ describe('AdminLogsPage', () => {
 
     expect(root().textContent).toContain('More entries could not be loaded.');
     expect(root().textContent).not.toContain('out of date');
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(100);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(100);
 
     buttonNamed('Try again').click();
     const retry = listRequest((r) => r.params.get('before') === 'c1');
@@ -455,7 +455,7 @@ describe('AdminLogsPage', () => {
     retry.flush(page(100, 100, null));
     await settle();
 
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(200);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(200);
     expect(root().textContent).not.toContain('More entries could not be loaded.');
   });
 
@@ -533,7 +533,7 @@ describe('AdminLogsPage', () => {
     const message = root().querySelector(`#${input().getAttribute('aria-describedby')}`);
     expect(message?.textContent).toContain('Invalid level');
     expect([input().selectionStart, input().selectionEnd]).toEqual([6, 11]);
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(0);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(0);
   });
 
   it('holds the first page until the summary and the status have answered, so nothing lands above it later', async () => {
@@ -575,19 +575,19 @@ describe('AdminLogsPage', () => {
     listRequest().flush(page(4, 4, null));
     summaryRequest().flush(summary());
     await settle();
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(0);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(0);
 
     statusRequest().flush({}, { status: 500, statusText: 'x' });
     await settle();
 
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(4);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(4);
     // The status is advisory: its failure is no page error.
     expect(root().querySelector('[role="alert"]')).toBeNull();
   });
 
   it('clears list and histogram when the summary refuses the filter while the page is held', async () => {
     await openAndLoad('/admin/logs');
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(4);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(4);
 
     input().value = 'level:debug';
     input().dispatchEvent(new Event('input'));
@@ -602,7 +602,7 @@ describe('AdminLogsPage', () => {
     );
     await settle();
 
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(0);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(0);
     expect(root().querySelector('app-time-histogram')).toBeNull();
     expect(input().getAttribute('aria-invalid')).toBe('true');
   });
@@ -612,12 +612,12 @@ describe('AdminLogsPage', () => {
     statusRequest().flush(healthyStatus());
     listRequest().flush(page(4, 4, null));
     await settle();
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(0);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(0);
 
     summaryRequest().flush({}, { status: 503, statusText: 'Busy' });
     await settle();
 
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(4);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(4);
     expect(root().querySelector('[role="alert"]')?.textContent).toContain('busy');
   });
 
@@ -635,7 +635,7 @@ describe('AdminLogsPage', () => {
       'Query too expensive — narrow the time range or the filter',
     );
     expect(root().querySelector('[role="alert"]')?.textContent).toContain('out of date');
-    expect(root().querySelectorAll('[data-log-id]').length).toBe(4);
+    expect(root().querySelectorAll('[data-log-id]')).toHaveLength(4);
   });
 
   it('lists every drop reason above zero, rejected included, and keeps the "possibly"', async () => {
@@ -1052,11 +1052,18 @@ describe('AdminLogsPage', () => {
       rangeToUtc: null,
       truncated: false,
     });
+    const LIVE_NOW = '2026-10-14T12:00:05Z';
     const startFakeDate = (iso: string) => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date(iso));
     };
     const advanceDate = (ms: number) => vi.setSystemTime(Date.now() + ms);
+
+    // Every reconcile asks preflightReconcile whether [from_L, Date.now()) still fits the server's
+    // 8-day span. The fixtures' range starts at 2026-10-13T12:00:00Z, so on an unpinned clock the key
+    // query is (correctly) no longer sent once the calendar passes 2026-10-21T12:00Z. Pin "now" five
+    // seconds after the fixtures' newest instant; a later vi.useFakeTimers carries this time over.
+    beforeEach(() => startFakeDate(LIVE_NOW));
 
     /** One hint, the key query over the loaded interval, and the id fetch for what is missing. */
     async function reconcile(incoming: LogEntry[]): Promise<void> {
@@ -1159,7 +1166,6 @@ describe('AdminLogsPage', () => {
     });
 
     it('pauses after a failed reconcile: later hints send nothing until a manual load succeeds', async () => {
-      startFakeDate('2026-10-14T12:00:05Z');
       await openAndLoad('/admin/logs');
 
       emitLive('logs.appended');
@@ -1315,7 +1321,6 @@ describe('AdminLogsPage', () => {
     });
 
     it('announces every insert, also two in a row with the same count', async () => {
-      startFakeDate('2026-10-14T12:00:05Z');
       await openAndLoad('/admin/logs');
       const region = root().querySelector('[data-testid="log-live-announcement"]')!;
       const heard: string[] = [];
@@ -1342,7 +1347,6 @@ describe('AdminLogsPage', () => {
     });
 
     it('takes the focus off "n new" when the held rows go in on their own', async () => {
-      startFakeDate('2026-10-14T12:00:05Z');
       await openAndLoad('/admin/logs');
       const firstRowButton = () => root().querySelector<HTMLButtonElement>('[data-log-id] button')!;
       firstRowButton().click();
@@ -1548,7 +1552,7 @@ describe('AdminLogsPage', () => {
 
       // The last good answer stays, marked out of date, and nothing claims it is live.
       expect(root().querySelector('[role="alert"]')?.textContent).toContain('out of date');
-      expect(rowIds().length).toBe(100);
+      expect(rowIds()).toHaveLength(100);
       expect(marker()).toBe('Reload needed');
 
       // Neither a hint nor the tick reconciles the old rows against the new filter.
@@ -1581,7 +1585,6 @@ describe('AdminLogsPage', () => {
     });
 
     it('marks a live summary refresh as current, so "n of total" comes back after a failed one', async () => {
-      startFakeDate('2026-10-14T12:00:05Z');
       await open('/admin/logs');
       statusRequest().flush(healthyStatus());
       listRequest().flush(page(4, 4, null));
@@ -1598,7 +1601,6 @@ describe('AdminLogsPage', () => {
     });
 
     it('refreshes the summary at most once per 30 s, and only after something was inserted', async () => {
-      startFakeDate('2026-10-14T12:00:05Z');
       await openAndLoad('/admin/logs');
 
       advanceDate(6000);

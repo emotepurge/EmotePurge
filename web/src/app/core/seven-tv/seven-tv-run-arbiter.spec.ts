@@ -392,6 +392,8 @@ function undoFullRow(): UndoPlanRow {
       animatedById: new Map([['undo-src', false]]),
       occupiedSlots: 1,
       complete: true,
+      readState: 'complete',
+      omittedCount: 0,
     },
   );
   return plan.rows[0];

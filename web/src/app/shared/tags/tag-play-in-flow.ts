@@ -140,7 +140,7 @@ export function raiseNotice(
 }
 
 /** Clears a stale banner before a new attempt — the host's, or the sink's once the host is gone. */
-function clearNotice(request: NoticeRouting): void {
+export function clearNotice(request: NoticeRouting): void {
   if (request.hostAlive()) {
     request.notice.set(null);
   } else {
@@ -318,22 +318,16 @@ export function prepareTagRun(
   request.pending.set(true);
 
   const readLive = (ownerTwitchChannelId: string | null, entries: EmoteTagEntries): void => {
-    readLiveSetAliases(deps.httpClient, frozenSetId)
-      .pipe(takeUntilDestroyed(deps.destroyRef))
-      .subscribe((read) => {
-        if (read.status === 'blocked') {
-          block({ key: setReadReasonKey(read.reasonKey), retry: preparation.restart });
-          return;
-        }
-        done({
-          operationId,
-          frozenSetId,
-          activeEmoteSetId,
-          ownerTwitchChannelId,
-          entries,
-          live: read.entries,
-        });
-      });
+    readTagRunLive(deps, frozenSetId, block, preparation.restart, (live) =>
+      done({
+        operationId,
+        frozenSetId,
+        activeEmoteSetId,
+        ownerTwitchChannelId,
+        entries,
+        live,
+      }),
+    );
   };
 
   const register = (ownerTwitchChannelId: string | null, entries: EmoteTagEntries): void => {
@@ -366,40 +360,81 @@ export function prepareTagRun(
       });
   };
 
+  readTagEntries(deps, request, frozenSetId, block, preparation.restart, (entries) => {
+    // Set freeze (E29): the entries must describe the very set that was frozen, and it must
+    // still be the active one — otherwise nothing is registered.
+    if (entries.emoteSetId !== frozenSetId || !entries.isActiveSet) {
+      block({ key: 'tags.errors.setChanged' });
+      return;
+    }
+    resolveDeleteTarget(deps, frozenSetId, channelName)
+      .pipe(takeUntilDestroyed(deps.destroyRef))
+      .subscribe((resolution) => {
+        if (resolution.status === 'blocked') {
+          block({
+            key: preparation.targetBlockedKey(resolution),
+            // Only "could not be checked right now" is worth another try.
+            ...(resolution.reason === 'unavailable' ? { retry: preparation.restart } : {}),
+          });
+          return;
+        }
+        // No second look at the page's active set here, unlike the delete chain after its
+        // own pre-check (`startDeleteFlow`, Codex C3): nothing is written to 7TV before a
+        // set guard, and the guards are the gate — the clear-out's confirm, the import hook's
+        // start, and for "all present" the check right before its report. A switch while this
+        // check was out costs at most a dialog for a set that already moved on, whose
+        // confirmation then aborts with "set changed".
+        register(resolution.ownerTwitchChannelId, entries);
+      });
+  });
+}
+
+/**
+ * The tag's entries for exactly `setId`, read through the flows' shared bounded request: a request
+ * that never answers, or fails, ends in the "entries unavailable" block (with `restart` as its
+ * retry). What the entries must satisfy (the set they describe, whether it is the active one) is
+ * the flow's own call, made in `onEntries`. Shared by the active-set flows (`prepareTagRun`) and the
+ * run into another set (`tag-other-set-flow.ts`).
+ */
+export function readTagEntries(
+  deps: Pick<TagRunFlowDeps, 'tagService' | 'destroyRef'>,
+  request: Pick<TagRunRequest, 'channelName' | 'tag'>,
+  setId: string,
+  block: (notice: TagRunNotice) => void,
+  restart: () => void,
+  onEntries: (entries: EmoteTagEntries) => void,
+): void {
   deps.tagService
-    .listEntries(channelName, tag.id, frozenSetId)
+    .listEntries(request.channelName, request.tag.id, setId)
     // Bounded like the reports and live reads: a request that never answers ends in the error
     // notice below instead of holding `pending` (and both buttons) forever.
     .pipe(timeoutReportAttempt(), takeUntilDestroyed(deps.destroyRef))
     .subscribe({
-      next: (entries) => {
-        // Set freeze (E29): the entries must describe the very set that was frozen, and it must
-        // still be the active one — otherwise nothing is registered.
-        if (entries.emoteSetId !== frozenSetId || !entries.isActiveSet) {
-          block({ key: 'tags.errors.setChanged' });
-          return;
-        }
-        resolveDeleteTarget(deps, frozenSetId, channelName)
-          .pipe(takeUntilDestroyed(deps.destroyRef))
-          .subscribe((resolution) => {
-            if (resolution.status === 'blocked') {
-              block({
-                key: preparation.targetBlockedKey(resolution),
-                // Only "could not be checked right now" is worth another try.
-                ...(resolution.reason === 'unavailable' ? { retry: preparation.restart } : {}),
-              });
-              return;
-            }
-            // No second look at the page's active set here, unlike the delete chain after its
-            // own pre-check (`startDeleteFlow`, Codex C3): nothing is written to 7TV before a
-            // set guard, and the guards are the gate — the clear-out's confirm, the import hook's
-            // start, and for "all present" the check right before its report. A switch while this
-            // check was out costs at most a dialog for a set that already moved on, whose
-            // confirmation then aborts with "set changed".
-            register(resolution.ownerTwitchChannelId, entries);
-          });
-      },
-      error: () => block({ key: 'tags.errors.entriesUnavailable', retry: preparation.restart }),
+      next: onEntries,
+      error: () => block({ key: 'tags.errors.entriesUnavailable', retry: restart }),
+    });
+}
+
+/**
+ * The live read of `setId` from 7TV, with a blocked read mapped to the tag family's notice
+ * (`setReadReasonKey`) and `restart` as its retry. A half-known set decides nothing (E28), so a
+ * block ends the flow; `onRead` gets only a complete read.
+ */
+export function readTagRunLive(
+  deps: Pick<TagRunFlowDeps, 'httpClient' | 'destroyRef'>,
+  setId: string,
+  block: (notice: TagRunNotice) => void,
+  restart: () => void,
+  onRead: (live: SevenTvSetEntries) => void,
+): void {
+  readLiveSetAliases(deps.httpClient, setId)
+    .pipe(takeUntilDestroyed(deps.destroyRef))
+    .subscribe((read) => {
+      if (read.status === 'blocked') {
+        block({ key: setReadReasonKey(read.reasonKey), retry: restart });
+        return;
+      }
+      onRead(read.entries);
     });
 }
 

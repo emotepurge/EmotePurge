@@ -26,8 +26,6 @@ import { ImportProgressSection } from './import-progress-section';
 const DE_TRANSLATIONS = {
   common: { cancel: 'Abbrechen', close: 'Schließen' },
   import: {
-    duplicateCheckUnavailable:
-      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
     errors: {
       targetNotEditable: 'Das Zielset ist nicht (mehr) bearbeitbar oder existiert nicht mehr.',
       targetNotSelectable: 'Das Zielset ist kein normales Emote-Set.',
@@ -68,6 +66,16 @@ const DE_TRANSLATIONS = {
       removed: {
         one: '{{ count }} Emote aus dem Zielset entfernt.',
         other: '{{ count }} Emotes aus dem Zielset entfernt.',
+      },
+      targetUncheckedSkipped: {
+        incomplete: {
+          one: '{{ count }} Emote nicht kopiert — 7TV hat das Zielset nur teilweise gelistet.',
+          other: '{{ count }} Emotes nicht kopiert — 7TV hat das Zielset nur teilweise gelistet.',
+        },
+        unavailable: {
+          one: '{{ count }} Emote nicht kopiert — das Zielset ließ sich gerade nicht prüfen.',
+          other: '{{ count }} Emotes nicht kopiert — das Zielset ließ sich gerade nicht prüfen.',
+        },
       },
       replaceSkippedDrift: {
         one: '{{ count }} Ersetzung übersprungen — Ziel hat sich verändert.',
@@ -141,6 +149,9 @@ function runInfo(overrides: Partial<ImportRunInfo> = {}): ImportRunInfo {
     tagPlacementReportReason: null,
     tagPlacementDiscardedStaleCount: 0,
     origin: { kind: 'channel', channelName: 'quellkanal' },
+    targetUncheckedSkipped: 0,
+    duplicateCheckAvailable: true,
+    replaceSkippedDrift: 0,
     plan: { rows: [] },
     settlement: 'pending',
     removedCount: 0,
@@ -175,8 +186,10 @@ interface FakeImportService {
   abortedForPrivileges: WritableSignal<boolean>;
   skippedDuplicates: WritableSignal<number>;
   replaceSkippedDrift: WritableSignal<number>;
+  targetUncheckedSkipped: WritableSignal<number>;
   duplicateCheckAvailable: WritableSignal<boolean>;
   duplicateNoticePending: WritableSignal<boolean>;
+  refusalNoticeRunId: WritableSignal<string | null>;
   targetCheckBlockReason: WritableSignal<TargetCheckBlockReason | null>;
   protocolSaved: WritableSignal<boolean>;
   markProtocolSaved: ReturnType<typeof vi.fn>;
@@ -206,8 +219,10 @@ function createFakeImportService(): FakeImportService {
     abortedForPrivileges: signal(false),
     skippedDuplicates: signal(0),
     replaceSkippedDrift: signal(0),
+    targetUncheckedSkipped: signal(0),
     duplicateCheckAvailable: signal(true),
     duplicateNoticePending: signal(false),
+    refusalNoticeRunId: signal<string | null>(null),
     targetCheckBlockReason: signal<TargetCheckBlockReason | null>(null),
     protocolSaved: signal(false),
     markProtocolSaved: vi.fn(),
@@ -617,30 +632,59 @@ describe('ImportProgressSection', () => {
     );
   });
 
-  // #149: the fresh pre-send duplicate check's own fetch can fail — this notice is what tells the
-  // user a duplicate may have slipped in undetected, independent of the run-progress panel (shown
-  // even while idle, same reasoning as skippedDuplicatesKey above it). Since the #149 P2 fix these
-  // are gated on `duplicateNoticePending` too (design doc §4.5's transient-notice convention), so
-  // every case below sets it alongside `duplicateCheckAvailable`, matching how the real service
-  // always sets both together (`startImport` calls `showDuplicateNotice` right after setting
-  // `duplicateCheckAvailable`).
+  // #457 (superseding #149's fail-open for the import): when the fresh pre-send read of the target
+  // cannot rule out a duplicate — it failed or timed out, or 7TV listed the set only partly — no
+  // add/renameSource row is sent, and this line names how many were refused, independent of the
+  // run-progress panel (shown even while idle, same reasoning as skippedDuplicatesKey above it).
+  // Gated on `duplicateNoticePending` too (design doc §4.5's transient-notice convention), so every
+  // case below sets it alongside the count, matching how the real service always sets them together
+  // (`startImport` calls `showDuplicateNotice` right after setting the count).
   it('shows nothing while the duplicate check is available (the default)', () => {
     importService.duplicateCheckAvailable.set(true);
 
     const fixture = render();
 
-    expect(fixture.nativeElement.textContent).not.toContain('Wir konnten gerade nicht prüfen');
+    expect(fixture.nativeElement.textContent).not.toContain('nicht kopiert');
   });
 
-  it('shows the quiet notice once the duplicate check is reported unavailable, stating the consequence', () => {
+  it('names the rows refused against a target that could not be read, in the unavailable wording', () => {
+    importService.targetUncheckedSkipped.set(2);
     importService.duplicateCheckAvailable.set(false);
     importService.duplicateNoticePending.set(true);
 
     const fixture = render();
 
     expect(fixture.nativeElement.textContent).toContain(
-      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
+      '2 Emotes nicht kopiert — das Zielset ließ sich gerade nicht prüfen.',
     );
+    expect(fixture.nativeElement.textContent).not.toContain('nur teilweise gelistet');
+  });
+
+  it('names the rows refused against a target 7TV listed only partly, in the incomplete wording', () => {
+    importService.targetUncheckedSkipped.set(1);
+    importService.duplicateCheckAvailable.set(true);
+    importService.duplicateNoticePending.set(true);
+
+    const fixture = render();
+
+    expect(fixture.nativeElement.textContent).toContain(
+      '1 Emote nicht kopiert — 7TV hat das Zielset nur teilweise gelistet.',
+    );
+    expect(fixture.nativeElement.textContent).not.toContain('ließ sich gerade nicht prüfen');
+  });
+
+  // The retired "duplicate entries are possible" notice is never shown: a failed check that refused
+  // no row (say, an adopt-only plan) has nothing left to report. Its key is gone from the
+  // translations, so a template still using it would render the raw key.
+  it('never shows the retired duplicates-possible notice, even on a failed check that refused nothing', () => {
+    importService.targetUncheckedSkipped.set(0);
+    importService.duplicateCheckAvailable.set(false);
+    importService.duplicateNoticePending.set(true);
+
+    const fixture = render();
+
+    expect(fixture.nativeElement.textContent).not.toContain('duplicateCheckUnavailable');
+    expect(fixture.nativeElement.textContent).not.toContain('nicht kopiert');
   });
 
   // #149 P2 (independent review): a P1 fix moved the duplicate check onto 7TV directly, and an
@@ -662,15 +706,16 @@ describe('ImportProgressSection', () => {
     );
   });
 
-  it('shows the check-unavailable notice even with no run at all — a fully refused import', () => {
+  it('shows the unchecked-target notice even with no run at all — a fully refused import', () => {
     importService.run.set(null);
+    importService.targetUncheckedSkipped.set(2);
     importService.duplicateCheckAvailable.set(false);
     importService.duplicateNoticePending.set(true);
 
     const fixture = render();
 
     expect(fixture.nativeElement.textContent).toContain(
-      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
+      '2 Emotes nicht kopiert — das Zielset ließ sich gerade nicht prüfen.',
     );
   });
 
@@ -678,6 +723,7 @@ describe('ImportProgressSection', () => {
   it('shows both duplicate notices aria-hidden, with no status region of its own', () => {
     importService.run.set(null);
     importService.skippedDuplicates.set(3);
+    importService.targetUncheckedSkipped.set(2);
     importService.duplicateCheckAvailable.set(false);
     importService.duplicateNoticePending.set(true);
 
@@ -688,20 +734,155 @@ describe('ImportProgressSection', () => {
     );
     expect(notices.map((notice) => notice.textContent?.trim())).toEqual([
       '3 Emotes waren beim Start bereits im Zielset und wurden übersprungen.',
-      'Wir konnten gerade nicht prüfen, ob diese Emotes schon im Zielset sind — es können doppelte Einträge entstehen.',
+      '2 Emotes nicht kopiert — das Zielset ließ sich gerade nicht prüfen.',
     ]);
     expect(announcedByStatusRegions(fixture.nativeElement)).toBe('');
   });
 
   // The other half of the P2 fix: the notice is transient (design doc §4.5), not a persistent flag
   // that would otherwise be able to sit next to a *later*, unrelated run's stale details forever.
-  it('hides the check-unavailable notice once its pending window has elapsed, even while duplicateCheckAvailable still reads false', () => {
+  it('hides the unchecked-target notice once its pending window has elapsed, even while the count still stands', () => {
+    importService.targetUncheckedSkipped.set(2);
     importService.duplicateCheckAvailable.set(false);
     importService.duplicateNoticePending.set(false);
 
     const fixture = render();
 
-    expect(fixture.nativeElement.textContent).not.toContain('Wir konnten gerade nicht prüfen');
+    expect(fixture.nativeElement.textContent).not.toContain('nicht kopiert');
+  });
+
+  // #460: the rows the last recheck refused stay named in the settled summary for as long as the
+  // run is shown, read off the run's own record.
+  describe('refusal lines of the settled summary (#460)', () => {
+    const UNCHECKED_UNAVAILABLE =
+      '2 Emotes nicht kopiert — das Zielset ließ sich gerade nicht prüfen.';
+    const UNCHECKED_INCOMPLETE =
+      '2 Emotes nicht kopiert — 7TV hat das Zielset nur teilweise gelistet.';
+    const DRIFT = '3 Ersetzungen übersprungen — Ziel hat sich verändert.';
+
+    function showSettled(overrides: Partial<ImportRunInfo>): void {
+      importService.isRunning.set(false);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ settlement: 'settled', ...overrides }));
+    }
+
+    function occurrences(root: HTMLElement, text: string): number {
+      return (root.textContent ?? '').split(text).length - 1;
+    }
+
+    it('keeps both lines after the notice window has closed, in the wording the run froze', () => {
+      showSettled({
+        targetUncheckedSkipped: 2,
+        duplicateCheckAvailable: false,
+        replaceSkippedDrift: 3,
+      });
+      importService.duplicateNoticePending.set(false);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(UNCHECKED_UNAVAILABLE);
+      expect(fixture.nativeElement.textContent).toContain(DRIFT);
+    });
+
+    it('picks the incomplete wording when the run froze a read that listed the set only partly', () => {
+      showSettled({ targetUncheckedSkipped: 2, duplicateCheckAvailable: true });
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(UNCHECKED_INCOMPLETE);
+      expect(fixture.nativeElement.textContent).not.toContain('ließ sich gerade nicht prüfen');
+    });
+
+    it('shows no line for a count of zero', () => {
+      showSettled({});
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).not.toContain('nicht kopiert');
+      expect(fixture.nativeElement.textContent).not.toContain('übersprungen');
+    });
+
+    it('reads the run, not the service-level counts a later refused start may have overwritten', () => {
+      showSettled({ targetUncheckedSkipped: 2, duplicateCheckAvailable: false });
+      importService.targetUncheckedSkipped.set(9);
+      importService.replaceSkippedDrift.set(7);
+      importService.duplicateCheckAvailable.set(true);
+      importService.duplicateNoticePending.set(false);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(UNCHECKED_UNAVAILABLE);
+      expect(fixture.nativeElement.textContent).not.toContain('9 Emotes');
+      expect(fixture.nativeElement.textContent).not.toContain('Ersetzung');
+    });
+
+    it('is spoken by the summary panel itself, not hidden from it', () => {
+      showSettled({ targetUncheckedSkipped: 2, duplicateCheckAvailable: false });
+
+      const fixture = render();
+
+      expect(announcedByStatusRegions(fixture.nativeElement)).toContain(UNCHECKED_UNAVAILABLE);
+    });
+
+    it('names a row once: the transient line gives way to the summary line when the run has stopped running', () => {
+      showSettled({ targetUncheckedSkipped: 2, duplicateCheckAvailable: false });
+      importService.targetUncheckedSkipped.set(2);
+      importService.duplicateCheckAvailable.set(false);
+      importService.duplicateNoticePending.set(true);
+      importService.refusalNoticeRunId.set('import-1');
+
+      const fixture = render();
+
+      expect(occurrences(fixture.nativeElement, UNCHECKED_UNAVAILABLE)).toBe(1);
+      expect(fixture.nativeElement.querySelectorAll('p[aria-hidden="true"]')).toHaveLength(0);
+    });
+
+    it('keeps the transient line while the run its start began is still running', () => {
+      importService.isRunning.set(true);
+      importService.queue.set([doneItem()]);
+      importService.run.set(runInfo({ targetUncheckedSkipped: 2, duplicateCheckAvailable: false }));
+      importService.targetUncheckedSkipped.set(2);
+      importService.duplicateCheckAvailable.set(false);
+      importService.duplicateNoticePending.set(true);
+      importService.refusalNoticeRunId.set('import-1');
+
+      const fixture = render();
+
+      expect(occurrences(fixture.nativeElement, UNCHECKED_UNAVAILABLE)).toBe(1);
+      expect(fixture.nativeElement.querySelectorAll('p[aria-hidden="true"]')).toHaveLength(1);
+    });
+
+    it('keeps the transient line of a start that began no run, next to an earlier run that has its own', () => {
+      showSettled({ targetUncheckedSkipped: 2, duplicateCheckAvailable: false });
+      importService.targetUncheckedSkipped.set(4);
+      importService.duplicateCheckAvailable.set(true);
+      importService.duplicateNoticePending.set(true);
+      importService.refusalNoticeRunId.set(null);
+
+      const fixture = render();
+
+      expect(fixture.nativeElement.textContent).toContain(UNCHECKED_UNAVAILABLE);
+      expect(fixture.nativeElement.textContent).toContain(
+        '4 Emotes nicht kopiert — 7TV hat das Zielset nur teilweise gelistet.',
+      );
+    });
+
+    it('is gone once the run is no longer shown, or the next run carries no refusals', () => {
+      showSettled({ targetUncheckedSkipped: 2, replaceSkippedDrift: 3 });
+      const fixture = render();
+      expect(fixture.nativeElement.textContent).toContain('nicht kopiert');
+
+      importService.run.set(null);
+      importService.queue.set([]);
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).not.toContain('nicht kopiert');
+      expect(fixture.nativeElement.textContent).not.toContain('übersprungen');
+
+      showSettled({ runId: 'import-2' });
+      fixture.detectChanges();
+      expect(fixture.nativeElement.textContent).not.toContain('nicht kopiert');
+      expect(fixture.nativeElement.textContent).not.toContain('übersprungen');
+    });
   });
 
   // The transfer-run protocol's dock offering, the removed/unknown-row summary lines, the drift

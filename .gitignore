@@ -61,8 +61,8 @@ src/EmotePurge.Api/wwwroot/
 # Angular CLI cache when ng runs from the repo root instead of from web/ (web/.gitignore only covers web/.angular/cache).
 .angular/
 
-# Bind-mount target of the `harness` compose service (#69): JSONL log and markdown report
-# of an accuracy run. Fetched from the VPS via scp, never committed.
+# Reports of the removed measurement harness (#69), kept ignored so a copy still lying around in
+# a checkout is never committed.
 harness-reports/
 
 # Bind-mount target of the `api` service's Legal:ContentPath (issue #247): operator-supplied

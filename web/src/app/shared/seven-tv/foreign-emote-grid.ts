@@ -15,6 +15,7 @@ import {
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
 import { ForeignEmoteRow } from '../../core/seven-tv/foreign-emote-set.model';
+import { importRowKey } from '../../core/seven-tv/import-source';
 import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { ListSelection } from '../selection/list-selection';
@@ -79,6 +80,12 @@ const SORT_OPTIONS: SortOption[] = [
  *  the trap for whoever adds a second simultaneous instance later. */
 let foreignEmoteGridInstanceCount = 0;
 
+/** A cell's identity — selection, `@for` tracking and the playing cell: one set entry, so two
+ *  aliases of one emote are two cells (#444). */
+function cellKey(row: ForeignEmoteRow): string {
+  return importRowKey(row);
+}
+
 function columnsForWidth(width: number): number {
   if (!Number.isFinite(width) || width <= 0) {
     return 1;
@@ -99,13 +106,14 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
  * The selection grid for a foreign channel's 7TV set (spec Falle F4). Deliberately not the
  * `usage-stats-page.html` atlas reused: that one is keyed on our internal `emoteId` Guid and reads
  * `EmoteUsageTotal` for its bands/sparkline/fill-bar, none of which exists for a channel this
- * account has no role in. This grid owns its own `ListSelection<ForeignEmoteRow>` keyed on
- * `sevenTvEmoteId`, the 7TV ObjectID (Regel 8).
+ * account has no role in. This grid owns its own `ListSelection<ForeignEmoteRow>` keyed per set
+ * entry — the 7TV ObjectID (Regel 8) together with the alias (`importRowKey`, #444): one emote can
+ * sit in the set under two aliases, and each is a cell and a row to copy of its own.
  *
  * Virtualized with `CdkVirtualScrollViewport` (HandOfBlood's set is ~956 emotes) — items are
  * chunked into fixed-column rows the same way the atlas is, and for the same reason: a *row*-level
  * `trackBy` (by index) keeps the virtualized row views stable across a resize or a sort change,
- * while the *inner* `@for` tracks each cell by `sevenTvEmoteId` so individual cells reconcile
+ * while the *inner* `@for` tracks each cell by that same entry key so individual cells reconcile
  * correctly instead of being torn down and rebuilt — a rebuilt cell means a rebuilt
  * `app-emote-sprite`, which starts `visibility: hidden` again until it reloads, i.e. the atlas's
  * known flicker (see `usage-stats-page.ts`'s `trackRow`; this repo has hit that bug once already
@@ -222,7 +230,7 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
                 class="grid gap-1"
                 [style.grid-template-columns]="'repeat(' + columns() + ', ' + cellPx + 'px)'"
               >
-                @for (emote of row; track emote.sevenTvEmoteId) {
+                @for (emote of row; track cellKey(emote)) {
                   <button
                     type="button"
                     class="flex w-16 flex-col items-stretch"
@@ -250,7 +258,7 @@ function chunkIntoRows<T>(items: readonly T[], columns: number): T[][] {
                           <app-emote-sprite-animated
                             [url]="emote.imageUrl"
                             [size]="cellPx"
-                            (animationShown)="revealedKey.set(emote.sevenTvEmoteId)"
+                            (animationShown)="revealedKey.set(cellKey(emote))"
                           />
                         </span>
                       }
@@ -430,10 +438,7 @@ export class ForeignEmoteGrid {
     () => `min(34rem, max(4rem, calc(100dvh - ${26 + this.reservedRem()}rem)))`,
   );
 
-  protected readonly selection = new ListSelection<ForeignEmoteRow>(
-    this.sortedEmotes,
-    (row) => row.sevenTvEmoteId,
-  );
+  protected readonly selection = new ListSelection<ForeignEmoteRow>(this.sortedEmotes, cellKey);
 
   /**
    * Transloco interpolation prints its params as raw JS numbers — no grouping. 7TV's "top overall"
@@ -461,12 +466,14 @@ export class ForeignEmoteGrid {
       .length.toLocaleString(toLocale(this.languageService.lang())),
   }));
 
+  protected readonly cellKey = cellKey;
   protected readonly cellPx = CELL_PX;
   protected readonly rowPx = ROW_PX;
   protected readonly spriteClass = SPRITE_CLASS;
   protected readonly hiddenSpriteClass = `${SPRITE_CLASS} invisible`;
 
-  /** The cell the pointer rests on and the focused cell, by 7TV id, each ended only by its own events. */
+  /** The cell the pointer rests on and the focused cell, by cell key, each ended only by its own
+   *  events. */
   private readonly pointerKey = signal<string | null>(null);
   private readonly focusKey = signal<string | null>(null);
   /** The one cell that may play, pointer first. One per grid because `EmoteSpriteAnimated` starts its
@@ -563,23 +570,23 @@ export class ForeignEmoteGrid {
   }
 
   protected onCellEnter(emote: ForeignEmoteRow): void {
-    this.pointerKey.set(emote.sevenTvEmoteId);
+    this.pointerKey.set(cellKey(emote));
   }
 
   /** Only if the pointer key is still this cell's: events from another cell must not end it. */
   protected onCellLeave(emote: ForeignEmoteRow): void {
-    if (this.pointerKey() === emote.sevenTvEmoteId) {
+    if (this.pointerKey() === cellKey(emote)) {
       this.pointerKey.set(null);
     }
   }
 
   protected onCellFocus(emote: ForeignEmoteRow): void {
-    this.focusKey.set(emote.sevenTvEmoteId);
+    this.focusKey.set(cellKey(emote));
   }
 
   /** Ends focus playback only: a clicked cell keeps its pointer key until the pointer leaves. */
   protected onCellBlur(emote: ForeignEmoteRow): void {
-    if (this.focusKey() === emote.sevenTvEmoteId) {
+    if (this.focusKey() === cellKey(emote)) {
       this.focusKey.set(null);
     }
   }
@@ -598,12 +605,12 @@ export class ForeignEmoteGrid {
   /** Whether this cell mounts the animated sprite: the playing one, and only if it has an animation.
    *  A hovered still mounts nothing and requests nothing. */
   protected playsAnimation(emote: ForeignEmoteRow): boolean {
-    return this.playingKey() === emote.sevenTvEmoteId && this.isAnimated(emote);
+    return this.playingKey() === cellKey(emote) && this.isAnimated(emote);
   }
 
   /** The cell's own still hides only once its animation has painted over it. */
   protected stillHidden(emote: ForeignEmoteRow): boolean {
-    return this.playsAnimation(emote) && this.revealedKey() === emote.sevenTvEmoteId;
+    return this.playsAnimation(emote) && this.revealedKey() === cellKey(emote);
   }
 
   protected trackRowIndex(index: number): number {
@@ -663,7 +670,7 @@ export class ForeignEmoteGrid {
 
   /** Whether the cell for this key is among the rows the viewport renders. */
   private isRendered(key: string): boolean {
-    const index = this.sortedEmotes().findIndex((emote) => emote.sevenTvEmoteId === key);
+    const index = this.sortedEmotes().findIndex((emote) => cellKey(emote) === key);
     if (index < 0) {
       return false;
     }

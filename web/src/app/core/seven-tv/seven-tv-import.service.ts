@@ -8,11 +8,12 @@ import { EmoteAdminService } from '../emotes/emote-admin.service';
 import { EmoteTagService } from '../tags/emote-tag.service';
 import {
   ImportOrigin,
-  ImportRow,
   importOriginLeaderboardSort,
   importOriginSourceChannelName,
+  importRowKey,
 } from './import-source';
 import {
+  ABORTED_DELETE_NOTICE_MS,
   MAX_AUTOMATIC_SYNC_RETRIES,
   REMOVE_EMOTE_MUTATION,
   SYNC_RETRY_DELAY_MS,
@@ -44,16 +45,24 @@ import {
   isChannelMismatch,
 } from './sync-report-outcome';
 import { ImportTagContext } from './tag-run-settlement';
-import { TransferPlan, TransferRow } from './transfer-plan';
+import { TransferPlan, TransferRow, TransferRowTarget } from './transfer-plan';
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startImport`
-// call that had something to report. Same 4000 ms convention as every other transient status in
+// call that began a run and had something to report (a start that began none keeps the longer
+// `NOT_STARTED_NOTICE_MS` below). Same 4000 ms convention as every other transient status in
 // this app (docs/UI-Designsprache.md §4.5 — usage-stats-page's SELECTION_PRUNED_FEEDBACK_MS,
 // admin-channels-page's resync feedback timer). Lives here rather than on the page that renders
 // it because the *visibility* of the page's own dock depends on this flag (see
 // `dockVisible`/`action-dock.ts`) — a refused, all-duplicates run leaves no run/queue for the dock
 // to mount on otherwise, which is exactly the bug this exists to fix.
 const DUPLICATE_NOTICE_MS = 4000;
+
+/** #460: how long the transient notice stands for a confirmed import that started no run at all
+ *  (every row refused, or the engine refused the start). Nothing else names those rows afterwards,
+ *  and the user confirmed an action that did not happen — the same purpose, hence the same length,
+ *  as the delete's abort notice; one constant, not a second literal. A start that did start a run
+ *  keeps `DUPLICATE_NOTICE_MS`: its settled summary carries the refusal lines from then on. */
+const NOT_STARTED_NOTICE_MS = ABORTED_DELETE_NOTICE_MS;
 
 /** The same ADD the restore run uses — an import *is* an ADD, only with rows that come from
  *  somewhere else. `alias` carries the plan row's alias: the source alias for an `add` row, so the
@@ -208,7 +217,19 @@ export interface ImportRunInfo extends RunRecordBase {
    *  `startImport` from `target.tag`; `null` for every other import. */
   tag: ImportTagContext | null;
   origin: ImportOrigin;
-  /** The plan this run executes, one queue row per plan row, keyed by the source 7TV id. */
+  /** #460: `add`/`renameSource` rows the last recheck refused before this run started because the
+   *  target read could not rule out a duplicate (#457). Bound to the run, not read from the
+   *  service-level signal of the same name, so the settled summary keeps naming them for as long
+   *  as the run is shown, and a later refused start can never rewrite them. */
+  targetUncheckedSkipped: number;
+  /** Which wording `targetUncheckedSkipped` takes: `true` when the read succeeded but did not
+   *  list the whole set, `false` when it failed or timed out. Frozen with the count. */
+  duplicateCheckAvailable: boolean;
+  /** #460: `replace` rows the last recheck held back because their target drifted since the
+   *  confirmation. Run-bound for the same reason as `targetUncheckedSkipped`. */
+  replaceSkippedDrift: number;
+  /** The plan this run executes, one queue row per plan row, keyed by the source row's
+   *  `importRowKey`. */
   plan: TransferPlan;
   /** See `ImportSettlement`. `result` is the engine's snapshot while `'pending'` — with every
    *  `failed` row already carrying its final reason (Plan-284 Festlegung 9), `unknown` rows as the
@@ -424,18 +445,28 @@ export class SevenTvImportService {
    *  all. Set unconditionally, like `skippedDuplicates`. */
   readonly replaceSkippedDrift = signal(0);
 
+  /** How many `add`/`renameSource` rows the caller's fresh pre-run check refused because its read
+   *  of the target could not rule out a duplicate: the read failed, timed out, or did not list the
+   *  whole set (#457, `recheckTransferPlan`). Set unconditionally, like `skippedDuplicates`. Which
+   *  of its two wordings is shown follows {@link duplicateCheckAvailable}. */
+  readonly targetUncheckedSkipped = signal(0);
+
   /** Whether the caller's fresh pre-send duplicate check (#149/T5, `already-present-filter.ts`)
-   *  actually ran — `false` means its fetch failed, so `rows` passed through unfiltered and an
-   *  undetected duplicate is possible in this run. Same vocabulary as
-   *  `AlreadyPresentFilterResult.available`; see that type's doc for why a failed check must not
-   *  read as a clean `skippedDuplicates: 0`. Defaults to `true` so existing callers/tests that omit
-   *  it keep reading as "checked, nothing to skip". */
+   *  actually ran — `false` means its fetch failed or timed out. Since #457 the caller lets no ADD
+   *  through on such a read (it counts the refused rows in {@link targetUncheckedSkipped}), so this
+   *  only selects the wording of that count: "could not be read" (`false`) vs "listed only partly"
+   *  (`true`). Same vocabulary as `AlreadyPresentFilterResult.available`. Defaults to `true` so
+   *  existing callers/tests that omit it keep reading as "checked, nothing to skip". */
   readonly duplicateCheckAvailable = signal(true);
 
   /** #149 P2 (independent review): whether the notice built from the signals above should
-   *  currently be shown — true for `DUPLICATE_NOTICE_MS` after any `startImport` call that had
-   *  something to report (`skippedDuplicates > 0 || !duplicateCheckAvailable || replaceSkippedDrift
-   *  > 0`), including a refused (all-duplicates, or all-drift) call.
+   *  currently be shown — true for `DUPLICATE_NOTICE_MS` after a `startImport` call that began a
+   *  run, or for the longer `NOT_STARTED_NOTICE_MS` after one that began none (#460), when it had
+   *  something to show (`skippedDuplicates > 0 || replaceSkippedDrift > 0 ||
+   *  targetUncheckedSkipped > 0`), including a refused (all-duplicates, all-drift, or
+   *  all-unchecked) call. `!duplicateCheckAvailable` alone no longer opens it (#457): it only picks
+   *  the wording of the `targetUncheckedSkipped` line, so with nothing refused (an adopt-only plan
+   *  on a failed read, say) there is no line to show and no empty window to open.
    *  `dockVisible()` (`usage-stats-page.ts`, via `action-dock.ts`) treats this
    *  exactly like an active run, which is what lets `import-progress-section` mount at all in that
    *  refused case — without it the section's own gate (`isRunning() || queue().length > 0`) would
@@ -445,6 +476,14 @@ export class SevenTvImportService {
    *  no run/queue for a dismiss button to attach to, and a persistent flag would otherwise be able
    *  to sit next to an unrelated *later* run's details with nothing to clear it. */
   readonly duplicateNoticePending = signal(false);
+
+  private readonly noticeRunIdState = signal<string | null>(null);
+
+  /** #460: the id of the run the call that opened the current notice started — `null` when that
+   *  call started none (everything refused, the engine refused, a blocked pre-check). What decides
+   *  whether the transient refusal lines give way to the run's own summary lines: see
+   *  `importRefusalNoticeVisible` in `dock-outcome-announcer.ts`. */
+  readonly refusalNoticeRunId = this.noticeRunIdState.asReadonly();
 
   /** Why the shared pre-check (spec 4.2, 6.2, E19) blocked a plan with at least one replace row
    *  before `import-flow.ts`'s `start()` ever reached `recheckTransferPlan` (spec 4.5 point 17) —
@@ -485,7 +524,7 @@ export class SevenTvImportService {
     });
   }
 
-  /** `plan` is expected to come from `buildTransferPlan` — deduplicated per source id, validated —
+  /** `plan` is expected to come from `buildTransferPlan` — deduplicated per source entry, validated —
    *  and already re-checked against the live target set right before this call (`import-flow.ts`);
    *  this method does no filtering of its own. `target.channelName` is `null` for an untracked
    *  target (T2.6, spec 8.6) — see `ImportRunInfo.targetChannelName` for what that changes
@@ -496,7 +535,8 @@ export class SevenTvImportService {
    *  the caller's own count from the *fresh* re-check it ran just before
    *  this call (see `already-present-filter.ts`) — defaults to 0. `duplicateCheckAvailable` mirrors
    *  the same call's `available` and defaults to `true` for the same reason. `replaceSkippedDrift`
-   *  is the same re-check's count of held-back `replace` rows, default 0.
+   *  is the same re-check's count of held-back `replace` rows, default 0. `targetUncheckedSkipped`
+   *  is its count of `add`/`renameSource` rows refused against an unchecked read (#457), default 0.
    *
    *  No guard against a `replace` row targeting an untracked account any more (#253, spec 4.5
    *  point 16/6.6, DECISIONS "The replace lock for an untracked target falls"): the removal report
@@ -532,6 +572,7 @@ export class SevenTvImportService {
     skippedDuplicates = 0,
     duplicateCheckAvailable = true,
     replaceSkippedDrift = 0,
+    targetUncheckedSkipped = 0,
   ): boolean {
     const deletes = plan.rows.some((row) => row.action === 'replace');
 
@@ -539,17 +580,22 @@ export class SevenTvImportService {
     this.skippedDuplicates.set(skippedDuplicates);
     this.duplicateCheckAvailable.set(duplicateCheckAvailable);
     this.replaceSkippedDrift.set(replaceSkippedDrift);
+    this.targetUncheckedSkipped.set(targetUncheckedSkipped);
     // Also fires for a run held back entirely by drift (every replace row skipped, nothing
-    // queued) — without this, such a run would leave no run/queue behind at all *and* no notice,
-    // which is exactly the silence AK 16's "the protocol appears after every run" exists against.
-    this.showDuplicateNotice(
-      skippedDuplicates > 0 || !duplicateCheckAvailable || replaceSkippedDrift > 0,
-    );
-    // The 7TV id is the only identity an imported row has — the emote does not exist in our
-    // database yet, so there is no internal `emoteId` to mirror the key from. Unique per run: the
-    // preview deduplicates by id, and no action makes two rows of one source id.
+    // queued) or by an unchecked target read (every add/renameSource row refused, #457) — without
+    // this, such a run would leave no run/queue behind at all *and* no notice, which is exactly the
+    // silence AK 16's "the protocol appears after every run" exists against.
+    const hasSomethingToReport =
+      skippedDuplicates > 0 || replaceSkippedDrift > 0 || targetUncheckedSkipped > 0;
+    this.noticeRunIdState.set(null);
+    this.showDuplicateNotice(hasSomethingToReport);
+    // The source row's `importRowKey` (7TV id and name) is the identity an imported row has — the
+    // emote does not exist in our database yet, so there is no internal `emoteId` to mirror the key
+    // from, and the id alone is not enough since one id can be two source rows under two aliases
+    // (#444). Unique per run: the source is deduplicated per entry, and no action makes two plan
+    // rows of one source row.
     const queueEmotes: RunQueueEmote[] = plan.rows.map((row) => ({
-      key: row.source.sevenTvEmoteId,
+      key: importRowKey(row.source),
       sevenTvEmoteId: row.source.sevenTvEmoteId,
       name: row.source.name,
     }));
@@ -569,6 +615,9 @@ export class SevenTvImportService {
       targetIsActiveSet: target.isActiveSet ?? true,
       tag: target.tag ?? null,
       origin,
+      targetUncheckedSkipped,
+      duplicateCheckAvailable,
+      replaceSkippedDrift,
       plan,
       settlement: 'pending',
       removedCount: 0,
@@ -602,12 +651,17 @@ export class SevenTvImportService {
     ) {
       // Refused (already running, empty list, no token) — take the just-opened record back and
       // restore whatever was shown before it, which may be another run still settling its reports.
-      // Every signal above (skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift) stays
+      // Every signal above (skippedDuplicates, duplicateCheckAvailable, replaceSkippedDrift,
+      // targetUncheckedSkipped) stays
       // as set: an all-duplicates import is a legitimate "refused" case whose count (and whether it
       // is even trustworthy) the caller still needs to see.
       this.lifecycle.discardUnstarted(started.runId, previousShown);
+      if (hasSomethingToReport) {
+        this.showDuplicateNotice(true, NOT_STARTED_NOTICE_MS);
+      }
       return false;
     }
+    this.noticeRunIdState.set(started.runId);
     return true;
   }
 
@@ -636,8 +690,10 @@ export class SevenTvImportService {
     this.lifecycle.detach();
     this.skippedDuplicates.set(0);
     this.replaceSkippedDrift.set(0);
+    this.targetUncheckedSkipped.set(0);
     this.duplicateCheckAvailable.set(true);
     this.targetCheckBlockReason.set(null);
+    this.noticeRunIdState.set(null);
     this.showDuplicateNotice(false);
   }
 
@@ -645,16 +701,19 @@ export class SevenTvImportService {
    *  with at least one replace row, before `recheckTransferPlan` even runs (spec 4.5 point 17) —
    *  nothing starts, and the reason is shown at the same transient spot a drift abort uses
    *  (`duplicateNoticePending`, plan 0.2): a blocked pre-check leaves no run/queue behind either.
-   *  Final fix wave A7: also resets `skippedDuplicates`, `duplicateCheckAvailable` and
-   *  `replaceSkippedDrift` to their neutral values, same as `startImport` does on every call —
-   *  without this, a still-shown finished run's counts survived into this call's own notice and
-   *  re-announced "N skipped as duplicate" next to a block reason that has nothing to do with it. */
+   *  Final fix wave A7: also resets `skippedDuplicates`, `duplicateCheckAvailable`,
+   *  `replaceSkippedDrift` and `targetUncheckedSkipped` (#457) to their neutral values, same as
+   *  `startImport` does on every call — without this, a still-shown finished run's counts survived
+   *  into this call's own notice and re-announced "N skipped as duplicate" next to a block reason
+   *  that has nothing to do with it. */
   reportTargetCheckBlocked(reason: TargetCheckBlockReason): void {
     this.targetCheckBlockReason.set(reason);
     this.skippedDuplicates.set(0);
     this.duplicateCheckAvailable.set(true);
     this.replaceSkippedDrift.set(0);
-    this.showDuplicateNotice(true);
+    this.targetUncheckedSkipped.set(0);
+    this.noticeRunIdState.set(null);
+    this.showDuplicateNotice(true, NOT_STARTED_NOTICE_MS);
   }
 
   /** Records on the shown run that its transfer-run protocol was downloaded. */
@@ -676,7 +735,7 @@ export class SevenTvImportService {
       current === null ||
       current.syncReport === 'pending' ||
       current.settlement !== 'settled' ||
-      importedKeys(current).length === 0
+      importedIds(current).length === 0
     ) {
       return;
     }
@@ -695,7 +754,7 @@ export class SevenTvImportService {
       current.removalReport === 'pending' ||
       isChannelMismatch(current.removalReportReason) ||
       current.settlement !== 'settled' ||
-      removedTargetIds(current).length === 0
+      reportedRemovedIdsOf(current.result).length === 0
     ) {
       return;
     }
@@ -841,8 +900,8 @@ export class SevenTvImportService {
   ): void {
     const translate = (key: string): string => this.translocoService.translate(key);
     const result = settleRunResult(snapshot, context, entries, translate);
-    const reportsImported = importedKeysOf(result).length > 0;
-    const reportsRemoved = removedTargetIdsOf(result).length > 0;
+    const reportsImported = importedIdsOf(result).length > 0;
+    const reportsRemoved = reportedRemovedIdsOf(result).length > 0;
     const settled = this.lifecycle.update(runId, (run) => ({
       ...run,
       result,
@@ -864,10 +923,11 @@ export class SevenTvImportService {
 
   /** The reports and the resync of a settled run. `sync-imported` names every `done` row that
    *  added an emote (`add`, `renameSource`, `replace`); the removal report names the target of
-   *  every replace row whose REMOVE 7TV confirmed, whatever the row ended as; an adopt row reports
+   *  every replace row whose REMOVE 7TV confirmed, whatever the row ended as, except an id a `done`
+   *  add or rename row of the same run added back (`reportedRemovedIdsOf`); an adopt row reports
    *  nothing. */
   private sendFollowUp(run: ImportRunInfo): void {
-    const imported = importedKeys(run);
+    const imported = importedIds(run);
     const removed = removedTargetIds(run);
 
     // The report is the audit trail for exactly these ids, always sent — this call is never gated
@@ -900,7 +960,7 @@ export class SevenTvImportService {
         ? run.targetChannelName
         : null;
 
-    if (removed.length > 0) {
+    if (reportedRemovedIdsOf(run.result).length > 0) {
       // With a removal report, the resync waits for its answer (spec 6.5, F15): the backend resyncs
       // every channel that report touched and names it in `resyncTriggered` — a second resync of
       // ours would only run into the per-channel cooldown. A failed report names nothing, so the
@@ -941,7 +1001,7 @@ export class SevenTvImportService {
     // names one, and every non-leaderboard origin sends `null` for the sort — both rules live in
     // the helpers, not here.
     const bodyBase = {
-      sevenTvEmoteIds: importedKeys(run),
+      sevenTvEmoteIds: importedIds(run),
       sourceChannelName: importOriginSourceChannelName(run.origin),
       sourceKind: run.origin.kind,
       leaderboardSort: importOriginLeaderboardSort(run.origin),
@@ -973,7 +1033,7 @@ export class SevenTvImportService {
   /**
    * The placement report of a tag play-in (#201 T-C, spec 7.1/8): `POST …/tags/{tagId}/placements`
    * with the registered `operationId`, the run's own set (the one the operation was registered for)
-   * and owner, and every `done` row that added an emote — the same keys `sync-imported` names, empty
+   * and owner, and every `done` row that added an emote — the same ids `sync-imported` names, empty
    * after a cancel before the first row. Same transport rules as the other reports: one
    * `timeoutReportAttempt` per attempt, automatic retries for anything but a 401/403, and an end
    * state on every path.
@@ -1007,7 +1067,7 @@ export class SevenTvImportService {
         operationId: run.tag.operationId,
         emoteSetId: run.targetSetId,
         targetOwnerTwitchId: run.targetOwnerTwitchId,
-        sevenTvEmoteIds: importedKeys(run),
+        sevenTvEmoteIds: importedIds(run),
       })
       .pipe(
         timeoutReportAttempt(),
@@ -1045,7 +1105,7 @@ export class SevenTvImportService {
     if (run === null) {
       return;
     }
-    const sevenTvEmoteIds = [...new Set(removedTargetIds(run))];
+    const sevenTvEmoteIds = [...new Set(reportedRemovedIdsOf(run.result))];
 
     this.emoteSetService
       .reportDeletedInSet(run.targetSetId, {
@@ -1152,9 +1212,13 @@ export class SevenTvImportService {
   }
 
   /** #149 P2: `hasSomethingToReport` clears any earlier timer first — a second call within
-   *  `DUPLICATE_NOTICE_MS` of the first must not let the first timer's clear race the new one and
+   *  window (`DUPLICATE_NOTICE_MS`, or `NOT_STARTED_NOTICE_MS` for a start that began no run) of
+   *  the first must not let the first timer's clear race the new one and
    *  hide a still-current notice out from under it. */
-  private showDuplicateNotice(hasSomethingToReport: boolean): void {
+  private showDuplicateNotice(
+    hasSomethingToReport: boolean,
+    windowMs: number = DUPLICATE_NOTICE_MS,
+  ): void {
     clearTimeout(this.duplicateNoticeTimeout);
     if (!hasSomethingToReport) {
       this.duplicateNoticePending.set(false);
@@ -1163,7 +1227,7 @@ export class SevenTvImportService {
     this.duplicateNoticePending.set(true);
     this.duplicateNoticeTimeout = setTimeout(
       () => this.duplicateNoticePending.set(false),
-      DUPLICATE_NOTICE_MS,
+      windowMs,
     );
   }
 }
@@ -1203,7 +1267,7 @@ function retryTransientSyncFailures<T>() {
 }
 
 function indexPlanRows(plan: TransferPlan | null): ReadonlyMap<string, TransferRow> {
-  return new Map((plan?.rows ?? []).map((row) => [row.source.sevenTvEmoteId, row]));
+  return new Map((plan?.rows ?? []).map((row) => [importRowKey(row.source), row]));
 }
 
 function transferRowOf(rowsByKey: ReadonlyMap<string, TransferRow>, key: string): TransferRow {
@@ -1251,19 +1315,23 @@ function addRequest(setId: string, emoteId: string, alias: string): RunRequest {
   return { mutation: ADD_EMOTE_MUTATION, variables: { setId, emoteId, alias } };
 }
 
-/** Source ids of every `done` row of `run` that added an emote — what `sync-imported` names. */
-function importedKeys(run: ImportRunInfo): string[] {
-  return importedKeysOf(run.result);
+/** Source ids of every `done` row of `run` that added an emote — what `sync-imported` and the tag
+ *  placement report name. Once per id: two aliases of one emote are two rows of the run, but the
+ *  audit and the placement stay per 7TV id (spec D3, #444). */
+function importedIds(run: ImportRunInfo): string[] {
+  return importedIdsOf(run.result);
 }
 
-function importedKeysOf(result: ImportRunResult | null): string[] {
-  return (result?.items ?? [])
+function importedIdsOf(result: ImportRunResult | null): string[] {
+  const ids = (result?.items ?? [])
     .filter((item) => item.status === 'done' && item.transfer.action !== 'adoptSourceName')
-    .map((item) => item.key);
+    .map((item) => item.transfer.source.sevenTvEmoteId);
+  return [...new Set(ids)];
 }
 
 /** Target ids of every replace row of `run` whose REMOVE 7TV confirmed, whatever the row ended as
- *  — what the removal report names. */
+ *  — what the removed count and the resync decision read; the removal report names
+ *  {@link reportedRemovedIdsOf}. */
 function removedTargetIds(run: ImportRunInfo): string[] {
   return removedTargetIdsOf(run.result);
 }
@@ -1274,6 +1342,28 @@ function removedTargetIdsOf(result: ImportRunResult | null): string[] {
       ? [item.transfer.target.sevenTvEmoteId]
       : [],
   );
+}
+
+/**
+ * The removed target ids the removal report names: `removedTargetIdsOf` minus every id a `done`
+ * add or rename row of the same run added back (#444 — a multi-alias source can hold the id a
+ * replace removed, under another alias). `sync-deleted` without entries archives the emote and every
+ * active slot of it, the one just added included, and records a leave that never happened; the
+ * resync is the bookkeeping for such an id instead. A re-add that ended `unknown` or `failed` does
+ * not count, so the id is still reported (fail-safe). `removedCount`, the dock and every file read
+ * `removedTargetIdsOf`/the rows, not this list, so they still show the REMOVE.
+ */
+function reportedRemovedIdsOf(result: ImportRunResult | null): string[] {
+  const addedBack = new Set(
+    (result?.items ?? [])
+      .filter(
+        (item) =>
+          item.status === 'done' &&
+          (item.transfer.action === 'add' || item.transfer.action === 'renameSource'),
+      )
+      .map((item) => item.transfer.source.sevenTvEmoteId),
+  );
+  return removedTargetIdsOf(result).filter((id) => !addedBack.has(id));
 }
 
 function outcomeCounts(result: ImportRunResult): {
@@ -1353,9 +1443,12 @@ function withFailureReason(
  *   (`failed` — with the gap reason for a replace, the generic unknown-outcome reason otherwise);
  *   the source id in the set under some other name cannot be told apart from a third party's
  *   entry and stays `unknown`;
- * - an unanswered REMOVE (a replace's first step): the target id still in the set means nothing
- *   happened (`failed` at step 0); gone means the REMOVE was applied and the ADD never sent —
- *   `failed` with the gap reason, and the REMOVE counts as confirmed (`completedSteps` 1);
+ * - an unanswered REMOVE (a replace's first step): the target still holding one of the entries the
+ *   row replaces (a confirmed alias, or its aliasless entry) means nothing happened (`failed` at
+ *   step 0); none of them left means the REMOVE was applied and the ADD never sent — `failed` with
+ *   the gap reason, and the REMOVE counts as confirmed (`completedSteps` 1). Compared per entry, not
+ *   per id (#444): a later row of the same run can have added the target's id again under another
+ *   alias, which says nothing about this REMOVE;
  * - an unanswered alias UPDATE: the target id under the source name means `done`, under its old
  *   alias `failed`; anything else cannot be told apart and stays `unknown`.
  * A third party who added the same source id under the plan alias meanwhile is indistinguishable
@@ -1389,7 +1482,7 @@ function settleUnknownRow(
       return settleAdd(1, unknownOutcome);
     case 'replace':
       if (item.failedStep === 0) {
-        if (entries.aliasesById.has(row.target.sevenTvEmoteId)) {
+        if (stillHoldsReplacedEntry(row.target, entries)) {
           return unknownOutcome();
         }
         return withReason(
@@ -1408,6 +1501,16 @@ function settleUnknownRow(
     default:
       return assertUnreachableTransferRow(row);
   }
+}
+
+/** Whether the set still holds one of the entries a replace row's REMOVE takes — a confirmed alias
+ *  of the target, or its aliasless entry when the row knew of one. */
+function stillHoldsReplacedEntry(target: TransferRowTarget, entries: SevenTvSetEntries): boolean {
+  const liveAliases = entries.aliasesById.get(target.sevenTvEmoteId) ?? [];
+  return (
+    target.aliases.some((alias) => liveAliases.includes(alias)) ||
+    (target.hasAliaslessEntry && entries.aliaslessIds.has(target.sevenTvEmoteId))
+  );
 }
 
 function asDone(item: ImportRunItem, completedSteps: number): ImportRunItem {

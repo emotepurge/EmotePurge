@@ -346,6 +346,35 @@ describe('loadImportTarget', () => {
       expect(result).toEqual({ status: 'failed' });
     });
 
+    /*
+     * #457, AK 13.
+     * protects: a target 7TV lists only in part (a stable gap) is never offered as ready — a copy
+     *   into it could not rule out that an emote is already there under a hidden entry.
+     * fails_when: the loader reads `readState: 'gap'` as usable and emits `ready`.
+     * no_claim: the confirm-time recheck of the target.
+     */
+    it('treats a gap read of the target as failed, like any truncated list (#457)', () => {
+      let result: ImportTargetLoadState | undefined;
+      loadImportTarget(emoteAdminService, emoteSetService, {
+        kind: 'trackedSet',
+        channelName: 'sensitron',
+        emoteSetId: 'set-halloween',
+      }).subscribe((value) => (result = value));
+
+      httpMock
+        .expectOne((candidate) => candidate.url === LIVE_URL)
+        .flush({
+          ...LIVE_PREVIEW,
+          totalCount: LIVE_PREVIEW.emotes.length + 2,
+          truncated: true,
+          readState: 'gap',
+          omittedCount: 2,
+        });
+      httpMock.expectOne((candidate) => candidate.url === WARNING_URL).flush(READY_WARNING);
+
+      expect(result).toEqual({ status: 'failed' });
+    });
+
     it('emits no-set when the live list 404s (7TV no longer knows this set)', () => {
       let result: ImportTargetLoadState | undefined;
       loadImportTarget(emoteAdminService, emoteSetService, {

@@ -499,6 +499,10 @@ test.describe('push flow: picker to confirmation dialog', () => {
 
     const addedEmoteIds: unknown[] = [];
     await mockSevenTvGql(page, (request) => {
+      // #457: the confirm-time recheck reads the target; only a complete read lets an ADD out.
+      if (sevenTvGqlRequestKind(request) === 'setRead') {
+        return sevenTvSetReadPayload([]);
+      }
       addedEmoteIds.push(request.variables['emoteId']);
       return {
         data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
@@ -605,6 +609,110 @@ test.describe('push flow: picker to confirmation dialog', () => {
 });
 
 /**
+ * #444: a copy reproduces the source set entry by entry. An emote the source set holds under two
+ * aliases is two slot cards on the usage page and must land in the target under both names — the
+ * id-keyed dedupe this replaced kept only the first one and lost the second silently.
+ */
+test.describe('push flow: a multi-alias emote (#444)', () => {
+  const MULTI_ALIAS_EMOTES: MockEmoteUsage[] = [
+    {
+      emoteId: 'e-ome',
+      emoteName: 'ome44',
+      sevenTvEmoteId: '7tv-ome',
+      imageUrl: 'https://cdn.7tv.app/emote/ome/2x.webp',
+      totalUseCount: 50,
+      slotId: 'slot-ome',
+      firstSeenAtFromRest: true,
+      siblingNames: ['hob44'],
+    },
+    {
+      emoteId: 'e-ome',
+      emoteName: 'hob44',
+      sevenTvEmoteId: '7tv-ome',
+      imageUrl: 'https://cdn.7tv.app/emote/ome/2x.webp',
+      totalUseCount: 20,
+      slotId: 'slot-hob',
+      firstSeenAtFromRest: true,
+      siblingNames: ['ome44'],
+    },
+    {
+      emoteId: 'e-plain',
+      emoteName: 'plainOne',
+      sevenTvEmoteId: '7tv-plain',
+      imageUrl: 'https://cdn.7tv.app/emote/plain/2x.webp',
+      totalUseCount: 5,
+    },
+  ];
+
+  test('copy a set with a multi-alias emote: both aliases are added, and the report names the id once', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page);
+    await installLiveStub(page);
+    await mockTargetPicker(page);
+    await mockWorkspace(page, SOURCE_CHANNEL, MULTI_ALIAS_EMOTES);
+    await mockActiveEmoteSet(page, TARGET_CHANNEL, 'target-set', {
+      capacity: 1000,
+      occupiedSlots: 0,
+    });
+    await mockSetWarning(page, TARGET_CHANNEL);
+    await mockEmoteList(page, TARGET_CHANNEL, []);
+    await mockChannelScopedResync(page, TARGET_CHANNEL);
+    let syncImportedBody: { sevenTvEmoteIds?: unknown } | null = null;
+    await page.route(`**/api/channels/${TARGET_CHANNEL}/emotes/sync-imported`, (route) => {
+      syncImportedBody = route.request().postDataJSON();
+      return route.fulfill({ status: 204 });
+    });
+
+    const added: [unknown, unknown][] = [];
+    await mockSevenTvGql(page, (request) => {
+      if (sevenTvGqlRequestKind(request) === 'setRead') {
+        // The re-check right before the run: the target set is still empty.
+        return {
+          data: { emoteSets: { emoteSet: { emotes: { totalCount: 0, pageCount: 1, items: [] } } } },
+        };
+      }
+      added.push([request.variables['emoteId'], request.variables['alias']]);
+      return {
+        data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
+      };
+    });
+    await page.clock.install();
+
+    await gotoUsageStats(page, SOURCE_CHANNEL);
+
+    await cell(page, 'ome44').click();
+    await cell(page, 'plainOne').click({ modifiers: ['Shift'] });
+    await expect(dockCopyButton(page, 3)).toBeEnabled();
+    await dockCopyButton(page, 3).click();
+
+    const picker = page.getByRole('dialog');
+    await picker.getByRole('radio', { name: 'Main (aktiv)' }).check();
+    await picker.getByRole('button', { name: 'Weiter' }).click();
+
+    // Three entries, not two: the second alias of 7tv-ome is counted like any other row.
+    const confirm = page.getByRole('dialog');
+    await expect(confirm.locator('#app-dialog-title')).toHaveText(
+      '3 Emotes nach aatrociity kopieren?',
+    );
+    await confirm.getByRole('button', { name: 'Kopieren' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    await page.clock.runFor(2000);
+    await expect(page.getByText('3 kopiert · 0 fehlgeschlagen · 0 abgebrochen')).toBeVisible();
+
+    expect(added).toEqual([
+      ['7tv-ome', 'ome44'],
+      ['7tv-ome', 'hob44'],
+      ['7tv-plain', 'plainOne'],
+    ]);
+    // The audit stays per 7TV id (spec D3): the emote is named once, not once per alias.
+    await expect.poll(() => syncImportedBody?.sevenTvEmoteIds).toEqual(['7tv-ome', '7tv-plain']);
+  });
+});
+
+/**
  * T2.6/spec 8.6: the two K2 target-picker paths the earlier "picker to confirmation dialog" block
  * does not already cover — a *non-active* set of a still-tracked channel (AK 43), and an untracked
  * account's set, which needs its own confirmation before the picker may close with it at all
@@ -659,6 +767,10 @@ test.describe('push flow: K2 target-set picker (T2.6)', () => {
 
     let capturedSetId: unknown;
     await mockSevenTvGql(page, (request) => {
+      // #457: the confirm-time recheck reads the target; only a complete read lets an ADD out.
+      if (sevenTvGqlRequestKind(request) === 'setRead') {
+        return sevenTvSetReadPayload([]);
+      }
       capturedSetId = request.variables['setId'];
       return {
         data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },
@@ -763,9 +875,15 @@ test.describe('push flow: K2 target-set picker (T2.6)', () => {
       await route.fulfill({ status: 204 });
     });
 
-    await mockSevenTvGql(page, () => ({
-      data: { emoteSets: { emoteSet: { addEmote: { id: '7tv-1' } } } },
-    }));
+    await mockSevenTvGql(page, (request) => {
+      // #457: the confirm-time recheck reads the target; only a complete read lets an ADD out.
+      if (sevenTvGqlRequestKind(request) === 'setRead') {
+        return sevenTvSetReadPayload([]);
+      }
+      return {
+        data: { emoteSets: { emoteSet: { addEmote: { id: '7tv-1' } } } },
+      };
+    });
     await page.clock.install();
 
     await gotoUsageStats(page, SOURCE_CHANNEL);
@@ -946,9 +1064,15 @@ test.describe('push flow: the 7TV leaderboard source (#148)', () => {
       return route.fulfill({ status: 204 });
     });
     await mockChannelScopedResync(page, SOURCE_CHANNEL);
-    await mockSevenTvGql(page, () => ({
-      data: { emoteSets: { emoteSet: { addEmote: { id: 'lb-1' } } } },
-    }));
+    await mockSevenTvGql(page, (request) => {
+      // #457: the confirm-time recheck reads the target; only a complete read lets an ADD out.
+      if (sevenTvGqlRequestKind(request) === 'setRead') {
+        return sevenTvSetReadPayload([]);
+      }
+      return {
+        data: { emoteSets: { emoteSet: { addEmote: { id: 'lb-1' } } } },
+      };
+    });
     // Frozen for the same reason as the other run-completion tests: the engine's trailing pacing
     // delay would otherwise race a real wait.
     await page.clock.install();
@@ -2130,9 +2254,15 @@ test.describe('running import: channel switch', () => {
 
     // R14: seeds the write token via addInitScript and routes 7tv.io's GQL endpoint — must be
     // registered, like installLiveStub, before the first goto.
-    await mockSevenTvGql(page, () => ({
-      data: { emoteSets: { emoteSet: { addEmote: { id: '7tv-1' } } } },
-    }));
+    await mockSevenTvGql(page, (request) => {
+      // #457: the confirm-time recheck reads the target; only a complete read lets an ADD out.
+      if (sevenTvGqlRequestKind(request) === 'setRead') {
+        return sevenTvSetReadPayload([]);
+      }
+      return {
+        data: { emoteSets: { emoteSet: { addEmote: { id: '7tv-1' } } } },
+      };
+    });
     // Frozen from the start: the run engine paces every row with a trailing RUN_DELAY_MS timer
     // (seven-tv-run-engine.ts), and a real wait would race it. runFor() below drives it explicitly.
     await page.clock.install();
@@ -2212,9 +2342,15 @@ test.describe('running import: channel switch', () => {
     await mockSyncImported(page, TARGET_CHANNEL);
     await mockChannelScopedResync(page, TARGET_CHANNEL);
 
-    await mockSevenTvGql(page, () => ({
-      data: { emoteSets: { emoteSet: { addEmote: { id: '7tv-1' } } } },
-    }));
+    await mockSevenTvGql(page, (request) => {
+      // #457: the confirm-time recheck reads the target; only a complete read lets an ADD out.
+      if (sevenTvGqlRequestKind(request) === 'setRead') {
+        return sevenTvSetReadPayload([]);
+      }
+      return {
+        data: { emoteSets: { emoteSet: { addEmote: { id: '7tv-1' } } } },
+      };
+    });
     await page.clock.install();
 
     await gotoUsageStats(page, SOURCE_CHANNEL);
@@ -2411,9 +2547,15 @@ test.describe('running import: progress wording matches the outcome (#158)', () 
     // A plain mutation rejection with no `extensions.code` — `abortsForMissingPrivileges` reads
     // false for it, so the row fails but the run does not abort. With one row selected there is
     // nothing left to cancel: the queue settles at done 0 / failed 1 / cancelled 0.
-    await mockSevenTvGql(page, () => ({
-      errors: [{ message: '7TV had an internal error' }],
-    }));
+    await mockSevenTvGql(page, (request) => {
+      // #457: the confirm-time recheck reads the target; only a complete read lets an ADD out.
+      if (sevenTvGqlRequestKind(request) === 'setRead') {
+        return sevenTvSetReadPayload([]);
+      }
+      return {
+        errors: [{ message: '7TV had an internal error' }],
+      };
+    });
     await page.clock.install();
 
     await gotoUsageStats(page, SOURCE_CHANNEL);
@@ -2543,9 +2685,15 @@ test.describe('running import: leaving the page', () => {
     await mockChannelScopedResync(page, TARGET_CHANNEL);
     await mockVoteSessionList(page, SOURCE_CHANNEL, []);
 
-    await mockSevenTvGql(page, () => ({
-      data: { emoteSets: { emoteSet: { addEmote: { id: '7tv-1' } } } },
-    }));
+    await mockSevenTvGql(page, (request) => {
+      // #457: the confirm-time recheck reads the target; only a complete read lets an ADD out.
+      if (sevenTvGqlRequestKind(request) === 'setRead') {
+        return sevenTvSetReadPayload([]);
+      }
+      return {
+        data: { emoteSets: { emoteSet: { addEmote: { id: '7tv-1' } } } },
+      };
+    });
     // Frozen and never advanced in this test: the engine's trailing pacing delay is what keeps the
     // run in flight, so `isRunning()` stays true for as long as the clock does not move — which is
     // exactly the state the guard is written for.
@@ -4058,6 +4206,10 @@ test.describe('set view: the import doors follow the selected set (#200, K4/T4.5
 
     let capturedSetId: unknown;
     await mockSevenTvGql(page, (request) => {
+      // #457: the confirm-time recheck reads the target; only a complete read lets an ADD out.
+      if (sevenTvGqlRequestKind(request) === 'setRead') {
+        return sevenTvSetReadPayload([]);
+      }
       capturedSetId = request.variables['setId'];
       return {
         data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['emoteId'] } } } },

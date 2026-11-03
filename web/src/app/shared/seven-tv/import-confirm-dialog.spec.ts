@@ -104,6 +104,11 @@ const DE_TRANSLATIONS = {
         one: '{{ count }} Name enthält Zeichen, die 7TV nicht anlegen kann:',
         other: '{{ count }} Namen enthalten Zeichen, die 7TV nicht anlegen kann:',
       },
+      sourceOmitted: {
+        one: '7TV listet {{ count }} Eintrag des Quellsets nicht auf; er wird nicht übertragen.',
+        other:
+          '7TV listet {{ count }} Einträge des Quellsets nicht auf; sie werden nicht übertragen.',
+      },
       discardedRows: {
         one: '{{ count }} ungültige Zeile in der Quelle verworfen.',
         other: '{{ count }} ungültige Zeilen in der Quelle verworfen.',
@@ -208,6 +213,8 @@ const DE_TRANSLATIONS = {
         duplicateReplaceTarget: 'Dasselbe Ziel wird mehrfach ersetzt: {{ rows }}.',
         targetTouchedByReplaceAndAdopt: 'Dasselbe Ziel wird ersetzt und umbenannt: {{ rows }}.',
         adoptBlocked: 'Namen übernehmen ist hier nicht möglich: {{ rows }}.',
+        replaceRemovesPlannedSource:
+          'Ein Ersetzen entfernt ein Emote, das eine andere Zeile gerade hinzufügt — eine der beiden überspringen oder umbenennen: {{ rows }}.',
       },
       back: 'Zurück',
       apply: 'Übernehmen',
@@ -1304,6 +1311,51 @@ describe('ImportConfirmDialog', () => {
       expect(dialog.text()).not.toContain('Zieldaten werden geladen…');
     });
 
+    /*
+     * #457, AK 12.
+     * protects: the copy confirmation names the entries of a gap source that 7TV does not list,
+     *   as the first source note — before discarded rows and collapsed duplicates (the documented
+     *   order, docs/UI-Designsprache.md §7.2) — and says nothing when the source has none.
+     * fails_when: the line is missing, stands after another source note, or shows without a count.
+     * no_claim: layout; that only the usage page sets the count (its own spec, AK 11).
+     */
+    it('puts the source-omitted line first among the source notes', () => {
+      const dialog = render({
+        source: channelSource([row('new-1', 'Kappa')], {
+          sourceOmittedCount: 2,
+          discardedRows: 1,
+          duplicatesCollapsed: 3,
+        }),
+      });
+
+      const contract = [
+        '7TV listet 2 Einträge des Quellsets nicht auf; sie werden nicht übertragen.',
+        '1 ungültige Zeile in der Quelle verworfen.',
+        '3 doppelte Zeilen in der Quelle zusammengefasst.',
+        'Das Hinzufügen läuft danach automatisch nacheinander.',
+      ];
+      expect(inRenderedOrder(dialog.text(), contract)).toEqual(contract);
+    });
+
+    it('picks the singular source-omitted line for one entry', () => {
+      const dialog = render({
+        source: channelSource([row('new-1', 'Kappa')], { sourceOmittedCount: 1 }),
+      });
+
+      expect(dialog.text()).toContain(
+        '7TV listet 1 Eintrag des Quellsets nicht auf; er wird nicht übertragen.',
+      );
+    });
+
+    it('shows no source-omitted line for a source without one', () => {
+      const dialog = render({
+        source: channelSource([row('new-1', 'Kappa')], { duplicatesCollapsed: 1 }),
+      });
+
+      expect(dialog.text()).not.toContain('des Quellsets nicht auf');
+      expect(dialog.text()).toContain('1 doppelte Zeile in der Quelle zusammengefasst.');
+    });
+
     it('puts the nothing-to-add banner after the source findings and before the closing lines', () => {
       const dialog = render({
         source: fileSource(
@@ -1404,7 +1456,7 @@ describe('ImportConfirmDialog', () => {
         sourceRows.push(row(`new-${index}`, `New${index}`));
       }
 
-      expect(sourceRows.length).toBe(762);
+      expect(sourceRows).toHaveLength(762);
 
       const dialog = render({
         source: channelSource(sourceRows),
@@ -1584,10 +1636,12 @@ describe('ImportConfirmDialog', () => {
       dialog.detect();
     }
 
-    function typeAlias(dialog: Harness, key: string, value: string): void {
-      const field = host(dialog).querySelector<HTMLInputElement>(`#resolve-alias-${key}`);
+    function typeAlias(dialog: Harness, sourceName: string, value: string): void {
+      const field = option(dialog, sourceName, 'renameSource')
+        .closest('[data-resolve-index]')
+        ?.querySelector<HTMLInputElement>('input[type="text"]');
       if (!field) {
-        throw new Error(`no rename field for ${key}`);
+        throw new Error(`no rename field for ${sourceName}`);
       }
       field.value = value;
       field.dispatchEvent(new Event('input'));
@@ -1907,7 +1961,7 @@ describe('ImportConfirmDialog', () => {
 
       await openStep(dialog, 'nameCollision');
       choose(dialog, 'Collides', 'renameSource');
-      typeAlias(dialog, 'src-a', 'CollidesNew');
+      typeAlias(dialog, 'Collides', 'CollidesNew');
       apply(dialog);
       expect(projected()).toBe('12');
 
@@ -1931,14 +1985,14 @@ describe('ImportConfirmDialog', () => {
       await openStep(dialog, 'nameCollision');
 
       choose(dialog, 'Collides', 'renameSource');
-      typeAlias(dialog, 'src-a', 'Collides neu');
+      typeAlias(dialog, 'Collides', 'Collides neu');
 
       const applyButton = dialog.button('Übernehmen');
       expect(applyButton.disabled).toBe(true);
       const reason = dialog.element(applyButton.getAttribute('aria-describedby') ?? '');
       expect(reason?.textContent).toContain('Name, den 7TV nicht annimmt: Collides.');
 
-      typeAlias(dialog, 'src-a', 'CollidesNeu');
+      typeAlias(dialog, 'Collides', 'CollidesNeu');
       expect(dialog.button('Übernehmen').disabled).toBe(false);
     });
 
@@ -1948,7 +2002,7 @@ describe('ImportConfirmDialog', () => {
 
       await openStep(dialog, 'nameCollision');
       choose(dialog, 'Collides', 'renameSource');
-      typeAlias(dialog, 'src-a', 'CollidesNew');
+      typeAlias(dialog, 'Collides', 'CollidesNew');
       apply(dialog);
       await openStep(dialog, 'aliasMismatch');
       choose(dialog, 'Pog', 'adoptSourceName');
@@ -2425,7 +2479,7 @@ describe('ImportConfirmDialog', () => {
 
       await openStep(dialog, 'nameCollision');
       choose(dialog, 'Dup', 'renameSource');
-      typeAlias(dialog, 'src-b', 'DupNew');
+      typeAlias(dialog, 'Dup', 'DupNew');
       apply(dialog);
       // The file on disk describes the old plan.
       expect(dialog.hasButton('Starten')).toBe(false);

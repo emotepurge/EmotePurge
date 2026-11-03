@@ -70,6 +70,8 @@ function read(
     animatedById: new Map(),
     occupiedSlots: entries.length,
     complete: true,
+    readState: 'complete',
+    omittedCount: 0,
   };
 }
 

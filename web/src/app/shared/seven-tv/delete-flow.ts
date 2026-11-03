@@ -66,6 +66,9 @@ export function deleteTargetCheckReasonKey(reason: TargetCheckBlockReason): stri
  *  standing lock description. */
 export const MEMBER_READ_UNAVAILABLE_REASON_KEY = 'massDelete.memberRead.unavailable';
 export const MEMBER_READ_TRUNCATED_REASON_KEY = 'massDelete.memberRead.truncated';
+/** Plural base key (`.one`/`.other`, param `count`) of the one block a gap read keeps (#454): every
+ *  confirmed row is an id row, and an id `REMOVE` would also take the entries 7TV does not list. */
+export const MEMBER_READ_GAP_REASON_KEY = 'massDelete.memberRead.gap';
 
 /** Total time budget for the delete's live alias read (K5 fix round) — a hung request (7TV accepts
  *  the connection but never answers) used to leave `liveAliasReadPending` `true` forever, with the
@@ -96,9 +99,9 @@ export type DeleteTargetResolution =
   | { status: 'editable'; ownerTwitchChannelId: string | null }
   | { status: 'blocked'; reason: TargetCheckBlockReason; reasonKey: string };
 
-/** What {@link readLiveSetAliases} answers: the set's complete live entries, or the translation key
- *  of the reason a delete must not start — an incomplete read
- *  ({@link MEMBER_READ_TRUNCATED_REASON_KEY}) or a failed/timed-out one
+/** What {@link readLiveSetAliases} answers: the set's live entries — complete, or with `allowGap` a
+ *  gap read too (#454) — or the translation key of the reason a delete must not start — an
+ *  incomplete read ({@link MEMBER_READ_TRUNCATED_REASON_KEY}) or a failed/timed-out one
  *  ({@link MEMBER_READ_UNAVAILABLE_REASON_KEY}). */
 export type LiveAliasReadResult =
   { status: 'ok'; entries: SevenTvSetEntries } | { status: 'blocked'; reasonKey: string };
@@ -200,19 +203,24 @@ export function resolveDeleteTarget(
 /**
  * The live alias read of `setId` a confirmed delete makes right before it starts (#227, operator
  * decision 2026-09-22): every entry the one `REMOVE` per emote will take, so the protocol records
- * every alias. A failed or incomplete read blocks — "a list that only knows half must not delete"
- * (spec 8.3).
+ * every alias. A failed read blocks, and so does an incomplete one — "a list that only knows half
+ * must not delete" (spec 8.3) — with one exception for the delete chain (#454): with `allowGap` a
+ * gap read (7TV lists fewer entries than it counts, otherwise consistent) passes as `ok`, because
+ * this function does not know the selection — `startDelete` decides on the batch, the run per row.
+ * Without `allowGap` (the tag flows) the read and its verdict are exactly what they were.
  */
 export function readLiveSetAliases(
   httpClient: HttpClient,
   setId: string,
+  options: { allowGap?: boolean } = {},
 ): Observable<LiveAliasReadResult> {
-  return loadSevenTvSetEntries(httpClient, setId).pipe(
+  const allowGap = options.allowGap === true;
+  return loadSevenTvSetEntries(httpClient, setId, allowGap ? { detectGap: true } : {}).pipe(
     // A hung request (7TV accepts the connection but never answers) must not leave the button
     // disabled forever — treated exactly like any other failed read (K5 fix round item 5).
     timeout(LIVE_ALIAS_READ_TIMEOUT_MS),
     map((entries): LiveAliasReadResult =>
-      entries.complete
+      entries.complete || (allowGap && entries.readState === 'gap')
         ? { status: 'ok', entries }
         : { status: 'blocked', reasonKey: MEMBER_READ_TRUNCATED_REASON_KEY },
     ),
@@ -458,7 +466,7 @@ function readLiveAliasesThenDelete(
   // exists without a run for the dock to see. No `takeUntilDestroyed`, as before #280: a torn-down
   // caller's `startDelete` starts nothing by contract (`abortReasonBeforeStart`), and the read is
   // bounded, so its `finalize` always runs.
-  readLiveSetAliases(deps.httpClient, frozenSetId)
+  readLiveSetAliases(deps.httpClient, frozenSetId, { allowGap: true })
     .pipe(
       // Released here rather than at the end of the `next` handler: `finalize` runs after that
       // handler on the completing path *and* on every other way out, so a throw inside
@@ -548,6 +556,19 @@ function startDelete(
     });
     return;
   }
+  const liveEntries = liveAliases?.entries;
+  // #454: a gap read (7TV lists fewer entries than it counts) proves presence, never absence. The
+  // run decides per row; only a batch of id rows alone is refused here, since every one of them
+  // would be skipped — an id `REMOVE` would also take the entries 7TV does not list (#227).
+  const gap = liveEntries?.readState === 'gap' ? liveEntries.omittedCount : null;
+  if (gap !== null && !confirmedSelection.some((emote) => emote.entry !== undefined)) {
+    request.notice.set({
+      leadKey: 'massDelete.nothingDeleted',
+      reasonKey: pluralKey(gap, MEMBER_READ_GAP_REASON_KEY),
+      reasonParams: { count: gap },
+    });
+    return;
+  }
   // The arbiter and token checks are `confirmTimeRefusal`, exported so the tag removal flow
   // (#201 T-C) re-evaluates this very chain instead of a copy of it.
   const refusal = confirmTimeRefusal(deps);
@@ -555,11 +576,11 @@ function startDelete(
     request.notice.set(refusal);
     return;
   }
-  const liveEntries = liveAliases?.entries;
-  if (liveEntries !== undefined) {
-    // A live read only ever reaches here complete (an incomplete one was already blocked above) —
-    // so an id it does not know at all under either map means 7TV no longer has it, not merely
-    // that it has no alias. Deleting such a row anyway would issue a `RemoveEmote` for something
+  if (liveEntries !== undefined && gap === null) {
+    // A live read reaches here complete or as a gap read (an incomplete one was already blocked
+    // above); a complete one that does not know an id at all under either map means 7TV no longer
+    // has it, not merely that it has no alias. A gap read cannot prove that (#454) and skips this
+    // check: its entry rows are bound per attempt in the run, its id rows never proceed there. Deleting such a row anyway would issue a `RemoveEmote` for something
     // that is not there: on the vote page specifically the exact defect #227 point 2 forbids (a
     // departed set-session member reaching the run), and equally a bug for the active-set path this
     // same read also serves. Fails the WHOLE batch, not just the missing rows: a partial run would
@@ -592,12 +613,25 @@ function startDelete(
   // The page's channel is the expected hit only when the run's set is its active one (spec 4.6
   // point 21); a non-active set's report is paper only and expects no channel.
   const expectedChannelName = frozenSetId === request.activeSetId() ? frozenChannelName : null;
+  if (gap === null) {
+    deps.deleteService.startDelete(
+      frozenSetId,
+      frozenChannelName,
+      emotes,
+      expectedChannelName,
+      frozenOwnerTwitchId,
+    );
+    return;
+  }
+  // The gap is handed to the run, which skips every id row of the batch from the start (#454).
   deps.deleteService.startDelete(
     frozenSetId,
     frozenChannelName,
     emotes,
     expectedChannelName,
     frozenOwnerTwitchId,
+    undefined,
+    { preRunRead: { readState: 'gap', omittedCount: gap } },
   );
 }
 

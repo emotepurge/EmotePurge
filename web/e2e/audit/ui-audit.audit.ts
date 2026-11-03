@@ -469,7 +469,7 @@ function tagEntries(count: number) {
   return Array.from({ length: count }, (_, i) => ({
     sevenTvEmoteId: `7tv-${i + 1}`,
     alias: i === 0 ? 'xXSuperMegaLangerAliasMitVierzigZeichen' : `Emote${i + 1}PogU`,
-    inSet: i % 6 === 5 ? false : true,
+    inSet: i % 6 !== 5,
     currentName: i % 6 === 5 ? `Renamed${i + 1}` : null,
   }));
 }
@@ -1958,11 +1958,15 @@ const SCENARIOS: Scenario[] = [
     },
     afterLoad: async (page) => {
       await page
-        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .getByRole('button', {
+          name: /^(Aus dem aktiven Set entfernen|Remove from active set)( \(\d+\))?$/,
+        })
         .click();
       const dialog = page.getByRole('dialog');
       await dialog
-        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .getByRole('button', {
+          name: /^(Aus dem aktiven Set entfernen|Remove from active set)( \(\d+\))?$/,
+        })
         .click();
       await page.locator('.app-dock').waitFor();
       await page
@@ -1988,7 +1992,9 @@ const SCENARIOS: Scenario[] = [
     },
     afterLoad: async (page) => {
       await page
-        .getByRole('button', { name: /^(Aus dem Set entfernen|Remove from set)( \(\d+\))?$/ })
+        .getByRole('button', {
+          name: /^(Aus dem aktiven Set entfernen|Remove from active set)( \(\d+\))?$/,
+        })
         .click();
       await page.getByRole('dialog').waitFor();
     },

@@ -983,7 +983,7 @@ public class AuthFilterMatrixTests : IClassFixture<ApiFactory>
         Assert.Equal(fromUtc, activeObservations[0].GetProperty("fromUtc").GetDateTime());
         Assert.Equal(toUtc, activeObservations[0].GetProperty("toUtc").GetDateTime());
         Assert.Equal(toUtc, activeObservations[1].GetProperty("fromUtc").GetDateTime());
-        Assert.True(activeObservations[1].GetProperty("toUtc").ValueKind == JsonValueKind.Null);
+        Assert.Equal(JsonValueKind.Null, activeObservations[1].GetProperty("toUtc").ValueKind);
 
         var other = sets.Single(set => set.GetProperty("id").GetString() == otherSetId);
         Assert.Empty(other.GetProperty("observations").EnumerateArray());

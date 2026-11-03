@@ -226,6 +226,7 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
     [InlineData("SetNotOnSevenTv")]
     [InlineData("SetEmpty")]
     [InlineData("SetTruncated")]
+    [InlineData("SetGap")]
     [InlineData("MembershipUnavailable")]
     [InlineData("PreviewRateLimited")]
     [InlineData("PreviewBudgetExhausted")]
@@ -259,6 +260,15 @@ public partial class ChatLogBackfillServiceTests(PostgresFixture fixture) : IAsy
                 break;
             case "SetTruncated":
                 PreviewReturns(SetB, "Set B", truncated: true, Member("n1", "BNew1", null));
+                expected = ChatLogBackfillEnqueueStatus.SetTruncated;
+                break;
+            case "SetGap":
+                // #457 (AK 5): a gap read lists every entry it shows, but a partial name list would
+                // still under-count persistently — refused with the existing code.
+                _foreign.GetForeignEmoteSetBySetIdAsync(Arg.Any<string>(), SetB, Arg.Any<bool>(), Arg.Any<CancellationToken>())
+                    .Returns(ForeignEmoteSetLookupResult.Ok(new ForeignEmoteSet(
+                        "ignored", null, SetB, 3, true, [Member("n1", "BNew1", null)], "Set B", 1000,
+                        SevenTvSetReadState.Gap, 2)));
                 expected = ChatLogBackfillEnqueueStatus.SetTruncated;
                 break;
             case "MembershipUnavailable":

@@ -1181,6 +1181,7 @@
   [markedCount]="dockMarkedCount()"
   [hiddenSelectedCount]="dockHiddenSelectedCount()"
   [pendingSyncNames]="dockPendingSyncNames()"
+  [retrySelectedCount]="dockRetryCount()"
 />
 
 <!-- The action bar. It exists only while there is something to act on, which is what allows the
@@ -1266,6 +1267,21 @@
             }}
           </p>
         }
+        <!-- The rows the last run did not delete stay marked (#453) — said once, here. Created by its
+             own @if, so it is spoken by the permanently mounted app-dock-outcome-announcer
+             (docs/UI-Designsprache.md §4.5) and aria-hidden here. -->
+        @if (dockRetryCount() > 0) {
+          <p aria-hidden="true" class="text-xs text-fg-muted">
+            {{ retryHintKey() | transloco: { count: dockRetryCount() } }}
+          </p>
+        }
+        <!-- `readLiveAliasesFromSet` is bound unconditionally (#457, superseding spec #200 §37 /
+             K5 round (k)): every confirmed delete reads the shown set live before it starts, in the
+             active view (the same read the active-set mode made there) and in a non-active one,
+             whose member list may be a gap read or arbitrarily old. A gap at that moment blocks an
+             id-only batch and skips id rows (#454); a complete read runs #227's missing-row check.
+             Not derived from the view: a confirmation opened on a non-active set that becomes the
+             active one before the click would otherwise lose its read. -->
         <app-mass-delete-panel
           #massDeletePanel
           [setId]="setId"
@@ -1274,11 +1290,11 @@
           [channelName]="channelName()"
           [selectedEmotes]="selectedForDelete()"
           [deleteLockReasonKey]="deleteLockReasonKey()"
-          [readLiveAliasesFromActiveSet]="true"
+          [readLiveAliasesFromSet]="true"
           [leadingActionsPresent]="true"
           (deleted)="onDeleted($event)"
           (reloadRequested)="onReloadRequested()"
-          (selectionCleared)="selection.clear()"
+          (selectionCleared)="clearSelection()"
         >
           <!-- Dock shortcut for the header's "Übertragen" (design doc §8.7 — same verb,
                second entry point, not a doubled command). Rendered unconditionally rather than
@@ -1306,7 +1322,7 @@
           >
             {{ 'import.dockCopyButton' | transloco: { count: importShortcutSelectionCount() } }}
           </button>
-          <!-- "Tag zuweisen…" (#201, spec 7.0/9.1): constructive, so before the vote button and the
+          <!-- "Tag zuweisen" (#201, spec 7.0/9.1): constructive, so before the vote button and the
                gap to the delete (§8.7). Projected like the vote button — an @if block carries no
                selector attribute of its own. Its gate (`tagAssignShown`) includes a view of the
                active set: tags are written against it (E3). -->
@@ -1331,8 +1347,9 @@
                accessible name (the count in the label), and needs no extra reason text. It points at
                the delete button's own `deleteLockReasonId` (`#massDeletePanel`, public for exactly
                this) rather than a second paragraph: since K6 `voteLockReasonKey()` and
-               `deleteLockReasonKey()` are the same `sharedSetViewLockReasonKey` (switching, or a
-               loading/unreadable/truncated member list), so whenever `voteLocked()` is `true` the
+               `deleteLockReasonKey()` are the same `actionSetViewLockReasonKey` (switching, or a
+               loading/unreadable/inconsistent member list; a gap read locks neither, #457), so
+               whenever `voteLocked()` is `true` the
                delete button's reason on screen is the identical text — nothing to duplicate,
                nothing that can drift out of sync. -->
           <ng-container ngProjectAs="[selection-actions]">

@@ -25,6 +25,7 @@ import {
   ImportOrigin,
   ImportSource,
   importOriginSourceChannelName,
+  importRowKey,
 } from '../../core/seven-tv/import-source';
 import { LEADERBOARD_SORT_LABEL_KEYS } from '../../core/seven-tv/leaderboard.model';
 import { SevenTvSetEntries, loadSevenTvSetEntries } from '../../core/seven-tv/seven-tv-set-entries';
@@ -176,9 +177,10 @@ const WIDE_PANEL_CLASS = 'app-dialog-panel-wide';
  * to "could not check", exactly as the delete dialog does.
  *
  * Colour follows §7: only the finding that makes *this* run unusual gets a banner. The row order
- * below is a contract (§7), not a layout preference — in particular `discardedRows` stands *before*
- * `duplicatesCollapsed`, because a discarded row is data actually lost while a collapsed duplicate
- * is only folded, and the heavier finding reads first.
+ * below is a contract (§7), not a layout preference — in particular the source notes read
+ * `sourceOmittedCount` → `discardedRows` → `duplicatesCollapsed`, heaviest first: entries of the
+ * source set 7TV does not list at all (#457 — the run cannot even see them), then rows actually
+ * lost, then duplicates merely folded.
  *
  * **Two steps, one dialog.** Both conflict groups (name collisions, alias mismatches) open a second
  * step in the same pane — `ImportConflictResolutionStep`, one group per opening — where each row
@@ -546,8 +548,18 @@ const WIDE_PANEL_CLASS = 'app-dialog-panel-wide';
           }
         }
 
-        @if (data.source.discardedRows > 0 || data.source.duplicatesCollapsed > 0) {
+        @if (
+          sourceOmittedCount > 0 ||
+          data.source.discardedRows > 0 ||
+          data.source.duplicatesCollapsed > 0
+        ) {
           <div class="flex flex-col gap-1">
+            <!-- First: the heaviest source finding (#457, order contract in the class docs). -->
+            @if (sourceOmittedCount > 0) {
+              <p class="text-sm text-fg-secondary">
+                {{ sourceOmittedKey | transloco: { count: sourceOmittedCount } }}
+              </p>
+            }
             @if (data.source.discardedRows > 0) {
               <p class="text-sm text-fg-secondary">
                 {{ discardedRowsKey | transloco: { count: data.source.discardedRows } }}
@@ -746,7 +758,7 @@ export class ImportConfirmDialog {
   });
 
   /** The live counterpart of every replace target the last live read found drifted, keyed by the
-   *  row's source id. Reset whenever the preview is rebuilt — a reload already shows the live set. */
+   *  row's `importRowKey`. Reset whenever the preview is rebuilt — a reload already shows the live set. */
   private readonly targetOverlays = linkedSignal<ImportPreview | null, Map<string, TargetOverlay>>({
     source: this.preview,
     computation: () => new Map(),
@@ -779,8 +791,8 @@ export class ImportConfirmDialog {
       return new Map();
     }
     const conflictKeys = new Set([
-      ...preview.nameCollisionRows.map((each) => each.row.sevenTvEmoteId),
-      ...preview.aliasMismatchRows.map((each) => each.row.sevenTvEmoteId),
+      ...preview.nameCollisionRows.map((each) => importRowKey(each.row)),
+      ...preview.aliasMismatchRows.map((each) => importRowKey(each.row)),
     ]);
     const onConflicts = new Map(
       [...this.appliedDecisions()].filter(([key]) => conflictKeys.has(key)),
@@ -801,7 +813,7 @@ export class ImportConfirmDialog {
     if (dropped.length === 0) {
       return null;
     }
-    const names = new Map(this.data.source.rows.map((row) => [row.sevenTvEmoteId, row.name]));
+    const names = new Map(this.data.source.rows.map((row) => [importRowKey(row), row.name]));
     return dropped.map((key) => names.get(key) ?? key).join(', ');
   });
 
@@ -839,7 +851,7 @@ export class ImportConfirmDialog {
     if (notice?.kind !== 'drifted') {
       return notice;
     }
-    const names = new Map(this.data.source.rows.map((row) => [row.sevenTvEmoteId, row.name]));
+    const names = new Map(this.data.source.rows.map((row) => [importRowKey(row), row.name]));
     return {
       kind: 'drifted',
       rows: notice.drifted.map((drift) => names.get(drift.key) ?? drift.key).join(', '),
@@ -873,10 +885,10 @@ export class ImportConfirmDialog {
       keys.filter((key) => (decisions.get(key)?.kind ?? 'skip') !== 'skip').length;
     return {
       nameCollision: resolved(
-        preview?.nameCollisionRows.map((each) => each.row.sevenTvEmoteId) ?? [],
+        preview?.nameCollisionRows.map((each) => importRowKey(each.row)) ?? [],
       ),
       aliasMismatch: resolved(
-        preview?.aliasMismatchRows.map((each) => each.row.sevenTvEmoteId) ?? [],
+        preview?.aliasMismatchRows.map((each) => importRowKey(each.row)) ?? [],
       ),
     };
   });
@@ -996,6 +1008,15 @@ export class ImportConfirmDialog {
     const preview = this.preview();
     return preview !== null && preview.alreadyPresent === this.data.source.rows.length;
   });
+
+  /** Entries of a gap source 7TV does not list (#457) — only the usage page's channel copy sets
+   *  it; `0` for every other origin, which keeps the source-notes block exactly as before. */
+  protected readonly sourceOmittedCount = this.data.source.sourceOmittedCount ?? 0;
+
+  protected readonly sourceOmittedKey = pluralKey(
+    this.sourceOmittedCount,
+    'import.confirm.sourceOmitted',
+  );
 
   protected readonly discardedRowsKey = pluralKey(
     this.data.source.discardedRows,
@@ -1220,7 +1241,7 @@ export class ImportConfirmDialog {
   /** The apply button's lock reason, naming rows by source name (AK 10, 11). Translated in the
    *  template, so a language switch re-translates it. */
   protected readonly applyReasons = computed(() => {
-    const names = new Map(this.data.source.rows.map((row) => [row.sevenTvEmoteId, row.name]));
+    const names = new Map(this.data.source.rows.map((row) => [importRowKey(row), row.name]));
     return violationMessages(this.stepViolations(), (key) => names.get(key) ?? key);
   });
 

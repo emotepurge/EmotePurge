@@ -645,7 +645,7 @@ public class LogQueryServiceTests(PostgresFixture fixture) : IAsyncLifetime
 
         var exception = await Record.ExceptionAsync(() => service.GetPageAsync(null, LastHour, null, 100, cancel.Token));
 
-        Assert.IsAssignableFrom<OperationCanceledException>(exception);
+        Assert.IsType<OperationCanceledException>(exception, exactMatch: false);
     }
 
     [Fact]

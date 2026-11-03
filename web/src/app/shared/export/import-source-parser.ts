@@ -79,7 +79,8 @@ export function parseImportSource(
   }
 
   // The row count the source claims to have, checked *before* dedup so a broken row and a
-  // duplicate row are counted independently instead of one masking the other. Falls back to the
+  // duplicate row are counted independently instead of one masking the other. The dedup is per set
+  // entry (#444): two rows of one id under two names both stay, only exact repeats fold. Falls back to the
   // raw array length when `meta.rowCount` is absent or not a number.
   const meta = partial.meta as { rowCount?: unknown } | null | undefined;
   const expectedRowCount = typeof meta?.rowCount === 'number' ? meta.rowCount : rawRows.length;

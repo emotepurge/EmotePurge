@@ -779,6 +779,7 @@ describe('ImportTrigger', () => {
         0,
         true,
         0,
+        0,
       );
     });
 
@@ -911,6 +912,7 @@ describe('ImportTrigger', () => {
         0,
         true,
         0,
+        0,
       );
     });
   });
@@ -964,6 +966,7 @@ describe('ImportTrigger', () => {
         addPlan([{ sevenTvEmoteId: '7tv-2', name: 'Dance', imageUrl: null }]),
         0,
         true,
+        0,
         0,
       );
     });
@@ -1063,6 +1066,7 @@ describe('ImportTrigger', () => {
         0,
         true,
         0,
+        0,
       );
     });
 
@@ -1116,6 +1120,7 @@ describe('ImportTrigger', () => {
         0,
         true,
         0,
+        0,
       );
     });
 
@@ -1167,6 +1172,7 @@ describe('ImportTrigger', () => {
         0,
         true,
         0,
+        0,
       );
     });
   });
@@ -1212,6 +1218,7 @@ describe('ImportTrigger', () => {
         addPlan([{ sevenTvEmoteId: '7tv-9', name: 'Kappa', imageUrl: null }]),
         0,
         true,
+        0,
         0,
       );
     });

@@ -23,6 +23,17 @@ public interface IForeignUpstreamRequestBudget
     /// the two apart (a refused permit must not feed the circuit breaker).
     /// </summary>
     Task<bool> TryChargeRequestAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Takes one permit only while at least <paramref name="reserve"/> permits of the rolling window
+    /// stay free after it, waiting up to <paramref name="timeout"/> for that headroom
+    /// (<see cref="TimeSpan.Zero"/>: no wait). A <paramref name="reserve"/> of <c>0</c> is exactly
+    /// <see cref="TryChargeRequestAsync(CancellationToken)"/> with an explicit wait. The set preview
+    /// charges its pages with <see cref="ForeignEmoteSetProviderBudget.PreviewReserve"/> (#457), so
+    /// preview traffic can never take the permits the set list, the set-owner lookup and the editor
+    /// grants depend on; those keep charging with no reserve.
+    /// </summary>
+    Task<bool> TryChargeRequestAsync(int reserve, TimeSpan timeout, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -59,6 +70,14 @@ public interface IForeignUpstreamRequestBudget
 /// timeout elapses is refused, which maps to the spec's "Unavailable" outcome.
 /// </para>
 /// <para>
+/// <b>A reserve for everything that is not a preview (#457).</b> One window serves the set preview's
+/// pages and the single-request reads behind permission and ownership checks (set list, set-owner
+/// lookup, editor grants). Preview pages are charged with <see cref="PreviewReserve"/>, so they are
+/// granted only while that many permits stay free; the other callers charge with none. Preview
+/// traffic, however heavy, therefore leaves those checks at least <see cref="PreviewReserve"/>
+/// permits a minute.
+/// </para>
+/// <para>
 /// <b>In-process, deliberately.</b> Same limitation as the Twitch token refresh's in-process lock
 /// (see <c>docs/DECISIONS.md</c>): with more than one API replica each would hold its own budget, so
 /// the real ceiling would be <c>replicas × (MaxConcurrent, MaxRequestsPerWindow)</c>. Acceptable
@@ -78,6 +97,15 @@ public sealed class ForeignEmoteSetProviderBudget(TimeProvider? timeProvider = n
 
     /// <summary>At most this many upstream requests may start within any rolling <see cref="Window"/>.</summary>
     public const int MaxRequestsPerWindow = 60;
+
+    /// <summary>
+    /// The permits of the rolling window a set-preview page must leave free (#457): preview pages,
+    /// first pass and verification re-read alike, are charged with this reserve, everything else
+    /// with none. The ceiling stays <see cref="MaxRequestsPerWindow"/>; previews can take at most
+    /// <c>MaxRequestsPerWindow - PreviewReserve</c> permits a minute, and the set list, the set-owner
+    /// lookup and the editor grants are guaranteed the rest whatever the preview traffic.
+    /// </summary>
+    public const int PreviewReserve = 20;
 
     /// <summary>The length of the rolling rate window.</summary>
     public static readonly TimeSpan Window = TimeSpan.FromMinutes(1);
@@ -123,8 +151,18 @@ public sealed class ForeignEmoteSetProviderBudget(TimeProvider? timeProvider = n
     /// Same as <see cref="TryChargeRequestAsync(CancellationToken)"/> with an explicit wait budget —
     /// the seam the tests use to prove the window without waiting on it in real time.
     /// </summary>
-    public async Task<bool> TryChargeRequestAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    public Task<bool> TryChargeRequestAsync(TimeSpan timeout, CancellationToken cancellationToken) =>
+        TryChargeRequestAsync(0, timeout, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<bool> TryChargeRequestAsync(int reserve, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(reserve);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(reserve, MaxRequestsPerWindow);
+
+        // The charge is granted while fewer than this many permits are held, so that after it at
+        // least `reserve` stay free.
+        var admitBelow = MaxRequestsPerWindow - reserve;
         var deadline = _timeProvider.GetUtcNow() + timeout;
 
         while (true)
@@ -135,14 +173,15 @@ public sealed class ForeignEmoteSetProviderBudget(TimeProvider? timeProvider = n
                 var now = _timeProvider.GetUtcNow();
                 Trim(now);
 
-                if (_recentRequests.Count < MaxRequestsPerWindow)
+                if (_recentRequests.Count < admitBelow)
                 {
                     _recentRequests.Enqueue(now);
                     return true;
                 }
 
-                // The oldest permit in the queue is the one whose expiry frees the next slot.
-                waitForWindow = _recentRequests.Peek() + Window - now;
+                // The count must drop to admitBelow - 1, so the permit whose expiry frees this
+                // charge is the (Count - admitBelow)-th oldest: for no reserve, the oldest one.
+                waitForWindow = _recentRequests.ElementAt(_recentRequests.Count - admitBelow) + Window - now;
             }
 
             var remaining = Remaining(deadline);

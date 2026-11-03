@@ -218,7 +218,7 @@ public static class EmoteTagEndpoints
                 return Results.BadRequest(new { errorCode = formError });
             }
 
-            var (rejection, actor) = await PassOwnershipLadderAsync(request!.EmoteSetId!, request.TargetOwnerTwitchId, httpContext, ownershipService, ct);
+            var (rejection, _) = await PassOwnershipLadderAsync(request!.EmoteSetId!, request.TargetOwnerTwitchId, httpContext, ownershipService, ct);
             if (rejection is not null)
             {
                 return rejection;

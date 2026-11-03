@@ -484,7 +484,7 @@ public static class SevenTvEndpoints
             // 7TV" is what 7TV normally does, not a guarantee this code relies on).
             return (new EmoteSetTargetAccount(
                 twitchChannelId, twitchLogin, isOwnAccount, trackedChannel?.ChannelName,
-                activeEmoteSetId, sets, SetsUnavailable: false, result.List!.SevenTvUserId), false);
+                activeEmoteSetId, sets, SetsUnavailable: false, result.List.SevenTvUserId), false);
         }
 
         if (result.Status == EmoteSetListStatus.NoSevenTvAccount)

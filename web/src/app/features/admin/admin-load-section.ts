@@ -293,7 +293,7 @@ export class AdminLoadSection {
   /** What the page's rate-limit trend should draw on: see `TrendAxis`. */
   readonly trendAxis = computed<TrendAxis>(() => {
     const load = this.data();
-    if (!load || !load.available) {
+    if (!load?.available) {
       return { kind: 'own' };
     }
     return load.range === '1h' || load.range === '24h'
@@ -304,7 +304,7 @@ export class AdminLoadSection {
   protected readonly charts = computed<LoadChart[]>(() => {
     const load = this.data();
     this.languageService.lang();
-    return load && load.available
+    return load?.available
       ? buildLoadCharts(load, {
           translate: (key, params) => this.transloco.translate(key, params),
           locale: this.locale(),

@@ -4,8 +4,8 @@ using Xunit;
 namespace EmotePurge.Infrastructure.Tests.Unit;
 
 // Pure, dependency-free — no container needed. Exercises the exact rule shared by
-// TwitchChatManager.OnMessageReceived, SevenTvSyncService.RefreshMatchCacheAsync and the #69
-// backfill harness. Fixtures here are synthetic (invented names/ids/text), never a recorded IRC
+// TwitchChatManager.OnMessageReceived, SevenTvSyncService.RefreshMatchCacheAsync and the
+// chat-log backfill. Fixtures here are synthetic (invented names/ids/text), never a recorded IRC
 // line — recorded chat does not belong in the repo (see DECISIONS.md for this file).
 public class EmoteNameMatchingTests
 {

@@ -362,7 +362,7 @@ export class TimeHistogram {
   private readonly yDomain = computed(() => {
     const max = Math.max(0, ...this.counts().map((c) => c.info + c.warn + c.error));
     const ticks = max === 0 ? [0, 1] : niceTicks(0, max, 4, 1);
-    return { ticks, max: ticks[ticks.length - 1] };
+    return { ticks, max: ticks.at(-1)! };
   });
 
   protected readonly yTicks = computed(() => {
@@ -428,7 +428,7 @@ export class TimeHistogram {
       return null;
     }
     const start = Date.parse(starts[0]);
-    const lastStart = Date.parse(starts[starts.length - 1]);
+    const lastStart = Date.parse(starts.at(-1)!);
     if (!Number.isFinite(start) || !Number.isFinite(lastStart)) {
       return null;
     }

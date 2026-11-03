@@ -1288,6 +1288,10 @@
       },
       "membersUnavailable": "This set’s member list is unavailable right now – only emotes with counts are shown.",
       "truncated": "This set’s member list is incomplete ({{total}} entries according to 7TV).",
+      "gap": {
+        "one": "7TV counts {{total}} entries in this set but lists {{count}} entry fewer. Cards without a listed entry are left out of deleting, voting and copying.",
+        "other": "7TV counts {{total}} entries in this set but lists {{count}} entries fewer. Cards without a listed entry are left out of deleting, voting and copying."
+      },
       "lock": {
         "membersUnavailable": "Deleting and voting are locked: this set’s member list is unavailable.",
         "truncated": "Deleting and voting are locked: this set’s member list is incomplete.",
@@ -1308,9 +1312,15 @@
       "departedSinceLoad": "{{name}} has left this set since the page loaded — not deleted.",
       "noAlias": "{{name}} no longer has a name of its own in 7TV and cannot be deleted on its own — not deleted.",
       "skippedUnread": "{{names}} not deleted: {{reason}}",
+      "gapHidden": "7TV currently omits {{count}} of this set’s entries and did not return them.",
+      "gapIdRow": "7TV currently omits {{count}} of this set’s entries — deleting by emote id would also remove entries it does not show.",
       "pendingSync": {
         "one": "{{names}} is being reconciled with 7TV and is left out of the delete — try again in a minute.",
         "other": "{{names}} are being reconciled with 7TV and are left out of the delete — try again in a minute."
+      },
+      "retryHint": {
+        "one": "1 entry was not deleted and is still selected — start the delete again to retry.",
+        "other": "{{count}} entries were not deleted and are still selected — start the delete again to retry."
       },
       "unexpectedRemoval": {
         "one": "{{names}} is now missing from the set although the run did not delete it — a deletion may have removed this entry as well.",
@@ -1665,9 +1675,14 @@
         "one": "{{names}} is no longer in the set — deselect it and start the run again.",
         "other": "{{names}} are no longer in the set — deselect them and start the run again."
       },
+      "gap": {
+        "one": "7TV currently omits {{count}} entry of this set, and deleting by emote id would also remove entries it does not show.",
+        "other": "7TV currently omits {{count}} entries of this set, and deleting by emote id would also remove entries it does not show."
+      },
       "lock": {
         "unavailable": "Deleting is locked: this set’s member list is not available. Reload the page to try again.",
         "truncated": "Deleting is locked: this set’s member list is incomplete. Reload the page to try again.",
+        "gap": "Deleting is locked: 7TV does not list every entry of this set, and deleting from a vote removes an emote with all of its entries.",
         "loading": "Deleting is locked until this set’s member list has loaded."
       }
     }
@@ -1819,6 +1834,10 @@
         "one": "{{ count }} name contains characters 7TV cannot create — 7TV will reject this emote:",
         "other": "{{ count }} names contain characters 7TV cannot create — 7TV will reject these emotes:"
       },
+      "sourceOmitted": {
+        "one": "7TV does not list {{ count }} entry of the source set; it is not copied.",
+        "other": "7TV does not list {{ count }} entries of the source set; they are not copied."
+      },
       "discardedRows": {
         "one": "{{ count }} invalid row in the source discarded.",
         "other": "{{ count }} invalid rows in the source discarded."
@@ -1933,7 +1952,8 @@
         "invalidTypedAlias": "Name 7TV does not accept: {{ rows }}.",
         "duplicateReplaceTarget": "The same target is replaced more than once: {{ rows }}.",
         "targetTouchedByReplaceAndAdopt": "The same target is replaced and renamed: {{ rows }}.",
-        "adoptBlocked": "Adopting the name is not possible here: {{ rows }}."
+        "adoptBlocked": "Adopting the name is not possible here: {{ rows }}.",
+        "replaceRemovesPlannedSource": "A replace would remove an emote another row adds — skip or rename one of the two: {{ rows }}."
       },
       "back": "Back",
       "apply": "Apply"
@@ -1970,6 +1990,16 @@
         "one": "{{ count }} replacement was not carried out — the target had changed since you confirmed.",
         "other": "{{ count }} replacements were not carried out — the target had changed since you confirmed."
       },
+      "targetUncheckedSkipped": {
+        "incomplete": {
+          "one": "{{ count }} emote was not copied — 7TV did not list the target set in full, so it could not rule out that the emote is already there.",
+          "other": "{{ count }} emotes were not copied — 7TV did not list the target set in full, so it could not rule out that the emotes are already there."
+        },
+        "unavailable": {
+          "one": "{{ count }} emote was not copied — the target set could not be checked for it right now. Try again shortly.",
+          "other": "{{ count }} emotes were not copied — the target set could not be checked for them right now. Try again shortly."
+        }
+      },
       "unknownRows": {
         "one": "For {{ count }} row it is unclear whether 7TV applied it — please check the set on 7TV.",
         "other": "For {{ count }} rows it is unclear whether 7TV applied them — please check the set on 7TV."
@@ -2004,8 +2034,7 @@
     "skippedDuplicates": {
       "one": "{{ count }} emote was already in the target set by the time the run started and was skipped.",
       "other": "{{ count }} emotes were already in the target set by the time the run started and were skipped."
-    },
-    "duplicateCheckUnavailable": "We couldn't check right now whether these emotes are already in the target set — duplicate entries are possible."
+    }
   },
   "undo": {
     "confirm": {
@@ -2216,7 +2245,7 @@
       "title": "Tags",
       "listLabel": "Tags",
       "intro": "A tag remembers emotes, even when they are not in the set.",
-      "introRuns": "“Add to set” adds them, “Remove from set” takes them out again – the tag itself stays.",
+      "introRuns": "“Add to active set” adds them, “Remove from active set” takes them out again – the tag itself stays.",
       "setLine": "The numbers refer to the active set {{set}}.",
       "noActiveSet": "This channel has no active set, so there are no “in the set” numbers.",
       "empty": {
@@ -2289,20 +2318,22 @@
       "rename": "Rename",
       "delete": "Delete tag",
       "clearSelection": "Clear selection",
-      "assign": "Assign tag…",
+      "assign": "Assign tag",
       "unassign": "Remove from tag ({{count}})",
       "unassignNamed": "Remove from tag ({{count}}) – {{tag}}",
       "unassignTitle": "Takes the marked emotes out of the tag. They stay in the set; the tag will no longer take them out of the set either.",
       "unassignLockReason": {
         "noneInTag": "None of the marked emotes is in {{tag}}."
       },
-      "playIn": "Add to set",
-      "playInCount": "Add to set ({{count}})",
+      "playIn": "Add to active set",
+      "playInCount": "Add to active set ({{count}})",
+      "playInOtherSet": "Add to another set",
+      "playInOtherSetCount": "Add to another set ({{count}})",
       "playInLockReason": {
         "allMarkedInSet": "All marked emotes are already in the set."
       },
-      "remove": "Remove from set",
-      "removeCount": "Remove from set ({{count}})",
+      "remove": "Remove from active set",
+      "removeCount": "Remove from active set ({{count}})",
       "removeLockReason": {
         "noneMarkedInSet": "None of the marked emotes is in the set."
       }
@@ -2335,6 +2366,14 @@
       "allMarkedPresent": {
         "one": "The marked emote is already in the set — the tag counts as added to the set.",
         "other": "All {{count}} marked emotes are already in the set — the tag counts as added to the set."
+      },
+      "otherSetAllPresent": {
+        "one": "The only emote of {{tag}} is already in {{set}}.",
+        "other": "All {{count}} emotes of {{tag}} are already in {{set}}."
+      },
+      "otherSetAllMarkedPresent": {
+        "one": "The marked emote is already in {{set}}.",
+        "other": "All {{count}} marked emotes are already in {{set}}."
       },
       "removedNothing": "Nothing of {{tag}} was in the set to remove."
     },
@@ -2386,9 +2425,10 @@
     },
     "errors": {
       "setChanged": "The active set has changed — reload the page.",
+      "otherSetChanged": "The entries no longer match the chosen set — nothing was changed.",
       "entriesUnavailable": "The tag's entries could not be loaded just now.",
       "markedGone": "None of the marked emotes belongs to the tag any more — nothing was changed.",
-      "changedDuringConfirm": "The tag has changed in the meantime — please open “Remove from set” again.",
+      "changedDuringConfirm": "The tag has changed in the meantime — please open “Remove from active set” again.",
       "setReadIncomplete": "The set's entries could only partly be read from 7TV — nothing was changed.",
       "setReadUnavailable": "The set's entries could not be read from 7TV — nothing was changed.",
       "noWriteRight": "You may not edit this set on 7TV.",

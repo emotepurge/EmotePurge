@@ -560,11 +560,24 @@ public class SevenTvApiClient(
         }
     }
 
+    // The read is classified three ways (#457, mirroring the browser reader of #454): complete, gap
+    // (a stable, self-consistent under-count: every listed entry is present, nothing may be concluded
+    // about the rest) and inconsistent (the read itself may be wrong). Truncated is exactly "not
+    // complete", so every reader of the flag stays fail-closed. A multi-page read that would be
+    // complete or gap is verified by re-reading pages 1..n-1: a shift across a page boundary between
+    // two page reads (an early entry removed, another appended) keeps the total and repeats nothing,
+    // yet hides the entry that slid onto the already-read page — only a second look at that page
+    // shows it. A set of up to 500 entries stays one request.
     public async Task<SevenTvEmoteSetPreviewResult> GetEmoteSetPreviewAsync(string emoteSetId, CancellationToken cancellationToken = default)
     {
         try
         {
             var items = new List<SevenTvEmoteSetPreviewItem>();
+            var totalCounts = new HashSet<int>();
+            var seenEntries = new HashSet<(string EmoteId, string Alias)>();
+            var pageMembers = new List<PreviewMember[]>();
+            var repeatedAcrossPages = false;
+            var pageCapped = false;
             var totalCount = 0;
             string? setName = null;
             int? setCapacity = null;
@@ -579,6 +592,17 @@ public class SevenTvApiClient(
 
                 var pageDto = fetch.PageDto!;
                 totalCount = pageDto.TotalCount;
+                totalCounts.Add(totalCount);
+
+                // Checked against earlier pages only: a repeat within one page is not a shift (#454).
+                var entries = pageDto.Items.Select(EntryKey).ToList();
+                if (entries.Exists(seenEntries.Contains))
+                {
+                    repeatedAcrossPages = true;
+                }
+
+                seenEntries.UnionWith(entries);
+                pageMembers.Add(MembersOf(pageDto));
                 items.AddRange(pageDto.Items.Select(MapPreviewItem));
 
                 if (page == 1)
@@ -598,19 +622,56 @@ public class SevenTvApiClient(
 
                 // F3: the guard is a runaway stop, not an expected limit (see the comment on
                 // MaxSetEntryPages) — but unlike the addedAt overlay this reads back to a user as a
-                // preview list, and a silently short one is exactly what the spec forbids. Truncated
-                // is derived once more, robustly, right after the loop from items.Count < totalCount;
-                // this log line exists only to say *why*, while the reason is still known.
+                // preview list, and a silently short one is exactly what the spec forbids. A capped
+                // walk is classified inconsistent right after the loop; this log line exists only to
+                // say *why*, while the reason is still known.
                 if (page == MaxSetEntryPages)
                 {
+                    pageCapped = true;
                     logger.LogWarning(
                         "7TV-Set {SetId} überschreitet die Seitendecke ({MaxPages} Seiten à {PerPage}) — Vorschau wird als unvollständig (truncated) markiert, angesagte Gesamtzahl {TotalCount}.",
                         emoteSetId, MaxSetEntryPages, SetEntriesPerPage, totalCount);
                 }
             }
 
-            var truncated = items.Count < totalCount;
-            return SevenTvEmoteSetPreviewResult.Ok(new SevenTvEmoteSetPreview(totalCount, truncated, items, setName, setCapacity));
+            var verifiable = totalCounts.Count == 1
+                && !repeatedAcrossPages
+                && !pageCapped
+                && items.Count <= totalCount
+                && !(items.Count == 0 && totalCount > 0);
+            var readState = SevenTvSetReadState.Inconsistent;
+            if (verifiable)
+            {
+                var verification = await VerifyPreviewPagesAsync(emoteSetId, pageMembers, totalCounts, cancellationToken);
+                if (verification.Failure is { } failure)
+                {
+                    return failure;
+                }
+
+                if (verification.Unchanged)
+                {
+                    readState = items.Count == totalCount ? SevenTvSetReadState.Complete : SevenTvSetReadState.Gap;
+                }
+            }
+
+            var omittedCount = readState == SevenTvSetReadState.Gap ? totalCount - items.Count : 0;
+            if (readState == SevenTvSetReadState.Gap)
+            {
+                // One line per gap read, never per page (#457): makes 7TV's under-counts visible in
+                // the admin log viewer.
+                logger.LogInformation(
+                    "7TV lists fewer entries than it counts for emote set {SetId}: totalCount {TotalCount}, listed {ListedCount}, omitted {OmittedCount} (gap read).",
+                    emoteSetId, totalCount, items.Count, omittedCount);
+            }
+
+            return SevenTvEmoteSetPreviewResult.Ok(new SevenTvEmoteSetPreview(
+                totalCount,
+                readState != SevenTvSetReadState.Complete,
+                items,
+                setName,
+                setCapacity,
+                readState,
+                omittedCount));
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
@@ -816,17 +877,60 @@ public class SevenTvApiClient(
         }
     }
 
+    // The verification re-read of GetEmoteSetPreviewAsync (#457): pages 1..n-1 of a multi-page read
+    // once more, each compared with its first-pass membership by (emote id, alias, addedAt in
+    // milliseconds) — the date makes an alias swap between two entries of one emote visible
+    // (Plan-378 S4) — and each re-read page's totalCount joins the drift check. A single-page read
+    // needs none. Each re-read is charged with the preview reserve and no wait: a refused permit
+    // means "could not be verified now", so the read is inconsistent (Unchanged false), not failed —
+    // and the reserve the permission checks rely on stays untouched. A re-read that fails (429,
+    // unavailable, not found) fails the whole preview with that status, like a first-pass page.
+    private async Task<PreviewVerification> VerifyPreviewPagesAsync(
+        string emoteSetId, List<PreviewMember[]> pageMembers, HashSet<int> totalCounts, CancellationToken cancellationToken)
+    {
+        for (var page = 1; page < pageMembers.Count; page++)
+        {
+            if (!await foreignRequestBudget.TryChargeRequestAsync(
+                    ForeignEmoteSetProviderBudget.PreviewReserve, TimeSpan.Zero, cancellationToken))
+            {
+                logger.LogWarning(
+                    "Provider-wide 7TV budget has no headroom above the preview reserve — verification re-read of emote set {SetId} not requested at page {Page}; the preview is reported as inconsistent.",
+                    emoteSetId, page);
+                return new PreviewVerification(false, null);
+            }
+
+            var fetch = await ReadClassifiedPreviewPageAsync(emoteSetId, page, cancellationToken);
+            if (fetch.Failure is { } failure)
+            {
+                return new PreviewVerification(false, failure);
+            }
+
+            totalCounts.Add(fetch.PageDto!.TotalCount);
+            if (totalCounts.Count > 1 || !MembersOf(fetch.PageDto).SequenceEqual(pageMembers[page - 1]))
+            {
+                return new PreviewVerification(false, null);
+            }
+        }
+
+        return new PreviewVerification(true, null);
+    }
+
     // One loop iteration of GetEmoteSetPreviewAsync, split out along its own business seam: obtain
     // one preview page, or determine — and already log — why it cannot be obtained (exhausted
     // budget, a confirmed 429 in either of its two disguises, or an unparseable/GraphQL-error
     // response). Charges one budget permit per page rather than once per resolution (E5b): a single
     // preview walks up to ten pages, and a permit charged per *resolution* would license ten times
     // the documented rate. The permit is taken before the request is built, so a refusal really does
-    // mean "no request was made".
+    // mean "no request was made". Charged with the preview reserve (#457): the page waits up to the
+    // budget's default for headroom above it, so preview traffic never takes the permits the set
+    // list, the owner lookup and the editor grants depend on.
     private async Task<PreviewPageFetch> FetchClassifiedPreviewPageAsync(
         string emoteSetId, int page, CancellationToken cancellationToken)
     {
-        if (!await foreignRequestBudget.TryChargeRequestAsync(cancellationToken))
+        if (!await foreignRequestBudget.TryChargeRequestAsync(
+                ForeignEmoteSetProviderBudget.PreviewReserve,
+                ForeignEmoteSetProviderBudget.DefaultRequestWaitTimeout,
+                cancellationToken))
         {
             logger.LogWarning(
                 "Providerweites 7TV-Budget erschöpft — Vorschau-Abruf für Set {SetId} bei Seite {Page} abgebrochen.",
@@ -834,6 +938,14 @@ public class SevenTvApiClient(
             return PreviewPageFetch.Failed(SevenTvEmoteSetPreviewResult.Failed(SevenTvPreviewLookupStatus.BudgetExhausted));
         }
 
+        return await ReadClassifiedPreviewPageAsync(emoteSetId, page, cancellationToken);
+    }
+
+    // The uncharged half of FetchClassifiedPreviewPageAsync, shared with the verification re-read:
+    // the request itself and the classification of its answer. Callers take the permit first.
+    private async Task<PreviewPageFetch> ReadClassifiedPreviewPageAsync(
+        string emoteSetId, int page, CancellationToken cancellationToken)
+    {
         var pageResult = await FetchPreviewPageAsync(emoteSetId, page, cancellationToken);
 
         // The single most expensive mistake in the whole spec (section 5/AK7): 7TV answers an
@@ -1362,6 +1474,21 @@ public class SevenTvApiClient(
         }
     }
 
+    // A set entry as the repeat check sees it (#454): the emote and its set-local alias.
+    private static (string EmoteId, string Alias) EntryKey(SevenTvGqlEmoteSetPreviewItemDto dto) =>
+        (dto.Emote?.Id ?? string.Empty, dto.Alias ?? string.Empty);
+
+    // A page's membership for the verification re-read, in a fixed order so two reads of the same
+    // page compare equal regardless of how 7TV ordered them.
+    private static PreviewMember[] MembersOf(SevenTvGqlEmoteSetPreviewPageDto pageDto) =>
+        pageDto.Items
+            .Select(item => new PreviewMember(
+                item.Emote?.Id ?? string.Empty, item.Alias ?? string.Empty, item.AddedAt?.ToUnixTimeMilliseconds()))
+            .OrderBy(member => member.EmoteId, StringComparer.Ordinal)
+            .ThenBy(member => member.Alias, StringComparer.Ordinal)
+            .ThenBy(member => member.AddedAtMs)
+            .ToArray();
+
     private static SevenTvEmoteSetPreviewItem MapPreviewItem(SevenTvGqlEmoteSetPreviewItemDto dto)
     {
         var emoteId = dto.Emote?.Id ?? string.Empty;
@@ -1472,6 +1599,15 @@ public class SevenTvApiClient(
 
         public static PreviewPageFetch Failed(SevenTvEmoteSetPreviewResult failure) => new(null, null, failure);
     }
+
+    // One set entry as the verification re-read compares it (#457): emote id, alias (absent = ""), and
+    // the entry's date in milliseconds (null = 7TV reported none), mirroring #454's member key.
+    private readonly record struct PreviewMember(string EmoteId, string Alias, long? AddedAtMs);
+
+    // Outcome of VerifyPreviewPagesAsync: Failure set ⇒ the preview fails with it; otherwise
+    // Unchanged says whether every re-read page matched its first pass (false also for a refused
+    // permit, which leaves the read unverified).
+    private readonly record struct PreviewVerification(bool Unchanged, SevenTvEmoteSetPreviewResult? Failure);
 
     // Outcome of PostBudgetedGqlAsync: Failure is null exactly when Dto may be read — the failure is
     // already the finished LookUpEditorGrantsAsync answer, so its caller returns it as-is.

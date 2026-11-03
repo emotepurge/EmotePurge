@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ImportOrigin, ImportRow } from './import-source';
 import { TagPlacementsResult } from '../tags/emote-tag.model';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
-import { REPORT_TIMEOUT_MS } from './seven-tv-delete.service';
+import { ABORTED_DELETE_NOTICE_MS, REPORT_TIMEOUT_MS } from './seven-tv-delete.service';
 import { SevenTvImportService } from './seven-tv-import.service';
 import { RUN_DELAY_MS } from './seven-tv-run-engine';
 import { CANCEL_SETTLE_GRACE_MS, SET_ENTRIES_READ_TIMEOUT_MS } from './seven-tv-run-settlement';
@@ -218,10 +218,10 @@ describe('SevenTvImportService', () => {
     vi.advanceTimersByTime(RUN_DELAY_MS);
   }
 
-  it('keys every queue row by its 7TV id and carries no internal emoteId', () => {
+  it('keys every queue row by its source entry (id and name) and carries no internal emoteId', () => {
     service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
 
-    expect(service.queue().map((item) => item.key)).toEqual(['7tv-1', '7tv-2']);
+    expect(service.queue().map((item) => item.key)).toEqual(['5:7tv-1#PogU', '5:7tv-2#KEKW']);
     expect(Object.hasOwn(service.queue()[0], 'emoteId')).toBe(false);
 
     const req = httpMock.expectOne(GQL_ENDPOINT);
@@ -266,6 +266,42 @@ describe('SevenTvImportService', () => {
     httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
   });
 
+  it('adds both aliases of one emote as two rows and reports the id once (#444)', () => {
+    const ome: ImportRow = { sevenTvEmoteId: '7tv-1', name: 'ome44', imageUrl: null };
+    const hob: ImportRow = { sevenTvEmoteId: '7tv-1', name: 'hob44', imageUrl: null };
+    service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([ome, hob]));
+
+    expect(service.queue().map((item) => item.key)).toEqual(['5:7tv-1#ome44', '5:7tv-1#hob44']);
+    const first = httpMock.expectOne(GQL_ENDPOINT);
+    expect(first.request.body.variables).toEqual({
+      setId: 'set-b',
+      emoteId: '7tv-1',
+      alias: 'ome44',
+    });
+    flushApplied(first);
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+    const second = httpMock.expectOne(GQL_ENDPOINT);
+    expect(second.request.body.variables).toEqual({
+      setId: 'set-b',
+      emoteId: '7tv-1',
+      alias: 'hob44',
+    });
+    flushApplied(second);
+    vi.advanceTimersByTime(RUN_DELAY_MS);
+
+    const reportReq = httpMock.expectOne(SYNC_IMPORTED_B);
+    expect(reportReq.request.body.sevenTvEmoteIds).toEqual(['7tv-1']);
+    reportReq.flush(null, { status: 204, statusText: 'No Content' });
+    httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+
+    const result = service.run()?.result;
+    expect(result?.doneKeys).toEqual(['5:7tv-1#ome44', '5:7tv-1#hob44']);
+    expect(result?.items.map((item) => [item.status, item.transfer.alias])).toEqual([
+      ['done', 'ome44'],
+      ['done', 'hob44'],
+    ]);
+  });
+
   it('reports a channel import with its source channel and triggers exactly one resync', () => {
     service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
     runTwoRowsToDone();
@@ -288,7 +324,7 @@ describe('SevenTvImportService', () => {
 
     expect(service.resyncTrigger()).toBe('succeeded');
     httpMock.expectNone(RESYNC_B);
-    expect(service.run()?.result?.doneKeys).toEqual(['7tv-1', '7tv-2']);
+    expect(service.run()?.result?.doneKeys).toEqual(['5:7tv-1#PogU', '5:7tv-2#KEKW']);
   });
 
   it('reports a foreign-channel import with both its kind and its source channel', () => {
@@ -610,7 +646,8 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 0, false);
 
       expect(service.duplicateCheckAvailable()).toBe(false);
-      // Fails open, same as always — an unverifiable check does not block the confirmed run.
+      // The service runs whatever plan it is handed — the refusal of add/renameSource rows on an
+      // unchecked read happens before this call, in `recheckTransferPlan` (#457).
       expect(service.isRunning()).toBe(true);
 
       runTwoRowsToDone();
@@ -625,6 +662,68 @@ describe('SevenTvImportService', () => {
       service.reset();
 
       expect(service.duplicateCheckAvailable()).toBe(true);
+    });
+  });
+
+  // #457: the add/renameSource rows the caller's fresh pre-run check refused because its read of
+  // the target could not rule out a duplicate (failed, timed out, or incomplete). The service gets
+  // the plan already trimmed; this pins that the count reaches the notice and that a trimmed plan
+  // puts no ADD on the wire.
+  describe('targetUncheckedSkipped (#457)', () => {
+    it('defaults to 0 when the caller omits it', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([]));
+
+      expect(service.targetUncheckedSkipped()).toBe(0);
+      expect(service.duplicateNoticePending()).toBe(false);
+    });
+
+    it('opens the notice for rows refused on a failed read too', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [] }, 0, false, 0, 1);
+
+      expect(service.duplicateNoticePending()).toBe(true);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('opens the notice for a plan emptied by the refusal, and sends nothing', () => {
+      const started = service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [] }, 0, true, 0, 2);
+
+      expect(started).toBe(false);
+      expect(service.targetUncheckedSkipped()).toBe(2);
+      expect(service.duplicateNoticePending()).toBe(true);
+      httpMock.expectNone(GQL_ENDPOINT);
+    });
+
+    it('runs the adopt row the refusal kept as an UPDATE, with no ADD on the wire', () => {
+      service.startImport(
+        TARGET_B,
+        CHANNEL_ORIGIN,
+        { rows: [adoptRow(SOURCE_X, 'KappaOld')] },
+        0,
+        false,
+        1,
+        2,
+      );
+
+      const mutation = nextMutation();
+      const query = (mutation.request.body as { query: string }).query;
+      expect(query).toContain('UpdateEmoteAlias');
+      expect(query).not.toContain('AddEmote');
+      flushApplied(mutation);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(service.isRunning()).toBe(false);
+      expect(service.targetUncheckedSkipped()).toBe(2);
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('is cleared by reset() and by a blocked pre-check', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [] }, 0, true, 0, 2);
+      service.reset();
+      expect(service.targetUncheckedSkipped()).toBe(0);
+
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [] }, 0, true, 0, 2);
+      service.reportTargetCheckBlocked('unavailable');
+      expect(service.targetUncheckedSkipped()).toBe(0);
     });
   });
 
@@ -649,21 +748,40 @@ describe('SevenTvImportService', () => {
       expect(service.duplicateNoticePending()).toBe(true);
     });
 
-    it('becomes true when the call reports the check unavailable, even with nothing skipped', () => {
+    // #457: an unavailable check alone has nothing left to show — it only picks the wording of the
+    // refused-rows line — so it opens no empty notice window (an adopt-only plan on a failed read).
+    it('stays false when the call reports the check unavailable but nothing skipped or refused', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 0, false);
 
-      expect(service.duplicateNoticePending()).toBe(true);
+      expect(service.duplicateNoticePending()).toBe(false);
 
       runTwoRowsToDone();
       httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
-    it('clears itself after DUPLICATE_NOTICE_MS without any dismiss call', () => {
-      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([]), 2);
+    // #460: a start that ran nothing keeps the longer window; the 4 s one is the mixed plan's.
+    it('clears itself after DUPLICATE_NOTICE_MS without any dismiss call, for a start that began a run', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 2);
       expect(service.duplicateNoticePending()).toBe(true);
 
       vi.advanceTimersByTime(3999);
+      expect(service.duplicateNoticePending()).toBe(true);
+
+      vi.advanceTimersByTime(1);
+      expect(service.duplicateNoticePending()).toBe(false);
+
+      runTwoRowsToDone();
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('holds the notice for ABORTED_DELETE_NOTICE_MS when the start began no run (every row refused)', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([]), 0, true, 0, 3);
+      expect(service.duplicateNoticePending()).toBe(true);
+      expect(service.refusalNoticeRunId()).toBeNull();
+
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS - 1);
       expect(service.duplicateNoticePending()).toBe(true);
 
       vi.advanceTimersByTime(1);
@@ -672,15 +790,15 @@ describe('SevenTvImportService', () => {
 
     it("a second call within the window restarts it, rather than the first call's timer cutting the new notice short", () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan([]), 2);
-      vi.advanceTimersByTime(3000);
+      vi.advanceTimersByTime(7000);
 
       service.startImport(TARGET_C, CHANNEL_ORIGIN, addPlan([]), 3);
       vi.advanceTimersByTime(2000);
 
-      // 5000 ms after the first call, but only 2000 ms after the second — still pending.
+      // 9000 ms after the first call, but only 2000 ms after the second — still pending.
       expect(service.duplicateNoticePending()).toBe(true);
 
-      vi.advanceTimersByTime(2000);
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS - 2000);
       expect(service.duplicateNoticePending()).toBe(false);
     });
 
@@ -691,6 +809,67 @@ describe('SevenTvImportService', () => {
       service.reset();
 
       expect(service.duplicateNoticePending()).toBe(false);
+    });
+  });
+
+  // #460: the refusal counts of the start travel on the run it opened, so the settled summary can
+  // keep naming them and a later refused start cannot rewrite them.
+  describe('run-bound refusal counts (#460)', () => {
+    function settleRun(): void {
+      runTwoRowsToDone();
+      httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    }
+
+    it('records both counts and the wording flag on the run the start opened', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 0, false, 2, 3);
+
+      const run = service.run();
+      expect(run?.targetUncheckedSkipped).toBe(3);
+      expect(run?.duplicateCheckAvailable).toBe(false);
+      expect(run?.replaceSkippedDrift).toBe(2);
+      expect(service.refusalNoticeRunId()).toBe(run?.runId);
+
+      settleRun();
+    });
+
+    it('defaults the run-bound counts to none, with the check available', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS));
+
+      expect(service.run()?.targetUncheckedSkipped).toBe(0);
+      expect(service.run()?.replaceSkippedDrift).toBe(0);
+      expect(service.run()?.duplicateCheckAvailable).toBe(true);
+
+      settleRun();
+    });
+
+    it('a refused start leaves the shown run untouched, whatever it refused itself', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 0, true, 0, 1);
+      const shown = service.run();
+      settleRun();
+      expect(service.run()?.runId).toBe(shown?.runId);
+
+      expect(service.startImport(TARGET_C, CHANNEL_ORIGIN, addPlan([]), 0, false, 4, 5)).toBe(
+        false,
+      );
+
+      expect(service.run()?.runId).toBe(shown?.runId);
+      expect(service.run()?.targetUncheckedSkipped).toBe(1);
+      expect(service.run()?.duplicateCheckAvailable).toBe(true);
+      expect(service.run()?.replaceSkippedDrift).toBe(0);
+      // The refused call's own counts live on the transient signals only, with no run behind them.
+      expect(service.targetUncheckedSkipped()).toBe(5);
+      expect(service.refusalNoticeRunId()).toBeNull();
+    });
+
+    it('reset() forgets which run the notice belongs to', () => {
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, addPlan(ROWS), 0, true, 0, 1);
+      settleRun();
+
+      service.reset();
+
+      expect(service.refusalNoticeRunId()).toBeNull();
+      expect(service.run()).toBeNull();
     });
   });
 
@@ -705,10 +884,10 @@ describe('SevenTvImportService', () => {
       expect(service.duplicateNoticePending()).toBe(true);
     });
 
-    it('clears itself after DUPLICATE_NOTICE_MS, the same window as every other transient notice', () => {
+    it('clears itself after ABORTED_DELETE_NOTICE_MS: no run is behind it, like any start that began none (#460)', () => {
       service.reportTargetCheckBlocked('unavailable');
 
-      vi.advanceTimersByTime(3999);
+      vi.advanceTimersByTime(ABORTED_DELETE_NOTICE_MS - 1);
       expect(service.duplicateNoticePending()).toBe(true);
 
       vi.advanceTimersByTime(1);
@@ -793,7 +972,7 @@ describe('SevenTvImportService', () => {
     expect(service.syncReport()).toBe('succeeded');
     expect(service.resyncTrigger()).toBe('succeeded');
     expect(service.run()?.targetChannelName).toBe('kanal_c');
-    expect(service.run()?.result?.doneKeys).toEqual(['7tv-9']);
+    expect(service.run()?.result?.doneKeys).toEqual(['5:7tv-9#Clueless']);
     // Run 1 closed on its failed report; with run 2 on screen it is not shown again — its failure
     // stays on its record and in the console.
     expect(service.isSettling()).toBe(false);
@@ -947,6 +1126,67 @@ describe('SevenTvImportService', () => {
       httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
       expect(service.destructiveOpen()).toBe(false);
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    describe('a removed target the same run added back (#444)', () => {
+      // Source X:A, X:B, Y:C against a target X:C: the replace of Y:C removes X, a further row adds
+      // X:B back. `sync-deleted` without entries would archive X with the new X:B.
+      const tgtUnderB: ImportRow = { sevenTvEmoteId: 'tgt-x', name: 'B', imageUrl: null };
+
+      it('leaves the re-added id out of sync-deleted and still counts the REMOVE', () => {
+        service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+          rows: [replaceRow(SOURCE_X, 'tgt-x'), replaceRow(SOURCE_Z, 'tgt-z'), addRow(tgtUnderB)],
+        });
+        for (let step = 0; step < 5; step++) {
+          answerNext();
+        }
+
+        expect(service.run()?.removedCount).toBe(2);
+        expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual([
+          'src-x',
+          'src-z',
+          'tgt-x',
+        ]);
+        const removalReq = httpMock.expectOne(SYNC_DELETED_B);
+        expect(removalReq.request.body.sevenTvEmoteIds).toEqual(['tgt-z']);
+        removalReq.flush(deletedAnswer());
+        httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+      });
+
+      it('still reports the id when its re-add failed', () => {
+        service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+          rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(tgtUnderB)],
+        });
+        answerNext();
+        answerNext();
+        answerNext(gqlRejection('BAD_REQUEST something else', 400));
+
+        expect(service.run()?.result?.items[1].status).toBe('failed');
+        const removalReq = httpMock.expectOne(SYNC_DELETED_B);
+        expect(removalReq.request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+        httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
+        removalReq.flush(deletedAnswer());
+        httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+      });
+
+      it('sends no sync-deleted when the only removed id was added back, resyncs directly and closes', () => {
+        service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+          rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(tgtUnderB)],
+        });
+        answerNext();
+        answerNext();
+        answerNext();
+
+        expect(service.run()?.removalReport).toBe('idle');
+        httpMock.expectNone(SYNC_DELETED_B);
+        httpMock.expectOne(SYNC_IMPORTED_B).flush(null, { status: 204, statusText: 'OK' });
+        httpMock.expectOne(RESYNC_B).flush(null, { status: 429, statusText: 'Too Many Requests' });
+
+        expect(service.resyncTrigger()).toBe('cooldown');
+        expect(service.run()?.phase).toBe('closed');
+        expect(service.destructiveOpen()).toBe(false);
+        expect(service.run()?.removedCount).toBe(1);
+      });
     });
 
     it('sends an adopt row as one updateEmoteAlias, old alias in the id and source name as argument, and no addEmote', () => {
@@ -1346,7 +1586,7 @@ describe('SevenTvImportService', () => {
       const row = service.run()?.result?.items[1];
       expect(row).toMatchObject({ status: 'done', completedSteps: 1, failedStep: null });
       expect(service.run()?.unknownCount).toBe(0);
-      expect(service.run()?.result?.doneKeys).toEqual(['src-x', 'src-y']);
+      expect(service.run()?.result?.doneKeys).toEqual(['5:src-x#Kappa', '5:src-y#Pog']);
 
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual([
         'src-x',
@@ -1452,7 +1692,7 @@ describe('SevenTvImportService', () => {
       const secondPlan = addPlan([SOURCE_Z]);
       service.startImport(TARGET_C, FILE_ORIGIN, secondPlan);
       const second = service.run();
-      expect(service.items().map((item) => item.key)).toEqual(['src-z']);
+      expect(service.items().map((item) => item.key)).toEqual(['5:src-z#Sadge']);
 
       read.flush(
         setEntriesPage([
@@ -1470,7 +1710,7 @@ describe('SevenTvImportService', () => {
       httpMock.expectNone(RESYNC_B);
       // …but run 1 is never shown again, and none of its report states lands on run 2.
       expect(service.run()).toBe(second);
-      expect(service.items().map((item) => item.key)).toEqual(['src-z']);
+      expect(service.items().map((item) => item.key)).toEqual(['5:src-z#Sadge']);
       expect(service.syncReport()).toBe('idle');
       expect(service.removalReport()).toBe('idle');
       expect(service.resyncTrigger()).toBe('idle');
@@ -1522,7 +1762,7 @@ describe('SevenTvImportService', () => {
       service.startImport(TARGET_B, CHANNEL_ORIGIN, { rows: [adoptRow(SOURCE_X, 'KappaOld')] });
 
       expect(service.items()).toEqual([
-        expect.objectContaining({ key: 'src-x', status: 'in-progress' }),
+        expect.objectContaining({ key: '5:src-x#Kappa', status: 'in-progress' }),
       ]);
       expect(service.items()[0].transfer.action).toBe('adoptSourceName');
       expect(service.destructiveOpen()).toBe(false);
@@ -1632,6 +1872,30 @@ describe('SevenTvImportService', () => {
       expect(service.run()?.unknownRemovalCount).toBe(0);
       expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['src-x']);
       httpMock.expectOne(SYNC_DELETED_B).flush(deletedAnswer());
+      httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('settles an unknown REMOVE as a gap when a later row of the run added the target id back under another alias (#444)', () => {
+      // A multi-alias source: the replace frees "Kappa" from tgt-x, a further row adds tgt-x
+      // under "Other". The re-read finds the id — but not under the alias the REMOVE took.
+      const tgtUnderOther: ImportRow = { sevenTvEmoteId: 'tgt-x', name: 'Other', imageUrl: null };
+      service.startImport(TARGET_B, CHANNEL_ORIGIN, {
+        rows: [replaceRow(SOURCE_X, 'tgt-x'), addRow(tgtUnderOther)],
+      });
+      httpMock.expectOne(GQL_ENDPOINT).flush('boom', { status: 503, statusText: 'Unavailable' });
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+      answerNext();
+
+      httpMock.expectOne(GQL_ENDPOINT).flush(setEntriesPage([{ id: 'tgt-x', alias: 'Other' }]));
+
+      const [replace] = service.run()?.result?.items ?? [];
+      expect(replace).toMatchObject({ status: 'failed', completedSteps: 1, failedStep: 1 });
+      expect(replace.errorMessage).toBe('Entfernt, aber nicht hinzugefügt.');
+      expect(service.run()?.removedCount).toBe(1);
+
+      expect(httpMock.expectOne(SYNC_IMPORTED_B).request.body.sevenTvEmoteIds).toEqual(['tgt-x']);
+      // The run added tgt-x back, so the removal report leaves it out (see the cases below).
+      httpMock.expectNone(SYNC_DELETED_B);
       httpMock.expectOne(RESYNC_B).flush(null, { status: 202, statusText: 'Accepted' });
     });
 
@@ -2370,7 +2634,7 @@ describe('SevenTvImportService', () => {
       expect(service.run()?.phase).toBe('closed');
       expect(service.syncReport()).toBe('failed');
       // What keeps the dock mounted (`import-progress-section`, `dockVisible`).
-      expect(service.queue().map((item) => item.key)).toEqual(['src-x']);
+      expect(service.queue().map((item) => item.key)).toEqual(['5:src-x#Kappa']);
       expect(service.items().map((item) => item.status)).toEqual(['done']);
 
       service.retrySyncReport();
