@@ -3,8 +3,8 @@ namespace EmotePurge.Core.Services;
 /// <summary>
 /// Since when a channel's usage data can be trusted. Extracted out of
 /// <c>EmoteSetStatusService</c> (which uses it for <c>EmoteSetStatusDto.TrackedSince</c>) so the
-/// chat-log backfill harness (issue #69) can apply the exact same rule instead of rebuilding it —
-/// there is deliberately only one place this one-line decision is made.
+/// rule lives in one place and can be applied without rebuilding it — there is deliberately only
+/// one place this one-line decision is made.
 /// </summary>
 public static class TrackingCoverage
 {

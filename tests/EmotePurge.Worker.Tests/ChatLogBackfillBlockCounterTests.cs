@@ -6,9 +6,8 @@ using Xunit;
 
 namespace EmotePurge.Worker.Tests;
 
-// Child 4 AC 2 (#350, spec 4.4, D9). Synthetic ids and text only, like ReplayDayCounterTests. The
-// classification cases are the ones ReplayDayCounterTests pins for the harness, run against the real
-// BotChatterDetector so "bot by badge" and "bot by id" are the live classifier's answers, not a stub's.
+// Child 4 AC 2 (#350, spec 4.4, D9). Synthetic ids and text only. The classification cases run
+// against the real BotChatterDetector so "bot by badge" and "bot by id" are the live classifier's answers, not a stub's.
 public class ChatLogBackfillBlockCounterTests
 {
     private const string Room = "room1";

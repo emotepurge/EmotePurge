@@ -9,8 +9,8 @@ namespace EmotePurge.Infrastructure.Logging;
 
 /// <summary>
 /// Registers the log capture of one process. Called by the Api and the long-running worker only: never
-/// from <c>AddEmotePurgeInfrastructure</c> and never from the harness, so a one-shot container cannot
-/// write log rows. It must run before every other hosted-service registration, because the host stops
+/// from <c>AddEmotePurgeInfrastructure</c> so a one-shot tool that shares the infrastructure
+/// registration cannot write log rows. It must run before every other hosted-service registration, because the host stops
 /// hosted services in reverse order and the writer has to be the last to stop (it drains the buffer).
 /// </summary>
 public static class LogCaptureRegistration

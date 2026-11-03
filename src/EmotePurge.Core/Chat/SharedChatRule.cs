@@ -2,9 +2,9 @@ namespace EmotePurge.Core.Chat;
 
 /// <summary>
 /// The one room-origin rule shared by the live chat path (<c>TwitchChatManager.OnMessageReceived</c>,
-/// via <see cref="FromTags"/>) and the chat-log backfill harness (<c>ReplayDayCounter.Count</c>,
-/// via <see cref="Classify"/>) — extracted from <c>ReplayDayCounter.cs:116-119</c> rather than
-/// rewritten (DECISIONS.md, "Shared Chat", 2026-09-06). Both sides decide with the same
+/// via <see cref="FromTags"/>) and the chat-log backfill (<c>ChatLogBackfillBlockCounter.Count</c>,
+/// via <see cref="Classify"/>) — extracted rather than rewritten (DECISIONS.md, "Shared Chat",
+/// 2026-09-06). Both sides decide with the same
 /// three-way <see cref="MessageOrigin"/> instead of duplicating the comparison.
 /// <para>
 /// Deliberately TwitchLib-free: it works on plain strings and an optional tag dictionary, not on
