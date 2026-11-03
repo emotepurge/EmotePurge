@@ -195,7 +195,7 @@ describe('TagAssignDialog', () => {
 
     const host: HTMLElement = fixture.nativeElement;
     const boxes = host.querySelectorAll<HTMLInputElement>('input[type=checkbox]');
-    expect(boxes.length).toBe(2);
+    expect(boxes).toHaveLength(2);
     expect(boxes[1].checked).toBe(true);
     expect(host.textContent).toContain('Neu');
 
@@ -218,7 +218,7 @@ describe('TagAssignDialog', () => {
 
     const host: HTMLElement = fixture.nativeElement;
     const boxes = host.querySelectorAll<HTMLInputElement>('input[type=checkbox]');
-    expect(boxes.length).toBe(1);
+    expect(boxes).toHaveLength(1);
     expect(boxes[0].checked).toBe(true);
     expect(host.textContent).toContain('Serverfehler.');
 
@@ -240,7 +240,7 @@ describe('TagAssignDialog', () => {
     fixture.detectChanges();
 
     const host: HTMLElement = fixture.nativeElement;
-    expect(host.querySelectorAll('input[type=checkbox]').length).toBe(2);
+    expect(host.querySelectorAll('input[type=checkbox]')).toHaveLength(2);
 
     const confirm = Array.from(host.querySelectorAll('button')).find(
       (b) => b.textContent?.trim() === '3 Emotes zuweisen',

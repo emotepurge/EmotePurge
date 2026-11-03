@@ -65,7 +65,7 @@ export function flushWithoutResult(request: TestRequest): void {
 function queryOf(request: TestRequest): string {
   const query: unknown = request.request.body?.query;
   if (typeof query !== 'string') {
-    throw new Error('Not a GraphQL request');
+    throw new TypeError('Not a GraphQL request');
   }
   return query;
 }

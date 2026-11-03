@@ -161,8 +161,8 @@ describe('ImportConflictResolutionStep', () => {
     it('offers replace enabled for an untracked target the same as for a tracked one', () => {
       const [row] = collisionStepRows([collision('a', 'Kappa')], new Map());
 
-      expect(row.options.find((o) => o.kind === 'replaceTarget')?.disabledReasonKey).toBe(null);
-      expect(row.options.find((o) => o.kind === 'renameSource')?.disabledReasonKey).toBe(null);
+      expect(row.options.find((o) => o.kind === 'replaceTarget')?.disabledReasonKey).toBeNull();
+      expect(row.options.find((o) => o.kind === 'renameSource')?.disabledReasonKey).toBeNull();
     });
 
     it('keeps replace listed but disabled with its reason for a target that is gone', () => {

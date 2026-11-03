@@ -185,9 +185,9 @@ describe('buildImportPreview', () => {
         result.aliasMismatches.length,
     ).toBe(rows.length);
     expect(result.alreadyPresent).toBe(1);
-    expect(result.aliasMismatches.length).toBe(1);
+    expect(result.aliasMismatches).toHaveLength(1);
     expect(result.nameCollisionRowCount).toBe(2);
-    expect(result.toAdd.length).toBe(2);
+    expect(result.toAdd).toHaveLength(2);
   });
 
   it('returns an empty toAdd list when every source row is already present', () => {
@@ -560,22 +560,22 @@ describe('buildImportPreview', () => {
       sourceRows.push({ sevenTvEmoteId: `new-${index}`, name: `New${index}`, imageUrl: null });
     }
 
-    expect(sourceRows.length).toBe(762);
+    expect(sourceRows).toHaveLength(762);
 
     const result = buildImportPreview(source(sourceRows), target);
 
     expect(result.alreadyPresent).toBe(ALREADY_PRESENT_COUNT);
-    expect(result.aliasMismatches.length).toBe(ALIAS_MISMATCH_COUNT);
-    expect(result.nameCollisions.length).toBe(NAME_COLLISION_COUNT);
+    expect(result.aliasMismatches).toHaveLength(ALIAS_MISMATCH_COUNT);
+    expect(result.nameCollisions).toHaveLength(NAME_COLLISION_COUNT);
     // Every collision here has a distinct name, so the deduplicated list and the row count agree —
     // this is the case the AK 38 numbers were measured against, not the shared-alias case covered
     // separately above.
     expect(result.nameCollisionRowCount).toBe(NAME_COLLISION_COUNT);
-    expect(result.toAdd.length).toBe(TO_ADD_COUNT);
+    expect(result.toAdd).toHaveLength(TO_ADD_COUNT);
     // The row-accurate counterpart lists must track the counting fields exactly, at this larger
     // scale too, not just in the small hand-written cases above.
-    expect(result.nameCollisionRows.length).toBe(result.nameCollisionRowCount);
-    expect(result.aliasMismatchRows.length).toBe(result.aliasMismatches.length);
+    expect(result.nameCollisionRows).toHaveLength(result.nameCollisionRowCount);
+    expect(result.aliasMismatchRows).toHaveLength(result.aliasMismatches.length);
     expect(
       result.toAdd.length +
         result.alreadyPresent +
