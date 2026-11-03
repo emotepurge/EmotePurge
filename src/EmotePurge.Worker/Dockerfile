@@ -26,14 +26,11 @@ RUN dotnet publish "EmotePurge.Worker.csproj" -c $BUILD_CONFIGURATION -o /app/pu
 
 FROM base AS final
 WORKDIR /app
-# Fixed uid/gid (#69 Task 8a): without a pin, `useradd --system` picks the next free id in the
-# Debian system range (0-999), which is whatever the base image happens to have free at build time
-# and can shift on a base-image update. That made the harness's bind-mounted `harness-reports`
-# directory (docs/DECISIONS.md, .env.example) impossible to `chown` correctly ahead of time — Task 8
-# had to discover the id at runtime (`docker run --entrypoint id`) before it could fix a
-# "Permission denied" on a freshly created, root-owned mount. 999 is the top of that system range
-# and is what this image already resolved to when the problem was found, so pinning it changes
-# nothing about the running container, only makes the id predictable from outside it.
+# Fixed uid/gid: without a pin, `useradd --system` picks the next free id in the Debian system
+# range (0-999), which is whatever the base image happens to have free at build time and can shift
+# on a base-image update. A bind-mounted directory could then not be `chown`ed correctly ahead of
+# time. 999 is the top of that system range and is what this image already resolved to, so pinning
+# it changes nothing about the running container, only makes the id predictable from outside it.
 RUN groupadd --system --gid 999 appgroup && useradd --system --uid 999 --gid appgroup --no-create-home appuser
 COPY --from=build /app/publish .
 RUN chown -R appuser:appgroup /app

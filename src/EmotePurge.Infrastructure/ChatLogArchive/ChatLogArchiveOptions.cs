@@ -11,7 +11,7 @@ public sealed class ChatLogArchiveOptions
     /// <summary>
     /// A justlog-compatible archive (format measured live 2026-09-05, T8). Defaults to
     /// <c>logs.cyex.app</c> since 2026-10-08, when the previous default (<c>logs.zonian.dev</c>) went
-    /// offline. Required on api, worker and harness alike: a backfill run stores the value it was
+    /// offline. Required on api and worker alike: a backfill run stores the value it was
     /// requested against and the worker refuses a run whose value differs from its own.
     /// </summary>
     public string BaseUrl { get; set; } = "https://logs.cyex.app/";
@@ -22,13 +22,6 @@ public sealed class ChatLogArchiveOptions
     /// (Premise 5 of the design).
     /// </summary>
     public TimeSpan RequestDelay { get; set; } = TimeSpan.FromMilliseconds(1500);
-
-    /// <summary>
-    /// Deadline for the response body to finish once headers have arrived. Separate from
-    /// <c>HttpClient.Timeout</c>, which <c>HttpCompletionOption.ResponseHeadersRead</c> makes cover
-    /// only the header phase.
-    /// </summary>
-    public TimeSpan BodyTimeout { get; set; } = TimeSpan.FromSeconds(120);
 
     /// <summary>
     /// Body deadline for <c>ReadRangeAsync</c>: a weekly block of up to ~66 MB at the measured

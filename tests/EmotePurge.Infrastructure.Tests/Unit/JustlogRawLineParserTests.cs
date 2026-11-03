@@ -231,7 +231,7 @@ public class JustlogRawLineParserTests
     {
         // long.MaxValue parses fine as a long but is far past what FromUnixTimeMilliseconds can
         // turn into a DateTimeOffset — that call throws unless the range is checked first, and an
-        // uncaught throw here would abort the whole harness run for one broken foreign line.
+        // uncaught throw here would abort the whole backfill block for one broken foreign line.
         var line = $"@room-id=200000001;tmi-sent-ts={long.MaxValue};user-id=100000001 "
             + ":alice_test!alice_test@alice_test.tmi.twitch.tv PRIVMSG #faketown_test :hey";
 

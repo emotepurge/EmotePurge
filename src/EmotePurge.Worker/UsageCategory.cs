@@ -26,8 +26,8 @@ public enum UsageCategory
 
 /// <summary>
 /// The one place the room-vs-bot precedence from the design doc (D2) is decided. Both the live path
-/// (<c>TwitchChatManager.OnMessageReceived</c>) and the chat-log replay path
-/// (<c>ReplayDayCounter.Count</c>) call this instead of each carrying their own <c>if</c>, so the
+/// (<c>TwitchChatManager.OnMessageReceived</c>) and the chat-log backfill
+/// (<c>ChatLogBackfillBlockCounter.Count</c>) call this instead of each carrying their own <c>if</c>, so the
 /// mapping cannot drift between them.
 /// </summary>
 public static class UsageCategoryRule

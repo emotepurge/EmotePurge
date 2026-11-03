@@ -5,7 +5,7 @@ namespace EmotePurge.Core.ChatLogArchive;
 /// the live path's TwitchLib <c>ChatMessage</c> presents it to <c>TwitchChatManager</c>.
 /// <paramref name="UserId"/> and the entries of <paramref name="Badges"/> are nullable/possibly
 /// empty on purpose: the archive can omit both without that being a client error (see
-/// <c>JustlogRawLineParser</c>'s class comment) — deciding what an absence means is the harness's
+/// <c>JustlogRawLineParser</c>'s class comment) — deciding what an absence means is the caller's
 /// job (design doc, "Rückfall ohne Badges"), not this client's.
 /// <paramref name="HasOtherSourceMarkers"/> carries only the *presence* of the Shared Chat markers
 /// other than <see cref="EmotePurge.Core.Chat.SharedChatRule.SourceRoomIdTag"/> — see
@@ -21,10 +21,10 @@ public record ChatLogMessage(
     bool HasOtherSourceMarkers,
     string Text);
 
-/// <summary>Outcome of one <see cref="IChatLogArchiveClient.ReadDayAsync"/> call.</summary>
+/// <summary>Outcome of one <see cref="IChatLogArchiveClient.ReadRangeAsync"/> call.</summary>
 public enum ChatLogDayStatus
 {
-    /// <summary>The full day was read; <see cref="ChatLogDayResult.BodySha256Hex"/> is set.</summary>
+    /// <summary>The full range was read.</summary>
     Complete,
 
     /// <summary>404 — no log exists for this channel-day. The normal case for most days (T8).</summary>
@@ -57,8 +57,7 @@ public enum ChatLogDayStatus
     /// <summary>
     /// A single line of a range read exceeded <c>MaxLineBytes</c> before its terminator arrived — a
     /// delimiter-free or otherwise hostile body. The body is discarded without being read further, so
-    /// no line (and no memory) beyond the limit is ever held. Only <c>ReadRangeAsync</c> produces
-    /// this; <c>ReadDayAsync</c> keeps its <c>StreamReader</c> path and never returns it.
+    /// no line (and no memory) beyond the limit is ever held.
     /// </summary>
     LineTooLong,
 
@@ -74,22 +73,8 @@ public enum ChatLogDayStatus
 }
 
 /// <summary>
-/// Result of reading one channel-day. <paramref name="BodySha256Hex"/> is only populated for
-/// <see cref="ChatLogDayStatus.Complete"/> — every other status means the body was partial or
-/// never read, so a digest of it would be meaningless.
-/// </summary>
-public record ChatLogDayResult(
-    ChatLogDayStatus Status,
-    long BytesReceived,
-    string? BodySha256Hex,
-    int MessageCount,
-    int NonPrivmsgLines,
-    int MalformedLines,
-    int? HttpStatusCode);
-
-/// <summary>
-/// Result of reading one UTC range. Same status vocabulary as <see cref="ChatLogDayResult"/>, but no
-/// body digest — a range is identified by its request parameters alone. <paramref name="RetryAfter"/>
+/// Result of reading one UTC range. A range is identified by its request parameters alone.
+/// <paramref name="RetryAfter"/>
 /// is only set for <see cref="ChatLogDayStatus.RateLimited"/> and only when the 429 carried a
 /// parseable <c>Retry-After</c> header (delta-seconds or HTTP-date); otherwise it is null.
 /// <paramref name="BytesReceived"/> counts decompressed bytes, which is what the line parser sees.

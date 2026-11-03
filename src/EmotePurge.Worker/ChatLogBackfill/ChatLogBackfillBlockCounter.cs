@@ -17,7 +17,7 @@ namespace EmotePurge.Worker.ChatLogBackfill;
 /// one emote in one message count once each. What it adds is the block boundary (a message dated
 /// outside the block is dropped) and the entry-day gate of the chosen set, per slot (a hit before the
 /// entry joined that set is not counted, B9). The excluded-chatter
-/// gate is the caller's, applied before <see cref="Count"/> (same placement as the harness); the
+/// gate is the caller's, applied before <see cref="Count"/> (same placement as on the live path); the
 /// message counter is the archive client's, not this class's (D47).
 /// </para>
 /// <para>
@@ -62,7 +62,7 @@ public sealed class ChatLogBackfillBlockCounter
             return;
         }
 
-        // 2. Room first, bot only for the own room — identical to ReplayDayCounter and the live path.
+        // 2. Room first, bot only for the own room — identical to the live path.
         var origin = SharedChatRule.Classify(message.RoomId, message.SourceRoomId, message.HasOtherSourceMarkers);
         var isBot = origin == MessageOrigin.Own && _isBot(message.UserId, message.Badges);
         var category = UsageCategoryRule.Resolve(origin, isBot);

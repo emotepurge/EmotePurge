@@ -30,7 +30,7 @@ namespace EmotePurge.Infrastructure.ChatLogArchive;
 /// <para>
 /// A missing/empty <c>user-id</c> or <c>badges</c> tag is not treated as an error: both are
 /// nullable/possibly-empty on <see cref="ChatLogMessage"/>, and deciding what an absence means is
-/// the harness's job (design doc, "Rückfall ohne Badges"), not this parser's.
+/// the caller's job (design doc, "Rückfall ohne Badges"), not this parser's.
 /// </para>
 /// </summary>
 public static class JustlogRawLineParser

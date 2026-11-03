@@ -5,12 +5,12 @@ namespace EmotePurge.Core.Matching;
 /// <summary>
 /// The one emote-name matching rule shared by the live chat path
 /// (<c>TwitchChatManager.OnMessageReceived</c>), the live match-cache build
-/// (<c>SevenTvSyncService.RefreshMatchCacheAsync</c>) and the chat-log backfill harness (#69).
+/// (<c>SevenTvSyncService.RefreshMatchCacheAsync</c>) and the chat-log backfill.
 /// <para>
 /// The rule is deliberately naive — split on plain spaces, ordinal lookup, no trimming, no
-/// case-folding, no Twitch emote tags — and is not a place to fix anything: the harness exists to
-/// measure whether an import reproduces the live count, and a "better" rule here would change what
-/// is being measured on both sides at once. See the DECISIONS.md entry for this file.
+/// case-folding, no Twitch emote tags — and is not a place to fix anything: the backfill must
+/// count an archived message exactly as the live path would have, and a "better" rule here would
+/// change what is counted on both sides at once. See the DECISIONS.md entry for this file.
 /// </para>
 /// </summary>
 public static class EmoteNameMatching
@@ -81,8 +81,7 @@ public static class EmoteNameMatching
     /// <paramref name="emotesInLoadOrder"/>, since the same name can legitimately be active on two
     /// emotes at once (observed live). The winner is therefore whatever order the caller loaded
     /// its emotes in — for the live match cache that is an unspecified query order without an
-    /// <c>OrderBy</c>, which this shared rule preserves rather than fixes; the harness surfaces
-    /// that instead of papering over it.
+    /// <c>OrderBy</c>, which this shared rule preserves rather than fixes.
     /// </summary>
     public static EmoteNameMap Coalesce(IEnumerable<KeyValuePair<string, string>> emotesInLoadOrder)
     {

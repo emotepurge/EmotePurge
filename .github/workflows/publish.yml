@@ -112,7 +112,7 @@ jobs:
   # anything unrecognised (EmotePurge.Core, EmotePurge.Infrastructure, .dockerignore, .github/**,
   # a new top-level file) falls through to building both. A path added later is therefore
   # over-built, never silently skipped — the failure mode that matters is prod running a stale
-  # worker, and the harness entrypoint of #69 rides on the same image.
+  # worker.
   changes:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest

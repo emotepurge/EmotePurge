@@ -10,6 +10,22 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-11-03 — The measurement harness is removed; the Worker image has one entry point again (#69)
+
+**Betrifft:** `src/EmotePurge.Worker/Harness/` · `src/EmotePurge.Worker/Program.cs` · `src/EmotePurge.Worker/WorkerServiceRegistration.cs` · `docker-compose.yml` · `docker-compose.prod.yml` · `.env.example` · `src/EmotePurge.Core/ChatLogArchive/` · `src/EmotePurge.Infrastructure/ChatLogArchive/` · `src/EmotePurge.Core/Services/IUsageStatQueryService.cs` · `src/EmotePurge.Worker/IBotChatterDetector.cs` · `src/EmotePurge.Worker/IExcludedChatterFilter.cs` · `docs/Architectur.md` · `docs/Operations.md` · `CLAUDE.md`
+
+**(a) Why.** Decided by the operator on 2026-11-03. The harness (`harness <channel>`, the Worker's second entry point from the 2026-09-06 entry) was a closed instrument: #69 was closed on 2026-10-08 as not passed, and nothing is going to run it again. It was never scheduled; the VPS script that started it by hand (`harness-daily.sh`) stopped itself after 2026-10-31. Keeping about 4,200 production lines and about 5,400 test lines alive for an instrument nobody runs costs review, Sonar and refactoring attention on every change that touches the shared rules it reads.
+
+**(b) What was deleted.** The `Harness/` directory (command line, options, runner, report file, input hash, replay counter and fidelity calculator, exclusion-list digest) and its tests; the argument switch in `Program.cs` (the Worker now starts straight into the host, with the pending-migration guard first); `WorkerServiceRegistration.AddHarness`; the `harness` compose service in both compose files and its `Harness__*` / `HARNESS_*` settings (`HARNESS_MAX_MEGABYTES_PER_RUN`, `HARNESS_SHARED_CHAT_CUTOVER`, the `./harness-reports` bind mount). Code that only the harness used went with it, each proven unreferenced across projects and tests by grep and by the compiler: `IChatLogArchiveClient.ReadDayAsync` with `ChatLogDayResult`, the day-body reader and the SHA-256 digest in the client's counting stream, and `ChatLogArchiveOptions.BodyTimeout`; `IUsageStatQueryService.GetEmoteLifetimesAsync` / `GetRowsAsync` with `EmoteLifetimeDto` / `UsageStatRowDto`; `IBotChatterDetector.KnownBotAccountIds` and `IExcludedChatterFilter.ExcludedChatterIds`, both exposed only so the harness could put them into a report head or run identity.
+
+**(c) What stays.** Everything the live path or the chat-log backfill (#346) also uses: `UsageCategoryRule`, `SharedChatRule`, `TrackingCoverage`, `EmoteNameMatching`, `JustlogRawLineParser`, `ChatLogBackfillBlockCounter`, `ReadRangeAsync`, `IBotChatterDetector.IsBot`, `IExcludedChatterFilter.IsExcluded`, `GetEarliestBotUsageDateAsync` and `GetEarliestSharedChatUsageDateAsync` (read by `EmoteSetStatusService`). Their comments no longer name the harness. `Twitch:AdditionalBotAccountIds` and `Twitch:ExcludedChatterIds` stay on the `worker` service, which reads both. The `harness-reports/` line in `.gitignore` and the fixed uid/gid 999 in the Worker Dockerfile stay (the first so a stray report is never committed, the second because a predictable id is useful for any bind mount). Earlier DECISIONS entries and the historical plans and specs keep describing the harness as it was.
+
+**(d) What is not in this repository.** The reports already written on the VPS and the hand-started script are outside it and are not touched here; their retention and the follow-up in `infra-docs` are the operator's. No migration: no table or column was exclusive to the harness (it only read). The `TwitchLib.*` ignore in `.github/dependabot.yml` is unchanged; its comment still names the harness report head and the #69 run and is stale, which is a separate decision.
+
+**(e) Deploy and rollback.** Worker image is what matters (Core and Infrastructure change too, so the Api image is rebuilt, with no behavioural change); no migration. `HARNESS_*` variables in the Portainer stack become unused and can be deleted. Once the new Worker image is `:latest`, do not run `docker compose ... --profile harness run` from a stack file that still has the `harness` service: the entry point no longer reads a `harness` verb, so such a container would start the full Worker next to the production one and double every usage row. Rollback is a revert of this change; images from before it still contain the harness. `src/EmotePurge.Worker/Program.cs`, now pure host bootstrapping verified live, joins `sonar.coverage.exclusions`; the price is that the gate never reports missing coverage for it, so testable logic must not move in.
+
+---
+
 ### 2026-11-03 — Sonar: four more rule filters (e6-e9) and CA2254 off for tests
 
 **Betrifft:** `.github/workflows/sonarcloud.yml` · `.editorconfig`
@@ -21,6 +37,8 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 **(c) Analyzer switch.** `.editorconfig` sets `CA2254` (varying logging message template) to `none` for `tests/**/*.cs` only: in the logging tests the dynamic message is the thing under test. The rule stays active for `src/**`.
 
 **(d) Rollback.** Remove the four criteria and the editorconfig line; no data or runtime effect.
+
+---
 
 ### 2026-11-02 — Tags: "Add to another set" is a one-shot add that records nothing about the tag (#328)
 

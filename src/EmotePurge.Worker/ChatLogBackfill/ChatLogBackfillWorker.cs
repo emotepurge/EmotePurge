@@ -394,8 +394,8 @@ public sealed class ChatLogBackfillWorker(
                 maxBytes,
                 message =>
                 {
-                    // Objection gate (GDPR Art. 21) before anything counts — the harness's placement
-                    // (HarnessRunner) and the live path's. The client's MessageCount still includes
+                    // Objection gate (GDPR Art. 21) before anything counts — the same placement as
+                    // the live path's. The client's MessageCount still includes
                     // the message (D47: a count before the gate, no identity).
                     if (!excludedChatterFilter.IsExcluded(message.UserId))
                     {
