@@ -10,6 +10,20 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-11-03 — The TwitchLib.* Dependabot freeze is lifted; the contract tests carry the protection (#73)
+
+**Betrifft:** `.github/dependabot.yml` · `src/EmotePurge.Core/Chat/SharedChatRule.cs` · `tests/EmotePurge.Worker.Tests/SharedChatRuleTwitchLibTests.cs` · `tests/EmotePurge.Worker.Tests/IrcLineSpliceRuleTwitchLibTests.cs`
+
+**(a) Why.** The `ignore` for `TwitchLib.*` (2026-09-06, "Shared Chat") existed so an update could not type `source-room-id` or another Shared Chat marker away unnoticed: `SharedChatRule.FromTags` would stop seeing it, every session message would count as "own", and neither report head nor InputHash would show it. It was bound to #73's measurement window ("remove once the bindable #69 run has closed"). #69 closed on 2026-10-08 and the harness with report head and InputHash was deleted on 2026-11-03, so the window is over and the instrument that would have shown the damage no longer exists. Nothing is imminent: TwitchLib.Client 4.0.1 and TwitchLib.Communication 2.0.1 are the latest stable versions.
+
+**(b) What replaces the freeze.** A test is the only remaining signal. `SharedChatRuleTwitchLibTests` and `IrcLineSpliceRuleTwitchLibTests` already pushed real IRC lines through the installed library's `IrcParser` and `ChatMessage`; the first covered `source-room-id` and the `source-id` + `source-badges` pair, but not `source-badge-info` at all and no other marker on its own. A theory now feeds each of `source-id`, `source-badges` and `source-badge-info` alone and asserts the key is in `UndocumentedTags` and the result is `Indeterminate`. It was shown to fail by swapping one marker for a typed key on the line (the case reds with the marker named in the message). Why it fails for real: `UndocumentedTags` holds exactly the keys the library's tag switch does not map to a typed property, so typing a tag removes it from the dictionary.
+
+**(c) Grouping.** The NuGet `minor-and-patch` group now excludes `TwitchLib.*`, so a TwitchLib bump is its own PR. A green CI is not enough for it: the transport (line-splice handling, `NoReconnectionPolicy`, tag typing) is verified live (Rule 16). The comment in `dependabot.yml` says so. Majors were never grouped.
+
+**(d) Not changed.** No runtime behaviour; the `SharedChatRule` doc comment and the two test-file header comments no longer point at the freeze. Earlier entries keep describing it as it was.
+
+---
+
 ### 2026-11-03 — The measurement harness is removed; the Worker image has one entry point again (#69)
 
 **Betrifft:** `src/EmotePurge.Worker/Harness/` · `src/EmotePurge.Worker/Program.cs` · `src/EmotePurge.Worker/WorkerServiceRegistration.cs` · `docker-compose.yml` · `docker-compose.prod.yml` · `.env.example` · `src/EmotePurge.Core/ChatLogArchive/` · `src/EmotePurge.Infrastructure/ChatLogArchive/` · `src/EmotePurge.Core/Services/IUsageStatQueryService.cs` · `src/EmotePurge.Worker/IBotChatterDetector.cs` · `src/EmotePurge.Worker/IExcludedChatterFilter.cs` · `docs/Architectur.md` · `docs/Operations.md` · `CLAUDE.md`
