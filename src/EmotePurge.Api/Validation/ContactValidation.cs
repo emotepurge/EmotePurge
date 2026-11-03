@@ -74,14 +74,6 @@ internal static class ContactValidation
     // other C0/C1 control character — a name or e-mail has no legitimate reason to carry any of them.
     private static bool ContainsControlCharacter(string value)
     {
-        foreach (var c in value)
-        {
-            if (char.IsControl(c))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        return value.Any(char.IsControl);
     }
 }

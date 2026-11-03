@@ -13,6 +13,9 @@ public class EmoteService(
     IExcludedChannelFilter excludedChannelFilter,
     IBroadcasterChannelLockService broadcasterChannelLocks) : IEmoteService
 {
+    // The audit target type the other emote-set targets use.
+    private const string EmoteSetTargetType = "emoteSet";
+
     public async Task<SyncDeletedResultDto> MarkDeletedAsync(string channelName, IReadOnlyList<string> emoteIds, AuditActor actor, CancellationToken cancellationToken = default)
     {
         // E4: measures how often the legacy body form is still in use, so retiring it (Folge-Issue 1,
@@ -134,7 +137,7 @@ public class EmoteService(
             // TargetType/TargetId mirror the set-centric endpoint's own entry (6.7) whenever a set is
             // actually known here — null/null when targetEmoteSetId was not reported, exactly like
             // the JSON detail below.
-            targetType: targetEmoteSetId is null ? null : "emoteSet",
+            targetType: targetEmoteSetId is null ? null : EmoteSetTargetType,
             targetId: targetEmoteSetId,
             details: new
             {
@@ -168,7 +171,7 @@ public class EmoteService(
             // ChannelName = null is deliberate (6.7): the row surfaces in the global admin log, not
             // a channel's own activity feed — there may be no channel behind the target set at all.
             channelName: null,
-            targetType: "emoteSet",
+            targetType: EmoteSetTargetType,
             targetId: emoteSetId,
             details: new
             {
@@ -520,7 +523,7 @@ public class EmoteService(
             report.Actor,
             action,
             channelName: hit.ChannelName,
-            targetType: "emoteSet",
+            targetType: EmoteSetTargetType,
             targetId: report.EmoteSetId,
             details: WithEntryCount(
                 new { emoteCount = foundCount, emoteSetId = report.EmoteSetId, targetIsActiveSetOfChannel = true }, entryCount));
@@ -560,7 +563,7 @@ public class EmoteService(
             report.Actor,
             action,
             channelName: ownerChannel?.ChannelName,
-            targetType: "emoteSet",
+            targetType: EmoteSetTargetType,
             targetId: report.EmoteSetId,
             details: WithEntryCount(
                 ownerChannel is null

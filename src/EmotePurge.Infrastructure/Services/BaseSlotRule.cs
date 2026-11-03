@@ -93,7 +93,12 @@ internal static class BaseSlotRule
             {
                 // A prefix sorts first; two strings equal rune by rune differ at most in lone
                 // surrogates (both read as U+FFFD), which ordinal keeps apart.
-                return hasA == hasB ? string.CompareOrdinal(x, y) : (hasA ? 1 : -1);
+                if (hasA == hasB)
+                {
+                    return string.CompareOrdinal(x, y);
+                }
+
+                return hasA ? 1 : -1;
             }
 
             var byScalar = a.Current.Value.CompareTo(b.Current.Value);

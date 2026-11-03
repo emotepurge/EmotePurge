@@ -160,8 +160,15 @@ internal sealed class AdminDashboardHourlyLoadAccumulator(AdminDashboardLoadWind
 
         private static long? ToBytes(double? value) => value is null ? null : (long)Math.Round(value.Value);
 
-        private static int? MaxOf(int? current, int? value) =>
-            value is null ? current : current is null ? value : Math.Max(current.Value, value.Value);
+        private static int? MaxOf(int? current, int? value)
+        {
+            if (value is null)
+            {
+                return current;
+            }
+
+            return current is null ? value : Math.Max(current.Value, value.Value);
+        }
     }
 
     private sealed class HourlySourceBucket
@@ -232,11 +239,25 @@ internal sealed class AdminDashboardHourlyLoadAccumulator(AdminDashboardLoadWind
             _memoryLimitBytes = null;
         }
 
-        private static double? MaxOf(double? current, double? value) =>
-            value is null ? current : current is null ? value : Math.Max(current.Value, value.Value);
+        private static double? MaxOf(double? current, double? value)
+        {
+            if (value is null)
+            {
+                return current;
+            }
 
-        private static long? MaxOf(long? current, long? value) =>
-            value is null ? current : current is null ? value : Math.Max(current.Value, value.Value);
+            return current is null ? value : Math.Max(current.Value, value.Value);
+        }
+
+        private static long? MaxOf(long? current, long? value)
+        {
+            if (value is null)
+            {
+                return current;
+            }
+
+            return current is null ? value : Math.Max(current.Value, value.Value);
+        }
     }
 
     // Per-source tooltip mean over several stored hours, weighted by each hour's SampleCount. Exact for

@@ -1355,16 +1355,16 @@ public sealed class ChatLogBackfillService(
         var previous = days[0];
         foreach (var day in days.Skip(1))
         {
-            if (day.Day != previous.Day.AddDays(1) || day.EmoteSetId != previous.EmoteSetId || day.ArchiveHost != previous.ArchiveHost)
+            if (day.Day != previous.Day.AddDays(1) || day.EmoteSetId != previous.EmoteSetId || day.Host != previous.Host)
             {
-                intervals.Add(new ChatLogBackfillCoverageInterval(start.Day, previous.Day.AddDays(1), start.EmoteSetId, start.ArchiveHost));
+                intervals.Add(new ChatLogBackfillCoverageInterval(start.Day, previous.Day.AddDays(1), start.EmoteSetId, start.Host));
                 start = day;
             }
 
             previous = day;
         }
 
-        intervals.Add(new ChatLogBackfillCoverageInterval(start.Day, previous.Day.AddDays(1), start.EmoteSetId, start.ArchiveHost));
+        intervals.Add(new ChatLogBackfillCoverageInterval(start.Day, previous.Day.AddDays(1), start.EmoteSetId, start.Host));
 
         var importedFrom = days[0].Day;
         var importedTo = days[^1].Day.AddDays(1);
@@ -1402,7 +1402,7 @@ public sealed class ChatLogBackfillService(
         _ => DateTime.SpecifyKind(value, DateTimeKind.Utc),
     };
 
-    private sealed record CoverageDay(DateOnly Day, string EmoteSetId, string ArchiveHost, long? RunId);
+    private sealed record CoverageDay(DateOnly Day, string EmoteSetId, string Host, long? RunId);
 
     // The RETURNING row of a counter-changing update; Status is the stored lowercase text.
     private sealed class TransitionRow

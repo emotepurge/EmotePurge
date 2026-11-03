@@ -1663,14 +1663,12 @@ public class SevenTvSyncService(
             }
         }
 
-        foreach (var entry in db.ChangeTracker.Entries<EmoteSlot>())
+        foreach (var entry in db.ChangeTracker.Entries<EmoteSlot>()
+                     .Where(e => e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted
+                                 && !allowed.Contains(e.Entity.EmoteId)))
         {
-            if (entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted
-                && !allowed.Contains(entry.Entity.EmoteId))
-            {
-                throw new InvalidOperationException(
-                    $"A slot-aware write of channel {channelId} is about to write slot {entry.Entity.Id} of an emote row it does not hold.");
-            }
+            throw new InvalidOperationException(
+                $"A slot-aware write of channel {channelId} is about to write slot {entry.Entity.Id} of an emote row it does not hold.");
         }
     }
 

@@ -9,13 +9,17 @@ namespace EmotePurge.Infrastructure.Twitch;
 
 public class TwitchAuthClient(HttpClient httpClient, IConfiguration configuration, ILogger<TwitchAuthClient> logger) : ITwitchAuthClient
 {
+    private const string ClientIdConfigKey = "Auth:Twitch:ClientId";
+
+    private const string ClientIdField = "client_id";
+
     public async Task<TwitchTokenResult?> ExchangeAuthorizationCodeAsync(string code, string redirectUri, CancellationToken cancellationToken = default)
     {
         try
         {
             var form = new Dictionary<string, string>
             {
-                ["client_id"] = GetRequired("Auth:Twitch:ClientId"),
+                [ClientIdField] = GetRequired(ClientIdConfigKey),
                 ["client_secret"] = GetRequired("Auth:Twitch:ClientSecret"),
                 ["code"] = code,
                 ["grant_type"] = "authorization_code",
@@ -44,7 +48,7 @@ public class TwitchAuthClient(HttpClient httpClient, IConfiguration configuratio
         {
             var form = new Dictionary<string, string>
             {
-                ["client_id"] = GetRequired("Auth:Twitch:ClientId"),
+                [ClientIdField] = GetRequired(ClientIdConfigKey),
                 ["client_secret"] = GetRequired("Auth:Twitch:ClientSecret"),
                 ["grant_type"] = "client_credentials"
             };
@@ -73,7 +77,7 @@ public class TwitchAuthClient(HttpClient httpClient, IConfiguration configuratio
             // reserved characters ('%', '='), and encoding them a second time would corrupt them.
             var form = new Dictionary<string, string>
             {
-                ["client_id"] = GetRequired("Auth:Twitch:ClientId"),
+                [ClientIdField] = GetRequired(ClientIdConfigKey),
                 ["client_secret"] = GetRequired("Auth:Twitch:ClientSecret"),
                 ["grant_type"] = "refresh_token",
                 ["refresh_token"] = refreshToken
@@ -146,7 +150,7 @@ public class TwitchAuthClient(HttpClient httpClient, IConfiguration configuratio
             // FormUrlEncodedContent encodes the values itself; the token is never put in the URL.
             var form = new Dictionary<string, string>
             {
-                ["client_id"] = GetRequired("Auth:Twitch:ClientId"),
+                [ClientIdField] = GetRequired(ClientIdConfigKey),
                 ["token"] = token
             };
 

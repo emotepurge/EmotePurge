@@ -90,7 +90,7 @@ public class EmoteTagService(
         {
             activations = await LoadActivationsAsync(tagIds, setId, cancellationToken);
             placedCounts = (await LoadPlacementStatesAsync(channel.Id, setId, tagIds, null, cancellationToken))
-                .Where(p => p.Holds)
+                .Where(p => p.IsHeld)
                 .CountBy(p => p.TagId)
                 .ToDictionary(c => c.Key, c => c.Value);
         }
@@ -658,7 +658,7 @@ public class EmoteTagService(
             .Where(p => p.TagId == tag.Id && p.SevenTvEmoteSetId == report.EmoteSetId)
             .ToListAsync(cancellationToken);
         var holds = (await LoadPlacementStatesAsync(channel!.Id, report.EmoteSetId, [tag.Id], null, cancellationToken))
-            .ToDictionary(p => p.SevenTvEmoteId, p => p.Holds, StringComparer.Ordinal);
+            .ToDictionary(p => p.SevenTvEmoteId, p => p.IsHeld, StringComparer.Ordinal);
 
         // Step 4 first, because steps 2 and 5 depend on it: the tag is deactivated only if its
         // activation still carries the operation the preview read. A newer play-in has re-activated the
@@ -896,7 +896,7 @@ public class EmoteTagService(
     /// <paramref name="sevenTvEmoteIds"/> when given — each judged by the read-time rule (spec 5.5 rule 5,
     /// E33 rev. 4): it holds unless the channel has a leave observation for the same emote and set that
     /// is later than the placement's own <see cref="EmoteTagPlacement.RegisteredAtUtc"/>. Valid and
-    /// expired rows are both returned; reads filter on <see cref="PlacementState.Holds"/>.
+    /// expired rows are both returned; reads filter on <see cref="PlacementState.IsHeld"/>.
     /// <para>
     /// Two queries over scalar keys, joined in memory (rule 10): the placements (the caller passes the
     /// channel's tag ids, which is what scopes them to the channel); the latest observation of their
@@ -973,7 +973,7 @@ public class EmoteTagService(
         var heldByActive = await LoadActiveHoldersAsync(activations.Keys, tagId, entryIds, cancellationToken);
 
         var valid = (await LoadPlacementStatesAsync(channelId, emoteSetId, channelTagIds, entryIds, cancellationToken))
-            .Where(p => p.Holds)
+            .Where(p => p.IsHeld)
             .ToList();
         // One placement per (tag, emote, set) by the primary key, so this tag's dictionary cannot collide.
         var own = valid
@@ -1058,10 +1058,10 @@ public class EmoteTagService(
             .Where(p => targetByEmote[p.SevenTvEmoteId] == p.TagId)
             .ToList();
         var validlyHeld = targetRows
-            .Where(p => p.Holds)
+            .Where(p => p.IsHeld)
             .Select(p => p.SevenTvEmoteId)
             .ToHashSet(StringComparer.Ordinal);
-        var expiredIds = targetRows.Where(p => !p.Holds).Select(p => p.SevenTvEmoteId).ToArray();
+        var expiredIds = targetRows.Where(p => !p.IsHeld).Select(p => p.SevenTvEmoteId).ToArray();
         var expiredRows = expiredIds.Length == 0
             ? new Dictionary<string, EmoteTagPlacement>(StringComparer.Ordinal)
             : (await db.EmoteTagPlacements
@@ -1222,9 +1222,9 @@ public class EmoteTagService(
 
     /// <param name="OperationId">Provenance and snapshot revision — the operation that last wrote the placement; not the validity anchor.</param>
     /// <param name="RegisteredAtUtc">The validity anchor the verdict was computed against.</param>
-    /// <param name="Holds">The read-time rule's verdict; an expired placement still exists until a play-in or sweep replaces it.</param>
+    /// <param name="IsHeld">The read-time rule's verdict; an expired placement still exists until a play-in or sweep replaces it.</param>
     private sealed record PlacementState(
-        long TagId, string SevenTvEmoteId, DateTime PlacedAtUtc, Guid OperationId, DateTime RegisteredAtUtc, bool Holds);
+        long TagId, string SevenTvEmoteId, DateTime PlacedAtUtc, Guid OperationId, DateTime RegisteredAtUtc, bool IsHeld);
 
     /// <param name="TargetByEmote">Per emote, the oldest other tag active in the set with an entry for it; absent means no target.</param>
     /// <param name="ValidlyHeld">The emotes whose target already has a placement in the set that holds; left untouched.</param>

@@ -203,9 +203,20 @@ internal sealed class LogQueryService(AppDbContext db, LogViewerOptions options,
             }
 
             var lastFlush = Utc(row.LastFlushUtc);
-            var state = lastFlush < now - StaleAfter
-                ? LogSourceState.Stale
-                : row.CaptureEnabled ? LogSourceState.Healthy : LogSourceState.Disabled;
+            LogSourceState state;
+            if (lastFlush < now - StaleAfter)
+            {
+                state = LogSourceState.Stale;
+            }
+            else if (row.CaptureEnabled)
+            {
+                state = LogSourceState.Healthy;
+            }
+            else
+            {
+                state = LogSourceState.Disabled;
+            }
+
             sources.Add(new LogSourceStatus(source, state, row.InstanceId, Utc(row.ProcessStartedUtc), lastFlush));
 
             var marker = Utc(row.LastIncompleteAtUtc);
