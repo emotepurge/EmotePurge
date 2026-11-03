@@ -57,7 +57,7 @@ export function playInCandidates(
 }
 
 /**
- * How many of the marked entries the host page shows as not in the set — the number "Ins Set holen"
+ * How many of the marked entries the host page shows as not in the set — the number "Ins aktive Set holen"
  * carries with a marking. Read off the page's own entry list (`inSet`), so it is a label, not a
  * decision: what is added is the live read's call. An entry with no known state (`inSet: null`) is not
  * known to be present and counts as missing, as the tag-level gate does with `inSetCount: null`.

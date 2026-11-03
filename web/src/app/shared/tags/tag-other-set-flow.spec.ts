@@ -414,7 +414,7 @@ describe('routeTagIntoChosenSet', () => {
     expect(other.confirmData().targetIsActiveSet).toBe(false);
   });
 
-  // protects=picking the active set while "Ins Set holen" is hidden or locked (nothing missing, or
+  // protects=picking the active set while "Ins aktive Set holen" is hidden or locked (nothing missing, or
   //   a marking with nothing missing) sends no request, so no empty report can activate the tag;
   //   it says the set already holds them, naming the set;
   // fails_when=the pick reaches the play-in (entries read, registration, empty placement report) or

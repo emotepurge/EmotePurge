@@ -2245,7 +2245,7 @@
       "title": "Tags",
       "listLabel": "Tags",
       "intro": "A tag remembers emotes, even when they are not in the set.",
-      "introRuns": "“Add to set” adds them, “Remove from set” takes them out again – the tag itself stays.",
+      "introRuns": "“Add to active set” adds them, “Remove from set” takes them out again – the tag itself stays.",
       "setLine": "The numbers refer to the active set {{set}}.",
       "noActiveSet": "This channel has no active set, so there are no “in the set” numbers.",
       "empty": {
@@ -2318,17 +2318,17 @@
       "rename": "Rename",
       "delete": "Delete tag",
       "clearSelection": "Clear selection",
-      "assign": "Assign tag…",
+      "assign": "Assign tag",
       "unassign": "Remove from tag ({{count}})",
       "unassignNamed": "Remove from tag ({{count}}) – {{tag}}",
       "unassignTitle": "Takes the marked emotes out of the tag. They stay in the set; the tag will no longer take them out of the set either.",
       "unassignLockReason": {
         "noneInTag": "None of the marked emotes is in {{tag}}."
       },
-      "playIn": "Add to set",
-      "playInCount": "Add to set ({{count}})",
-      "playInOtherSet": "Add to another set …",
-      "playInOtherSetCount": "Add to another set … ({{count}})",
+      "playIn": "Add to active set",
+      "playInCount": "Add to active set ({{count}})",
+      "playInOtherSet": "Add to another set",
+      "playInOtherSetCount": "Add to another set ({{count}})",
       "playInLockReason": {
         "allMarkedInSet": "All marked emotes are already in the set."
       },

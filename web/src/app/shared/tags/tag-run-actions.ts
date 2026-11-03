@@ -59,7 +59,7 @@ export function settledTagPlayIn(run: ImportRunInfo | null): string | null {
 /** One of the two run buttons. */
 export type TagRunButton = 'playIn' | 'remove';
 
-/** Where focus goes when the run button the user clicked leaves the DOM under them ("Ins Set holen"
+/** Where focus goes when the run button the user clicked leaves the DOM under them ("Ins aktive Set holen"
  *  after a play-in left nothing missing, "Aus dem Set entfernen" after a clear-out left nothing to clear): the
  *  other run button if it is there and usable, otherwise the host's stable fallback (the detail
  *  heading). A disabled button ignores `focus()` — the run that removed the clicked one can still be
@@ -75,21 +75,21 @@ export function runButtonFocusTarget(state: {
   return state.otherUsable ? 'other' : 'fallback';
 }
 
-/** Whether the tag offers "In anderes Set holen …" (#328): it has entries, nothing else. Neither a
+/** Whether the tag offers "In anderes Set holen" (#328): it has entries, nothing else. Neither a
  *  missing emote nor an active set is needed — the target is whatever set the picker offers, and
  *  what that set lacks is only known after the live read. */
 export function tagOffersOtherSet(tag: Pick<EmoteTagSummary, 'entryCount'>): boolean {
   return tag.entryCount > 0;
 }
 
-/** Whether the tag has an emote missing from the set — where "Ins Set holen" exists at all (spec
+/** Whether the tag has an emote missing from the set — where "Ins aktive Set holen" exists at all (spec
  *  7.2: missing, not locked). Without a count (`inSetCount: null`, no set to count in) nothing is
  *  known to be present, so a tag with entries counts. */
 export function tagMissesAnEmote(tag: Pick<EmoteTagSummary, 'entryCount' | 'inSetCount'>): boolean {
   return tag.entryCount > (tag.inSetCount ?? 0);
 }
 
-/** "Ins Set holen" with a grid marking none of whose entries is missing from the set: the button
+/** "Ins aktive Set holen" with a grid marking none of whose entries is missing from the set: the button
  *  stays (the tag still misses an emote, and a button that came and went with each click on the grid
  *  would move the header) but is locked, and says why (operator decision 2026-10-05). */
 export function playInMarkingLocked(markedCount: number, markedMissingCount: number): boolean {
@@ -121,14 +121,14 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
 }
 
 /**
- * "Ins Set holen" and "Aus dem Set entfernen" for one tag (#201 T-C, spec 9.4) — hosted by the tags page, the
+ * "Ins aktive Set holen" and "Aus dem Set entfernen" for one tag (#201 T-C, spec 9.4) — hosted by the tags page, the
  * only surface that starts tag runs (operator feedback 2026-10-05: the usage page shows what is in
  * the set, not what is missing).
  *
  * Renders nothing unless the host says so (`enabled`: runs switched on, fine pointer). The two
- * active-set actions also need a known active set (`activeEmoteSetId`); "In anderes Set holen …"
+ * active-set actions also need a known active set (`activeEmoteSetId`); "In anderes Set holen"
  * (#328, `tag-other-set-flow.ts`) does not — it exists for every tag with entries and opens the
- * target picker. "Ins Set holen" exists only while the tag has an emote missing from the set,
+ * target picker. "Ins aktive Set holen" exists only while the tag has an emote missing from the set,
  * "Aus dem Set entfernen" while one of its emotes is in the set or it is played in there (`removeShown`; spec
  * 7.2: missing, not locked — there is nothing to explain beyond the state the host shows next to
  * it). Both lock
@@ -143,7 +143,7 @@ export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
  * **A grid marking narrows both runs** (operator decisions 2026-10-05): the clear-out proposes the
  * marked emotes, the play-in adds only the marked ones that are missing, and each button carries the
  * number of marked emotes it is about (missing for one, in the set for the other). A marking that
- * misses nothing locks "Ins Set holen" without removing it (`playInMarkingLocked`), one with nothing
+ * misses nothing locks "Ins aktive Set holen" without removing it (`playInMarkingLocked`), one with nothing
  * in the set locks "Aus dem Set entfernen" the same way (`removeMarkingLocked`); the host shows each
  * reason under `markedLockReasonId` / `removeMarkedLockReasonId`. `runCommitted` tells
  * the host when either run went ahead, so it drops the marking.
@@ -265,7 +265,7 @@ export class TagRunActions {
   /** The active set's display name, `null` to fall back to its id. */
   readonly setName = input<string | null>(null);
   /** The host's gate: tag runs switched on and a fine pointer. The two active-set actions
-   *  additionally need a known `activeEmoteSetId`; "In anderes Set holen …" does not (#328). */
+   *  additionally need a known `activeEmoteSetId`; "In anderes Set holen" does not (#328). */
   readonly enabled = input(false);
   /** Run kinds whose surface (dock section) this host does not mount — a lock by one of them is
    *  explained in text here, since nothing else on the page would (plan 3.8). */
@@ -275,10 +275,10 @@ export class TagRunActions {
    *  open dialog does not follow the grid. */
   readonly markedIds = input<readonly string[]>([]);
   /** How many of the marked entries the host shows as not in the set (`markedMissingCount`) — the
-   *  number "Ins Set holen" carries with a marking. A label, not a decision: the flow adds what the
+   *  number "Ins aktive Set holen" carries with a marking. A label, not a decision: the flow adds what the
    *  live read finds missing among the marked entries. */
   readonly markedMissingCount = input(0);
-  /** The id of the host's visible text saying why "Ins Set holen" is locked by the marking (§10:
+  /** The id of the host's visible text saying why "Ins aktive Set holen" is locked by the marking (§10:
    *  the reason stands as text). The host renders it where a marking change moves nothing — on the
    *  tags page in the marking's own dock line under the grid — and under the same condition
    *  (`playInMarkingLocked`); the button points `aria-describedby` at it and repeats it as its title. */
@@ -321,7 +321,7 @@ export class TagRunActions {
   /** This component's flow is between its click and its hand-over (or its report). */
   protected readonly pending = signal(false);
   protected readonly notice = signal<TagRunNotice | null>(null);
-  /** "Ins Set holen" exists only while the tag has an emote that is not in the set (spec 7.2: missing,
+  /** "Ins aktive Set holen" exists only while the tag has an emote that is not in the set (spec 7.2: missing,
    *  not locked) — read off the summary the host already holds. Without a count (`inSetCount:
    *  null`, no set to count in) nothing is known to be present, so a tag with entries offers it. A
    *  click that outraces a change of the set still lands in the flow's own "all present" path. */
@@ -331,7 +331,7 @@ export class TagRunActions {
   /** The two active-set actions need an active set to act on; a null one never reaches their
    *  flows. */
   private readonly activeSetKnown = computed(() => this.activeEmoteSetId() !== null);
-  /** "In anderes Set holen …" (#328) exists for every tag with entries, whatever the active set. */
+  /** "In anderes Set holen" (#328) exists for every tag with entries, whatever the active set. */
   protected readonly otherSetShown = computed(() => tagOffersOtherSet(this.tag()));
   /** "Aus dem Set entfernen" exists while there is something to clear out (operator decision 2026-10-05,
    *  superseding spec 7.2's "only for a played-in tag"): an emote of the tag in the set — whether
@@ -345,7 +345,7 @@ export class TagRunActions {
   /** How many emotes the host's grid has marked — whether a marking exists; each run button then
    *  carries the number of marked emotes it is about. */
   protected readonly markedCount = computed(() => this.markedIds().length);
-  /** "Ins Set holen" with a marking that misses nothing — shown, locked, explained. */
+  /** "Ins aktive Set holen" with a marking that misses nothing — shown, locked, explained. */
   protected readonly markingLocked = computed(() =>
     playInMarkingLocked(this.markedCount(), this.markedMissingCount()),
   );
@@ -368,7 +368,7 @@ export class TagRunActions {
       : null;
   });
   protected readonly otherRunReasonId = `tag-run-other-run-${nextReasonId++}`;
-  /** Both reasons "Ins Set holen" can be locked for, as one `aria-describedby`. */
+  /** Both reasons "Ins aktive Set holen" can be locked for, as one `aria-describedby`. */
   protected readonly playInDescribedBy = computed(() => {
     const markedReason = this.markingLocked() ? this.markedLockReasonId() : null;
     const ids = [this.otherRunKey() ? this.otherRunReasonId : null, markedReason].filter(
@@ -512,7 +512,7 @@ export class TagRunActions {
       this.started.emit();
       this.noticeSink.clear();
       // Read when the answer is consumed, not at the click: a live reload while the picker was open
-      // may have hidden "Ins Set holen", and an empty play-in would then activate the tag.
+      // may have hidden "Ins aktive Set holen", and an empty play-in would then activate the tag.
       routeTagIntoChosenSet(this.deps, request, choice, {
         playInUsable: this.playInShown() && !this.markingLocked(),
         entryCount: this.tag().entryCount,

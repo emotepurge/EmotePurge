@@ -41,7 +41,7 @@ export interface TagAssignDialogResult {
 }
 
 /**
- * "Tag zuweisen…" from a usage-stats selection (spec 7.0): tick tags, optionally create one inline,
+ * "Tag zuweisen" from a usage-stats selection (spec 7.0): tick tags, optionally create one inline,
  * confirm. Add-only, nothing is pre-ticked. One `addEntries` per ticked tag, strictly in list order;
  * a failure part-way keeps what already succeeded and says so in a banner.
  */

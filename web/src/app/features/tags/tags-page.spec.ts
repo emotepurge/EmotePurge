@@ -1001,10 +1001,10 @@ describe('TagsPage', () => {
     }
 
     describe('the run buttons (spec 9.4, 8)', () => {
-      it('offers "Ins Set holen" in the detail head, without "Aus dem Set entfernen" for a tag not played in with nothing in the set', async () => {
+      it('offers "Ins aktive Set holen" in the detail head, without "Aus dem Set entfernen" for a tag not played in with nothing in the set', async () => {
         const { harness } = await openTag(tag(1, 'Stronghold', 2, 0));
 
-        expect(buttonByName(harness, 'Ins Set holen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ins aktive Set holen')).not.toBeNull();
         expect(buttonByName(harness, 'Aus dem Set entfernen')).toBeNull();
       });
 
@@ -1012,28 +1012,28 @@ describe('TagsPage', () => {
       it('offers "Aus dem Set entfernen" for a tag not played in once one of its emotes is in the set', async () => {
         const { harness } = await openTag(tag(1, 'Stronghold', 2, 1));
 
-        expect(buttonByName(harness, 'Ins Set holen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ins aktive Set holen')).not.toBeNull();
         expect(buttonByName(harness, 'Aus dem Set entfernen')).not.toBeNull();
       });
 
       it('offers "Aus dem Set entfernen" for a played-in tag', async () => {
         const { harness } = await openTag(activeTag(1, 'Stronghold'));
 
-        expect(buttonByName(harness, 'Ins Set holen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ins aktive Set holen')).not.toBeNull();
         expect(buttonByName(harness, 'Aus dem Set entfernen')).not.toBeNull();
       });
 
-      it('hides "Ins Set holen" for a tag whose emotes are all in the set — an inactive one keeps "Aus dem Set entfernen"', async () => {
+      it('hides "Ins aktive Set holen" for a tag whose emotes are all in the set — an inactive one keeps "Aus dem Set entfernen"', async () => {
         const full = { ...tag(1, 'Stronghold', 2, 2) };
         const { harness } = await openTag(full);
-        expect(buttonByName(harness, 'Ins Set holen')).toBeNull();
+        expect(buttonByName(harness, 'Ins aktive Set holen')).toBeNull();
         expect(buttonByName(harness, 'Aus dem Set entfernen')).not.toBeNull();
       });
 
       it('keeps only "Aus dem Set entfernen" for a played-in tag with nothing missing', async () => {
         const { harness } = await openTag({ ...activeTag(1, 'Stronghold'), inSetCount: 2 });
 
-        expect(buttonByName(harness, 'Ins Set holen')).toBeNull();
+        expect(buttonByName(harness, 'Ins aktive Set holen')).toBeNull();
         expect(buttonByName(harness, 'Aus dem Set entfernen')).not.toBeNull();
       });
 
@@ -1050,7 +1050,7 @@ describe('TagsPage', () => {
         permissions = { ...MANAGER, canManage: false, tagRunsEnabled: true };
         const { harness, page } = await openTag(tag(1, 'Stronghold'));
 
-        expect(buttonByName(harness, 'Ins Set holen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ins aktive Set holen')).not.toBeNull();
         expect(buttonByName(harness, 'Umbenennen')).toBeNull();
         expect(runActions(harness)!.activeEmoteSetId()).toBe(page.activeEmoteSetId());
       });
@@ -1059,7 +1059,7 @@ describe('TagsPage', () => {
         permissions = { ...MANAGER, tagRunsEnabled: false };
         const { harness } = await openTag(activeTag(1, 'Stronghold'));
 
-        expect(buttonByName(harness, 'Ins Set holen')).toBeNull();
+        expect(buttonByName(harness, 'Ins aktive Set holen')).toBeNull();
         expect(buttonByName(harness, 'Umbenennen')).not.toBeNull();
       });
 
@@ -1067,7 +1067,7 @@ describe('TagsPage', () => {
         isCoarse.set(true);
         const { harness } = await openTag(activeTag(1, 'Stronghold'));
 
-        expect(buttonByName(harness, 'Ins Set holen')).toBeNull();
+        expect(buttonByName(harness, 'Ins aktive Set holen')).toBeNull();
         expect(buttonByName(harness, 'Aus dem Set entfernen')).toBeNull();
         expect(buttonByName(harness, 'Tag löschen')).not.toBeNull();
       });
@@ -1091,7 +1091,7 @@ describe('TagsPage', () => {
           });
         await settle(harness);
 
-        expect(buttonByName(harness, 'Ins Set holen')).toBeNull();
+        expect(buttonByName(harness, 'Ins aktive Set holen')).toBeNull();
       });
 
       it('explains a lock held by an undo — whose dock this page does not show', async () => {
@@ -1654,13 +1654,13 @@ describe('TagsPage', () => {
 
       it('carries the number of marked emotes missing from the set', async () => {
         const { harness } = await openTag(tag(1, 'Stronghold', 4, 1), ENTRIES);
-        expect(buttonByName(harness, 'Ins Set holen')).not.toBeNull();
+        expect(buttonByName(harness, 'Ins aktive Set holen')).not.toBeNull();
 
         cells(harness)[0].click();
         cells(harness)[1].click();
         await settle(harness);
 
-        expect(buttonByName(harness, 'Ins Set holen (1)')!.disabled).toBe(false);
+        expect(buttonByName(harness, 'Ins aktive Set holen (1)')!.disabled).toBe(false);
       });
 
       it('adds only the marked missing emotes as marked at the click, and drops the marking once the run started', async () => {
@@ -1674,7 +1674,7 @@ describe('TagsPage', () => {
         await settle(harness);
         const closed = new Subject<unknown>();
 
-        const data = await clickPlayIn(harness, 'Ins Set holen (2)', closed, async () => {
+        const data = await clickPlayIn(harness, 'Ins aktive Set holen (2)', closed, async () => {
           // Marked after the click: not part of this play-in.
           cells(harness)[3].click();
           await settle(harness);
@@ -1707,7 +1707,7 @@ describe('TagsPage', () => {
         cells(harness)[1].click();
         await settle(harness);
         const closed = new Subject<unknown>();
-        await clickPlayIn(harness, 'Ins Set holen (1)', closed);
+        await clickPlayIn(harness, 'Ins aktive Set holen (1)', closed);
 
         closed.next(undefined);
         await settle(harness);
@@ -1720,7 +1720,7 @@ describe('TagsPage', () => {
         cells(harness)[0].click();
         await settle(harness);
 
-        const playIn = buttonByName(harness, 'Ins Set holen (0)')!;
+        const playIn = buttonByName(harness, 'Ins aktive Set holen (0)')!;
         expect(playIn.disabled).toBe(true);
         const reason = (harness.routeNativeElement as HTMLElement).querySelector(
           `#${playIn.getAttribute('aria-describedby')}`,
@@ -1729,10 +1729,10 @@ describe('TagsPage', () => {
 
         cells(harness)[1].click();
         await settle(harness);
-        expect(buttonByName(harness, 'Ins Set holen (1)')!.disabled).toBe(false);
-        expect(buttonByName(harness, 'Ins Set holen (1)')!.hasAttribute('aria-describedby')).toBe(
-          false,
-        );
+        expect(buttonByName(harness, 'Ins aktive Set holen (1)')!.disabled).toBe(false);
+        expect(
+          buttonByName(harness, 'Ins aktive Set holen (1)')!.hasAttribute('aria-describedby'),
+        ).toBe(false);
       });
 
       it('counts the marked emotes in the set on "Aus dem Set entfernen", and locks it with the reason beside the marking when none is', async () => {

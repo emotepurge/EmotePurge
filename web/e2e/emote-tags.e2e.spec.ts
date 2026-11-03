@@ -101,7 +101,7 @@ test.describe('emote tags', () => {
 
     await cell(page, 'catJAM').click();
     await cell(page, 'monkaW').click();
-    await page.getByRole('button', { name: 'Tag zuweisen…' }).click();
+    await page.getByRole('button', { name: 'Tag zuweisen', exact: true }).click();
 
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByRole('heading', { name: 'Tag zuweisen' })).toBeVisible();
@@ -259,7 +259,7 @@ test.describe('emote tags', () => {
   test('the usage page never offers tag runs, in the active set or in another one', async ({
     page,
   }) => {
-    // Tag runs are on, and still not here: "Ins Set holen"/"Aus dem Set entfernen" live on the tags page only
+    // Tag runs are on, and still not here: "Ins aktive Set holen"/"Aus dem Set entfernen" live on the tags page only
     // (operator feedback 2026-10-05).
     await mockChannel(page, { tagRunsEnabled: true });
     await mockTags(page, CHANNEL, [{ id: 7, name: 'Favoriten', entryCount: 1, inSetCount: 1 }]);
@@ -275,9 +275,9 @@ test.describe('emote tags', () => {
 
     // On the active set the button is there for a marked emote.
     await cell(page, 'catJAM').click();
-    await expect(page.getByRole('button', { name: 'Tag zuweisen…' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Tag zuweisen', exact: true })).toBeVisible();
     await page.getByRole('combobox', { name: 'Tag' }).selectOption({ label: 'Favoriten' });
-    await expect(page.getByRole('button', { name: 'Ins Set holen' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Ins aktive Set holen' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Aus dem Set entfernen' })).toHaveCount(0);
 
     // Deep-link to the other set (the URL is what carries the view); the tag filter set above is
@@ -288,7 +288,7 @@ test.describe('emote tags', () => {
     await page.getByRole('combobox', { name: 'Tag' }).selectOption({ label: 'Favoriten' });
     await cell(page, 'catJAM').click();
 
-    await expect(page.getByRole('button', { name: 'Ins Set holen' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Ins aktive Set holen' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Aus dem Set entfernen' })).toHaveCount(0);
   });
 
@@ -310,7 +310,7 @@ test.describe('emote tags', () => {
     await expect(page.getByRole('status', { name: 'Lädt…' })).toHaveCount(0);
 
     await cell(page, 'catJAM').click();
-    await page.getByRole('button', { name: 'Tag zuweisen…' }).click();
+    await page.getByRole('button', { name: 'Tag zuweisen', exact: true }).click();
     const dialog = page.getByRole('dialog');
     await dialog.getByRole('checkbox', { name: 'Favoriten' }).check();
     await dialog.getByRole('button', { name: '1 Emote zuweisen' }).click();
@@ -370,7 +370,7 @@ test.describe('emote tags on a touch device', () => {
     await expect(page.locator('#app-dialog-title')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.locator('#app-dialog-title')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Tag zuweisen…' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Tag zuweisen', exact: true })).toHaveCount(0);
   });
 });
 
@@ -503,14 +503,14 @@ async function mockSwitchableActiveSet(page: Page): Promise<(emoteSetId: string)
   };
 }
 
-/** The tags page with `Favoriten` chosen — and "Ins Set holen" there, so the tag has a missing emote. */
+/** The tags page with `Favoriten` chosen — and "Ins aktive Set holen" there, so the tag has a missing emote. */
 async function gotoTagWithMissing(page: Page): Promise<void> {
   await page.goto(`/channels/${CHANNEL}/tags?tag=${TAG_ID}`);
   await expect(page.getByRole('heading', { name: 'Favoriten', level: 3 })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Ins Set holen' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Ins aktive Set holen' })).toBeVisible();
 }
 
-const playIn = (page: Page) => page.getByRole('button', { name: 'Ins Set holen' });
+const playIn = (page: Page) => page.getByRole('button', { name: 'Ins aktive Set holen' });
 const clearOut = (page: Page) => page.getByRole('button', { name: 'Aus dem Set entfernen' });
 
 test.describe('emote tag runs', () => {
@@ -627,7 +627,7 @@ test.describe('emote tag runs', () => {
     await expect(page.getByText(/über den Tag ins Set geholt/)).toHaveCount(0);
   });
 
-  test('offers no "Ins Set holen" for a tag whose emotes are all in the set — only "Aus dem Set entfernen", played in or not', async ({
+  test('offers no "Ins aktive Set holen" for a tag whose emotes are all in the set — only "Aus dem Set entfernen", played in or not', async ({
     page,
   }) => {
     await mockChannel(page);
@@ -976,7 +976,7 @@ test.describe('emote tag runs', () => {
     await grid.getByRole('button', { name: /^PogU/ }).click();
     await expect(page.getByText('2 markiert', { exact: true })).toBeVisible();
 
-    await page.getByRole('button', { name: 'Ins Set holen (2)' }).click();
+    await page.getByRole('button', { name: 'Ins aktive Set holen (2)' }).click();
     const dialog = page.getByRole('dialog');
     await expect(dialog.locator('#app-dialog-title')).toContainText('2 Emotes');
     await dialog.getByRole('button', { name: 'Kopieren' }).click();
@@ -1219,7 +1219,7 @@ test.describe('emote tag runs', () => {
     // Nothing is missing from the active set: only the other-set action is there to add with.
     await expect(playIn(page)).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'In anderes Set holen …' }).click();
+    await page.getByRole('button', { name: 'In anderes Set holen' }).click();
     const picker = page.getByRole('dialog');
     await picker.getByRole('radio', { name: 'Halloween' }).check();
     await picker.getByRole('button', { name: 'Weiter' }).click();
@@ -1251,8 +1251,8 @@ test.describe('emote tag runs', () => {
   });
 });
 
-// Final review O3 ("keine Layout-Sprünge"): the first click on the grid adds a count to both set
-// buttons in the tag header ("Ins Set holen (0)", "Aus dem Set entfernen (1)"). If that made the
+// Final review O3 ("keine Layout-Sprünge"): the first click on the grid adds a count to all three set
+// buttons in the tag header ("Ins aktive Set holen (0)", "In anderes Set holen (1)", "Aus dem Set entfernen (1)"). If that made the
 // header wrap, the grid would move down under the pointer on the very click that marks it. Measured
 // at the two-column widths where the header is tightest, with a short, a middling and a maximal
 // (40 characters) tag name — the first measurement found the middling one wrapping at 1024 px.
@@ -1275,7 +1275,7 @@ test.describe('emote tag header while marking', () => {
         // Both header groups stand: the set actions and the tag actions.
         await expect(playIn(page)).toBeVisible();
         await expect(clearOut(page)).toBeVisible();
-        await expect(page.getByRole('button', { name: 'In anderes Set holen …' })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'In anderes Set holen' })).toBeVisible();
         await expect(page.getByRole('button', { name: 'Tag löschen' })).toBeVisible();
 
         const grid = page.getByRole('group', { name: `Emotes in ${name}` });
@@ -1285,7 +1285,9 @@ test.describe('emote tag header while marking', () => {
 
         await grid.getByRole('button', { name: 'catJAM' }).click();
         await expect(page.getByRole('button', { name: 'Aus dem Set entfernen (1)' })).toBeVisible();
-        await expect(page.getByRole('button', { name: 'Ins Set holen (0)' })).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Ins aktive Set holen (0)' })).toBeVisible();
+        // All three set buttons carry their count at once — the longest German header.
+        await expect(page.getByRole('button', { name: 'In anderes Set holen (1)' })).toBeVisible();
 
         expect(await gridTop()).toBe(before);
       });

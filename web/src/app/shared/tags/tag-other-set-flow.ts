@@ -45,7 +45,7 @@ import { TagRunNotice } from './tag-run-notice-sink';
  * (registration, placements), any other set — including another account's active set — this flow.
  * The comparison reads the host's live view of the active set at the moment the picker closes.
  *
- * The play-in is taken only when "Add to set" would itself be usable (`playInUsable`): an empty
+ * The play-in is taken only when "Add to active set" would itself be usable (`playInUsable`): an empty
  * play-in reports an activation, which would mark the tag as played in with no dialog and no choice
  * by the person. Otherwise the active set is told to be complete as it is, with no request at all.
  * `entryCount` is the tag's entry count, for the feedback when nothing is marked.

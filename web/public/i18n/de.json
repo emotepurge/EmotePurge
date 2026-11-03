@@ -2245,7 +2245,7 @@
       "title": "Tags",
       "listLabel": "Tags",
       "intro": "Ein Tag merkt sich Emotes, auch wenn sie gerade nicht im Set sind.",
-      "introRuns": "„Ins Set holen“ fügt sie hinzu, „Aus dem Set entfernen“ nimmt sie wieder heraus – der Tag selbst bleibt dabei erhalten.",
+      "introRuns": "„Ins aktive Set holen“ fügt sie hinzu, „Aus dem Set entfernen“ nimmt sie wieder heraus – der Tag selbst bleibt dabei erhalten.",
       "setLine": "Die Zahlen beziehen sich auf das aktive Set {{set}}.",
       "noActiveSet": "Dieser Channel hat kein aktives Set; Zahlen „im Set“ gibt es deshalb nicht.",
       "empty": {
@@ -2318,17 +2318,17 @@
       "rename": "Umbenennen",
       "delete": "Tag löschen",
       "clearSelection": "Auswahl aufheben",
-      "assign": "Tag zuweisen…",
+      "assign": "Tag zuweisen",
       "unassign": "Aus dem Tag entfernen ({{count}})",
       "unassignNamed": "Aus dem Tag entfernen ({{count}}) – {{tag}}",
       "unassignTitle": "Nimmt die markierten Emotes aus dem Tag. Sie bleiben im Set; der Tag nimmt sie danach auch nicht mehr aus dem Set.",
       "unassignLockReason": {
         "noneInTag": "Keins der markierten Emotes gehört zu {{tag}}."
       },
-      "playIn": "Ins Set holen",
-      "playInCount": "Ins Set holen ({{count}})",
-      "playInOtherSet": "In anderes Set holen …",
-      "playInOtherSetCount": "In anderes Set holen … ({{count}})",
+      "playIn": "Ins aktive Set holen",
+      "playInCount": "Ins aktive Set holen ({{count}})",
+      "playInOtherSet": "In anderes Set holen",
+      "playInOtherSetCount": "In anderes Set holen ({{count}})",
       "playInLockReason": {
         "allMarkedInSet": "Alle markierten Emotes sind schon im Set."
       },
