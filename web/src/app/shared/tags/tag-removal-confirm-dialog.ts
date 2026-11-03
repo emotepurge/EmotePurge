@@ -432,20 +432,24 @@ export class TagRemovalConfirmDialog {
     const proposed = this.proposedRows();
     const notProposed = this.notProposedRows();
     if (proposed.length > 0) {
-      out.push({
-        kind: 'heading',
-        id: 'h:proposed',
-        labelKey: 'tags.removalDialog.proposedHeading',
-      });
-      out.push(...proposed.map(toItem));
+      out.push(
+        {
+          kind: 'heading',
+          id: 'h:proposed',
+          labelKey: 'tags.removalDialog.proposedHeading',
+        },
+        ...proposed.map(toItem),
+      );
     }
     if (notProposed.length > 0) {
-      out.push({
-        kind: 'heading',
-        id: 'h:notProposed',
-        labelKey: 'tags.removalDialog.notProposedHeading',
-      });
-      out.push(...notProposed.map(toItem));
+      out.push(
+        {
+          kind: 'heading',
+          id: 'h:notProposed',
+          labelKey: 'tags.removalDialog.notProposedHeading',
+        },
+        ...notProposed.map(toItem),
+      );
     }
     return out;
   });

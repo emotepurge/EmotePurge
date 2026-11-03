@@ -366,7 +366,7 @@ export function settleEntryDeleteRun(
  *  short (`complete: false`) has itself only partial knowledge of the set, which is not enough to
  *  positively confirm anything either way (Plan-275 Festlegung 7/8). */
 function readableEntries(entries: SevenTvSetEntries | null): SevenTvSetEntries | null {
-  return entries !== null && entries.complete ? entries : null;
+  return entries?.complete ? entries : null;
 }
 
 /** A single `REMOVE`'s id is gone from the set exactly when it has no entry left in `aliasesById`

@@ -67,7 +67,7 @@ export function replacedIntervals(
   const merged: ReplacedInterval[] = [];
   for (const interval of clipped) {
     const last = merged.at(-1);
-    if (last && last.emoteSetId === interval.emoteSetId && last.to === interval.from) {
+    if (last?.emoteSetId === interval.emoteSetId && last.to === interval.from) {
       last.to = interval.to;
       last.emoteSetName = last.emoteSetName ?? interval.emoteSetName;
     } else {

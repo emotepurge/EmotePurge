@@ -206,12 +206,7 @@ export function importRefusalNoticeVisible(state: {
 function notActiveNoticeParams(
   run: ImportRunInfo | null,
 ): { channel: string; setName: string } | null {
-  if (
-    run === null ||
-    run.settlement !== 'settled' ||
-    run.targetChannelName === null ||
-    run.targetIsActiveSet
-  ) {
+  if (run?.settlement !== 'settled' || run.targetChannelName === null || run.targetIsActiveSet) {
     return null;
   }
   return { channel: run.targetChannelName, setName: run.targetSetName };

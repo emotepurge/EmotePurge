@@ -485,7 +485,7 @@ export class ImportProgressSection {
    *  engine's queue, so a superseded run cannot leak its rows into a newer one's file. */
   protected openProtocolExport(): void {
     const run = this.importService.run();
-    if (!run || run.settlement !== 'settled' || run.result === null) {
+    if (run?.settlement !== 'settled' || run.result === null) {
       return;
     }
     const protocol = buildTransferRunProtocol({
