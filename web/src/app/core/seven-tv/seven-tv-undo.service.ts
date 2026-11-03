@@ -579,11 +579,7 @@ export class SevenTvUndoService {
    *  and completes (Plan-256 Festlegung 13). */
   resetIfChannelChanged(pageChannelName: string): void {
     const current = this.run();
-    if (
-      current === null ||
-      current.phase !== 'closed' ||
-      current.hostChannelName === pageChannelName
-    ) {
+    if (current?.phase !== 'closed' || current.hostChannelName === pageChannelName) {
       return;
     }
     this.reset();
@@ -946,7 +942,7 @@ export class SevenTvUndoService {
 
   private retryReport(kind: UndoReportKind): void {
     const current = this.run();
-    if (current === null || current.settlement !== 'settled' || current.result === null) {
+    if (current?.settlement !== 'settled' || current.result === null) {
       return;
     }
     const state = kind === 'removal' ? current.removalReport : current.restoreReport;

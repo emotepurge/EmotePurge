@@ -103,7 +103,7 @@ export interface BackfillAnnouncement {
   total?: number;
 }
 
-const OUTCOME_STATUSES: readonly string[] = ['completed', 'failed', 'cancelled'];
+const OUTCOME_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
 
 /**
  * The live region's content: the running run's progress, or — for the run that has just left
@@ -129,7 +129,7 @@ export function backfillAnnouncement(
     };
   }
   const last = status.lastRun;
-  if (last === null || !OUTCOME_STATUSES.includes(last.status)) {
+  if (last === null || !OUTCOME_STATUSES.has(last.status)) {
     return null;
   }
   if (previousStatus?.activeRun?.id === last.id) {
@@ -193,7 +193,7 @@ interface RemovalScope {
 }
 
 /** The statuses of a run that can still be cancelled (B11); the other three are final. */
-const CANCELLABLE_STATUSES: readonly string[] = ['queued', 'running', 'paused'];
+const CANCELLABLE_STATUSES: ReadonlySet<string> = new Set(['queued', 'running', 'paused']);
 
 interface SetView {
   id: string;
@@ -487,8 +487,7 @@ export class BackfillSection {
       value: this.lastRead()?.status,
     }),
     computation: (source, previous) =>
-      source.value ??
-      (previous && previous.source.channel === source.channel ? previous.value : null),
+      source.value ?? (previous?.source.channel === source.channel ? previous.value : null),
   });
 
   /** What the permanent live region says; see {@link backfillAnnouncement}. */
@@ -717,7 +716,7 @@ export class BackfillSection {
 
   /** The running run may be cancelled while it is queued, running or paused. */
   readonly canCancel = computed(() =>
-    CANCELLABLE_STATUSES.includes(this.status()?.activeRun?.status ?? ''),
+    CANCELLABLE_STATUSES.has(this.status()?.activeRun?.status ?? ''),
   );
 
   /** The selected option's window, `[from, to)`, or `null` while there is no available pick. */
@@ -736,7 +735,7 @@ export class BackfillSection {
     const setId = this.selectedSetId();
     const status = this.status();
     // Start is impossible while a run exists, so there is nothing to warn about.
-    if (window === null || setId === null || status === null || status.activeRun !== null) {
+    if (window === null || setId === null || status?.activeRun !== null) {
       return [];
     }
     return replacedIntervals(status.coverage, window.from, window.to, setId).map((interval) =>

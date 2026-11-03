@@ -834,7 +834,7 @@ describe('ImportProgressSection', () => {
       const fixture = render();
 
       expect(occurrences(fixture.nativeElement, UNCHECKED_UNAVAILABLE)).toBe(1);
-      expect(fixture.nativeElement.querySelectorAll('p[aria-hidden="true"]').length).toBe(0);
+      expect(fixture.nativeElement.querySelectorAll('p[aria-hidden="true"]')).toHaveLength(0);
     });
 
     it('keeps the transient line while the run its start began is still running', () => {
@@ -849,7 +849,7 @@ describe('ImportProgressSection', () => {
       const fixture = render();
 
       expect(occurrences(fixture.nativeElement, UNCHECKED_UNAVAILABLE)).toBe(1);
-      expect(fixture.nativeElement.querySelectorAll('p[aria-hidden="true"]').length).toBe(1);
+      expect(fixture.nativeElement.querySelectorAll('p[aria-hidden="true"]')).toHaveLength(1);
     });
 
     it('keeps the transient line of a start that began no run, next to an earlier run that has its own', () => {

@@ -11,6 +11,9 @@ internal static partial class SecretScrubber
 {
     private const string Redacted = "[redacted]";
 
+    // Keeps the named group (the key part) and replaces only what follows it.
+    private const string KeepKeyAndRedact = "${key}" + Redacted;
+
     public static string Scrub(string text)
     {
         if (string.IsNullOrEmpty(text))
@@ -20,10 +23,10 @@ internal static partial class SecretScrubber
 
         try
         {
-            text = PasswordPattern().Replace(text, "${key}" + Redacted);
-            text = OAuthPattern().Replace(text, "${key}" + Redacted);
-            text = BearerPattern().Replace(text, "${key}" + Redacted);
-            return NamedSecretPattern().Replace(text, "${key}" + Redacted);
+            text = PasswordPattern().Replace(text, KeepKeyAndRedact);
+            text = OAuthPattern().Replace(text, KeepKeyAndRedact);
+            text = BearerPattern().Replace(text, KeepKeyAndRedact);
+            return NamedSecretPattern().Replace(text, KeepKeyAndRedact);
         }
         catch (RegexMatchTimeoutException)
         {

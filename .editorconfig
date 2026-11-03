@@ -36,3 +36,8 @@ dotnet_diagnostic.SYSLIB1045.severity = none
 # hot path. Scoped to tests/** only, so the rule stays active for src/**.
 [tests/**/*.cs]
 dotnet_diagnostic.CA1861.severity = none
+
+# CA2254 ("the logging message template should not vary between calls"): the logging tests feed
+# dynamic messages on purpose, because what the log capture and its redaction do with arbitrary
+# message text is the thing under test. Tests only; the rule stays active for src/**.
+dotnet_diagnostic.CA2254.severity = none

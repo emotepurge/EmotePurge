@@ -1456,7 +1456,7 @@ describe('ImportConfirmDialog', () => {
         sourceRows.push(row(`new-${index}`, `New${index}`));
       }
 
-      expect(sourceRows.length).toBe(762);
+      expect(sourceRows).toHaveLength(762);
 
       const dialog = render({
         source: channelSource(sourceRows),

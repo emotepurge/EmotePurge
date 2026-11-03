@@ -469,7 +469,7 @@ function tagEntries(count: number) {
   return Array.from({ length: count }, (_, i) => ({
     sevenTvEmoteId: `7tv-${i + 1}`,
     alias: i === 0 ? 'xXSuperMegaLangerAliasMitVierzigZeichen' : `Emote${i + 1}PogU`,
-    inSet: i % 6 === 5 ? false : true,
+    inSet: i % 6 !== 5,
     currentName: i % 6 === 5 ? `Renamed${i + 1}` : null,
   }));
 }

@@ -551,7 +551,7 @@ export class UndoConfirmDialog {
     plan: UndoPlan;
   } | null> = computed(() => {
     const read = this.gate.lastRead();
-    return read === null || !read.complete
+    return !read?.complete
       ? null
       : {
           read,
@@ -809,9 +809,8 @@ function rowViews(
     ...plan.skipped.map((row) => ({ candidate: row.candidate, view: skippedView(row, plan.read) })),
   ];
   const position = (candidate: UndoCandidate) => candidateOrder.get(candidate) ?? 0;
-  return views
-    .sort((a, b) => position(a.candidate) - position(b.candidate))
-    .map((entry) => entry.view);
+  views.sort((a, b) => position(a.candidate) - position(b.candidate));
+  return views.map((entry) => entry.view);
 }
 
 /** What every row shows about its candidate, whatever the plan does with it (K1: the source's

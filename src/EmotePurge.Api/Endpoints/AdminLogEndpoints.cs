@@ -193,6 +193,23 @@ public static class AdminLogEndpoints
 
     private static DateTime? Utc(DateTime? value) => value is null ? null : Utc(value.Value);
 
+    private static JsonNode ParseProperties(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new JsonObject();
+        }
+
+        try
+        {
+            return JsonNode.Parse(json) is JsonObject parsed ? parsed : new JsonObject();
+        }
+        catch (JsonException)
+        {
+            return new JsonObject();
+        }
+    }
+
     private static object ToWire(LogFilterView filter) =>
         new { id = filter.Id, name = filter.Name, filter = filter.Filter, sortOrder = filter.SortOrder };
 
@@ -224,23 +241,6 @@ public static class AdminLogEndpoints
         wire["processStartedUtc"] = Utc(detail.ProcessStartedUtc);
         wire["uptimeSeconds"] = detail.UptimeSeconds;
         return wire;
-    }
-
-    private static JsonNode ParseProperties(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return new JsonObject();
-        }
-
-        try
-        {
-            return JsonNode.Parse(json) is JsonObject parsed ? parsed : new JsonObject();
-        }
-        catch (JsonException)
-        {
-            return new JsonObject();
-        }
     }
 
     private static object ToWire(LogSummary s) => new

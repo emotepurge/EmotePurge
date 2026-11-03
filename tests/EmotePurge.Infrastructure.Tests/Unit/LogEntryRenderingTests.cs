@@ -414,10 +414,7 @@ public class LogEntryRenderingTests
         {
             get
             {
-                if (index >= Count)
-                {
-                    throw new ArgumentOutOfRangeException(nameof(index));
-                }
+                ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(index, Count);
 
                 MaxIndexRead = Math.Max(MaxIndexRead, index);
                 return new($"k{index}", index);

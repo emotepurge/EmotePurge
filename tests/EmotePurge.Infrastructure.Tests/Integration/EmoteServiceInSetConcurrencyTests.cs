@@ -377,7 +377,7 @@ public class EmoteServiceInSetConcurrencyTests(PostgresFixture fixture)
         }
         else
         {
-            Assert.IsAssignableFrom<InvalidOperationException>(thrown);
+            Assert.IsType<InvalidOperationException>(thrown, exactMatch: false);
             Assert.Single(ReportLines(logger, DeadlockLine));
             Assert.Empty(ReportLines(logger, VanishedLine));
         }

@@ -2,6 +2,7 @@ using EmotePurge.Worker;
 using Microsoft.Extensions.Logging;
 using TwitchLib.Client.Models;
 using TwitchLib.Client.Parsing;
+using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Fixtures;
 
@@ -93,7 +94,7 @@ public static class RedactionChainFixtures
             ConsoleChecked: true),
     };
 
-    public static IEnumerable<object[]> Names => All.Keys.Select(name => new object[] { name });
+    public static TheoryData<string> Names => new(All.Keys);
 
     /// <summary>An exception whose message and inner message carry the raw line, both thrown so they have stack traces.</summary>
     public static Exception RawTextException(string rawLine)

@@ -171,6 +171,30 @@ jobs:
       # everywhere, scripts/ included. The wildcard is intentional: ignoring only S8707 would let
       # its siblings turn main red one at a time. Note the sub-parameter is resourceKey;
       # resourcePattern would break the analysis.
+      #
+      # multicriteria e6 filters typescript:S2699 ("tests should include assertions") for
+      # web/src/**/*.spec.ts. The rule recognises expect(), but not HttpTestingController's
+      # expectOne/expectNone/verify, which throw on a mismatch and are this project's assertion
+      # for every HttpClient service spec. The rule has no parameter for extra assertion patterns,
+      # so the only way to silence those false positives is the filter. The price: a spec that
+      # truly asserts nothing is no longer flagged in web/src; reviewers have to catch it.
+      # (web/e2e is not covered, Playwright's expect is recognised.)
+      #
+      # multicriteria e7 filters csharpsquid:S3265 ("non-flags enums should not be used in bitwise
+      # operations") for src/EmotePurge.Infrastructure/**/*.cs. `NpgsqlDbType.Array | NpgsqlDbType.X`
+      # is the documented Npgsql way to type an array parameter, and NpgsqlDbType is not marked
+      # [Flags]. The price: real bitwise misuse of a non-flags enum in Infrastructure goes unreported.
+      #
+      # multicriteria e8 filters csharpsquid:S107 ("too many parameters") for
+      # src/EmotePurge.Api/Endpoints/*.cs. Same reasoning as e4 and Rule 6: the handler lambdas'
+      # parameters are DI services and route/query binding, not a design smell that a parameter
+      # object would cure. The price: a private helper in these files with a real parameter pile is
+      # exempt too, as with e4.
+      #
+      # multicriteria e9 filters shell:S7684 (variable naming convention) for scripts/**/*.sh. The
+      # scripts use mixed-case names for the .NET configuration convention (Section__Key) on
+      # purpose, so that the variables map onto the configuration keys. The price: other naming
+      # slips in the shell scripts are no longer reported.
       - name: Sonar Scanner begin
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -184,7 +208,7 @@ jobs:
           /d:sonar.exclusions="**/Migrations/**,src/EmotePurge.Api/wwwroot/**,web/dist/**,**/node_modules/**,docs/superpowers/prototypes/**"
           /d:sonar.coverage.exclusions="web/e2e/**,**/Migrations/**,scripts/**,src/EmotePurge.Worker/TwitchChatManager.cs,src/EmotePurge.Worker/TwitchConnectionWatchdog.cs"
           /d:sonar.qualitygate.wait=true
-          /d:sonar.issue.ignore.multicriteria=e1,e2,e3,e4,e5
+          /d:sonar.issue.ignore.multicriteria=e1,e2,e3,e4,e5,e6,e7,e8,e9
           /d:sonar.issue.ignore.multicriteria.e1.ruleKey="javascript:S4036"
           /d:sonar.issue.ignore.multicriteria.e1.resourceKey="scripts/**/*.mjs"
           /d:sonar.issue.ignore.multicriteria.e2.ruleKey="csharpsquid:S2325"
@@ -195,6 +219,14 @@ jobs:
           /d:sonar.issue.ignore.multicriteria.e4.resourceKey="src/EmotePurge.Api/Endpoints/*.cs"
           /d:sonar.issue.ignore.multicriteria.e5.ruleKey="jssecurity:S870*"
           /d:sonar.issue.ignore.multicriteria.e5.resourceKey="scripts/**"
+          /d:sonar.issue.ignore.multicriteria.e6.ruleKey="typescript:S2699"
+          /d:sonar.issue.ignore.multicriteria.e6.resourceKey="web/src/**/*.spec.ts"
+          /d:sonar.issue.ignore.multicriteria.e7.ruleKey="csharpsquid:S3265"
+          /d:sonar.issue.ignore.multicriteria.e7.resourceKey="src/EmotePurge.Infrastructure/**/*.cs"
+          /d:sonar.issue.ignore.multicriteria.e8.ruleKey="csharpsquid:S107"
+          /d:sonar.issue.ignore.multicriteria.e8.resourceKey="src/EmotePurge.Api/Endpoints/*.cs"
+          /d:sonar.issue.ignore.multicriteria.e9.ruleKey="shell:S7684"
+          /d:sonar.issue.ignore.multicriteria.e9.resourceKey="scripts/**/*.sh"
 
       # --no-incremental is mandatory, not style: MSBuild otherwise skips already-built projects
       # incrementally (e.g. from a previous cache restore), and the Sonar-Scanner-MSBuild hook sees

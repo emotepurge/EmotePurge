@@ -303,7 +303,7 @@ export class FileImportStep {
 
   protected chooseUndo(): void {
     const offered = this.choice();
-    if (offered === null || !offered.undo.ok) {
+    if (!offered?.undo.ok) {
       return;
     }
     this.picked.emit({

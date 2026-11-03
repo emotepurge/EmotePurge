@@ -3514,7 +3514,7 @@ export class UsageStatsPage {
   // instead of subtracting another set's emotes and slots (the selection reconciles against it).
   protected onDeleted(doneKeys: string[]): void {
     const run = this.deleteService.lastRun();
-    if (!run || run.channelName !== this.totalsChannel()) {
+    if (run?.channelName !== this.totalsChannel()) {
       return;
     }
     if (run.setId !== this.shownSetId() || this.isNonActiveView()) {
@@ -3636,7 +3636,7 @@ export class UsageStatsPage {
     openCreateVoteSessionDialog(this.dialog, data).closed.subscribe((created) => {
       if (created) {
         this.selection.clear();
-        this.router.navigate(['/channels', this.channelName(), 'vote-sessions', created.id]);
+        void this.router.navigate(['/channels', this.channelName(), 'vote-sessions', created.id]);
       }
     });
   }

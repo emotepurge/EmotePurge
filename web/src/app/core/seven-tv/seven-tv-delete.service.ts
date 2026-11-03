@@ -638,7 +638,7 @@ export class SevenTvDeleteService {
    *  later `failed` with no dock to show it and no retry to reach it (Codex-Befund 2). */
   resetIfChannelChanged(channelName: string): void {
     const current = this.run();
-    if (current === null || current.phase !== 'closed' || current.channelName === channelName) {
+    if (current?.phase !== 'closed' || current.channelName === channelName) {
       return;
     }
     this.reset();
@@ -676,8 +676,7 @@ export class SevenTvDeleteService {
   retryTagRemovalReport(): void {
     const current = this.run();
     if (
-      current === null ||
-      current.tag === undefined ||
+      current?.tag === undefined ||
       current.tagRemovalReport === 'pending' ||
       current.result === null
     ) {

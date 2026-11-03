@@ -539,9 +539,9 @@ describe('AdminMonitoringPage', () => {
         fixture.detectChanges();
         vi.advanceTimersByTime(1);
 
-        expect(vi.mocked(service.getDashboardActivity).mock.calls.length).toBe(before + 1);
-        expect(vi.mocked(service.getRateLimitTrend).mock.calls.length).toBe(2);
-        expect(vi.mocked(service.getRateLimits).mock.calls.length).toBe(2);
+        expect(vi.mocked(service.getDashboardActivity).mock.calls).toHaveLength(before + 1);
+        expect(vi.mocked(service.getRateLimitTrend).mock.calls).toHaveLength(2);
+        expect(vi.mocked(service.getRateLimits).mock.calls).toHaveLength(2);
       } finally {
         setVisibility('visible');
         vi.useRealTimers();

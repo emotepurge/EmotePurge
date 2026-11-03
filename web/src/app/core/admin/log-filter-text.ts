@@ -35,7 +35,7 @@ export function quoteFilterValue(value: string): string {
   if (value !== '' && !NEEDS_QUOTES.test(value) && !value.startsWith('-')) {
     return value;
   }
-  const escaped = value.replaceAll('"', '\\"');
+  const escaped = value.replaceAll('"', String.raw`\"`);
   return `"${escaped}${escaped.endsWith('\\') ? '*' : ''}"`;
 }
 

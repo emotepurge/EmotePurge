@@ -19,6 +19,9 @@ public static class SevenTvDispatchParser
     // (pushed/updated) and the nested ones inside a connections change.
     private const string ValueKey = "value";
 
+    // The JSON property carrying the value a change entry replaced.
+    private const string OldValueKey = "old_value";
+
     public static SevenTvEmoteSetDelta ParseEmoteSetUpdate(JsonElement body, ILogger logger)
     {
         var pushed = new List<SevenTvEmote>();
@@ -110,14 +113,14 @@ public static class SevenTvDispatchParser
         {
             if (HasKey(innerChange, "emote_set_id"))
             {
-                oldSetId = GetNonEmptyString(innerChange, "old_value");
+                oldSetId = GetNonEmptyString(innerChange, OldValueKey);
                 newSetId = GetNonEmptyString(innerChange, ValueKey);
                 return true;
             }
 
             if (HasKey(innerChange, "emote_set"))
             {
-                oldSetId = GetNonEmptyObjectId(innerChange, "old_value");
+                oldSetId = GetNonEmptyObjectId(innerChange, OldValueKey);
                 newSetId = GetNonEmptyObjectId(innerChange, ValueKey);
                 found = true;
             }
@@ -156,7 +159,7 @@ public static class SevenTvDispatchParser
 
             // A missing or empty name is null here, never a throw; a missing old_value gives a null
             // OldName.
-            var oldName = change.TryGetProperty("old_value", out var oldValue) ? GetNonEmptyString(oldValue, "name") : null;
+            var oldName = change.TryGetProperty(OldValueKey, out var oldValue) ? GetNonEmptyString(oldValue, "name") : null;
             into.Add(new SevenTvEmoteRename(
                 dto.Id, oldName, dto.Name.Length > 0 ? dto.Name : null, SevenTvEmoteJsonMapper.MapDto(dto).ImageUrl));
         }
@@ -175,10 +178,10 @@ public static class SevenTvDispatchParser
                 return;
             }
 
-            var id = GetNonEmptyObjectId(change, "old_value");
+            var id = GetNonEmptyObjectId(change, OldValueKey);
             if (id is null)
             {
-                if (change.TryGetProperty("old_value", out var oldValue) && oldValue.ValueKind == JsonValueKind.Object)
+                if (change.TryGetProperty(OldValueKey, out var oldValue) && oldValue.ValueKind == JsonValueKind.Object)
                 {
                     logger.LogWarning("Skipped an emote_set.update pull change without an emote id: {Change}", Truncate(change));
                 }
@@ -186,7 +189,7 @@ public static class SevenTvDispatchParser
                 return;
             }
 
-            into.Add(new SevenTvPulledEntry(id, GetNonEmptyString(change.GetProperty("old_value"), "name")));
+            into.Add(new SevenTvPulledEntry(id, GetNonEmptyString(change.GetProperty(OldValueKey), "name")));
         }
         catch (Exception ex)
         {

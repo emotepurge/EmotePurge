@@ -665,32 +665,17 @@ describe('SevenTvEmoteSetService', () => {
         req.flush(preCheckEditableBody());
       });
 
-      it('maps status "notSelectable" to { status: "notSelectable" }, no target', () => {
-        let result: EditableSetResolution | undefined;
-        service.resolveEditableSet('set-1').subscribe((r) => (result = r));
+      it.each(['notSelectable', 'notEditable', 'unavailable'] as const)(
+        'maps status "%s" to a bare status result, no target',
+        (status) => {
+          let result: EditableSetResolution | undefined;
+          service.resolveEditableSet('set-1').subscribe((r) => (result = r));
 
-        httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'notSelectable', target: null });
+          httpMock.expectOne(preCheckUrl('set-1')).flush({ status, target: null });
 
-        expect(result).toEqual({ status: 'notSelectable' });
-      });
-
-      it('maps status "notEditable" to { status: "notEditable" }, no target', () => {
-        let result: EditableSetResolution | undefined;
-        service.resolveEditableSet('set-1').subscribe((r) => (result = r));
-
-        httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'notEditable', target: null });
-
-        expect(result).toEqual({ status: 'notEditable' });
-      });
-
-      it('maps status "unavailable" to { status: "unavailable" }, no target', () => {
-        let result: EditableSetResolution | undefined;
-        service.resolveEditableSet('set-1').subscribe((r) => (result = r));
-
-        httpMock.expectOne(preCheckUrl('set-1')).flush({ status: 'unavailable', target: null });
-
-        expect(result).toEqual({ status: 'unavailable' });
-      });
+          expect(result).toEqual({ status });
+        },
+      );
 
       // plan decision 20: distinct from the cache-first list above — a per-set answer, kept 60 s,
       // so up to three pre-checks about the same set inside one user action (restore, delete,

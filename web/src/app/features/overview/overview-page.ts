@@ -183,7 +183,7 @@ export class OverviewPage {
   }
 
   protected openChannel(channelName: string): void {
-    this.router.navigate(['/channels', channelName]);
+    void this.router.navigate(['/channels', channelName]);
   }
 
   // Fresh Twitch OAuth round-trip (full browser redirect). Returning to the overview afterwards

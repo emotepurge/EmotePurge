@@ -330,6 +330,9 @@ export type AdminDashboardLoadSource = 'raw' | 'hourly';
 /** Which of the two processes contributed to / produced a host value (`A` = Api, `W` = Worker). */
 export type AdminDashboardLoadProvenance = 'A' | 'W' | 'AW';
 
+/** Whose hourly P95 a host value shows (`A` = Api, `W` = Worker); `null` = unknown. */
+export type LoadValueSource = 'A' | 'W' | null;
+
 /**
  * Host series, column-oriented: every list is as long as `bucketStartsUtc`, `null` = unknown. Both
  * processes measure the same host; `provenance` and the `*ValueSource` columns say who contributed
@@ -344,9 +347,9 @@ export interface AdminDashboardHostSeries {
   loadAverage1P95: (number | null)[];
   loadAverage1Max: (number | null)[];
   provenance: (AdminDashboardLoadProvenance | null)[];
-  cpuValueSource: ('A' | 'W' | null)[];
-  memoryValueSource: ('A' | 'W' | null)[];
-  loadAverageValueSource: ('A' | 'W' | null)[];
+  cpuValueSource: LoadValueSource[];
+  memoryValueSource: LoadValueSource[];
+  loadAverageValueSource: LoadValueSource[];
   apiSampleCount: (number | null)[];
   workerSampleCount: (number | null)[];
   apiCpuBusyMean: (number | null)[];

@@ -469,11 +469,7 @@ export class SevenTvRestoreService {
    *  later `failed` with no dock to show it and no retry to reach it (Codex-Befund 2). */
   resetIfChannelChanged(pageChannelName: string): void {
     const current = this.run();
-    if (
-      current === null ||
-      current.phase !== 'closed' ||
-      current.hostChannelName === pageChannelName
-    ) {
+    if (current?.phase !== 'closed' || current.hostChannelName === pageChannelName) {
       return;
     }
     this.reset();
