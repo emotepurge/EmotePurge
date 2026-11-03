@@ -7550,7 +7550,7 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(component['filteredEmotes']()).toHaveLength(3);
   });
 
-  it('offers "Tag zuweisen…" for a manager on a fine pointer with a selection in the active view', async () => {
+  it('offers "Tag zuweisen" for a manager on a fine pointer with a selection in the active view', async () => {
     await open({ tags: [] });
     expect(component['tagAssignShown']()).toBe(false);
 
@@ -7666,7 +7666,7 @@ describe('UsageStatsPage — tags: filter, dock actions, messages (#201 T-B)', (
     expect(component['tagUnassignCount']()).toBe(1);
   });
 
-  it('after "Tag zuweisen…": hands the dialog the marked ids, acknowledges for 4 s, reloads the tags and keeps the selection', async () => {
+  it('after "Tag zuweisen": hands the dialog the marked ids, acknowledges for 4 s, reloads the tags and keeps the selection', async () => {
     await open({ tags: [tag(4, 'Stronghold')] });
     mark('7tv-a', '7tv-b');
     const result: TagAssignDialogResult = {

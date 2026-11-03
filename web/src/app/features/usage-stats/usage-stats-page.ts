@@ -3650,7 +3650,7 @@ export class UsageStatsPage {
   }
 
   /**
-   * "Tag zuweisen…" (spec 7.0): the dialog does the writing, tag by tag; the page acknowledges.
+   * "Tag zuweisen" (spec 7.0): the dialog does the writing, tag by tag; the page acknowledges.
    * The tag list reloads on *every* close, result or not — a tag created inline and then abandoned
    * returns `undefined` but exists on the server. The selection stays as it is (step 4).
    *

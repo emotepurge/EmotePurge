@@ -82,8 +82,9 @@ export type ImportFlowTarget =
       kind: 'chosen';
       choice: Omit<ImportTargetChoice, 'scope'>;
       /** A tag play-in (#201 T-C, spec E29 rev. 3): read exactly `choice.emoteSetId`, even when it is
-       *  the account's active set — see {@link toTargetSelection}. Absent for every other caller,
-       *  which then resolves byte-identically to before. */
+       *  the account's active set — see {@link toTargetSelection}. The tag run into another set
+       *  (#328) sets it too, without a tag hook. Absent for every other caller, which then resolves
+       *  byte-identically to before. */
       pinSetId?: true;
     };
 
@@ -112,6 +113,18 @@ export interface ImportFlowTagHook {
   activeEmoteSetId: Signal<string | null>;
   onSetChanged(): void;
   onNothingToImport(): void;
+  onStarted?(): void;
+}
+
+/**
+ * What a caller without a {@link ImportFlowTagHook} can still ask of the flow — the tag run into
+ * another set (#328) has no hook (no registration, no placements) but still lets go of the grid
+ * marking once its run went ahead.
+ *
+ * `onStarted` is called under the same condition as the hook's: right after `startImport` reported
+ * the run as started, never for a dismissed dialog, a cancelled token prompt or a refused start.
+ */
+export interface ImportFlowRunHooks {
   onStarted?(): void;
 }
 
@@ -400,6 +413,7 @@ export function startImportFlow(
   source: ImportSource,
   target: ImportFlowTarget,
   tagHook?: ImportFlowTagHook,
+  runHooks: ImportFlowRunHooks = {},
 ): void {
   const targetState = signal<ImportTargetLoadState>({ status: 'loading' });
   const targetChannelName = toTargetChannelName(target);
@@ -678,6 +692,7 @@ export function startImportFlow(
         // marking standing for another attempt.
         if (started) {
           tagHook?.onStarted?.();
+          runHooks.onStarted?.();
         }
       });
   };

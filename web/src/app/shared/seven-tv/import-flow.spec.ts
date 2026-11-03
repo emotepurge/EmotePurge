@@ -1626,6 +1626,29 @@ describe('startImportFlow', () => {
       expect(onSetChanged).not.toHaveBeenCalled();
     });
 
+    // protects=`runHooks.onStarted` (a run without a tag hook, #328) fires only for a run the engine
+    //   started, never for one it refused;
+    // fails_when=a refused start still lets go of the caller's marking, or a started run does not;
+    // no_claim=the tag hook's own `onStarted` (tested above) and any tag-less caller other than this seam.
+    it('calls runHooks.onStarted for a started run and not for a refused one, without a tag hook', () => {
+      const started = setupPinned();
+      started.startImport.mockReturnValue(true);
+      const onStarted = vi.fn();
+      startImportFlow(started.deps, source([KAPPA]), pinnedTarget(), undefined, { onStarted });
+      confirmAdd(started.dialogOpen);
+      expect(onStarted).toHaveBeenCalledOnce();
+
+      const refused = setupPinned();
+      refused.startImport.mockReturnValue(false);
+      const onRefusedStarted = vi.fn();
+      startImportFlow(refused.deps, source([KAPPA]), pinnedTarget(), undefined, {
+        onStarted: onRefusedStarted,
+      });
+      confirmAdd(refused.dialogOpen);
+      expect(refused.startImport).toHaveBeenCalledOnce();
+      expect(onRefusedStarted).not.toHaveBeenCalled();
+    });
+
     it('still hands the plan to startImport when held-back replace rows, not presence, emptied it — and calls no onStarted when the engine refuses it', () => {
       const { deps, dialogOpen, startImport, httpPost } = setupPinned();
       // The real engine refuses an empty queue (`SevenTvRunEngine.start`).

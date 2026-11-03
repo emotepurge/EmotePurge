@@ -237,6 +237,33 @@ describe('proposeTagRemoval for a tag that is not played in', () => {
   });
 });
 
+// #328: "Add to another set" writes no placement. When that set is activated later and the tag was
+// played into it earlier, the tag reads as played in there, and the emotes the plain add put in
+// have no placement behind them.
+describe('proposeTagRemoval on a re-activated set after a plain add (#328)', () => {
+  // protects=an emote added by "Add to another set" (no placement) is proposed unchecked as
+  //   alreadyPresent for a played-in tag, and checked once the person marked it in the grid;
+  // fails_when=the removal rules start ticking placement-less emotes of a played-in tag unmarked
+  //   (removes too much), or ignore the marking for them (cannot be removed on purpose);
+  // no_claim=the server's `tagActive` decision for the set; here the entry read's answer is given.
+  it('leaves a placement-less emote unchecked, and checks it when it is marked', () => {
+    const entries = [own('placed'), entry('plainAdd')];
+    const read = live({ placed: ['x'], plainAdd: ['y'] });
+
+    const unmarked = proposeTagRemoval(entries, read, true);
+    expect(unmarked.rows.map((r) => [r.sevenTvEmoteId, r.checked, r.reason])).toEqual([
+      ['placed', true, 'placed'],
+      ['plainAdd', false, 'alreadyPresent'],
+    ]);
+
+    const marked = proposeTagRemoval(entries, read, true, ['plainAdd']);
+    expect(marked.rows.find((r) => r.sevenTvEmoteId === 'plainAdd')).toMatchObject({
+      checked: true,
+      reason: 'alreadyPresent',
+    });
+  });
+});
+
 // Operator decision 2026-10-05: a marking on the tags page grid is the proposal.
 describe('proposeTagRemoval with a grid marking', () => {
   const rowsOf = (p: ReturnType<typeof proposeTagRemoval>) =>
