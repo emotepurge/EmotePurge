@@ -302,7 +302,7 @@ public static class ServiceCollectionExtensions
             client.DefaultRequestHeaders.UserAgent.ParseAdd("EmotePurge (+https://emotepurge.app)");
         })
         // Brotli/gzip are accepted; the byte cap and BytesReceived count decompressed bytes, which is
-        // what the line parser sees. Applies to ReadDayAsync too (transport only).
+        // what the line parser sees.
         .ConfigurePrimaryHttpMessageHandler(ChatLogArchiveClient.CreatePrimaryHandler);
 
         // Singleton cache over the transient typed client — see the class comment for why it
