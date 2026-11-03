@@ -173,34 +173,6 @@ public class BotChatterDetectorTests
         Assert.False(result);
     }
 
-    [Fact]
-    public void KnownBotAccountIds_AreTheSixStaticOnes()
-    {
-        var detector = CreateDetector();
-
-        Assert.Equal(
-            new[] { MoobotId, NightbotId, StreamElementsId, StreamlabsId, FossabotId, SeryBotId }.Order(StringComparer.Ordinal),
-            detector.KnownBotAccountIds.Order(StringComparer.Ordinal));
-    }
-
-    [Fact]
-    public void KnownBotAccountIds_IncludeTheConfiguredOnes()
-    {
-        // The harness puts this set into its report head (issue #69) instead of parsing the
-        // configuration a second time, so what it publishes is exactly what IsBot decides on.
-        var configuration = BuildConfiguration(new Dictionary<string, string?>
-        {
-            ["Twitch:AdditionalBotAccountIds"] = "555, 666"
-        });
-
-        var detector = new BotChatterDetector(configuration);
-
-        Assert.Equal(8, detector.KnownBotAccountIds.Count);
-        Assert.Contains("555", detector.KnownBotAccountIds);
-        Assert.Contains("666", detector.KnownBotAccountIds);
-        Assert.Contains(NightbotId, detector.KnownBotAccountIds);
-    }
-
     private static BotChatterDetector CreateDetector() => new(new ConfigurationBuilder().Build());
 
     private static IConfiguration BuildConfiguration(Dictionary<string, string?> values) =>

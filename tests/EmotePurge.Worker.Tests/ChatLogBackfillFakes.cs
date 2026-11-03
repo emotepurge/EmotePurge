@@ -548,10 +548,6 @@ internal sealed class FakeArchive(TimeProvider clock) : IChatLogArchiveClient
         return new ChatLogRangeResult(ChatLogDayStatus.Cancelled, 4096, 7, 0, 0, 200, null);
     }
 
-    public Task<ChatLogDayResult> ReadDayAsync(
-        string twitchChannelId, DateOnly day, long maxBytes, Func<ChatLogMessage, ValueTask> onMessage, CancellationToken ct) =>
-        throw new NotSupportedException("The backfill reads ranges.");
-
     public Task<ChatLogRangeResult> ReadRangeAsync(
         string twitchChannelId, DateTime fromUtc, DateTime toUtcExclusive, long maxBytes, Func<ChatLogMessage, ValueTask> onMessage,
         CancellationToken ct)

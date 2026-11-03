@@ -284,18 +284,17 @@ public static class ServiceCollectionExtensions
         chatLogArchiveOptions.Validate();
         services.AddSingleton(chatLogArchiveOptions);
 
-        // T3 (#69): read-only, sequential-by-contract client for the third-party chat-log archive
-        // that backs the accuracy-harness backfill. No telemetry handler here on purpose
-        // (Plan-Entscheidung 3) — the archive is an optional, unreliable harness dependency
-        // behind its own feature flag (design doc Premise 5), not a provider the rate-limit
-        // dashboard needs to track like Twitch/7TV.
+        // Read-only, sequential-by-contract client for the third-party chat-log archive that backs
+        // the chat-log backfill. No telemetry handler here on purpose (Plan-Entscheidung 3) — the
+        // archive is an optional, unreliable dependency behind its own feature flag (design doc
+        // Premise 5), not a provider the rate-limit dashboard needs to track like Twitch/7TV.
         //
         // Registered transient, as the typed-client pattern (and the plan) dictate — but the
         // RequestDelay pacing that keeps this client from hammering a free third-party service
         // lives in *instance* state on ChatLogArchiveClient (see its class comment). Resolving a
         // fresh instance per call silently drops that pacing: no exception, no log line, just a
-        // client that no longer waits between requests. Task 6 (the harness) must resolve this
-        // client exactly once per run and hold it for the whole day-loop (Fixrunde 1 finding).
+        // client that no longer waits between requests. ChatLogBackfillWorker therefore resolves
+        // this client exactly once per run and holds it for the whole block loop.
         services.AddHttpClient<IChatLogArchiveClient, ChatLogArchiveClient>(client =>
         {
             client.BaseAddress = new Uri(chatLogArchiveOptions.BaseUrl);

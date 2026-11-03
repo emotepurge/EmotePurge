@@ -501,66 +501,6 @@ public class UsageStatQueryService(AppDbContext db) : IUsageStatQueryService
             .MinAsync(cancellationToken);
     }
 
-    public async Task<IReadOnlyList<EmoteLifetimeDto>> GetEmoteLifetimesAsync(string channelId, CancellationToken cancellationToken = default)
-    {
-        // A plain projection over Emotes with a scalar ChannelId filter — no navigation join, no
-        // GroupBy, so rule 10 does not even come into play here. Archived emotes are deliberately
-        // included (see the interface doc comment), and the ordering is ordinal on Id so the
-        // harness's hash over this list is stable regardless of insertion order. That ordinal
-        // guarantee rests on the database's collation, though: OrderBy(e => e.Id) translates to a
-        // plain ORDER BY "Id" with no COLLATE "C", so a non-C collation could in principle order
-        // differently from string.CompareOrdinal. It holds for the ids actually stored here — hex
-        // GUIDs with hyphens at fixed positions, a character set essentially every collation orders
-        // the same way — and a collation change would only ever produce a different (still
-        // deterministic) input hash and thus a fresh report file, never a wrong count.
-        return await db.Emotes
-            .AsNoTracking()
-            .Where(e => e.ChannelId == channelId)
-            .OrderBy(e => e.Id)
-            .Select(e => new EmoteLifetimeDto(e.Id, e.Name, e.IsArchived, e.FirstSeenAt, e.ArchivedAt, e.LastSyncedAt))
-            .ToListAsync(cancellationToken);
-    }
-
-    public async Task<IReadOnlyList<UsageStatRowDto>> GetRowsAsync(
-        IReadOnlyCollection<string> emoteIds, DateOnly from, DateOnly to, CancellationToken cancellationToken = default)
-    {
-        if (from > to)
-        {
-            throw new ArgumentException("'from' darf nicht nach 'to' liegen.", nameof(from));
-        }
-
-        if (emoteIds.Count == 0)
-        {
-            return [];
-        }
-
-        // Rule 10: a plain Where over UsageStats with a scalar id list and the date range, then a
-        // GroupBy over that same single table — no navigation join anywhere near it. Materialized
-        // to a plain list first for the same reason GetTotalsByEmoteIdsAsync does: Contains against
-        // the caller's own collection type can fail to translate. UseCount > 0 is deliberately
-        // absent — see the interface doc comment, a bot-only row is exactly what the harness's
-        // bot-inclusive total needs.
-        // Summed across emote sets (spec E15): since #200 a day can carry two rows for one emote,
-        // one per set the cache observed that day, and the harness compares against the chat log,
-        // which knows nothing of sets. Handing it two rows for one day would make its per-day
-        // comparison wrong in a way that looks like a counting bug; the sum is the number it has
-        // always been reading. No set filter, deliberately — set-agnostic is the point.
-        var ids = emoteIds.ToList();
-
-        return await db.UsageStats
-            .AsNoTracking()
-            .Where(u => ids.Contains(u.EmoteId) && u.Date >= from && u.Date <= to)
-            .GroupBy(u => new { u.EmoteId, u.Date })
-            .OrderBy(g => g.Key.EmoteId).ThenBy(g => g.Key.Date)
-            .Select(g => new UsageStatRowDto(
-                g.Key.EmoteId,
-                g.Key.Date,
-                g.Sum(u => u.UseCount),
-                g.Sum(u => u.BotUseCount),
-                g.Sum(u => u.SharedChatUseCount)))
-            .ToListAsync(cancellationToken);
-    }
-
     private async Task<EmoteUsageSeriesDto> BuildDailySeriesAsync(
         IQueryable<UsageStat> rows,
         string emoteId,

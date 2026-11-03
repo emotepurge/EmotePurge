@@ -46,17 +46,9 @@ public sealed class BotChatterDetector : IBotChatterDetector
             ids.Add(additionalId);
         }
 
-        // Frozen rather than the mutable builder above: KnownBotAccountIds hands this very instance
-        // out, and a read-only interface over a HashSet is a promise the type cannot keep. Faster
-        // lookups on the hot path are the free half of the trade.
+        // Frozen rather than the mutable builder above: faster lookups on the hot path.
         _botAccountIds = ids.ToFrozenSet(StringComparer.Ordinal);
     }
-
-    /// <summary>
-    /// The union of the static list and the configured additions, genuinely frozen at construction —
-    /// the same set <see cref="IsBot"/> looks into, handed out rather than rebuilt.
-    /// </summary>
-    public IReadOnlySet<string> KnownBotAccountIds => _botAccountIds;
 
     public bool IsBot(string? chatterId, IReadOnlyList<KeyValuePair<string, string>>? badges)
     {
