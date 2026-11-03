@@ -20,8 +20,8 @@ namespace EmotePurge.Worker.Tests;
 // tag, because Twitch's reply UI prepends "@nutzername " to every reply and IRCv3 tag escaping
 // leaves '@' alone. Rule and pure test shared that wrong assumption and were both green — only a
 // line pushed through the library's own parser settles it, so every case below does exactly that.
-// The TwitchLib.* Dependabot freeze (see .github/dependabot.yml) exists so an update cannot flip
-// either contract without this test going red first.
+// There is no Dependabot freeze on TwitchLib.* any more (DECISIONS.md, 2026-11-03): this file is
+// what turns red if an update flips either contract.
 public class IrcLineSpliceRuleTwitchLibTests
 {
     private const string RoomId = "111111111";

@@ -42,6 +42,12 @@ updates:
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
+        # A TwitchLib bump is never maintenance: it needs the live check (Rule 16) on top of green
+        # CI, because the transport (line-splice handling, NoReconnectionPolicy, which Shared Chat
+        # tags stay in UndocumentedTags) is verified live, not by the suites. Kept out of the group
+        # so it arrives as its own PR and a reviewer cannot wave it through with the rest.
+        exclude-patterns:
+          - "TwitchLib.*"
     open-pull-requests-limit: 5
     # Microsoft.AspNetCore.OpenApi 10.x is pinned to the Microsoft.OpenApi 2.x line: the code that
     # ASP.NET Core 10 generates for AddOpenApi() assigns to IOpenApiMediaType.Example, which 3.x
@@ -50,10 +56,3 @@ updates:
     ignore:
       - dependency-name: "Microsoft.OpenApi"
         update-types: ["version-update:semver-major"]
-      # A TwitchLib update could type source-room-id (or one of the other Shared Chat markers)
-      # instead of leaving it in UndocumentedTags — the live extraction (SharedChatRule.FromTags)
-      # would then stop seeing it, every session message would silently count as "own", and
-      # neither the report head nor the InputHash would move to show it. Frozen for the duration
-      # of #73's measurement window; remove once the bindable #69 run has closed. See the
-      # DECISIONS.md entry "Shared Chat" (2026-09-06).
-      - dependency-name: "TwitchLib.*"

@@ -14,10 +14,10 @@ namespace EmotePurge.Core.Chat;
 /// message carries at least one tag it does not model as a typed property. <c>source-room-id</c>,
 /// <c>source-id</c>, <c>source-badges</c> and <c>source-badge-info</c> are all undocumented in
 /// that version — a fact this class relies on but cannot see for itself, so
-/// <c>SharedChatRuleTwitchLibTests</c> in the Worker test project proves it against the installed
-/// library rather than trusting a changelog. A future TwitchLib update that types one of these
+/// <c>SharedChatRuleTwitchLibTests</c> in the Worker test project proves it, marker by marker,
+/// against the installed library rather than trusting a changelog. A future TwitchLib update that types one of these
 /// tags would make it disappear from <c>UndocumentedTags</c> and silently blind the live side —
-/// see the Dependabot ignore entry for <c>TwitchLib.*</c>.
+/// that is what those tests are for, and why a TwitchLib bump arrives as its own Dependabot PR.
 /// </para>
 /// </summary>
 public static class SharedChatRule
