@@ -10,6 +10,18 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-11-03 — Sonar: four more rule filters (e6-e9) and CA2254 off for tests
+
+**Betrifft:** `.github/workflows/sonarcloud.yml` · `.editorconfig`
+
+**(a) Decision.** After triaging the open Sonar findings one by one, the rules whose findings were all false positives or a conflict with a documented convention were filtered instead of fixed or marked per issue. The filters follow the e1-e5 pattern: `sonar.issue.ignore.multicriteria`, sub-parameter `resourceKey` (not `resourcePattern`, which breaks the analysis). Each has its reason and its price in the workflow comment.
+
+**(b) The filters.** e6 `typescript:S2699` on `web/src/**/*.spec.ts`: the rule knows `expect()` but not `HttpTestingController.expectOne/expectNone/verify`, which throw on a mismatch; the rule has no parameter for assertion patterns. Price: a spec that really asserts nothing is no longer flagged in `web/src`. e7 `csharpsquid:S3265` on `src/EmotePurge.Infrastructure/**/*.cs`: `NpgsqlDbType.Array | X` is the documented Npgsql API. Price: real bitwise misuse of a non-flags enum in Infrastructure goes unreported. e8 `csharpsquid:S107` on `src/EmotePurge.Api/Endpoints/*.cs`: same reasoning as e4 and Rule 6, handler parameters are DI services and binding. Price: private helpers in those files are exempt too. e9 `shell:S7684` on `scripts/**/*.sh`: the .NET configuration mapping uses the repo-wide mixed-case form (compose does too); ALL_CAPS would break the convention. Price: other naming slips in shell scripts go unreported.
+
+**(c) Analyzer switch.** `.editorconfig` sets `CA2254` (varying logging message template) to `none` for `tests/**/*.cs` only: in the logging tests the dynamic message is the thing under test. The rule stays active for `src/**`.
+
+**(d) Rollback.** Remove the four criteria and the editorconfig line; no data or runtime effect.
+
 ### 2026-11-02 — Tags: "Add to another set" is a one-shot add that records nothing about the tag (#328)
 
 **Betrifft:** `web/src/app/shared/tags/tag-other-set-flow.ts` · `web/src/app/shared/tags/tag-play-in-flow.ts` · `web/src/app/shared/tags/tag-run-actions.ts` · `web/src/app/features/tags/tags-page.ts` · `web/src/app/shared/seven-tv/import-flow.ts` · `web/src/app/shared/seven-tv/import-target-dialog.ts` · `web/src/app/shared/seven-tv/import-target-choices.ts` · `web/src/app/features/tags/tags-page.html`
