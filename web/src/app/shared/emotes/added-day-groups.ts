@@ -92,7 +92,7 @@ export function groupByAddedDay<T extends AddDated>(
   const groups: AddedDayGroup<T>[] = [];
   for (const { item, at } of dated) {
     const key = localDayKey(at);
-    const last = groups[groups.length - 1];
+    const last = groups.at(-1);
     if (last?.key === key) {
       last.items.push(item);
     } else {
@@ -101,7 +101,8 @@ export function groupByAddedDay<T extends AddDated>(
   }
 
   if (unknown.length > 0) {
-    groups.push({ key: UNKNOWN_ADDED_DAY, items: unknown.sort(byName) });
+    unknown.sort(byName);
+    groups.push({ key: UNKNOWN_ADDED_DAY, items: unknown });
   }
   return groups;
 }

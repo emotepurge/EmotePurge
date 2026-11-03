@@ -160,7 +160,7 @@ describe('TagRemovalConfirmDialog', () => {
     const host = open([row('a'), row('b', { checked: false })]);
     await settle();
     expect(rowIds(host)).toEqual(['a', 'b']);
-    expect(host.querySelectorAll('ul, [role="list"], [role="listitem"]').length).toBe(0);
+    expect(host.querySelectorAll('ul, [role="list"], [role="listitem"]')).toHaveLength(0);
     // The irreversibility sentence still closes the dialog's body.
     expect(host.textContent).toContain('Nicht rückgängig zu machen.');
     expect(host.textContent).toContain('Fremde Channels nicht erkennbar.');

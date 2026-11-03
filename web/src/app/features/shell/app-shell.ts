@@ -283,7 +283,7 @@ export class AppShell {
       if (this.currentUser()) {
         const returnUrl = this.authService.consumeReturnUrl();
         if (returnUrl) {
-          this.router.navigateByUrl(returnUrl);
+          void this.router.navigateByUrl(returnUrl);
         }
       }
     });

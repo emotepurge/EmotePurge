@@ -1005,7 +1005,7 @@ export class AdminLogsPage {
       untracked(() => {
         const active = this.document.activeElement;
         const handoff = this.host.nativeElement.contains(active)
-          ? active?.closest('[data-focus-handoff]')?.getAttribute('data-focus-handoff')
+          ? active?.closest<HTMLElement>('[data-focus-handoff]')?.dataset['focusHandoff']
           : null;
         if (handoff === 'back' || handoff === 'widen' || handoff === 'slot') {
           if (gone[handoff]) {

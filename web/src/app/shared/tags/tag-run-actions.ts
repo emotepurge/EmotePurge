@@ -115,7 +115,7 @@ export function removeMarkingLocked(markedCount: number, markedInSetCount: numbe
 
 /** The same for a tag clear-out. A tag-less delete run has **no** `tag` field (`undefined`). */
 export function settledTagRemoval(run: DeleteRunInfo | null): string | null {
-  return run !== null && run.tag !== undefined && run.phase === 'closed'
+  return run?.tag !== undefined && run.phase === 'closed'
     ? `${run.runId}:${run.tagRemovalReport}`
     : null;
 }

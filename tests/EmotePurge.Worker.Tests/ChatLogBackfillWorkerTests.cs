@@ -192,7 +192,7 @@ public class ChatLogBackfillWorkerTests
         await using var rig = new BackfillRig();
         var run = rig.Store.AddRun(WindowFrom, WindowFrom.AddDays(14));
         DateTime? abortedAt = null;
-        rig.Archive.Handler = (_, _, ct) => FakeArchive.UntilCancelled(ct, () => abortedAt = rig.Now);
+        rig.Archive.Handler = (_, _, ct) => FakeArchive.UntilCancelled(() => abortedAt = rig.Now, ct);
 
         await rig.StartAsync();
         await rig.DriveUntilAsync(() => rig.Archive.Requests.Count == 1);

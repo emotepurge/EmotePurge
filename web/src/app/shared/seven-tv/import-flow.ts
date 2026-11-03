@@ -358,7 +358,7 @@ export function recheckTransferPlan(
       );
       // Unchecked: the read failed (or timed out), or it succeeded without seeing the whole set.
       // Either way it cannot prove that a source id is absent, so no ADD may rely on it.
-      const unchecked = entries === null || !entries.complete;
+      const unchecked = !entries?.complete;
       let replaceSkippedDrift = 0;
       let targetUncheckedSkipped = 0;
       const kept = plan.rows.filter((row) => {

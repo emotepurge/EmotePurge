@@ -72,7 +72,7 @@ const END_SLACK_MS = 3;
 // this long after the recorded end; a served request also lasted at least half the rebuild, which
 // keeps fast cached answers (2-30 ms) out.
 const LEGACY_SPAWN_SLACK_MS = 200;
-const KEYS = ['24h', '13mo'];
+const KEYS = new Set(['24h', '13mo']);
 // Directories the CSV may live in: the repository (prepared fixtures) and, optionally, the directory
 // named by GATE_CSV_DIR (where a measurement run wrote its output, e.g. its OUT directory).
 const ALLOWED_BASES = [
@@ -159,7 +159,7 @@ const phaseOf = (entry) => entry.requests[0]?.phase ?? 'none';
 const tickOf = (entry) => entry.requests[0]?.tick ?? 'none';
 // A gate-key rebuild nobody measurable waited for cannot be attributed to a cycle; the preflight 1h
 // read is the only expected rebuild without one.
-for (const entry of rebuildRequests.filter((e) => KEYS.includes(e.rebuild.range) && e.requests.length === 0)) {
+for (const entry of rebuildRequests.filter((e) => KEYS.has(e.rebuild.range) && e.requests.length === 0)) {
   invalid.push(`rebuild of ${entry.rebuild.range} at ${entry.rebuild.start} served no measured request`);
 }
 
@@ -311,11 +311,12 @@ for (const tick of dualTicks) {
     }
   }
   const secondLoads = tickLoads.filter((l) => l.range === second.rebuild.range);
+  const responses = secondLoads.map((l) => `${l.status}/${fmt(l.value)}ms`).join(' ');
   lines.push(
     `(d) dual tick ${tick}: first ${first.rebuild.range} ${first.rebuild.value} ms (${first.requests.length} served), ` +
       `second ${second.rebuild.range} gate wait ${second.rebuild.start - Math.min(...secondLoads.map((l) => l.start))} ms, ` +
       `rebuild ${second.rebuild.value} ms (${second.requests.length} served), responses ` +
-      `${secondLoads.map((l) => `${l.status}/${fmt(l.value)}ms`).join(' ')}`,
+      responses,
   );
 }
 

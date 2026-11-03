@@ -414,7 +414,7 @@ export class LineChart {
       4,
       this.unit() === 'count' ? 1 : 0,
     );
-    return { ticks, min: ticks[0], max: ticks[ticks.length - 1] };
+    return { ticks, min: ticks[0], max: ticks.at(-1)! };
   });
 
   protected readonly yTicks = computed(() => {
@@ -518,9 +518,7 @@ export class LineChart {
         path: toLinePath(complete, geometry),
         // Dashed bridge into the still-filling bucket; only when both ends are known.
         partialPath:
-          partial &&
-          partialTail[partialTail.length - 2] != null &&
-          partialTail[partialTail.length - 1] != null
+          partial && partialTail.at(-2) != null && partialTail.at(-1) != null
             ? toLinePath(partialTail, geometry)
             : '',
         points: values.flatMap((value, index) =>
@@ -561,7 +559,7 @@ export class LineChart {
     const { min, max } = this.yDomain();
     const count = this.bucketCount();
     return this.series().flatMap((series, position) => {
-      const value = series.values[series.values.length - 1];
+      const value = series.values.at(-1);
       if (value === null || value === undefined) {
         return [];
       }
@@ -597,7 +595,8 @@ export class LineChart {
 
   protected readonly unitCaption = computed(() => {
     this.activeLang();
-    return `${this.transloco.translate(`admin.dashboard.chart.unit.${this.unit()}`)} · ${this.transloco.translate('admin.dashboard.chart.utc')}`;
+    const unit = this.transloco.translate(`admin.dashboard.chart.unit.${this.unit()}`);
+    return `${unit} · ${this.transloco.translate('admin.dashboard.chart.utc')}`;
   });
 
   protected readonly groupLabel = computed(() => {
@@ -660,7 +659,8 @@ export class LineChart {
         ? ` (${this.transloco.translate('admin.dashboard.chart.incompleteShort')})`
         : '';
     const detail = this.bucketDetails()[index];
-    return `${time}${incomplete} — ${values}${detail ? ` · ${detail}` : ''}`;
+    const detailSuffix = detail ? ` · ${detail}` : '';
+    return `${time}${incomplete} — ${values}${detailSuffix}`;
   });
 
   constructor() {

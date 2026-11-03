@@ -192,7 +192,7 @@ test.describe('admin log viewer on /admin/logs', () => {
       () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
     );
     await syncWithMock(page);
-    expect(calls.list.length).toBe(requests);
+    expect(calls.list).toHaveLength(requests);
   });
 
   test('first load: the skeletons hold the place, nothing pushes the list down later', async ({

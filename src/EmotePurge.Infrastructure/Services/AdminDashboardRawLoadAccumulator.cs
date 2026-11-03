@@ -362,8 +362,15 @@ internal sealed class AdminDashboardRawLoadAccumulator(AdminDashboardLoadWindow 
                 ? (double)quotaMicroseconds.Value / periodMicroseconds.Value
                 : null;
 
-        private static int? MaxOf(int? current, int? value) =>
-            value is null ? current : current is null ? value : Math.Max(current.Value, value.Value);
+        private static int? MaxOf(int? current, int? value)
+        {
+            if (value is null)
+            {
+                return current;
+            }
+
+            return current is null ? value : Math.Max(current.Value, value.Value);
+        }
     }
 
     private sealed class RawSourceBucket

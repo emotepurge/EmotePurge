@@ -184,14 +184,18 @@ test.describe('touch: reading and voting only', () => {
 
     // Let the sheet's own open animation settle before reading geometry — it runs a 260ms transform
     // (`app-sheet-in`, styles.css) that would otherwise be measured mid-flight.
-    await page.waitForTimeout(400);
+    await pane.evaluate((el) =>
+      Promise.all(el.getAnimations({ subtree: true }).map((animation) => animation.finished)),
+    );
 
     await pane.evaluate((el) => {
       el.scrollTop = Math.round((el.scrollHeight - el.clientHeight) / 2);
     });
     // Sticky repositioning itself is synchronous with scroll, but give layout a moment to settle
     // before reading geometry.
-    await page.waitForTimeout(50);
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
 
     // The grab bar's own visible pill (the `<span>`), not its `[data-sheet-handle]` wrapper — the
     // wrapper is a 44px touch target (`min-h-11`, §10) and stays partly inside the pane long after

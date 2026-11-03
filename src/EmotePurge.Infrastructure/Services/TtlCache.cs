@@ -47,12 +47,12 @@ internal sealed class TtlCache<T>
         try
         {
             var result = await Task.Run(fill);
-            entry.ExpiresAt = _time.GetUtcNow() + _ttl;
+            entry.SetExpiresAt(_time.GetUtcNow() + _ttl);
             return result;
         }
         catch
         {
-            entry.ExpiresAt = DateTimeOffset.MinValue;
+            entry.SetExpiresAt(DateTimeOffset.MinValue);
             throw;
         }
     }
@@ -65,10 +65,7 @@ internal sealed class TtlCache<T>
 
         public Task<T> Value => Start.Value;
 
-        public DateTimeOffset ExpiresAt
-        {
-            set => Interlocked.Exchange(ref _expiresAtTicks, value.UtcTicks);
-        }
+        public void SetExpiresAt(DateTimeOffset value) => Interlocked.Exchange(ref _expiresAtTicks, value.UtcTicks);
 
         public bool IsExpired(DateTimeOffset now) => now.UtcTicks >= Interlocked.Read(ref _expiresAtTicks);
     }

@@ -8,12 +8,12 @@ import { EmoteAdminService } from '../emotes/emote-admin.service';
 import { EmoteTagService } from '../tags/emote-tag.service';
 import {
   ImportOrigin,
-  ImportRow,
   importOriginLeaderboardSort,
   importOriginSourceChannelName,
   importRowKey,
 } from './import-source';
 import {
+  ABORTED_DELETE_NOTICE_MS,
   MAX_AUTOMATIC_SYNC_RETRIES,
   REMOVE_EMOTE_MUTATION,
   SYNC_RETRY_DELAY_MS,
@@ -46,7 +46,6 @@ import {
 } from './sync-report-outcome';
 import { ImportTagContext } from './tag-run-settlement';
 import { TransferPlan, TransferRow, TransferRowTarget } from './transfer-plan';
-import { ABORTED_DELETE_NOTICE_MS } from './seven-tv-delete.service';
 
 // #149 P2 (independent review): how long `duplicateNoticePending` stays true after a `startImport`
 // call that began a run and had something to report (a start that began none keeps the longer
