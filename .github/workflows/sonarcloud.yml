@@ -124,6 +124,12 @@ jobs:
       # if testable logic moves in there later. Anyone adding such logic should pull it into
       # its own class instead of relying on this line.
       #
+      # src/EmotePurge.Worker/Program.cs has been in the list since 2026-11-03. After the harness removal
+      # it is pure host bootstrapping (build the host, run the pending-migration guard, run), with no
+      # branch a unit test could pin without rebuilding the host; it is verified live (Rule 16). The
+      # price is the same: the gate never reports missing coverage for this file, so testable logic
+      # must not move into it.
+      #
       # docs/superpowers/prototypes/** is excluded from sonar.exclusions since the "comprehensive"
       # profile switch (2026-09-15, see DECISIONS): these are throwaway HTML prototypes kept only
       # as a record cited by DECISIONS entries (e.g. the distribution-band comparison), never
@@ -182,7 +188,7 @@ jobs:
           /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml"
           /d:sonar.javascript.lcov.reportPaths="web/coverage/web/lcov.info"
           /d:sonar.exclusions="**/Migrations/**,src/EmotePurge.Api/wwwroot/**,web/dist/**,**/node_modules/**,docs/superpowers/prototypes/**"
-          /d:sonar.coverage.exclusions="web/e2e/**,**/Migrations/**,scripts/**,src/EmotePurge.Worker/TwitchChatManager.cs,src/EmotePurge.Worker/TwitchConnectionWatchdog.cs"
+          /d:sonar.coverage.exclusions="web/e2e/**,**/Migrations/**,scripts/**,src/EmotePurge.Worker/TwitchChatManager.cs,src/EmotePurge.Worker/TwitchConnectionWatchdog.cs,src/EmotePurge.Worker/Program.cs"
           /d:sonar.qualitygate.wait=true
           /d:sonar.issue.ignore.multicriteria=e1,e2,e3,e4,e5
           /d:sonar.issue.ignore.multicriteria.e1.ruleKey="javascript:S4036"
