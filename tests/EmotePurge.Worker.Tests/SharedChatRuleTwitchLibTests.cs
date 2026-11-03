@@ -13,8 +13,8 @@ namespace EmotePurge.Worker.Tests;
 // library behaviour under test here, not our own code — hence real IRC lines run through TwitchLib's
 // own IrcParser and ChatMessage constructor instead of a hand-built fake. Lines are synthetic
 // (invented ids/logins/text), never recorded chat, same rule as everywhere else in this repo.
-// The TwitchLib.* Dependabot freeze (see .github/dependabot.yml) exists so an update cannot flip
-// this contract without these tests going red first.
+// There is no Dependabot freeze on TwitchLib.* any more (DECISIONS.md, 2026-11-03): these tests are
+// the only signal left that an update typed one of the markers away, so they must stay red then.
 public class SharedChatRuleTwitchLibTests
 {
     private const string OwnRoomId = "111111111";
@@ -79,6 +79,29 @@ public class SharedChatRuleTwitchLibTests
         var result = SharedChatRule.FromTags(message.RoomId, message.UndocumentedTags);
 
         Assert.Equal(MessageOrigin.Indeterminate, result);
+    }
+
+    [Theory]
+    [InlineData(SharedChatRule.SourceIdTag, "bbbb2222-2222-2222-2222-222222222222")]
+    [InlineData(SharedChatRule.SourceBadgesTag, "")]
+    [InlineData(SharedChatRule.SourceBadgeInfoTag, "")]
+    public void FromTags_EachOtherSourceMarkerAlone_IsUndocumented_AndReturnsIndeterminate(string marker, string value)
+    {
+        // One marker per line: if a TwitchLib update types exactly this one away, the key leaves
+        // UndocumentedTags (the first assertion names which marker) and the live side would count
+        // the message as Own instead of Indeterminate. The combined cases above cannot see that
+        // for source-badge-info at all, and for the others only when every sibling vanishes too.
+        var line = "@badges=;color=#00FF00;display-name=TestUser3;"
+            + "id=dddd4444-4444-4444-4444-444444444444;mod=0;room-id=" + OwnRoomId + ";"
+            + marker + "=" + value + ";subscriber=0;"
+            + "tmi-sent-ts=1694000000000;turbo=0;user-id=555555555;user-type= "
+            + ":testuser3!testuser3@testuser3.tmi.twitch.tv PRIVMSG #targetchannel_test :hello single marker";
+
+        var message = ParseLine(line);
+
+        Assert.NotNull(message.UndocumentedTags);
+        Assert.True(message.UndocumentedTags.ContainsKey(marker), marker + " no longer reaches UndocumentedTags");
+        Assert.Equal(MessageOrigin.Indeterminate, SharedChatRule.FromTags(message.RoomId, message.UndocumentedTags));
     }
 
     private static ChatMessage ParseLine(string line)
