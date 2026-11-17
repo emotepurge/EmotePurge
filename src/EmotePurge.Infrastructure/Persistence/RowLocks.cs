@@ -24,7 +24,8 @@ namespace EmotePurge.Infrastructure.Persistence;
 /// autocommit would release the lock the moment it returns.</item>
 /// </list>
 /// Across tables the order is always <c>Channels</c>, then <c>Emotes</c>, then
-/// <c>EmoteSetLeaveObservations</c>. The one shared entry, <see cref="LockEmotesForShareByIdsAsync"/>
+/// <c>EmoteSetLeaveObservations</c>; the wish emotes work (<see cref="LockWishesByIdsAsync"/>) takes the channel row
+/// before the <c>Wishes</c> rows, and the wish rows by <c>Id</c> ascending. The one shared entry, <see cref="LockEmotesForShareByIdsAsync"/>
 /// (plan #373 E11a), sits in the <c>Emotes</c> position of that order like every other emote entry.
 /// </summary>
 internal static class RowLocks

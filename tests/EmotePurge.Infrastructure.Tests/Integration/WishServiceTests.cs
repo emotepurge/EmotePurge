@@ -115,6 +115,72 @@ public class WishServiceTests(PostgresFixture fixture)
         Assert.Equal(WishOutcome.Success, (await CreateAsync(channel, EmoteId(), new string('a', 100))).Outcome);
     }
 
+    // Length counts code points: 60 emoji are 120 UTF-16 units but one valid alias; 101 are not.
+    [Fact]
+    public async Task Create_CountsAliasLengthInCodePoints()
+    {
+        var channel = await SeedChannelAsync();
+
+        var accepted = await CreateAsync(channel, EmoteId(), string.Concat(Enumerable.Repeat("\U0001F600", 60)));
+        Assert.Equal(WishOutcome.Success, accepted.Outcome);
+        Assert.Equal(WishOutcome.Success, (await CreateAsync(channel, EmoteId(), string.Concat(Enumerable.Repeat("\U0001F600", 100)))).Outcome);
+        Assert.Equal(WishOutcome.AliasInvalid, (await CreateAsync(channel, EmoteId(), string.Concat(Enumerable.Repeat("\U0001F600", 101)))).Outcome);
+    }
+
+    // The belt: a competing row committed without the channel lock. The service's insert waits on the
+    // unique key, then fails on it, and the failure is a conflict outcome carrying the winner's id.
+    [Fact]
+    public async Task Create_LosingARaceAtTheRunningIndex_IsAlreadyRunning_WithTheWinnersId()
+    {
+        var channel = await SeedChannelAsync();
+        var emoteId = EmoteId();
+        await using var holder = fixture.CreateTaggedDbContext("wish-index-holder");
+        await using var holderTransaction = await holder.Database.BeginTransactionAsync();
+        var winner = NewWish(channel.Id, emoteId, WishStatus.Approved, slotId: null);
+        holder.Wishes.Add(winner);
+        await holder.SaveChangesAsync();
+
+        await using var contender = fixture.CreateTaggedDbContext("wish-index-contender");
+        var waiting = Sut(contender).CreateAsync(channel.Name, new CreateWishRequest(emoteId, "N", "A", null, null), Actor);
+        await fixture.WaitUntilBlockedOnLockAsync("wish-index-contender", waiting);
+
+        await holderTransaction.CommitAsync();
+        var result = await waiting;
+
+        Assert.Equal(WishOutcome.AlreadyRunning, result.Outcome);
+        Assert.Equal(winner.Id, result.ConflictingWishId);
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(1, await db.Wishes.CountAsync(w => w.ChannelId == channel.Id));
+        Assert.False(await db.AuditLogEntries.AnyAsync(a => a.ChannelName == channel.Name));
+        _ = _publisher.DidNotReceiveWithAnyArgs().PublishAsync(default!, default!, default);
+    }
+
+    [Fact]
+    public async Task Adopt_LosingARaceAtTheLiveSlotIndex_IsSlotAlreadyLinked()
+    {
+        var channel = await SeedChannelAsync();
+        var emote = await SeedEmoteAsync(channel);
+        var slot = await SeedSlotAsync(emote, "Kappa", Now.AddDays(-2));
+        await using var holder = fixture.CreateTaggedDbContext("wish-slotindex-holder");
+        await using var holderTransaction = await holder.Database.BeginTransactionAsync();
+        // Another emote id keeps the running index out of the way; only the slot key is contended.
+        holder.Wishes.Add(NewWish(channel.Id, EmoteId(), WishStatus.Active, slot));
+        await holder.SaveChangesAsync();
+
+        await using var contender = fixture.CreateTaggedDbContext("wish-slotindex-contender");
+        var waiting = Sut(contender).AdoptAsync(channel.Name, new AdoptWishRequest(slot, null, null, null), Actor);
+        await fixture.WaitUntilBlockedOnLockAsync("wish-slotindex-contender", waiting);
+
+        await holderTransaction.CommitAsync();
+        var result = await waiting;
+
+        Assert.Equal(WishOutcome.SlotAlreadyLinked, result.Outcome);
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(1, await db.Wishes.CountAsync(w => w.ChannelId == channel.Id));
+        Assert.False(await db.AuditLogEntries.AnyAsync(a => a.ChannelName == channel.Name));
+        _ = _publisher.DidNotReceiveWithAnyArgs().PublishAsync(default!, default!, default);
+    }
+
     [Theory]
     [InlineData("ab")]
     [InlineData("has space")]

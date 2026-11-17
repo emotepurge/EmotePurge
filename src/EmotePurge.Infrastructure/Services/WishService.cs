@@ -153,7 +153,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             emoteName = alias;
         }
 
-        if (!IsValidAlias(alias) || emoteName.Length > WishLimits.EmoteNameMaxLength || emoteName.Any(char.IsControl))
+        if (!IsValidAlias(alias) || emoteName.EnumerateRunes().Count() > WishLimits.EmoteNameMaxLength || emoteName.Any(char.IsControl))
         {
             return WishCommandResult.Of(WishOutcome.AliasInvalid);
         }
@@ -564,8 +564,10 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
     private static bool IsThresholdInRange(decimal value) => value >= ThresholdMin && value <= ThresholdMax;
 
+    // Length counts Unicode code points like 7TV and the frontend's alias check, not UTF-16 units.
     private static bool IsValidAlias(string alias) =>
-        alias.Length is >= 1 and <= WishLimits.AliasMaxLength && !alias.Any(c => char.IsControl(c) || char.IsWhiteSpace(c));
+        alias.EnumerateRunes().Count() is >= 1 and <= WishLimits.AliasMaxLength
+        && !alias.Any(c => char.IsControl(c) || char.IsWhiteSpace(c));
 
     private static EffectiveSettings ToSettings(ChannelWishSettings row) => new(
         row.DefaultDurationDays,
