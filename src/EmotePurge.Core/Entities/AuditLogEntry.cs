@@ -48,6 +48,18 @@ public static class AuditActions
     public const string BackfillRequest = "backfill.request";
     public const string BackfillCancel = "backfill.cancel";
     public const string BackfillRemoveImported = "backfill.removeImported";
+
+    // Wish emotes (#481). Written by the wish service under the acting manager. The target is
+    // ("wish", id); details carry ids, states and numbers, never the requester's name or text.
+    public const string WishCreate = "wish.create";
+    public const string WishAdopt = "wish.adopt";
+    public const string WishExtend = "wish.extend";
+    public const string WishKeep = "wish.keep";
+    public const string WishRemove = "wish.remove";
+    public const string WishClose = "wish.close";
+    public const string WishRetry = "wish.retry";
+    public const string WishReAdd = "wish.readd";
+    public const string WishSettings = "wish.settings";
 }
 
 /// <summary>

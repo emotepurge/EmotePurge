@@ -10,6 +10,24 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-11-17 — Wish emotes, child 1: backend core (#483, epic #481)
+
+**Betrifft:** `src/EmotePurge.Core/Entities/Wish.cs` · `src/EmotePurge.Core/Entities/ChannelWishSettings.cs` · `src/EmotePurge.Core/Entities/WishStatus.cs` · `src/EmotePurge.Core/Services/WishTransitions.cs` · `src/EmotePurge.Core/Services/WishOptions.cs` · `src/EmotePurge.Core/Services/RetentionPolicy.cs` · `src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Core/Messaging/LiveEvents.cs` · `tests/EmotePurge.Infrastructure.Tests/Unit/WishTransitionsTests.cs` · `docs/plans/Plan-483-Wunsch-Emotes-Backend-Kern.md` · `docs/superpowers/specs/2026-11-17-wunsch-emotes-spec.md`
+
+**(a) Model.** A wish (`Wish`) is one channel's request for a 7TV emote to sit in the set for a limited time; `ChannelWishSettings` holds the per-channel defaults (duration 30 days, probation lead 7 days, optional protection threshold, bot-mode columns that only K4 writes). The row stores no manager identity: who did what lives only in the audit log. Both entities are plain Core types (rule: Core has no package dependency).
+
+**(b) States are strings.** `WishStatus`, `WishStatusReason`, `WishSource` and `WishLinkOrigin` are `const string` sets, not enums: the value is persisted and sent to the frontend as-is, so the text is the contract (same reasoning as `AuditActions`). All thirteen states exist from K1, including the ones only K6 reaches (`pending`, `rejected`, `expired`, `merged`).
+
+**(c) One transition table.** `WishTransitions` maps (state, reason, action) to a target state or "not allowed" and is the only place that knows the transitions; services ask it, handlers never decide. It holds the rows only K2, K4 and K6 trigger, so no later child touches it. Conditions beyond state and reason (`close` from `presented` only without a slot, a permanent wish ending in `kept`, `unlink` only for irc/auto links, the state a wish returns to after an external removal) are parameters of the query, not a second table. The matrix test states its expectations as an explicit table, independent of the implementation.
+
+**(d) Switch.** `Wishes:Enabled` (default `false`, `WishOptions`, kept in Core because K2 reads it from there). Off means the wish routes answer 404 `wishes_disabled` and `wishesEnabled` in `/permissions` is false. The boundary constants (duration 1 to 365, lead 1 to 30, threshold above 0, alias and emote name 100, login 25, emote id 32, adoption window 6 h, look-back 30 min) stand once in `WishLimits`.
+
+**(e) Four columns beyond spec table 6.1**, all nullable timestamps or text, added by `AddWishes` in a later task: `LinkOrigin` (`auto`, `adopted`, `bot`; the spec used it in the DTO and the transitions but left it out of the table; plan finding 1), `SlotAddedAtUtc` and `SlotConfirmedAtUtc` (the generation of the linked slot and the last reconcile that saw it active; a reactivated slot keeps its id and alias, so without them an archive-and-return between two reconciles is indistinguishable from an unchanged slot; plan finding 19), and `FirstActivatedAtUtc` (set once on the first entry into `active`, never cleared; the retention cap of E14 (c) needs "was never active", which `StartsAtUtc` cannot say because `re-add` clears it; plan finding 20).
+
+**(f) Not changed.** No tables or migration in this step (the migration follows in a later task of the same child), no behaviour, no endpoint. `wish.changed` goes to the channel stream only, not to the admin stream.
+
+---
+
 ### 2026-11-03 — The TwitchLib.* Dependabot freeze is lifted; the contract tests carry the protection (#73)
 
 **Betrifft:** `.github/dependabot.yml` · `src/EmotePurge.Core/Chat/SharedChatRule.cs` · `tests/EmotePurge.Worker.Tests/SharedChatRuleTwitchLibTests.cs` · `tests/EmotePurge.Worker.Tests/IrcLineSpliceRuleTwitchLibTests.cs`

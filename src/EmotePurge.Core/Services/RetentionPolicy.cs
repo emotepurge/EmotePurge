@@ -62,6 +62,21 @@ public static class RetentionPolicy
     /// </summary>
     public static readonly TimeSpan LogEntry = TimeSpan.FromDays(7);
 
+    /// <summary>
+    /// A wish's requester data (<c>RequesterTwitchUserId</c>, <c>RequesterLogin</c>) is cleared 30 days
+    /// after the wish ended (<c>EndedAtUtc</c>); for wishes without an end the rules of E14 apply.
+    /// </summary>
+    public static readonly TimeSpan WishRequester = TimeSpan.FromDays(30);
+
+    /// <summary>An ended wish is deleted 365 days after it ended (<c>EndedAtUtc</c>).</summary>
+    public static readonly TimeSpan EndedWish = TimeSpan.FromDays(365);
+
+    /// <summary>
+    /// E14 (c): requester data of a wish that was never active is cleared at the latest 120 days after
+    /// creation: the longest pending expiry (90 days) plus the 30 days of <see cref="WishRequester"/>.
+    /// </summary>
+    public static readonly TimeSpan WishNeverActiveRequesterCap = TimeSpan.FromDays(120);
+
     /// <summary>Hourly system-load summaries remain for thirteen calendar months.</summary>
     public const int SystemLoadHourlyMonths = 13;
 }
