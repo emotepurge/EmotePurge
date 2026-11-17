@@ -207,7 +207,7 @@ Reihenfolge so gewählt, dass jede Scheibe auch dann Wert hat, wenn eine Probe s
   **Ergebnis Zweit-Login 2026-11-17: bestanden.** Ein Login desselben Bot-Kontos in einem zweiten
   Browser stellt ein eigenes Token aus; das erste bleibt gültig (Seite zeigt nach Neuladen weiter
   das Bot-Konto an, `exp` unverändert). **P2 ist damit bestanden** bis auf die in den ersten
-  Scheibe-2-Lauf verschobenen Punkte. Der Notaus per Logout ist weiterhin ungetestet.
+  Scheibe-2-Lauf verschobenen Punkte. Notaus s. Scheibe 2 („Sign Out Everywhere“).
   Als Bot-Konto bei 7tv.app einloggen,
   `exp` ablesen; dann Schreibtest mit dem eigenen Testkonto (Writes dort freigegeben): Bot als
   Editor eintragen, über die v4-Mutation ein Emote hinzufügen und wieder entfernen. Dabei
@@ -294,9 +294,13 @@ Reihenfolge so gewählt, dass jede Scheibe auch dann Wert hat, wenn eine Probe s
 - **Bot-Token (D8: in Kauf genommen mit Schutzmaßnahmen):**
   - Vom Betreiber hinterlegt, verschlüsselt wie `User.TwitchRefreshToken`, nur Admin. Entschlüsselt
     nur im schreibenden Prozess, nie geloggt (Log-Redaktion prüfen), nie über die Api ausgeliefert.
-  - **Notaus:** Logout des Bot-Kontos auf 7tv.app macht das Token sofort ungültig (SevenTV#311,
-    vor dem Bau in P2 bestätigen); zusätzlich ein Admin-Schalter, der alle Bot-Schreibzugriffe
-    stoppt. Beides steht im Runbook in `docs/Operations.md`.
+  - **Notaus:** „Sign Out Everywhere" in den 7TV-Einstellungen des Bot-Kontos (Settings →
+    Security) beendet alle Sitzungen des Kontos und damit auch das Server-Token (7TV-Oberfläche,
+    2026-11-17; Wirkung auf das Server-Token im ersten Scheibe-2-Lauf bestätigen). Zusätzlich ein
+    Admin-Schalter, der alle Bot-Schreibzugriffe stoppt. Beides steht im Runbook in
+    `docs/Operations.md`. 7TV kennt mehrere gleichzeitige Sitzungen je Konto; ob ein normaler
+    Logout in einer anderen Sitzung das Server-Token mitnimmt (so SevenTV#311), ist ungeprüft. Bis
+    dahin gilt: mit dem Bot-Konto nirgends normal ausloggen.
   - Vorwarnung vor `exp` im Admin-Monitoring; erneuert wird von Hand.
   - **Ausfall** (Token ungültig, abgelaufen, Notaus, Editor-Rechte entzogen): Alle Bot-Kanäle
     fallen auf den manuellen Ablauf zurück. Freigegebene, noch nicht hinzugefügte Wünsche,
