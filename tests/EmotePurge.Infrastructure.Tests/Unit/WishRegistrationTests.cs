@@ -34,6 +34,7 @@ public class WishRegistrationTests
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IWishService>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IWishChangedPublisher>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IWishOverviewService>());
     }
 
     private static ServiceProvider BuildProvider(string? wishesEnabled)

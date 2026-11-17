@@ -591,7 +591,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         return new PagedResult<WishDto>(rows.Select(w => ToDto(w, settings)).ToList(), page, pageSize, total);
     }
 
-    public async Task<WishDto?> GetAsync(string channelName, long wishId, CancellationToken cancellationToken = default)
+    public async Task<WishDetailDto?> GetAsync(string channelName, long wishId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(channelName);
 
@@ -602,10 +602,76 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         }
 
         var wish = await db.Wishes.AsNoTracking().FirstOrDefaultAsync(w => w.Id == wishId && w.ChannelId == channelId, cancellationToken);
-        return wish is null ? null : ToDto(wish, await LoadSettingsAsync(channelId, cancellationToken));
+        if (wish is null)
+        {
+            return null;
+        }
+
+        var dto = ToDto(wish, await LoadSettingsAsync(channelId, cancellationToken));
+        return new WishDetailDto(dto, await LoadUsageAsync(wish, channelId, Now(), cancellationToken));
     }
 
     private DateTime Now() => timeProvider.GetUtcNow().UtcDateTime;
+
+    // The usage of the wish's window (E4, E5, E16), evaluated at the given time. Rule 10: the slot ids are reduced
+    // to scalar lists first and the sums run over UsageStats alone, on UseCount only like every product read of
+    // usage (a bot-only or shared-chat-only row is no use). Slots of the emote count whether archived or not (a
+    // re-added emote keeps its earlier stay's usage), a migration seed that no sync has settled does not.
+    private async Task<WishUsageDto?> LoadUsageAsync(Wish wish, string channelId, DateTime evaluatedAtUtc, CancellationToken cancellationToken)
+    {
+        if (wish.StartsAtUtc is not { } startsAt)
+        {
+            return null;
+        }
+
+        var windowStart = WishUsageWindow.WindowStart(startsAt, evaluatedAtUtc);
+        var from = DateOnly.FromDateTime(windowStart);
+        var to = DateOnly.FromDateTime(evaluatedAtUtc);
+
+        var ownSlotIds = await db.EmoteSlots
+            .Where(s => !s.SeedUnsettled && s.Emote.ChannelId == channelId && s.Emote.SevenTvEmoteId == wish.SevenTvEmoteId)
+            .Select(s => s.Id)
+            .ToListAsync(cancellationToken);
+        var total = ownSlotIds.Count == 0 ? 0L : await SumUseAsync(ownSlotIds, from, to, cancellationToken);
+
+        // E16: the rank among all active slots of the channel in the same window. The wish's own slots are among
+        // them, so a single-slot emote ranks against itself consistently; the number placed is the emote's total.
+        var activeSlotIds = await db.EmoteSlots
+            .Where(s => !s.IsArchived && !s.SeedUnsettled && s.Emote.ChannelId == channelId)
+            .Select(s => s.Id)
+            .ToListAsync(cancellationToken);
+        int? rank = null;
+        int? rankOf = null;
+        if (activeSlotIds.Count > 0 && ownSlotIds.Intersect(activeSlotIds, StringComparer.Ordinal).Any())
+        {
+            var perSlot = await db.UsageStats
+                .Where(u => activeSlotIds.Contains(u.SlotId) && u.Date >= from && u.Date <= to)
+                .GroupBy(u => u.SlotId)
+                .Select(g => new { SlotId = g.Key, Total = g.Sum(u => (long)u.UseCount) })
+                .ToListAsync(cancellationToken);
+            var totals = new List<long>(activeSlotIds.Count);
+            totals.AddRange(perSlot.Select(p => p.Total));
+            totals.AddRange(Enumerable.Repeat(0L, activeSlotIds.Count - perSlot.Count));
+            rank = WishUsageWindow.Rank(total, totals);
+            rankOf = activeSlotIds.Count;
+        }
+
+        var channel = await db.Channels.AsNoTracking()
+            .Where(c => c.Id == channelId)
+            .Select(c => new { c.CreatedAt, c.TrackingResumedAt, c.DeactivatedAtUtc, c.IsBotActive })
+            .FirstAsync(cancellationToken);
+        var facts = new WishCoverageFacts(
+            TrackingCoverage.TrackedSince(channel.TrackingResumedAt, channel.CreatedAt), channel.DeactivatedAtUtc, channel.IsBotActive);
+
+        var mean = WishUsageWindow.MeanPerDay(total, WishUsageWindow.LengthInDays(windowStart, evaluatedAtUtc));
+        return new WishUsageDto(
+            windowStart, evaluatedAtUtc, total, mean, rank, rankOf, WishUsageWindow.HasCoverageGap(facts, windowStart, evaluatedAtUtc));
+    }
+
+    private async Task<long> SumUseAsync(List<string> slotIds, DateOnly from, DateOnly to, CancellationToken cancellationToken) =>
+        await db.UsageStats
+            .Where(u => slotIds.Contains(u.SlotId) && u.Date >= from && u.Date <= to)
+            .SumAsync(u => (long)u.UseCount, cancellationToken);
 
     private Task<string?> ResolveChannelIdAsync(string channelName, CancellationToken cancellationToken)
     {
@@ -802,7 +868,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         return now;
     }
 
-    private static string[] StatusesOf(WishListView view, bool botMode)
+    internal static string[] StatusesOf(WishListView view, bool botMode)
     {
         // An approved wish needs a human while the channel runs manually; in bot mode it is the bot's turn.
         var approvedNeedsAction = !botMode;
@@ -828,7 +894,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         alias.EnumerateRunes().Count() is >= 1 and <= WishLimits.AliasMaxLength
         && !alias.Any(c => char.IsControl(c) || char.IsWhiteSpace(c));
 
-    private static EffectiveSettings ToSettings(ChannelWishSettings row) => new(
+    internal static EffectiveSettings ToSettings(ChannelWishSettings row) => new(
         row.DefaultDurationDays,
         row.ProbationLeadDays,
         row.ProtectionThresholdPerDay,
@@ -836,7 +902,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         row.BotSuspendedReason,
         row.BotModeActivatedByTwitchUserId);
 
-    private static WishDto ToDto(Wish w, EffectiveSettings settings) => new(
+    internal static WishDto ToDto(Wish w, EffectiveSettings settings) => new(
         w.Id,
         w.SevenTvEmoteId,
         w.EmoteName,
@@ -876,7 +942,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         public static readonly Task<CommandStep> ConflictTask = Task.FromResult(Conflict);
     }
 
-    private sealed record EffectiveSettings(
+    internal sealed record EffectiveSettings(
         int DefaultDurationDays,
         int ProbationLeadDays,
         decimal? ProtectionThresholdPerDay,

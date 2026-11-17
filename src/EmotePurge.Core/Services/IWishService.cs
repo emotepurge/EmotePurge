@@ -114,8 +114,11 @@ public interface IWishService
     Task<PagedResult<WishDto>?> ListAsync(
         string channelName, WishListView view, int page, int pageSize, CancellationToken cancellationToken = default);
 
-    /// <summary>One wish of the channel; null when the channel is unknown or the wish belongs to another channel.</summary>
-    Task<WishDto?> GetAsync(string channelName, long wishId, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// One wish of the channel with its usage (E4, E5, E16), evaluated now; null when the channel is unknown or the
+    /// wish belongs to another channel. A wish without a start has no usage (<see cref="WishDetailDto.Usage"/> null).
+    /// </summary>
+    Task<WishDetailDto?> GetAsync(string channelName, long wishId, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -202,7 +205,7 @@ public sealed record WishCommandResult(
 /// The wish as the Api serves it. The requester's Twitch id is never part of it (spec 6.4); the bot and queue
 /// fields exist for K4 and stay empty until then.
 /// </summary>
-public sealed record WishDto(
+public record WishDto(
     long Id,
     string SevenTvEmoteId,
     string EmoteName,
@@ -228,6 +231,38 @@ public sealed record WishDto(
     DateTime? BotNextAttemptAtUtc,
     DateTime? RemovalQueuedAtUtc,
     string Mode);
+
+/// <summary>
+/// The detail view: the <see cref="WishDto"/> plus the usage of its window. Serialized flat, the usage as one
+/// extra property (spec K1 "Formen").
+/// </summary>
+public sealed record WishDetailDto : WishDto
+{
+    public WishDetailDto(WishDto wish, WishUsageDto? usage)
+        : base(wish)
+    {
+        Usage = usage;
+    }
+
+    /// <summary>Null for a wish without a start: there is no window to measure.</summary>
+    public WishUsageDto? Usage { get; init; }
+}
+
+/// <summary>
+/// Usage over the window of E4: <see cref="Total"/> is the sum over all slots of the emote on the UTC days of the
+/// window, <see cref="PerDayMean"/> that sum over the window length in fractional days. <see cref="Rank"/> of
+/// <see cref="RankOf"/> places the total among the active slots of the channel (E16, ties share the better
+/// rank); both are null while the emote has no active slot to rank (an ended wish). <see cref="CoverageGap"/>
+/// is the E5 rule: counting did not cover the whole window.
+/// </summary>
+public sealed record WishUsageDto(
+    DateTime WindowFromUtc,
+    DateTime WindowToUtc,
+    long Total,
+    decimal PerDayMean,
+    int? Rank,
+    int? RankOf,
+    bool CoverageGap);
 
 /// <summary>The channel's wish settings; the defaults of <see cref="Entities.WishLimits"/> while no row exists.</summary>
 public sealed record WishSettingsDto(

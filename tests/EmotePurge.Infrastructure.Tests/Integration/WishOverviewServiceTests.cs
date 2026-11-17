@@ -1,0 +1,301 @@
+using EmotePurge.Core.Entities;
+using EmotePurge.Core.Services;
+using EmotePurge.Core.Twitch;
+using EmotePurge.Infrastructure.Persistence;
+using EmotePurge.Infrastructure.Services;
+using EmotePurge.Infrastructure.Tests.Fakes;
+using EmotePurge.Infrastructure.Tests.Fixtures;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
+using Xunit;
+
+namespace EmotePurge.Infrastructure.Tests.Integration;
+
+// The cross-channel overview and counter (wish emotes, T6) against real Postgres in a database of their own
+// (the overview reads every channel's wishes, so it must not see the rows of other classes) and, for the cost
+// claim of AK15, a real ChannelAccessService on a real ModeratedChannelsProvider on real Redis with a counting
+// Helix double. The clock shows 2026-09-14 12:00 UTC.
+[Collection("Postgres")]
+public class WishOverviewServiceTests(PostgresFixture fixture, RedisFixture redisFixture) : IAsyncLifetime, IClassFixture<RedisFixture>
+{
+    private const string DatabaseName = "wish_overview_tests";
+    private static readonly SemaphoreSlim DatabaseGate = new(1, 1);
+    private static bool _databaseReady;
+
+    private readonly HandWoundTimeProvider _clock = new();
+
+    private DateTime Now => _clock.Now.UtcDateTime;
+
+    public async Task InitializeAsync()
+    {
+        await DatabaseGate.WaitAsync();
+        try
+        {
+            if (!_databaseReady)
+            {
+                await using (var admin = fixture.CreateDbContext())
+                {
+#pragma warning disable EF1002
+                    await admin.Database.ExecuteSqlRawAsync($"CREATE DATABASE {DatabaseName}");
+#pragma warning restore EF1002
+                }
+
+                await using var migrate = fixture.CreateDbContext(DatabaseName);
+                await migrate.Database.MigrateAsync();
+                _databaseReady = true;
+            }
+        }
+        finally
+        {
+            DatabaseGate.Release();
+        }
+
+        await using var reset = CreateDb();
+        await reset.Database.ExecuteSqlRawAsync("TRUNCATE \"Wishes\", \"ChannelWishSettings\", \"Channels\" CASCADE;");
+    }
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    // ------------------------------------------------------------------------------------ the list
+
+    [Fact]
+    public async Task Mine_ListsOnlyChannelsTheCallerManages_AndNamesTheChannelPerRow()
+    {
+        var mine = await SeedChannelAsync("mine_channel");
+        var foreign = await SeedChannelAsync("foreign_channel");
+        var wishInMine = await SeedWishAsync(mine, WishStatus.Approved);
+        await SeedWishAsync(foreign, WishStatus.Approved);
+        var access = AccessAllowing("mine_channel");
+
+        var rows = await Sut(access).ListMineAsync(Principal("u-mine"));
+
+        var row = Assert.Single(rows);
+        Assert.Equal("mine_channel", row.ChannelName);
+        Assert.Equal(wishInMine, row.Wish.Id);
+        await access.Received(1).CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), "foreign_channel", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Mine_HoldsActionAndProbation_NotTheRest_SortedByExpiryThenCreation_NoExpiryLast()
+    {
+        var channel = await SeedChannelAsync("sorted_channel");
+        var approved = await SeedWishAsync(channel, WishStatus.Approved, createdAt: Now.AddDays(-5));
+        var failed = await SeedWishAsync(channel, WishStatus.Failed, createdAt: Now.AddDays(-4));
+        var presented = await SeedWishAsync(channel, WishStatus.Presented, expiresAt: Now.AddDays(-1), createdAt: Now.AddDays(-9));
+        var soon = await SeedWishAsync(channel, WishStatus.Active, startsAt: Now.AddDays(-20), expiresAt: Now.AddDays(3));
+        var tieA = await SeedWishAsync(channel, WishStatus.Active, startsAt: Now.AddDays(-20), expiresAt: Now.AddDays(5), createdAt: Now.AddDays(-2));
+        var tieB = await SeedWishAsync(channel, WishStatus.Active, startsAt: Now.AddDays(-20), expiresAt: Now.AddDays(5), createdAt: Now.AddDays(-3));
+        await SeedWishAsync(channel, WishStatus.Active, startsAt: Now.AddDays(-5), expiresAt: Now.AddDays(25)); // not yet in probation
+        await SeedWishAsync(channel, WishStatus.Active, startsAt: Now.AddDays(1), expiresAt: Now.AddDays(30)); // not started
+        await SeedWishAsync(channel, WishStatus.Unconfirmed);
+        await SeedWishAsync(channel, WishStatus.Kept, endedAt: Now.AddDays(-1));
+        await SeedWishAsync(channel, WishStatus.Removed, endedAt: Now.AddDays(-1));
+
+        var rows = await Sut(AccessAllowing("sorted_channel")).ListMineAsync(Principal("u-sorted"));
+
+        Assert.Equal([presented, soon, tieB, tieA, approved, failed], rows.Select(r => r.Wish.Id));
+    }
+
+    [Fact]
+    public async Task Mine_UsesTheChannelsProbationLead_ForTheProbationRule()
+    {
+        var channel = await SeedChannelAsync("lead_channel");
+        await SeedSettingsAsync(channel, probationLeadDays: 30);
+        var wish = await SeedWishAsync(channel, WishStatus.Active, startsAt: Now.AddDays(-5), expiresAt: Now.AddDays(25));
+
+        var rows = await Sut(AccessAllowing("lead_channel")).ListMineAsync(Principal("u-lead"));
+
+        Assert.Equal(wish, Assert.Single(rows).Wish.Id);
+    }
+
+    [Fact]
+    public async Task Mine_TreatsApprovedAsActionOnlyWhileTheChannelRunsManually()
+    {
+        var manual = await SeedChannelAsync("manual_channel");
+        var bot = await SeedChannelAsync("bot_channel");
+        await SeedSettingsAsync(bot, botMode: true);
+        var manualWish = await SeedWishAsync(manual, WishStatus.Approved);
+        await SeedWishAsync(bot, WishStatus.Approved);
+        var botFailed = await SeedWishAsync(bot, WishStatus.Failed);
+
+        var rows = await Sut(AccessAllowing("manual_channel", "bot_channel")).ListMineAsync(Principal("u-mode"));
+
+        Assert.Equal([manualWish, botFailed], rows.Select(r => r.Wish.Id).Order());
+        Assert.Equal(2, await Sut(AccessAllowing("manual_channel", "bot_channel")).CountActionAsync(Principal("u-mode")));
+    }
+
+    // ------------------------------------------------------------------------------------ the counter
+
+    [Fact]
+    public async Task Count_CountsActionWishesInManagedChannels_NotProbationAndNotForeignChannels()
+    {
+        var mine = await SeedChannelAsync("count_mine");
+        var foreign = await SeedChannelAsync("count_foreign");
+        await SeedWishAsync(mine, WishStatus.Approved);
+        await SeedWishAsync(mine, WishStatus.Presented);
+        await SeedWishAsync(mine, WishStatus.Active, startsAt: Now.AddDays(-20), expiresAt: Now.AddDays(2)); // probation only
+        await SeedWishAsync(foreign, WishStatus.Failed);
+
+        Assert.Equal(2, await Sut(AccessAllowing("count_mine")).CountActionAsync(Principal("u-count")));
+    }
+
+    [Fact]
+    public async Task Count_WithoutCandidates_IsZeroWithoutAnyRoleCheck()
+    {
+        var channel = await SeedChannelAsync("quiet_channel");
+        await SeedWishAsync(channel, WishStatus.Active, startsAt: Now.AddDays(-5), expiresAt: Now.AddDays(25)); // no probation yet
+        await SeedWishAsync(channel, WishStatus.Kept, endedAt: Now.AddDays(-1));
+        var access = AccessAllowing("quiet_channel");
+
+        Assert.Equal(0, await Sut(access).CountActionAsync(Principal("u-quiet")));
+        Assert.Empty(await Sut(access).ListMineAsync(Principal("u-quiet")));
+        Assert.Empty(access.ReceivedCalls());
+    }
+
+    [Fact]
+    public async Task Count_OfAChannelWithOnlyProbationWishes_AsksNoOne()
+    {
+        var channel = await SeedChannelAsync("probation_only");
+        await SeedWishAsync(channel, WishStatus.Active, startsAt: Now.AddDays(-20), expiresAt: Now.AddDays(2));
+        var access = AccessAllowing("probation_only");
+
+        Assert.Equal(0, await Sut(access).CountActionAsync(Principal("u-prob")));
+        Assert.Empty(access.ReceivedCalls());
+    }
+
+    [Fact]
+    public void NeitherReadRoutesThroughTheMyChannelsService()
+    {
+        // The overview and the counter must not pay for the channel overview (spec E18, AK15): neither service,
+        // nor the access check they call, can reach IMyChannelsService, because none takes it.
+        foreach (var type in new[] { typeof(WishOverviewService), typeof(ChannelAccessService) })
+        {
+            var parameters = type.GetConstructors().Single().GetParameters();
+            Assert.DoesNotContain(parameters, p => p.ParameterType == typeof(IMyChannelsService));
+        }
+    }
+
+    // ------------------------------------------------------------------------------------ the cost (AK15)
+
+    [Fact]
+    public async Task RealRoleCheck_PaginatesHelixOnce_AndAnsweringTheSecondCallFromTheCache()
+    {
+        const string userId = "wish-overview-moderator";
+        var moderated = await SeedChannelAsync("moderated_channel");
+        var other = await SeedChannelAsync("other_channel");
+        var editorOnly = await SeedChannelAsync("editor_only_channel");
+        var inModerated = await SeedWishAsync(moderated, WishStatus.Approved);
+        await SeedWishAsync(other, WishStatus.Approved);
+        await SeedWishAsync(editorOnly, WishStatus.Failed);
+
+        var helix = Substitute.For<ITwitchHelixClient>();
+        helix.GetModeratedChannelsAsync(Arg.Any<string>(), userId, Arg.Any<CancellationToken>())
+            .Returns<IReadOnlyList<TwitchModeratedChannelInfo>?>(_ => [new TwitchModeratedChannelInfo("moderated_channel", "9001")]);
+        var tokens = Substitute.For<ITwitchUserTokenService>();
+        tokens.GetValidAccessTokenAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<CancellationToken>())
+            .Returns(new TwitchUserTokenResult("token", false));
+        var editors = Substitute.For<ISevenTvEditorService>();
+        var access = RealAccessService(helix, tokens, editors);
+        var sut = Sut(access);
+        var principal = new TwitchPrincipalInfo(userId, "somemod", "cookie-token");
+
+        var first = await sut.CountActionAsync(principal);
+        var second = await sut.ListMineAsync(principal);
+        var third = await sut.CountActionAsync(principal);
+
+        Assert.Equal(1, first);
+        Assert.Equal(inModerated, Assert.Single(second).Wish.Id);
+        Assert.Equal(1, third);
+        // Cold cache: one token lookup and one Helix pagination for the whole sequence; no 7TV call at all,
+        // and an editor-only channel is not visible.
+        await helix.Received(1).GetModeratedChannelsAsync(Arg.Any<string>(), userId, Arg.Any<CancellationToken>());
+        await tokens.Received(1).GetValidAccessTokenAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<CancellationToken>());
+        Assert.Empty(editors.ReceivedCalls());
+    }
+
+    // ------------------------------------------------------------------------------------ helpers
+
+    private AppDbContext CreateDb() => fixture.CreateDbContext(DatabaseName);
+
+    private WishOverviewService Sut(IChannelAccessService access) => new(CreateDb(), access, _clock);
+
+    private static TwitchPrincipalInfo Principal(string userId) => new(userId, "caller", "cookie-token");
+
+    private static IChannelAccessService AccessAllowing(params string[] channelNames)
+    {
+        var access = Substitute.For<IChannelAccessService>();
+        access.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call => channelNames.Contains((string)call[1]));
+        return access;
+    }
+
+    private ChannelAccessService RealAccessService(ITwitchHelixClient helix, ITwitchUserTokenService tokens, ISevenTvEditorService editors)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Auth:ModCheckCacheTtlMinutes"] = "10" })
+            .Build();
+        var provider = new ModeratedChannelsProvider(
+            tokens, helix, redisFixture.Connection, configuration, Substitute.For<IRateLimitTelemetry>(),
+            NullLogger<ModeratedChannelsProvider>.Instance);
+        var channels = Substitute.For<IChannelService>();
+        channels.GetByNameAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call => new Channel { ChannelName = (string)call[0], TwitchChannelId = "owner-" + call[0] });
+        return new ChannelAccessService(
+            new ModeratorCheckService(provider, NullLogger<ModeratorCheckService>.Instance),
+            editors,
+            channels,
+            new GlobalAdminAllowlist(configuration, NullLogger<GlobalAdminAllowlist>.Instance),
+            NullLogger<ChannelAccessService>.Instance);
+    }
+
+    private async Task<string> SeedChannelAsync(string name)
+    {
+        await using var db = CreateDb();
+        var channel = new Channel { ChannelName = name, TwitchChannelId = Guid.NewGuid().ToString("N")[..12], IsBotActive = true };
+        db.Channels.Add(channel);
+        await db.SaveChangesAsync();
+        return channel.Id;
+    }
+
+    private async Task SeedSettingsAsync(string channelId, int probationLeadDays = 7, bool botMode = false)
+    {
+        await using var db = CreateDb();
+        db.ChannelWishSettings.Add(new ChannelWishSettings
+        {
+            ChannelId = channelId,
+            ProbationLeadDays = probationLeadDays,
+            BotModeEnabled = botMode
+        });
+        await db.SaveChangesAsync();
+    }
+
+    private async Task<long> SeedWishAsync(
+        string channelId,
+        string status,
+        DateTime? startsAt = null,
+        DateTime? expiresAt = null,
+        DateTime? endedAt = null,
+        DateTime? createdAt = null)
+    {
+        await using var db = CreateDb();
+        var wish = new Wish
+        {
+            ChannelId = channelId,
+            SevenTvEmoteId = Guid.NewGuid().ToString("N")[..24],
+            EmoteName = "Emote",
+            Alias = "Alias",
+            Source = WishSource.Manual,
+            Status = status,
+            StatusChangedAtUtc = Now,
+            CreatedAtUtc = createdAt ?? Now,
+            StartsAtUtc = startsAt,
+            ExpiresAtUtc = expiresAt,
+            EndedAtUtc = endedAt
+        };
+        db.Wishes.Add(wish);
+        await db.SaveChangesAsync();
+        return wish.Id;
+    }
+}
