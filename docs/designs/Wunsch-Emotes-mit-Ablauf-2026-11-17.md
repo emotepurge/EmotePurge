@@ -375,6 +375,16 @@ Chat-Antworten des Bots; Discord-Webhook je Kanal; EventSub mit Streamer-Login.
 - **F10** Später: Würde der Bot als eigenes Konto statt anonym mitlesen und wäre er in den
   Wunsch-Kanälen Mod, zählten diese laut Twitch nicht gegen die 100-Chatroom-Grenze. Das wäre der
   Umbau „Bot nicht mehr anonym", den v1 ausschließt.
+- **F11** Später (Betreiber, 2026-11-17, „im Kopf behalten“): Der Bot könnte auch das Entfernen
+  auf der normalen Nutzungsseite übernehmen; dann könnten Twitch-Mods ohne 7TV-Editor-Rechte
+  entfernen, was der Betreiber nicht als großes Problem sieht. Folgen: Die Zustimmung nach D7
+  deckt das nicht (der Dialog nennt nur Wunsch-Emotes), es öffnet „würde ich nicht bauen #3“ weit
+  über diesen Entwurf hinaus, und die Browser-Engine (Rückgängig-Fenster, Rate-Limits) müsste
+  serverseitig nachgebaut werden. Eigene Entscheidung. **v1: Der Bot entfernt automatisch nur
+  Wunsch-Emotes.**
+- **F12** Darf der Bot auch Wunsch-Einträge automatisch entfernen, die ein Mod über Emote Purge
+  hinzugefügt hat (manueller Weg, `addedById` = 7TV-Konto des Mods, von Emote Purge beim
+  Hinzufügen festgehalten)? `addedById` ist zuverlässig gefüllt (P2), technisch ginge es.
 
 ## Erfolgskriterien
 
