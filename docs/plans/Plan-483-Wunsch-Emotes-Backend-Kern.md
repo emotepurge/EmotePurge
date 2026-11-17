@@ -1,7 +1,8 @@
 # Plan #483: Wunsch-Emotes, Kind K1: Backend-Kern
 
 Erstellt am 2026-11-17 im Worktree `EmotePurge-wt-483` (Branch `feat/483-wish-core`, Basis `docs/wunsch-emotes-design` @ `14439289`).
-**Status: Revision 1 (2026-11-17). Betreiberfrage F1 entschieden (Variante c), Sol adversarial durch (5 × P2 eingearbeitet). Der Branch
+**Status: Revision 2 (2026-11-17). Betreiberfrage F1 entschieden (Variante c), Sol adversarial zweimal durch (5 × P2, in der
+Nachprüfung 3 × P2, alle eingearbeitet). Der Branch
 liegt inzwischen auf `origin/main`; die Codestellen sind unverändert. Keine offene Betreiberfrage, eine Lesart zur Bestätigung (Abschnitt 10).**
 Quellen: [Spec](../superpowers/specs/2026-11-17-wunsch-emotes-spec.md) Abschnitte 1 bis 17 und „K1: Backend-Kern“ (AK1 bis AK21); aus K2,
 K3, K6 und K4 nur die Verträge, die K1 ihnen liefert; Issue #483, Epic #481; `CLAUDE.md` (Schichten, Regeln 1 bis 22, Gates, Sprache,
@@ -24,6 +25,14 @@ eingearbeitet · „Spec 6.3“ meint den Abschnitt der Spec, „AK7“ das Akze
 | Befehle und Abgleich lesen und schreiben einen Wunsch nur unter Zeilensperre; Reihenfolge Kanal vor Wunsch (2.3, T5, T7) | Sol-P2-2 |
 | Abgleich schreibt je Wunsch einzeln hinter einem Savepoint, mit Vorfilter nach laufenden Emote-IDs (T7) | Sol-P2-3 |
 | `FirstActivatedAtUtc`, unveränderlich; E14 (c) hängt daran statt an `StartsAtUtc` (Befund 20, T1, T2, T9) | Sol-P2-4 |
+
+### Revision 2 (2026-11-17): Nachprüfung durch Sol, drei neue P2 (R2-1 bis R2-3)
+
+| Änderung | Anlass |
+|---|---|
+| Kanalsperre auch vor dem Handeintrag, vor `adopt` als neuem Wunsch und vor dem Upsert der Einstellungen; Schrankentests Anlegen gegen Zusammenführung (2.3, T4, T9) | Sol-R2-1 |
+| `StartsAtAuthoritative` folgt bei jedem Festhalten der Generation dem Slot, auch bei Bestätigung mit späterem Datum und als Heilung im unveränderten Zweig (T7) | Sol-R2-2 |
+| Vorprüfung ohne Wanduhr: offene Rückkehrer werden über die Eignung eines Kandidaten gefunden, nicht über das Alter von `EndedAtUtc` (T7) | Sol-R2-3 |
 
 ---
 
@@ -162,8 +171,15 @@ keinen Aufrufer. Bedingungen, die über Zustand und Grund hinausgehen (`close` a
 
 **2.3 Sperre, dann bedingtes Update (T4, T5, T7; Sol-P2-2).** Jede Transaktion, die einen bestehenden Wunsch ändert, sperrt
 zuerst seine Zeile (`FOR UPDATE`, neuer Helfer neben `RowLocks.LockChannelsByIdsAsync`), liest dann und rechnet erst danach.
-**Sperrreihenfolge überall: Kanalzeile vor Wunsch-Zeilen, Wunsch-Zeilen nach `Id` aufsteigend.** Befehle, die keinen Slot
-schreiben, nehmen nur die Wunsch-Zeile; `adopt` und der Abgleich nehmen zuerst die Kanalzeile (Befund 11). Das Update trägt
+**Sperrreihenfolge überall: Kanalzeile vor Wunsch-Zeilen, Wunsch-Zeilen nach `Id` aufsteigend.** Die Kanalzeile nimmt zuerst (über `RowLocks.LockChannelsByIdsAsync`, `FOR NO KEY UPDATE`), wer eine Zeile mit
+Kanal-Fremdschlüssel **einfügt** (Handeintrag, `adopt` als neuer Wunsch, Upsert der Einstellungen) oder `SlotId` schreibt (`adopt`,
+Abgleich). Grund (Sol-R2-1): `ChannelIdentityService` sperrt beim Zusammenführen beide Kanäle `FOR UPDATE` (`:858`, `:871`)
+und hängt danach Wünsche um. Ein Einfügen ohne Kanalsperre reserviert erst den eindeutigen Schlüssel und wartet dann für
+seinen Fremdschlüssel auf `KEY SHARE` an der Kanalzeile, während die Zusammenführung auf den reservierten Schlüssel wartet: ein
+Deadlock, dasselbe Muster wie in `ChannelQueries.cs:145-152` beschrieben. `NO KEY UPDATE` serialisiert mit Zusammenführung
+und Purge, blockiert aber die Fremdschlüssel-Einfügungen des Syncs nicht. Befehle, die nur einen bestehenden Wunsch ändern
+(`extend`, `keep`, `close`, `retry`, `re-add`, `complete-removal`, `PATCH`), nehmen nur die Wunsch-Zeile: Sie brauchen danach
+keine weitere Sperre, ein Zyklus ist ausgeschlossen (Befund 11). Das Update trägt
 zusätzlich den erwarteten Ausgangszustand in der Bedingung; trifft es keine Zeile, ist das Ergebnis „Konflikt“ und nichts wird
 geschrieben, auch kein Audit-Eintrag. Update und Audit-Eintrag teilen eine Transaktion. Jeder Befehl und jede Eigentumsänderung
 im Abgleich erhöht `DecisionVersion` und leert `RemovalQueuedAtUtc` und `RemovalQueuedVersion` im selben Update (E25); eine reine
@@ -291,10 +307,10 @@ Eintrag „Wish emotes, child 1: backend core“; T1 legt ihn an, jeder Task mit
   Muster `:338-341`, Dienste), `docker-compose.yml`, `docker-compose.prod.yml`, `.env.example` (`WISHES_ENABLED`, Default `false`,
   an `api` **und** `worker`).
 - **Verträge (Befehle und Lesewege, alle mit Kanalname, normalisiert über `ChannelName.Normalize`):**
-  - *Einstellungen lesen:* Zeile oder Defaults. *Schreiben:* Upsert, Grenzen geprüft (`wish_settings_out_of_range`), Audit
+  - *Einstellungen lesen:* Zeile oder Defaults. *Schreiben:* Kanalsperre zuerst (2.3), dann Upsert, Grenzen geprüft (`wish_settings_out_of_range`), Audit
     `wish.settings`, Event. Dazu eine Entscheidungsmethode „darf dieser Aufrufer die Einstellungen ändern“ für den Filter aus T10
     (manueller Modus: jeder Verwalter; Bot-Modus: Broadcaster, Aktivierender, globaler Admin).
-  - *Handeintrag:* validiert Laufzeit (fehlt sie: Kanal-Default), Alias, Emote-ID, Login (getrimmt, kleingeschrieben, dann
+  - *Handeintrag:* Kanalsperre zuerst (2.3, nach der reinen Eingabeprüfung); validiert Laufzeit (fehlt sie: Kanal-Default), Alias, Emote-ID, Login (getrimmt, kleingeschrieben, dann
     Twitch-Login-Form); prüft „Emote-ID aktiv im Set“ (→ Konflikt mit Slot-IDs) vor „läuft schon“ (→ Konflikt mit Wunsch-ID);
     legt `approved` mit `ApprovedAtUtc` an, Quelle `manual`; `setFull` als Hinweis aus `ActiveEmoteSetCapacity`.
   - *Bestand übernehmen:* ohne `wishId` neuer Wunsch `active`, Quelle `adopted`; mit `wishId` verknüpft er den vorhandenen
@@ -305,15 +321,17 @@ Eintrag „Wish emotes, child 1: backend core“; T1 legt ihn an, jeder Task mit
   - *DTO:* Felder nach Spec; `probationStartsAtUtc` abgeleitet (T3), `mode` aus den Einstellungen (in K1 immer `manual`),
     `botWritePending`, `botNextAttemptAtUtc`, `removalQueuedAtUtc` aus den Spalten (in K1 leer). `requesterTwitchUserId` kommt
     in keinem DTO vor.
-- **Grenzfälle:** Wettlauf zweier Handeinträge derselben Emote-ID: der Verlierer am Index wird zu `wish_already_running`, nicht zu
-  500. `adopt` auf einen Slot mit laufendem Wunsch: `wish_slot_already_linked` (auch über den Index). Slot eines anderen Kanals:
+- **Grenzfälle:** Wettlauf zweier Handeinträge derselben Emote-ID: Die Kanalsperre reiht sie, der zweite sieht den ersten und
+  antwortet `wish_already_running`; der Index bleibt als Gürtel (ein Treffer dort ist ebenfalls `wish_already_running`, nie
+  500). Kanal während des Wartens auf die Sperre zusammengeführt oder gelöscht: `channel_not_found`. `adopt` auf einen Slot mit laufendem Wunsch: `wish_slot_already_linked` (auch über den Index). Slot eines anderen Kanals:
   `wish_slot_not_found`. Unbekannter oder nicht getrackter Kanal: der bestehende Code `channel_not_found` **[E]**. Audit-Details
   nur `wishId`, `sevenTvEmoteId`, `durationDays`.
 - **AKs:** AK4, AK5, AK6 (409-Teil), AK16 (Veröffentlichung), AK19.
 - **Tests:** `Infrastructure.Tests/Integration` (Postgres, Redis-Publisher als Double): Grenzen 0, 1, 365, 366 und Default; AK5 als
   Folge Handeintrag → Konflikt → `adopt`; AK6 Konflikt mit ID; Wettlauf am Index; `adopt` mit `startsAtUtc` in der Zukunft und
   vor `AddedAt`; genau ein Event je Commit, keins bei Konflikt; Audit-Details enthalten weder Alias noch Namen noch Login (AK19,
-  geprüft am rohen `DetailsJson`); Einstellungen Default, Upsert, Grenzen.
+  geprüft am rohen `DetailsJson`); Einstellungen Default, Upsert, Grenzen; Handeintrag und Einstellungs-Upsert warten nachweislich
+  an einer fremd gehaltenen Kanalsperre (`PostgresLockProbe`) und schreiben vorher nichts.
 - **Fertig:** Tests grün; Api und Worker starten mit und ohne `Wishes__Enabled`.
 - **Commit:** `feat: add wish service with manual entry, adoption and settings`
 
@@ -371,22 +389,31 @@ Eintrag „Wish emotes, child 1: backend core“; T1 legt ihn an, jeder Task mit
 - **Dateien:** neu `Core/Services/IWishReconcileService.cs` (Form: `ReconcileChannelAsync(channelId, ct)`),
   `Infrastructure/Services/WishReconcileService.cs`; Registrierung.
 - **Verträge:** Eigener Scope und Kontext (Befund 4). Ablauf:
-  1. **Vorprüfung, eine Indexabfrage:** Hat der Kanal Wünsche in `approved`, `active`, `presented` oder in
-     `removed_externally` mit `EndedAtUtc` in den letzten 24 Stunden **[E]** (großzügig, damit ein verspäteter Lauf heilt;
-     ob übernommen wird, entscheidet allein das Fenster am `AddedAt`)? Nein → Rückkehr ohne Transaktion.
+  1. **Vorprüfung, eine Abfrage, ohne Wanduhr (Sol-R2-3):** Hat der Kanal Wünsche in `approved`, `active`, `presented`, **oder**
+     einen offenen Rückkehrer? Offener Rückkehrer heißt: `removed_externally`, für dessen Emote-ID im Kanal kein anderer Wunsch
+     läuft und zu dem ein zulässiger Slot (Befund 7) derselben Emote-ID mit dem Alias des Wunsches existiert, dessen `AddedAt` im
+     Fenster `EndedAtUtc` minus 30 Minuten bis plus 6 Stunden liegt und der mit keinem anderen laufenden Wunsch verknüpft ist.
+     Wie alt `EndedAtUtc` gegenüber „jetzt“ ist, spielt keine Rolle: Ein Abgleich, der erst Tage später läuft, findet den
+     Rückkehrer. Die Bedingung ist dieselbe wie im Matcher (eine Quelle für die Grenzen, T1/T3); sie hält die Vorprüfung nur dann
+     positiv, wenn wirklich eine Rückkehr ansteht, sodass alte `removed_externally`-Zeilen keinen Durchlauf auslösen. Nein →
+     Rückkehr ohne Transaktion.
   2. **Transaktion:** Kanalzeile sperren (Befund 11), dann die betroffenen Wunsch-Zeilen nach `Id` (2.3), dann Slots lesen.
   3. **Verknüpfte Wünsche in `active` und `presented`**, je nach Lage des Slots (Befund 19):
      - *archiviert* → `removed_externally`; `EndedAtUtc` = `ArchivedAt` des Slots, falls gesetzt und nicht vor
        `SlotConfirmedAtUtc`, sonst jetzt; `BotOwned` endet; `SlotId` und `StatusReason` bleiben stehen **[E]**. So trägt ein verpasster Hook den echten
        Zeitpunkt nach, solange der Slot archiviert ist.
      - *aktiv, `AddedAt` gleich `SlotAddedAtUtc`* → Umbenennung prüfen (`Alias` nachziehen, `BotOwned` endet, Frist bleibt);
-       `SlotConfirmedAtUtc` auffrischen, wenn älter als 30 Minuten.
+       `SlotConfirmedAtUtc` auffrischen, wenn älter als 30 Minuten; ist der Slot maßgeblich und der Wunsch noch nicht, wird
+       `StartsAtAuthoritative` wahr (Heilung, Sol-R2-2).
      - *aktiv, `AddedAt` abweichend, Datums-Bestätigung* (Wunsch `StartsAtAuthoritative = false`, Slot jetzt maßgeblich, neues
        Datum nicht nach dem alten) → Start und Ablauf um dieselbe Differenz verschieben, `StartsAtAuthoritative = true`,
        Generation nachziehen (AK8). Hat `adopt` einen eigenen Start gesetzt, bleibt der Start, nur die Generation zieht nach.
      - *aktiv, `AddedAt` abweichend, sonst* → **Generationswechsel:** Der Slot war weg und ist wieder da, ohne dass ein
        Abgleich es gesehen hat. Behandelt als entfernt zum Zeitpunkt `SlotConfirmedAtUtc`: `removed_externally` mit diesem
        `EndedAtUtc`, `BotOwned` endet. Schritt 4 desselben Durchlaufs entscheidet über die Rückkehr.
+     - **Regel für alle Zweige (Sol-R2-2):** Wo immer der Abgleich oder `adopt` die Generation festhält (Verknüpfen, Rückkehr,
+       Bestätigung), setzt er `StartsAtAuthoritative` auf den Wert von `AddedAtFromRest` des Slots. Das Merkmal kann damit nie
+       falsch stehen bleiben, während der Slot längst maßgeblich ist.
   4. **Wünsche ohne gültige Verknüpfung** in `approved` und `removed_externally`: Vorfilter (Emote-IDs, für die im Kanal ein
      anderer Wunsch läuft, scheiden für die Rückkehr aus), Kandidaten laden (Befund 7), Matcher fragen (T3). Treffer:
      `approved` → `active`, bei `Permanent` `kept`, Start = `AddedAt`, Ablauf aus Start und Laufzeit, Alias folgt dem Slot,
@@ -405,15 +432,24 @@ Eintrag „Wish emotes, child 1: backend core“; T1 legt ihn an, jeder Task mit
 - **Grenzfälle:** Zwei Wünsche konkurrieren im selben Durchlauf um einen Slot: feste Reihenfolge nach `CreatedAtUtc`, der zweite
   bleibt. Rückkehr aus `removed_externally`, während ein neuer Wunsch derselben Emote-ID läuft: der alte bleibt (Vorfilter,
   sonst Savepoint), alle anderen Übergänge des Durchlaufs committen. Datums-Bestätigung mit Datum **nach** dem vorläufigen
-  (Uhrenabweichung): läuft als Generationswechsel, kehrt im selben Durchlauf zurück, Frist bleibt unverschoben; in K1 folgenlos,
-  für K4 als Eigentumsverlust vermerkt (R10). Slot ohne Datum nach Reaktivierung: kein Kandidat, der nächste datierte Sync
+  (Uhrenabweichung; `BindByName` nimmt beide Richtungen): läuft als Generationswechsel, kehrt im selben Durchlauf zurück, Frist
+  bleibt unverschoben, **`StartsAtAuthoritative` ist danach wahr**, sonst stellte K2 den Wunsch bei gesundem Sync nie fällig
+  (Spec K2, AK26); für K4 als Eigentumsverlust vermerkt (R10). Rückkehrer, dessen Abgleich erst nach mehr als 24 Stunden
+  läuft: wird übernommen, wenn `AddedAt` im Fenster liegt. Slot ohne Datum nach Reaktivierung: kein Kandidat, der nächste datierte Sync
   entscheidet. Zweiter Lauf über denselben Stand: keine fachliche Änderung, kein Event. Kanal während des Laufs gelöscht: ohne
   Wirkung, kein Fehler.
 - **AKs:** AK7, AK8, AK9, AK10, AK11 (Ausgangslage), AK12.
 - **Tests:** `Infrastructure.Tests/Integration`. *Mit direkt gesäten Slots:* die vier Fälle aus AK7; AK8 mit vorläufigem und dann
   maßgeblichem Datum (Laufzeit unverändert, auch nach einer Verlängerung); AK9; AK10 mit neuem Slot gleichen Alias bei 5 h und
   7 h, zwei Ersatz-Slots mit genau einem Alias-Träger, zwei ohne; AK12; Idempotenz; Kanal ohne laufende Wünsche kostet genau
-  eine Abfrage (über `CommandHook` gezählt); `BotWriteAtUtc`-Ausnahme. *Mit den echten Schreibern (Sol-P2-1):* Archivieren und
+  eine Abfrage (über `CommandHook` gezählt), auch wenn er alte `removed_externally`-Zeilen ohne Kandidaten trägt; **Rückkehr
+  bei verspätetem Lauf (Sol-R2-3):** Entfernen bei T0, Ersatz gleichen Alias mit `AddedAt` T0 plus 5 h, erster Abgleich bei T0
+  plus 25 h und bei T0 plus 10 Tagen → jeweils zurück mit alter Frist; Ersatz mit `AddedAt` T0 plus 7 h → bleibt, und die
+  Vorprüfung ist negativ; **spätere Bestätigung (Sol-R2-2):** vorläufig verknüpft, maßgebliches Datum eine Sekunde später,
+  zwei Abgleiche hintereinander → `active`, Frist unverändert, `StartsAtAuthoritative` wahr nach dem ersten und unverändert
+  nach dem zweiten; derselbe Wunsch mit überschrittenem Ablauf erfüllt danach die Auswahlbedingung des Ablauf-Laufs (in K1 als
+  Abfrage auf die Felder geprüft, K2 übernimmt den Fall in AK26); vorab falsch stehendes Merkmal bei maßgeblichem Slot und
+  gleicher Generation wird geheilt; `BotWriteAtUtc`-Ausnahme. *Mit den echten Schreibern (Sol-P2-1):* Archivieren und
   Wiederherstellen über `EmoteService` (Bericht Löschen, Bericht Restore) und über den Vollsync mit `ResumeArchivedSlots`
   (gleiche `SlotId`), jeweils (i) Abgleich nach beiden Schritten, Rückkehr binnen Fenster; (ii) **Abgleich nach dem Archivieren
   scheitert oder bleibt aus**, Wiederherstellung nach 7 Stunden, dann Abgleich → `removed_externally`, nicht `active`; (iii) wie
@@ -472,7 +508,12 @@ Eintrag „Wish emotes, child 1: backend core“; T1 legt ihn an, jeder Task mit
 - **Tests:** `Infrastructure.Tests/Integration`: jede Zeile aus AK17 als Fall mit `FakeTimeProvider` (31 und 29 Tage, 121 Tage,
   366 Tage), `enforce = false` ändert nichts und zählt richtig; **aktiv → entfernt → `re-add` mit `CreatedAtUtc` vor 121 Tagen
   behält die Einlöser-Daten, derselbe Wunsch 31 Tage nach dem `re-add` ohne Slot verliert sie über (b)** (Sol-P2-4); Kontolöschung mit zwei Wünschen; Zusammenführung mit und ohne
-  Kollision, mit und ohne Einstellungen des Überlebenden; Purge über alle drei Purge-Wege des Bestands hinterlässt keine Zeile.
+  Kollision, mit und ohne Einstellungen des Überlebenden; **Schrankentests Anlegen gegen Zusammenführung (Sol-R2-1),** je in
+  beiden Reihenfolgen und ohne Deadlock (kein `40P01`, beide Seiten enden definiert): Handeintrag im Überlebenden für eine
+  Emote-ID, die ein laufender Wunsch des Verlierers trägt (erst Anlegen: die Zusammenführung beendet den jüngeren als `merged`;
+  erst Zusammenführung: der Handeintrag antwortet `wish_already_running`); Einstellungs-Upsert im Überlebenden gegen eine
+  Zusammenführung, deren Verlierer Einstellungen trägt (am Ende genau eine Zeile, die des Überlebenden); Handeintrag im
+  Verlierer während der Zusammenführung (`channel_not_found` oder der Wunsch ist umgezogen, nie verloren); Purge über alle drei Purge-Wege des Bestands hinterlässt keine Zeile.
   `Worker.Tests`: Formatter nennt die neuen Zählwerte.
 - **Fertig:** Tests grün; DECISIONS-Absatz zu den Fristen.
 - **Commit:** `feat: add wish retention, account deletion and channel merge handling`
@@ -611,7 +652,7 @@ Zahlen sind Dev-Zahlen.
 | R7 | Zusage aus AK15 hängt an der Cache-TTL eines anderen Features (Befund 13) | in DECISIONS benannt |
 | R8 | `MergedIntoWishId` und `SlotId` an beendeten Wünschen zeigen auf Zeilen, die verschwinden können | beide SET NULL, Test in T2 |
 | R9 | Einlöser-Daten werden nur bei `Retention:Enforce = true` geleert (RR9 der Spec) | Operations-Abschnitt nennt es (T11) |
-| R10 | Generationswechsel ist eine Heuristik am Datum: Eine Datums-Bestätigung mit späterem Datum (Uhrenabweichung) läuft als Entfernen und Rückkehr | Frist bleibt, in K1 ohne sichtbare Folge; K4 muss wissen, dass dabei Bot-Eigentum endet (DECISIONS) |
+| R10 | Generationswechsel ist eine Heuristik am Datum: Eine Datums-Bestätigung mit späterem Datum (Uhrenabweichung) läuft als Entfernen und Rückkehr | Frist bleibt, `StartsAtAuthoritative` wird wahr (Sol-R2-2), in K1 sonst ohne sichtbare Folge; K4 muss wissen, dass dabei Bot-Eigentum endet (DECISIONS) |
 | R11 | `SlotConfirmedAtUtc` ist bis zu 30 Minuten alt; bei verpasstem Hook verkürzt das die 6 Stunden entsprechend | Richtung ist die sichere (eher keine Übernahme); K2 ruft den Abgleich alle 15 Minuten |
 | R12 | Zeilensperren verlängern Wartezeiten: Ein Befehl wartet auf einen laufenden Abgleich des Kanals | Abgleich hält die Sperren nur für Lesen der Slots und einzelne Updates; kein Netzaufruf in der Transaktion |
 
