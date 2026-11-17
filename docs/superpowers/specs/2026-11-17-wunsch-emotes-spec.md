@@ -5,7 +5,7 @@ Entwurf `docs/designs/Wunsch-Emotes-mit-Ablauf-2026-11-17.md` (Annahmen 1 bis 10
 Fable-Eigentumsvertrag) plus die Betreiberentscheidungen aus der /spec-Befragung vom selben Tag.
 Diese Spec rollt keine dieser Entscheidungen neu auf. Wo sie selbst etwas festlegt, steht es in
 Abschnitt 4 („Festlegungen dieser Spec“) und der Betreiber kann widersprechen. Wo Entwurf, Brief und
-Code einander widersprechen, steht es in Abschnitt 17.
+Code einander widersprachen, hat der Betreiber entschieden; die Entscheide stehen in Abschnitt 17.
 
 Labels (Epic): `feat`, `epic`. Kinder: K1 bis K5, dazu eine Zeile „Scheibe 3“ ohne Issue.
 
@@ -70,11 +70,13 @@ Oberflächen:
   Browser-Engine. Das Backend schreibt nie nach 7TV.
 - **Bot-Modus:** Das Bot-Konto ist 7TV-Editor des Kanals. Nach Freigabe fügt der Worker hinzu, bei
   Ablauf entfernt er, aber nur Einträge, die er nach bestem Wissen selbst hinzugefügt hat.
-- **Oberflächen:** Tab „Wünsche“ je Kanal (Queue, laufende Wünsche, Einstellungen), eine
-  kanalübergreifende Seite, ein Zähler in der Kopfzeile, live per SSE.
+- **Oberflächen:** Tab „Wünsche“ je Kanal als reine Arbeitsliste (live per SSE über den
+  kanaleigenen Stream), ein Abschnitt „Wünsche“ im Settings-Tab, eine kanalübergreifende Seite und
+  ein Zähler in der Kopfzeile (lädt beim Seitenaufruf und alle 5 Minuten).
 
 Erfassung in diesem Epic nur per Handeintrag und per Übernahme eines Bestandseintrags. Die
-Erfassung über IRC ist Scheibe 3 und hat kein Issue.
+Erfassung über IRC ist Scheibe 3 und hat kein Issue. Der Zustand `offen` samt Freigeben, Ablehnen
+und Verfall gehört ebenfalls dorthin (Entscheid W1).
 
 ## 4. Festlegungen dieser Spec (Betreiber kann widersprechen)
 
@@ -82,20 +84,23 @@ Erfassung über IRC ist Scheibe 3 und hat kein Issue.
 |---|---|---|
 | E1 | **Laufzeit je Wunsch in ganzen Tagen**, Spalte `DurationDays`, 1 bis 365. Vorbelegt mit dem Kanal-Default (`DefaultDurationDays`, Default 30). Beim Handeintrag und bei der Freigabe abweichend setzbar. | Betreiber-Ergänzung: Kanäle haben mehrere Belohnungen mit verschiedenen Laufzeiten. Obergrenze 365: Darüber ist ein Wunsch faktisch „behalten“, und kein Wunsch-Datensatz soll länger offen sein, als das Audit-Log (365 Tage) seine Freigabe belegt. |
 | E2 | **Vorlauf der Probezeit** je Kanal, `ProbationLeadDays`, Default 7, 1 bis 30. Probezeit ist **kein gespeicherter Zustand**, sondern abgeleitet: Beginn = spätester von Start und (Ablauf minus Vorlauf). Ist die Laufzeit kürzer als der Vorlauf, ist der Wunsch ab Start in Probezeit. | Eine Regel für alle Laufzeiten, kein Sonderfall für kurze. |
-| E3 | **Verfall offener Wünsche** je Kanal, `PendingExpiryDays`, Default 14, 1 bis 90. | Entwurf Scheibe 1 plus Betreiber-Ergänzung. |
+| E3 | **Verfall offener Wünsche: nicht in diesem Epic.** Die Kanal-Vorgabe `PendingExpiryDays` (Default 14, 1 bis 90) entsteht mit Scheibe 3, zusammen mit dem Zustand `offen`. | Entscheid W1. |
 | E4 | **Bewertungsfenster des Schutzes:** Fensterbeginn = spätester von Start des Wunsches und (Bewertungszeitpunkt minus 7 Tage). Bewertungszeitpunkt ist der Lauf, der die Fälligkeit feststellt. Mittel je Tag = Summe der Nutzung über alle Slots desselben Emotes im Kanal an den UTC-Tagen vom Tag des Fensterbeginns bis zum Bewertungstag, geteilt durch die Fensterlänge in Tagen (Bruchteile erlaubt). **Ist das Fenster kürzer als 24 Stunden, gilt das wie eine Zähllücke.** | Betreiber-Korrektur: min(7 Tage, tatsächliche Zeit im Set), eine Regel ohne eigene Logik für kurze Laufzeiten. Bei 1 Tag Laufzeit ist das Fenster bei Fälligkeit genau 24 Stunden und damit gültig. |
 | E5 | **Zähllücke** (Entscheidung 2): `TrackedSince(kanal)` liegt nach dem Fensterbeginn, **oder** `DeactivatedAtUtc` ist gesetzt, **oder** `IsBotActive` ist falsch, **oder** E4-Fenster unter 24 Stunden. Die Lückenregel greift nur bei eingeschaltetem Schutz; ohne Schutz spielt die Nutzung für das Entfernen keine Rolle. | Eine Deaktivierung mit Reaktivierung im Fenster setzt `TrackingResumedAt` und fällt damit unter die erste Bedingung (`Channel.cs:23`). |
 | E6 | **Ablauf-Lauf alle 15 Minuten** (`Wishes:ExpiryIntervalMinutes`, 1 bis 1440), eigener Worker, erster Lauf 1 Minute nach Start, wartet nicht auf die Boot-Recovery. | Das Beobachtungsziel „binnen 24 h“ und Laufzeiten ab 1 Tag vertragen keinen Tagestakt. Der Lauf berührt keinen Kanal-Purge und braucht die Sperre der Retention nicht. |
-| E7 | **Bot-Token asymmetrisch versiegelt:** Die Api hält nur einen öffentlichen Schlüssel und kann damit setzen, aber nicht lesen. Der private Schlüssel liegt nur am Worker. Details in Abschnitt 7. | Erfüllt „nie zurücklesen“ kryptografisch statt per Disziplin. Geht über die zwei Varianten des Briefs hinaus, s. Abschnitt 17 Punkt 2. |
-| E8 | **Pilot-Freischaltung über eine Liste:** `Wishes:PilotChannelIds` (Twitch-Kanal-IDs, kommagetrennt). Leer heißt alle Kanäle. Ein Kanal außerhalb der Liste verhält sich wie bei ausgeschaltetem Schalter. | Der Brief verlangt „zuerst in den Kanälen des anfragenden Mods“; ein globaler Schalter allein kann das nicht. |
+| E7 | **Bot-Token asymmetrisch versiegelt:** Die Api hält nur einen öffentlichen Schlüssel und kann damit setzen, aber nicht lesen. Der private Schlüssel liegt nur am Worker. Details in Abschnitt 7. | Erfüllt „nie zurücklesen“ kryptografisch statt per Disziplin. Vom Betreiber angenommen (W2). |
+| E8 | **Pilot-Liste nur für den Bot-Modus, fail-closed:** `Wishes:PilotChannelIds` (Twitch-Kanal-IDs, kommagetrennt, oder `*` für alle). In einem gelisteten Kanal darf jeder Berechtigte den Bot-Modus aktivieren, in jedem anderen nur ein globaler Admin. **Leer heißt: nirgends, außer durch globale Admins.** Die Liste regelt nur das Aktivieren; zum Stoppen dient der Notaus. Der manuelle Modus hängt allein an `Wishes:Enabled`. | Entscheid W7. Der Bot-Modus ist der Teil mit serverseitigem Schreibzugriff; eine vergessene oder leere Variable darf ihn nicht für alle Kanäle öffnen. Globale Admins bleiben ausgenommen, damit sich der Betrieb ohne Stack-Update prüfen lässt; `*` ist die bewusste, ausgeschriebene Öffnung. |
 | E9 | **Abgleich zustandsbasiert statt ereignisbasiert:** Nach jedem erfolgreichen Vollsync, Delta und manuellen Slot-Schreiben läuft `IWishReconcileService.ReconcileChannelAsync(channelId)`, der Wünsche gegen den aktuellen Slot-Bestand vergleicht. Idempotent; der Ablauf-Lauf ruft ihn als Sicherheitsnetz für jeden Kanal mit laufenden Wünschen. | Es gibt keinen Hook für „Slot angelegt/archiviert“ (Abschnitt 2). Ein Vergleich gegen den Ist-Stand heilt verpasste Ereignisse von selbst. |
 | E10 | **Übernahmefenster 6 Stunden** nach `extern entfernt` (Entwurf: „Größenordnung Stunden“). | Deckt Entfernen und Wieder-Hinzufügen über mehrere Sync-Läufe (R3-3), ohne ein späteres, unabhängiges Hinzufügen zu übernehmen. |
 | E11 | **Bestätigungsschwelle im Bot-Modus 15 Minuten:** Lesen direkt nach dem Schreiben, dann nach 30 s, 2 min, 5 min, 15 min. Danach `vorgelegt` mit Grund `unconfirmed`. | P2-Schwelle des Entwurfs war 5 Minuten für die Machbarkeit; der Betrieb bekommt einen Versuch mehr, bevor ein Mensch gerufen wird. |
 | E12 | **Verlängern ohne Obergrenze der Anzahl**, je Vorgang um den Kanal-Default, gerechnet ab dem bisherigen Ablauf, oder ab jetzt, wenn der Ablauf schon vorbei ist. Jede Verlängerung ist ein Audit-Eintrag. | Entscheidung 3 nennt keine Obergrenze; E1 begrenzt die einzelne Laufzeit, das Audit-Log zeigt Ketten. |
-| E13 | **Höchstens ein laufender Wunsch je Kanal und 7TV-Emote-ID** (Zustände `approved`, `unconfirmed`, `active`, `presented`). Ein weiterer Wunsch für dasselbe Emote wird bei Freigabe zur Verlängerung des laufenden und endet selbst als `merged`. | Entscheidung 3. Ein zweiter Alias desselben Emotes als eigener Wunsch ist Out of Scope. |
-| E14 | **Personendaten in `vorgelegt`:** Bleibt ein Wunsch länger als 30 Tage nach seinem Ablauf unentschieden, werden Twitch-ID und Login des Einlösers trotzdem geleert. | `vorgelegt` hat bewusst keinen Timeout (R3-12); ohne diese Kappe hätte Entscheidung 4 eine Lücke. S. Abschnitt 17 Punkt 3. |
+| E13 | **Höchstens ein laufender Wunsch je Kanal und 7TV-Emote-ID** (Zustände `approved`, `unconfirmed`, `active`, `presented`). Ein Handeintrag für ein Emote mit laufendem Wunsch wird abgelehnt (409), und die Oberfläche bietet „Verlängern“ an. Das Aufgehen eines offenen Wunsches in einem laufenden gehört zu Scheibe 3. | Entscheidung 3, auf Scheibe 1 zugeschnitten (W1). Ein zweiter Alias desselben Emotes als eigener Wunsch ist Out of Scope. |
+| E14 | **Personendaten in `vorgelegt`:** Bleibt ein Wunsch länger als 30 Tage nach seinem Ablauf unentschieden, werden Twitch-ID und Login des Einlösers trotzdem geleert. | `vorgelegt` hat bewusst keinen Timeout (R3-12); ohne diese Kappe hätte Entscheidung 4 eine Lücke. Vom Betreiber angenommen (W3). |
 | E15 | **Backlog (F8):** neue Idee `A18` „Wunsch-Emotes mit Ablauf“ in `docs/Feature-Ideen-2026-08-01.md`, mit Querverweis auf A15. A15 (Nachrücker-Liste) bleibt eigenständig; „einer rein, einer raus“ ist die spätere Brücke. Am Eintrag „würde ich nicht bauen #3“ steht ein Verweis auf die enge Ausnahme. Statuszeile pflegt K1 (begonnen) und K5 (umgesetzt). | CLAUDE.md verlangt die Statuszeile im selben Commit. |
 | E16 | **Position im Set (R3-7):** Die Karte zeigt „Rang N von M“ der Nutzung unter allen aktiven Slots im selben Fenster wie E4. Nur in der Detailantwort, nicht in Listen. | Macht „wo es im Set steht“ aus dem Entwurf messbar, ohne die Liste zu verteuern. |
+| E17 | **Die Laufzeit je Wunsch darf jeder Verwalter setzen; D7 gilt nur für die Kanal-Vorgaben** (Standardlaufzeit, Vorlauf, Schutzschwelle, Abschalten des Bot-Modus). | Entscheid W4. Der Bot entfernt nur eigene Einträge, und die sind von demselben Verwalter freigegeben, der ihre Laufzeit setzt. Eine kurze Laufzeit trifft also nie einen Eintrag, der außerhalb dieses Wegs ins Set kam. |
+| E18 | **Zähler in der Kopfzeile per Poll:** lädt beim Seitenaufruf und alle 5 Minuten über einen eigenen leichten Zähl-Endpunkt. Kein `wish.changed` auf `/api/channels/live-events`. Live per SSE ist nur der Wünsche-Tab über den kanaleigenen Stream. | Entscheid W6. Der globale Stream zeigte den Kanalnamen jedem eingeloggten Nutzer; 12 Anfragen je Stunde und Sitzung liegen weit unter dem Budget von `InteractiveRead`. |
+| E19 | **Einstellungen im Settings-Tab:** neuer Abschnitt „Wünsche“ unter dem Backfill-Abschnitt. Der Tab-Link hängt nur noch an `canManage`; der Backfill-Schalter blendet nur den Backfill-Abschnitt aus, `wishesEnabled` nur den Wünsche-Abschnitt. Der Wünsche-Tab bleibt reine Arbeitsliste. | Entscheid W9. Löst die im Code angekündigte Übergangsbedingung ab (`channel-workspace-layout.ts:105-110`). |
 
 ## 5. Lebenszyklus
 
@@ -103,23 +108,27 @@ Zustände (`Wish.Status`, als Zeichenkette gespeichert, die Werte sind Vertrag):
 
 | Wert | Deutsch | Bedeutung | Endzustand |
 |---|---|---|---|
-| `pending` | offen | erfasst, wartet auf Freigabe | nein |
+| `pending` | offen | reserviert für Scheibe 3: erfasst, wartet auf Freigabe | nein |
 | `approved` | freigegeben | freigegeben, Eintrag noch nicht im Set | nein |
 | `unconfirmed` | unbestätigt | Bot hat geschrieben, maßgebliches `addedAt` fehlt noch | nein |
 | `failed` | fehlgeschlagen | Bot-Hinzufügen von 7TV abgelehnt | nein |
 | `active` | aktiv | Eintrag im Set, Frist läuft | nein |
 | `presented` | vorgelegt | braucht eine Entscheidung eines Menschen, Grund in `StatusReason` | nein |
-| `rejected` | abgelehnt | Freigabe verweigert | ja |
-| `expired` | verfallen | offen geblieben bis `PendingExpiryDays` | ja |
+| `rejected` | abgelehnt | reserviert für Scheibe 3: Freigabe verweigert | ja |
+| `expired` | verfallen | reserviert für Scheibe 3: offen geblieben bis zur Verfallsfrist | ja |
 | `removed` | entfernt | über Emote Purge entfernt (Mensch oder Bot) | ja |
 | `removed_externally` | extern entfernt | außerhalb von Emote Purge entfernt | ja, mit Rückweg (E10) |
 | `kept` | behalten | Eintrag bleibt dauerhaft, Wunsch geschlossen | ja |
 | `closed` | geschlossen | ohne Aktion in 7TV beendet | ja |
-| `merged` | zusammengeführt | ging als Verlängerung in einen laufenden Wunsch auf | ja |
+| `merged` | zusammengeführt | bei einer Kanal-Zusammenführung der jüngere von zwei laufenden Wünschen desselben Emotes; das Aufgehen eines offenen Wunsches ist Scheibe 3 | ja |
+
+Die als reserviert markierten Werte stehen in `WishStatus`, damit Scheibe 3 keine Datenmigration
+braucht. In K1 bis K5 gibt es für sie keinen Endpunkt, keinen Worker-Zweig, keine Oberfläche und
+kein Akzeptanzkriterium (W1).
 
 Begriffe für die Oberfläche: **„Probezeit“** = `active` und jetzt ≥ Probezeitbeginn (E2).
 **„fällig“** = `presented` (jeder Grund) sowie `active` mit überschrittenem Ablauf, solange der Lauf
-oder der Bot noch nicht reagiert hat. **„Handlungsbedarf“** (Zähler) = `pending`, `failed`,
+oder der Bot noch nicht reagiert hat. **„Handlungsbedarf“** (Zähler) = `failed`,
 `presented`, dazu `approved`, wenn der Kanal im manuellen Modus ist oder der Bot ausgefallen ist.
 
 Gründe in `StatusReason` bei `presented`: `expired` (abgelaufen, manuell zu erledigen),
@@ -135,10 +144,6 @@ Zeile, antwortet die Api 409 `wish_state_conflict`):
 |---|---|---|---|
 | (neu) | `approved` | Handeintrag | gilt als Freigabe (Annahme 1) |
 | (neu) | `active` | Bestand übernehmen | Slot schon im Set; nie Bot-Eigentum |
-| (neu) | `pending` | IRC-Erfassung | erst Scheibe 3; in diesem Epic nur über Tests erreichbar |
-| `pending` | `approved` | Freigeben | Laufzeit und Alias änderbar; läuft schon ein Wunsch desselben Emotes: stattdessen `merged` und der laufende wird verlängert (E13) |
-| `pending` | `rejected` | Ablehnen | Oberfläche zeigt den Hinweis auf Twitchs Warteschlange für die Rückerstattung |
-| `pending` | `expired` | Ablauf-Lauf | älter als `PendingExpiryDays` |
 | `approved` | `active` | Abgleich, manueller Weg | genau ein passender neuer Slot (Abschnitt 6.3); Start = `AddedAt` des Slots |
 | `approved` | `unconfirmed` | Bot hat `addEmote` geschrieben | nur Bot-Modus |
 | `approved` | `failed` | Bot | 7TV lehnt ab; kein stiller Retry (F2) |
@@ -184,7 +189,7 @@ Eine Migration `AddWishes` (K1) für die Tabellen 6.1 und 6.2, eine zweite `AddW
 | `SevenTvEmoteId` | text, max. 32 | 7TV-ID, nicht `Emote.Id` (Regel 8) |
 | `EmoteName` | text, max. 100 | Standardname bei 7TV zum Zeitpunkt des Eintrags, nur Anzeige |
 | `Alias` | text, max. 100 | gewünschter bzw. aktueller Name im Set |
-| `Source` | text | `manual`, `adopted`, `irc` |
+| `Source` | text | `manual`, `adopted`; `irc` reserviert für Scheibe 3 |
 | `Status` | text | Werte aus Abschnitt 5 |
 | `StatusReason` | text, null | Grund bei `presented` und `failed` |
 | `StatusChangedAtUtc` | timestamptz | |
@@ -227,7 +232,6 @@ Indizes und Constraints:
 |---|---|---|---|
 | `DefaultDurationDays` | int | 30 | 1 bis 365 |
 | `ProbationLeadDays` | int | 7 | 1 bis 30 |
-| `PendingExpiryDays` | int | 14 | 1 bis 90 |
 | `ProtectionThresholdPerDay` | numeric(10,2), null | null = Schutz aus | > 0 |
 | `BotModeEnabled` | bool | false | |
 | `BotModeActivatedByTwitchUserId`, `BotModeActivatedByLogin` | text, null | | bei Kontolöschung pseudonymisiert |
@@ -364,14 +368,18 @@ Zeile 81, Zweck, Nutzer, Positionierung „Purge plus Wünsche“), `docs/Operat
 
 | # | Titel | Priorität | Aufwand | Status | Hängt ab von |
 |---|---|---|---|---|---|
-| K1 | Backend-Kern: Datenmodell, Lebenszyklus, Handeintrag, Verwalter-API, Slot-Abgleich, Live-Event, Retention, Schalter | P1 | 5 Tage | offen | keine |
-| K2 | Ablauf-Lauf im Worker: Verfall, Fälligkeit, Schutz, Lückenregel | P1 | 2 Tage | offen | K1 |
-| K3 | Frontend manueller Modus: Tab je Kanal, Einstellungen, kanalübergreifende Seite, Zähler in der Kopfzeile | P1 | 5 Tage | offen | K1 (Vertrag), K2 (nur Live-Probe) |
+| K1 | Backend-Kern: Datenmodell, Lebenszyklus, Handeintrag, Verwalter-API, Slot-Abgleich, Live-Event, Retention, Schalter | P1 | 4,5 Tage | offen | keine |
+| K2 | Ablauf-Lauf im Worker: Fälligkeit, Schutz, Lückenregel | P1 | 2 Tage | offen | K1 |
+| K3 | Frontend manueller Modus: Tab je Kanal als Arbeitsliste, Abschnitt im Settings-Tab, kanalübergreifende Seite, Zähler in der Kopfzeile | P1 | 4,5 Tage | offen | K1 (Vertrag), K2 (nur Live-Probe) |
 | K4 | Bot-Backend: Token-Ablage und Admin-Seite, Schreib-Client, Warteschlange, Editor-Prüfung, Eigentum, Notaus, Doku | P2 | 6 Tage | offen | K1, K2 |
 | K5 | Bot-Frontend: Aktivierungsdialog mit Editor-Mutation (D7), Abschalten, Bot-Zustände auf den Karten | P2 | 2,5 Tage | offen | K3, K4, Probe „Editor-Mutation“ |
-| keine | Scheibe 3: IRC-Erfassung über `custom-reward-id` (kein Issue) | später | ungeschätzt | nicht geplant | K1; P1-Rest (Nicht-Mod-Einlösung) |
+| ohne | Scheibe 3: IRC-Erfassung über `custom-reward-id`, Zustand `offen` mit Freigeben, Ablehnen und Verfall (kein Issue) | später | ungeschätzt | nicht geplant | K1; P1-Rest (Nicht-Mod-Einlösung) |
 
-Scheibe 3 trägt mit, sobald sie geplant wird: Link-Prüfung, Duplikate über die
+Scheibe 3 trägt mit, sobald sie geplant wird: den Zustand `offen` mit Freigeben (Laufzeit und Alias
+dabei änderbar), Ablehnen (mit Hinweis auf Twitchs Warteschlange für die Rückerstattung) und Verfall
+nach der Kanal-Vorgabe `PendingExpiryDays` (Default 14, 1 bis 90); das Aufgehen eines offenen
+Wunsches in einem laufenden desselben Emotes (`merged`, Entscheidung 3); die Audit-Aktionen
+`wish.approve` und `wish.reject`; dazu Link-Prüfung, Duplikate über die
 IRC-Nachrichten-ID, Begrenzung je Zuschauer, F10 (Bot nicht mehr anonym, Chat-Antworten) und den
 Shared-Chat-Nebenbefund: Einlösungen aus fremden Räumen (`source-room-id`) werden ignoriert, die
 vorhandene `SharedChatRule` (`src/EmotePurge.Core/Chat/SharedChatRule.cs:23`) deckt das ab.
@@ -379,7 +387,7 @@ vorhandene `SharedChatRule` (`src/EmotePurge.Core/Chat/SharedChatRule.cs:23`) de
 **Anforderung an das spätere Scheibe-3-Issue: „Belohnung anlernen“.** Ein Mod bekommt die
 Belohnungs-ID (`custom-reward-id`), ohne sie je zu sehen:
 
-1. Ein Verwalter startet in den Wunsch-Einstellungen des Kanals das Anlernen.
+1. Ein Verwalter startet im Abschnitt „Wünsche“ des Settings-Tabs das Anlernen.
 2. Der Worker meldet für diesen Kanal die nächste Chatnachricht mit `custom-reward-id` innerhalb
    eines Zeitfensters (Richtwert 10 Minuten). Der Mod löst die Belohnung dafür selbst einmal mit
    Text ein oder wartet auf eine echte Einlösung.
@@ -392,7 +400,7 @@ Belohnungs-ID (`custom-reward-id`), ohne sie je zu sehen:
    Reward“ braucht das Token des Broadcasters.
 
 Das sind Anforderungen für Scheibe 3, keine Akzeptanzkriterien von K1 bis K5. Das Datenmodell aus
-K1 ist darauf vorbereitet (`Source = irc`, `DurationDays` je Wunsch, Zustand `pending`); die Tabelle
+K1 ist darauf vorbereitet (`Source = irc`, `DurationDays` je Wunsch, reservierter Zustand `pending`); die Tabelle
 der angelernten Belohnungen entsteht erst mit Scheibe 3.
 
 ## 10. Dependency Graph
@@ -426,7 +434,7 @@ Wunsch.
 2. `dotnet test EmotePurge.slnx`, `npm --prefix web test -- --watch=false` und
    `npm --prefix web run e2e` grün; `node scripts/coverage-local.mjs` für jeden PR gelaufen.
 3. Beide Migrationen von Hand auf Prod angewendet, jeweils vor dem Image.
-4. `Wishes:Enabled` auf Prod an, `Wishes:PilotChannelIds` auf die Pilot-Kanäle gesetzt,
+4. `Wishes:Enabled` auf Prod an, `Wishes:PilotChannelIds` auf die Bot-Pilot-Kanäle gesetzt,
    Datenschutztext ergänzt.
 5. Bot-Modus in mindestens einem Kanal aktiv; die Live-Proben AK58 bis AK63 und AK80 dokumentiert.
 6. Ein Wunsch mit 7 Tagen Laufzeit hat im Pilot den ganzen Weg live durchlaufen: Freigabe,
@@ -436,8 +444,9 @@ Wunsch.
 
 ## 13. Beobachtung nach Aktivierung (Pilot)
 
-Kein formales Fenster und keine Freigabebedingung. Freigeschaltet wird zuerst in den Kanälen des
-anfragenden Mods; der eigene Kanal des Betreibers ist kein Affiliate und hat keine Kanalpunkte.
+Kein formales Fenster und keine Freigabebedingung. Der manuelle Modus steht mit `Wishes:Enabled`
+allen Kanälen offen; der Bot-Modus wird über die Pilot-Liste (E8) zuerst in den Kanälen des
+anfragenden Mods freigeschaltet; der eigene Kanal des Betreibers ist kein Affiliate und hat keine Kanalpunkte.
 
 - **Erster Funktionstest mit 7 Tagen Laufzeit**, damit Probezeit, Fälligkeit, Vorlage und
   Bot-Entfernung binnen einer Woche live sichtbar werden. Kürzere Laufzeiten (1 bis 6 Tage) bleiben
@@ -457,7 +466,7 @@ Schalter (alle Default `false` bzw. leer, also aus für andere Betreiber):
 | Schlüssel | Compose-Variable | Wirkung |
 |---|---|---|
 | `Wishes:Enabled` | `WISHES_ENABLED` | Api-Routen, Tab, Zähler, Ablauf-Lauf |
-| `Wishes:PilotChannelIds` | `WISHES_PILOT_CHANNEL_IDS` | E8 |
+| `Wishes:PilotChannelIds` | `WISHES_PILOT_CHANNEL_IDS` | E8: nur Bot-Modus; leer = nur globale Admins |
 | `Wishes:ExpiryIntervalMinutes` | `WISHES_EXPIRY_INTERVAL_MINUTES` | E6 |
 | `Wishes:BotMode:Enabled` | `WISHES_BOT_MODE_ENABLED` | Bot-Worker, Aktivierung, Admin-Seite |
 | `Wishes:BotMode:TokenPublicKey` | nur am Dienst `api` | E7 |
@@ -504,39 +513,38 @@ Abschnitt 7 Punkt 8; nichts geht verloren, alles Offene steht als Handlungsbedar
 | RR5 | Ob ein normaler Logout das Server-Token entwertet, ist ungeprüft | Betriebsregel „nirgends normal ausloggen“; Probe AK62 |
 | RR6 | 7TV-Reads können veralten; ein Bestätigungs-Read kann den neuen Eintrag verspätet zeigen | E11, danach Vorlage statt Annahme |
 | RR7 | `presented` ohne Timeout kann liegen bleiben | Zähler und Übersicht halten es sichtbar; E14 begrenzt die Personendaten |
-| RR8 | Das Ereignis `wish.changed` nennt auf dem kanalübergreifenden Stream den Kanalnamen jedem eingeloggten Nutzer | gleiche Klasse wie `live.changed` heute; s. Abschnitt 17 Punkt 6 |
-| RR9 | Der Einwilligungsgedanke aus D7 (nur wer in 7TV Editoren verwalten darf, kann den Bot eintragen) ist unbelegt (R3-15) | Probe AK80; fällt sie durch, entscheidet der Betreiber über D7 neu |
-| RR10 | Einlöser-Daten werden nur bei `Retention:Enforce = true` geleert | auf Prod an; für fremde Betreiber im Operations-Text benannt |
+| RR8 | Der Einwilligungsgedanke aus D7 (nur wer in 7TV Editoren verwalten darf, kann den Bot eintragen) ist unbelegt (R3-15) | Probe AK80; fällt sie durch, entscheidet der Betreiber über D7 neu |
+| RR9 | Einlöser-Daten werden nur bei `Retention:Enforce = true` geleert | auf Prod an; für fremde Betreiber im Operations-Text benannt |
 
-## 17. Offene Widersprüche für den Betreiber
+## 17. Entschieden (Betreiber, 2026-11-17)
 
-1. **`offen` hat in diesem Epic keinen Erzeuger.** Der Brief legt den ganzen Lebenszyklus in K1,
-   der Handeintrag gilt aber als freigegeben und die IRC-Erfassung ist Scheibe 3. Die Spec baut
-   Freigeben, Ablehnen und Verfall trotzdem in K1 bis K3 (nur über Tests erreichbar), damit Scheibe 3
-   nur die Erfassung ergänzt. Alternative: bis Scheibe 3 weglassen und K1/K3 um etwa 1,5 Tage kürzen.
-2. **Token-Schlüssel.** Der Entwurf sagt „verschlüsselt wie `User.TwitchRefreshToken`“ (symmetrisch,
-   Schlüssel an der Api), der Brief verlangt einen eigenen Schlüssel und lässt zwei Varianten offen.
-   Die Spec wählt eine dritte (E7, asymmetrisch), weil nur sie „nie zurücklesen“ erzwingt.
-3. **Entscheidung 4 gegen R3-12.** „30 Tage nach dem Endzustand“ greift nie, solange ein Wunsch
-   `vorgelegt` bleibt. E14 ergänzt eine Kappe; das ist eine Erweiterung der Entscheidung.
-4. **D7 gegen die Laufzeit je Wunsch.** D7 behält „Frist“ dem Aktivierenden und dem Broadcaster vor;
-   die Betreiber-Ergänzung erlaubt jedem Verwalter, die Laufzeit eines einzelnen Wunsches zu setzen.
-   Die Spec liest D7 als Regel für die **Kanal-Defaults** und lässt die Laufzeit je Wunsch allen
-   Verwaltern. Folge: Ein Twitch-Mod ohne 7TV-Rechte kann im Bot-Modus einen Wunsch mit 1 Tag
-   freigeben, den der Bot dann nach 1 Tag entfernt (nur bot-eigene Wunsch-Einträge).
-5. **Takt des Ablauf-Laufs.** Der Entwurf nennt `DataRetentionWorker` als Vorlage (Tagestakt hinter
-   der Boot-Recovery). Das verträgt sich nicht mit „binnen 24 h“ und Laufzeiten ab 1 Tag; die Spec
-   nimmt 15 Minuten (E6).
-6. **Kanalübergreifender Zähler gegen Ereignis-Sichtbarkeit.** „Live per SSE“ für den Zähler heißt,
-   `wish.changed` auf `/api/channels/live-events` weiterzuleiten, wo jeder eingeloggte Nutzer den
-   Kanalnamen sieht. Alternative ohne dieses Leck: Zähler nur beim Laden und alle 5 Minuten.
-7. **Pilot-Liste.** Der Brief nennt nur zwei Schalter; „zuerst in den Kanälen des anfragenden Mods“
-   braucht einen dritten (E8).
-8. **Lückenregel.** Der Brief sagt „bei Lücke immer vorlegen“, der Entwurf „bei eingeschaltetem
-   Schutz“. Die Spec folgt dem Entwurf (E5), weil ohne Schutz kein Bewertungsfenster existiert.
-9. **Ort der Einstellungen.** Der Entwurf legt sie in den Wünsche-Tab, der Code-Kommentar am
-   Settings-Tab (`channel-workspace-layout.ts:105-110`) erwartet dort einen zweiten Abschnitt. Die
-   Spec folgt dem Entwurf; der Settings-Tab bleibt unverändert an den Backfill-Schalter gekoppelt.
+Die neun Widersprüche der ersten Fassung sind entschieden. Je Punkt eine Zeile:
+
+| # | Frage | Entscheid | Steht in |
+|---|---|---|---|
+| W1 | Zustand `offen` ohne Erzeuger vor Scheibe 3 | **Nicht in Scheibe 1.** Freigeben, Ablehnen und Verfall wandern nach Scheibe 3; der Wert bleibt im Modell reserviert | E3, E13, Abschnitt 5, Abschnitt 9 |
+| W2 | Token symmetrisch oder asymmetrisch | **Asymmetrisch angenommen:** Api nur öffentlicher Schlüssel, Worker privater | E7, Abschnitt 7 |
+| W3 | Einlöser-Daten bei dauerhaft `vorgelegt` | **Kappe angenommen:** 30 Tage nach Ablauf geleert | E14, 6.5 |
+| W4 | D7 gegen Laufzeit je Wunsch | **Jeder Verwalter setzt die Laufzeit je Wunsch;** D7 gilt nur für Kanal-Vorgaben | E17 |
+| W5 | Takt des Ablauf-Laufs | **Eigener Worker, 15 Minuten** | E6, K2 |
+| W6 | Zähler live per SSE | **Poll** beim Seitenaufruf und alle 5 Minuten, eigener leichter Endpunkt; kein `wish.changed` auf dem globalen Stream; SSE nur im Wünsche-Tab | E18, K1, K3 |
+| W7 | Pilot-Liste | **Nur für den Bot-Modus, fail-closed:** leer = nur globale Admins; manueller Modus nur an `Wishes:Enabled` | E8, K4 |
+| W8 | Lückenregel ohne Schutz | **Nur bei eingeschaltetem Schutz** | E5 |
+| W9 | Ort der Einstellungen | **Settings-Tab,** neuer Abschnitt „Wünsche“ unter dem Backfill-Abschnitt; Tab-Link nur noch an `canManage` | E19, K3, K5 |
+
+Durch die Entscheide neu entstanden, zur Kenntnis:
+
+1. **W9 ändert einen Vertrag der Backfill-Spec.** Dort gilt bei ausgeschaltetem Backfill-Schalter
+   „Settings-Tab fehlt, Route leitet um“ (D17, AK14). Künftig ist der Tab für jeden Verwalter da; sind
+   beide Schalter aus, zeigt die Seite einen leeren Zustand. Betrifft fremde Betreiber mit beiden
+   Schaltern auf Default. K3 passt den E2E-Fall an und schreibt den DECISIONS-Eintrag.
+2. **W1 macht Entscheidung 3 (zweiter Teil) in Scheibe 1 unerreichbar:** „erneut gewünscht wird nach
+   Freigabe zur Verlängerung“ setzt einen offenen Wunsch voraus. Scheibe 1 antwortet stattdessen mit
+   409 und bietet „Verlängern“ an (E13); die eigentliche Regel kommt mit Scheibe 3.
+3. **W6 heißt bis zu 5 Minuten Verzug** am Zähler; die kanalübergreifende Seite lädt beim Öffnen.
+4. **W7 regelt nur das Aktivieren.** Ein Kanal, der aus der Liste genommen wird, läuft im Bot-Modus
+   weiter, bis ihn jemand abschaltet oder der Notaus greift. Soll die Liste auch stoppen, wäre das
+   eine zusätzliche Prüfung im Worker.
 
 ---
 
@@ -551,8 +559,8 @@ Abgleich mit Slots, Live-Event, Retention, Schalter. Hinter `Wishes:Enabled`, oh
 
 ## Umfang
 
-Enthalten: Abschnitte 5, 6.1 bis 6.3, 6.5 dieser Spec; Schalter `Wishes:Enabled`,
-`Wishes:PilotChannelIds`. Nicht enthalten: Ablauf-Lauf (K2), jede 7TV-Schreibaktion (K4),
+Enthalten: Abschnitte 5, 6.1 bis 6.3, 6.5 dieser Spec; Schalter `Wishes:Enabled`.
+Nicht enthalten: der Zustand `offen` (Scheibe 3), die Pilot-Liste (K4), Ablauf-Lauf (K2), jede 7TV-Schreibaktion (K4),
 Bot-Felder werden angelegt, aber von nichts gesetzt.
 
 ## Implementation Details
@@ -578,7 +586,7 @@ laufenden Wunsch kosten genau eine Indexabfrage.
 
 Kanal-Gruppe `/api/channels/{channelName}/wishes`: `RequireAuthorization` →
 `ChannelNameValidationFilter` → `ChannelManagementAuthorizationFilter` → im Handler Schalterprüfung
-(404 `wishes_disabled`, auch für Kanäle außerhalb der Pilot-Liste). Diese Reihenfolge ist der
+(404 `wishes_disabled`). Diese Reihenfolge ist der
 Fehlervertrag: 400 vor 403 vor 404.
 
 | Route | Rate-Limit | Zweck |
@@ -587,16 +595,22 @@ Fehlervertrag: 400 vor 403 vor 404.
 | `GET /{id}` | `InteractiveRead` | Detail mit `usage` (E4, E16) |
 | `POST /` | `Bookkeeping` | Handeintrag |
 | `POST /adopt` | `Bookkeeping` | Bestand übernehmen |
-| `PATCH /{id}` | `Bookkeeping` | Alias, Laufzeit; nur in `pending`, `approved`, `failed` |
-| `POST /{id}/approve`, `/reject`, `/extend`, `/keep`, `/close`, `/retry`, `/re-add`, `/complete-removal`, `/recheck` | `Bookkeeping` | Übergänge aus Abschnitt 5 |
+| `PATCH /{id}` | `Bookkeeping` | Alias, Laufzeit; nur in `approved`, `failed` |
+| `POST /{id}/extend`, `/keep`, `/close`, `/retry`, `/re-add`, `/complete-removal`, `/recheck` | `Bookkeeping` | Übergänge aus Abschnitt 5 |
 | `GET /settings` | `InteractiveRead` | Kanal-Einstellungen mit Defaults |
 | `PUT /settings` | `Bookkeeping`, zusätzlich `WishSettingsAuthorizationFilter` | im manuellen Modus jeder Verwalter; im Bot-Modus nur Broadcaster, Aktivierender, globaler Admin, sonst 403 `wish_settings_restricted` |
 
 Kanalübergreifend, Gruppe `/api/wishes` (`RequireAuthorization`, `InteractiveRead`):
 `GET /mine` (Handlungsbedarf und Wünsche in Probezeit über alle verwaltbaren Kanäle, sortiert nach
-`ExpiresAtUtc`, dann `CreatedAtUtc`) und `GET /summary` (`{ "actionCount": 3 }`). Die Menge der
-verwaltbaren Kanäle kommt aus `IMyChannelsService` (Broadcaster, Moderator, globaler Admin; nicht
-7TV-Editor allein), gefiltert auf Schalter und Pilot-Liste.
+`ExpiresAtUtc`, dann `CreatedAtUtc`) und `GET /summary` (`{ "actionCount": 3 }`), der leichte
+Zähl-Endpunkt für die Kopfzeile (E18). Beide gehen **nicht** über `IMyChannelsService` und nicht
+über `/api/channels/mine`. Sie beginnen bei den Kanälen, die überhaupt Wünsche mit Handlungsbedarf
+oder in Probezeit haben (eine Indexabfrage), und prüfen nur für diese das Verwaltungsrecht über
+`IChannelAccessService.CanManageChannelAsync` (Broadcaster, Moderator, globaler Admin; nicht
+7TV-Editor allein). Hat kein Kanal einen solchen Wunsch, antwortet `summary` ohne jede
+Rollenprüfung mit 0. Was eine Rollenprüfung bei kaltem Cache an Helix-Aufrufen kostet, ist in K1
+an `ChannelAccessService` und `ModRoleCache` nachzulesen und im PR zu nennen; der Vertrag steht in
+AK15.
 
 Formen (camelCase, Zeiten als ISO-8601 UTC):
 
@@ -607,10 +621,9 @@ POST /api/channels/{c}/wishes
 → 201 WishDto
 
 POST …/wishes/adopt        { "slotId": "…", "durationDays": 30, "startsAtUtc": null }
-POST …/{id}/approve        { "durationDays": 7, "alias": null }
 POST …/{id}/re-add         { "mode": "timed" | "permanent", "durationDays": 30 }
 PUT  …/wishes/settings     { "defaultDurationDays": 30, "probationLeadDays": 7,
-                             "pendingExpiryDays": 14, "protectionThresholdPerDay": null }
+                             "protectionThresholdPerDay": null }
 
 WishDto { id, sevenTvEmoteId, emoteName, alias, source, status, statusReason,
           requesterLogin, durationDays, createdAtUtc, approvedAtUtc, startsAtUtc,
@@ -630,23 +643,24 @@ Frontend-Hälfte liefert K3, K1 legt die Codes an und dokumentiert sie im PR): `
 `wish_alias_invalid` (400), `wish_requester_invalid` (400), `wish_settings_out_of_range` (400),
 `wish_settings_restricted` (403), `wish_slot_not_found` (404), `wish_slot_already_linked` (409).
 
-F2 beim Handeintrag und bei der Freigabe: Liegt die Emote-ID schon aktiv im Set, antwortet die Api
+F2 beim Handeintrag: Liegt die Emote-ID schon aktiv im Set, antwortet die Api
 409 `wish_emote_already_in_set`; der Client bietet „Bestand übernehmen“ an. Läuft schon ein Wunsch
-für die Emote-ID: beim Handeintrag 409 `wish_already_running`, bei der Freigabe eines `pending`
-greift E13. Ein volles Set (`ActiveEmoteSetCapacity`) blockiert nicht, die Antwort trägt nur
+für die Emote-ID: 409 `wish_already_running` mit der ID des laufenden Wunsches; der Client bietet
+„Verlängern“ an (E13). Ein volles Set (`ActiveEmoteSetCapacity`) blockiert nicht, die Antwort trägt nur
 `setFull: true` als Hinweis, weil die Zahl veralten kann.
 
 `GET /api/channels/{c}/permissions` (`ChannelEndpoints.cs`, heute u. a. `TagRunsEnabled`) bekommt
-`wishesEnabled` (Schalter und Pilot-Liste für diesen Kanal).
+`wishesEnabled` (der Schalter `Wishes:Enabled`).
 
-**Live-Event:** `LiveEvents.WishChanged = "wish.changed"`, mit Kanal, ohne weitere Nutzlast. In
-`ChannelTypes` aufnehmen; das Prädikat des kanalübergreifenden Streams (`LiveEndpoints.cs:92`) lässt
-zusätzlich `wish.changed` durch. Veröffentlicht nach jedem Commit, der einen Wunsch oder die
-Einstellungen ändert, höchstens einmal je Commit.
+**Live-Event:** `LiveEvents.WishChanged = "wish.changed"`, mit Kanal, ohne weitere Nutzlast. Nur in
+`ChannelTypes` aufnehmen, also nur auf `GET /api/channels/{channelName}/live`. Das Prädikat des
+kanalübergreifenden Streams (`LiveEndpoints.cs:92`) bleibt unverändert und lässt `wish.changed`
+nicht durch (E18). Veröffentlicht nach jedem Commit, der einen Wunsch oder die Einstellungen
+ändert, höchstens einmal je Commit.
 
 **Audit** (atomar mit dem `SaveChanges` der Aktion, Details nur `wishId`, `sevenTvEmoteId`,
-`durationDays`, nie Alias, nie Einlöser): `wish.create`, `wish.adopt`, `wish.approve`,
-`wish.reject`, `wish.extend`, `wish.keep`, `wish.remove`, `wish.close`, `wish.retry`,
+`durationDays`, nie Alias, nie Einlöser): `wish.create`, `wish.adopt`,
+`wish.extend`, `wish.keep`, `wish.remove`, `wish.close`, `wish.retry`,
 `wish.readd`, `wish.settings`. Die Frontend-Übersetzungen `audit.actions.*` liefert K3.
 
 ## Akzeptanzkriterien
@@ -656,16 +670,16 @@ Einstellungen ändert, höchstens einmal je Commit.
    sind leer, keine bestehende Tabelle hat eine geänderte Spalte.
 2. **AK2** `WishTransitions` lässt genau die Übergänge aus Abschnitt 5 zu; jeder nicht gelistete
    (Zustand, Aktion) ergibt 409 `wish_state_conflict`, geprüft als vollständige Matrix.
-3. **AK3** Zwei gleichzeitige `approve` auf denselben Wunsch: genau einer 200, der andere 409, ein
+3. **AK3** Zwei gleichzeitige `keep` auf denselben Wunsch: genau einer 200, der andere 409, ein
    Audit-Eintrag.
 4. **AK4** Handeintrag mit `durationDays` 0 oder 366 → 400 `wish_duration_out_of_range`; mit 1 und
    365 → 201; ohne Wert gilt der Kanal-Default.
 5. **AK5** Handeintrag für eine Emote-ID, die aktiv im Set liegt → 409
    `wish_emote_already_in_set` mit den Slot-IDs; anschließendes `adopt` mit dieser Slot-ID → 201,
    `status = active`, `botOwned = false`, `startsAtUtc` = `AddedAt` des Slots.
-6. **AK6** Freigabe eines `pending`, während ein `active`-Wunsch derselben Emote-ID läuft: Der
-   laufende hat danach `ExpiresAtUtc` um die Laufzeit des neuen verlängert und `ExtensionCount + 1`,
-   der neue ist `merged` mit `MergedIntoWishId`.
+6. **AK6** Handeintrag für eine Emote-ID mit laufendem Wunsch → 409 `wish_already_running` mit
+   dessen ID; ein anschließendes `extend` auf diesen Wunsch verlängert `ExpiresAtUtc` um den
+   Kanal-Default und erhöht `ExtensionCount` um 1.
 7. **AK7** Abgleich: `approved` plus genau ein neuer Slot gleicher Emote-ID und gleichen Alias →
    `active`, `SlotId` gesetzt. Mit zwei Kandidaten bleibt der Wunsch `approved`.
 8. **AK8** Abgleich: Slot mit vorläufigem `AddedAt` → `startsAtAuthoritative = false`; nach dem
@@ -683,14 +697,16 @@ Einstellungen ändert, höchstens einmal je Commit.
     Erscheinen des Slots nach `kept`, nicht nach `active`.
 13. **AK13** Filter-Matrix an den echten Routen (`Api.Tests`): ungültiger Name 400, nicht
     eingeloggt 401, Nicht-Verwalter 403, 7TV-Editor ohne Mod-Status 403, Verwalter bei
-    ausgeschaltetem Schalter 404 `wishes_disabled`, Verwalter eines Kanals außerhalb der Pilot-Liste
-    404, Nicht-Verwalter bei ausgeschaltetem Schalter 403 (nicht 404).
+    ausgeschaltetem Schalter 404 `wishes_disabled`,
+    Nicht-Verwalter bei ausgeschaltetem Schalter 403 (nicht 404).
 14. **AK14** `PUT /settings` bei `BotModeEnabled = true`: Twitch-Mod, der nicht aktiviert hat → 403
     `wish_settings_restricted`; Broadcaster, Aktivierender und globaler Admin → 200.
 15. **AK15** `GET /api/wishes/mine` enthält nur Wünsche aus Kanälen, die der Aufrufer verwalten
-    darf; ein Konto, das nur 7TV-Editor eines Kanals ist, sieht dessen Wünsche nicht.
+    darf; ein Konto, das nur 7TV-Editor eines Kanals ist, sieht dessen Wünsche nicht. `GET /summary`
+    ruft `IMyChannelsService` nie auf, antwortet ohne Wünsche mit Handlungsbedarf ohne Rollenprüfung
+    mit 0, und ein zweiter Aufruf desselben Kontos binnen 5 Minuten löst keinen Helix-Aufruf aus.
 16. **AK16** `wish.changed` erscheint nach einem Handeintrag auf
-    `GET /api/channels/{c}/live` dieses Kanals und auf `/api/channels/live-events`, nicht auf dem
+    `GET /api/channels/{c}/live` dieses Kanals, nicht auf `/api/channels/live-events` und nicht auf dem
     Kanal-Stream eines anderen Kanals.
 17. **AK17** Retention: Ein Wunsch mit `EndedAtUtc` vor 31 Tagen hat nach dem Durchlauf beide
     Einlöser-Felder null, einer vor 29 Tagen nicht; ein `presented` mit `ExpiresAtUtc` vor 31 Tagen
@@ -740,9 +756,9 @@ zusätzlicher Integrationstest zeigt, dass ein Fehler im Abgleich den Sync nicht
 | `src/EmotePurge.Infrastructure/Services/ChannelIdentityService.cs` | Wünsche beim Zusammenführen mitnehmen |
 | `src/EmotePurge.Infrastructure/ServiceCollectionExtensions.cs:339` | Optionen, Dienste |
 | `src/EmotePurge.Api/Endpoints/WishEndpoints.cs`, `Auth/WishSettingsAuthorizationFilter.cs` | neu |
-| `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` (`/permissions`), `LiveEndpoints.cs:92` | Feld, Prädikat |
+| `src/EmotePurge.Api/Endpoints/ChannelEndpoints.cs` (`/permissions`) | Feld `wishesEnabled` |
 | `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` | zwölf Codes |
-| `docker-compose.yml`, `docker-compose.prod.yml`, `.env.example` | `WISHES_ENABLED`, `WISHES_PILOT_CHANNEL_IDS` an `api` und `worker` |
+| `docker-compose.yml`, `docker-compose.prod.yml`, `.env.example` | `WISHES_ENABLED` an `api` und `worker` |
 | `docs/DECISIONS.md` | englischer Eintrag: Wunsch-Modell, zustandsbasierter Abgleich, Schalter |
 | `docs/Feature-Ideen-2026-08-01.md` | `A18`, Verweis an #3 |
 
@@ -758,8 +774,8 @@ Labels: `feat`, `worker`. Hängt ab von K1.
 
 ## Ziel
 
-Ein Hosted Service, der Fristen durchsetzt, ohne je nach 7TV zu schreiben: offene Wünsche verfallen
-lassen, fällige feststellen, Schutz und Lücke bewerten, vorlegen oder zur Bot-Entfernung vormerken.
+Ein Hosted Service, der Fristen durchsetzt, ohne je nach 7TV zu schreiben:
+fällige Wünsche feststellen, Schutz und Lücke bewerten, vorlegen oder zur Bot-Entfernung vormerken.
 
 ## Umfang
 
@@ -770,10 +786,10 @@ lassen, fällige feststellen, Schutz und Lücke bewerten, vorlegen oder zur Bot-
 
 - Takt nach E6 mit `PeriodicTimer` und `TimeProvider`. Bei `Wishes:Enabled = false` beendet sich
   der Dienst nach einer Logzeile (Muster `ChatLogBackfillWorker`).
-- Je Durchlauf, in dieser Reihenfolge: (1) `pending` älter als `PendingExpiryDays` des Kanals →
-  `expired`. (2) Abgleich für jeden Kanal mit laufenden Wünschen (E9). (3) Für jeden `active` mit
-  `ExpiresAtUtc` ≤ jetzt die Entscheidung aus der Tabelle unten. (4) Ein `wish.changed` je
-  betroffenem Kanal. (5) Eine Logzeile mit reinen Zählwerten, nur wenn sich etwas geändert hat.
+- Je Durchlauf, in dieser Reihenfolge: (1) Abgleich für jeden Kanal mit laufenden Wünschen (E9).
+  (2) Für jeden `active` mit `ExpiresAtUtc` ≤ jetzt die Entscheidung aus der Tabelle unten. (3) Ein
+  `wish.changed` je betroffenem Kanal. (4) Eine Logzeile mit reinen Zählwerten, nur wenn sich etwas
+  geändert hat. Einen Zweig für offene Wünsche gibt es nicht (W1).
 - Ein Wunsch mit `StartsAtAuthoritative = false` wird nicht fällig gestellt, solange der Kanal
   aktiv gesynct wird; ist der letzte erfolgreiche Sync älter als 24 Stunden, gilt das vorläufige
   Datum.
@@ -799,32 +815,29 @@ fest, ist das Fenster entsprechend länger, nie kürzer.
 
 ## Akzeptanzkriterien
 
-22. **AK22** `pending` mit `CreatedAtUtc` vor 15 Tagen und `PendingExpiryDays = 14` → `expired`,
-    `EndedAtUtc` gesetzt; mit `PendingExpiryDays = 1` und Alter 23 h bleibt er `pending`, mit 25 h
-    verfällt er.
-23. **AK23** `WishExpiryPolicy` liefert für jede der sechs Zeilen das genannte Ergebnis; die
+22. **AK22** `WishExpiryPolicy` liefert für jede der sechs Zeilen das genannte Ergebnis; die
     Reihenfolge ist getestet (ein Fall, der Zeile 2 und 5 erfüllt, ergibt `not_bot_owned`).
-24. **AK24** Fenster E4: Laufzeit 30 Tage → Fenster genau 7 Tage; Laufzeit 2 Tage → Fenster 2 Tage,
+23. **AK23** Fenster E4: Laufzeit 30 Tage → Fenster genau 7 Tage; Laufzeit 2 Tage → Fenster 2 Tage,
     Mittel = Summe geteilt durch 2; Laufzeit 1 Tag → Fenster 24 h, gültig; ein Wunsch, der 23 h im
     Set ist (künstlich früher Ablauf), gilt als Lücke.
-25. **AK25** Mittel je Tag summiert über alle Slots desselben Emotes im Kanal (R3-8): Emote unter
+24. **AK24** Mittel je Tag summiert über alle Slots desselben Emotes im Kanal (R3-8): Emote unter
     zwei Aliasen mit 10 und 20 Nutzungen je Tag ergibt 30.
-26. **AK26** Lücke E5: `TrackedSince` einen Tag nach Fensterbeginn → `coverage_gap`, auch wenn die
+25. **AK25** Lücke E5: `TrackedSince` einen Tag nach Fensterbeginn → `coverage_gap`, auch wenn die
     Nutzung über der Schwelle liegt; `DeactivatedAtUtc` gesetzt → `coverage_gap`; Schutz aus und
     dieselbe Lage → Zeile 6.
-27. **AK27** Ein Wunsch mit vorläufigem Start wird bei frischem Sync nicht fällig gestellt, bei
+26. **AK26** Ein Wunsch mit vorläufigem Start wird bei frischem Sync nicht fällig gestellt, bei
     einem letzten Sync vor 25 h schon.
-28. **AK28** Zwei Durchläufe hintereinander über denselben Stand: der zweite ändert keine Zeile und
+27. **AK27** Zwei Durchläufe hintereinander über denselben Stand: der zweite ändert keine Zeile und
     veröffentlicht kein Event.
-29. **AK29** `Wishes:Enabled = false`: genau eine Logzeile, kein Datenbankzugriff danach.
-30. **AK30** Der Worker hat fünfzehn Hosted Services; `LogCaptureWriter` bleibt der erste.
-31. **AK31** Live-Verifikation (Regel 16) lokal: per `adopt` einen Bestandseintrag mit
+28. **AK28** `Wishes:Enabled = false`: genau eine Logzeile, kein Datenbankzugriff danach.
+29. **AK29** Der Worker hat fünfzehn Hosted Services; `LogCaptureWriter` bleibt der erste.
+30. **AK30** Live-Verifikation (Regel 16) lokal: per `adopt` einen Bestandseintrag mit
     `startsAtUtc` vor 8 Tagen und `durationDays = 7` übernehmen; nach höchstens einem Takt steht der
     Wunsch auf `presented` (`expired`) und `wish.changed` kommt auf dem Kanal-Stream an. Wiederholen
     mit Schutzschwelle 1 auf einem Emote mit echter Nutzung im Fenster: Ergebnis `presented`
     (`expired`) im manuellen Modus bleibt, die Detailantwort zeigt `perDayMean` > 0 und
     `coverageGap = false`.
-32. **AK32** Nach der Aktivierung im Pilot (Beobachtung, kein Merge-Tor): Ein echter Wunsch mit
+31. **AK31** Nach der Aktivierung im Pilot (Beobachtung, kein Merge-Tor): Ein echter Wunsch mit
     7 Tagen Laufzeit zeigt ab Start „Probezeit“ (Vorlauf 7) und steht spätestens 15 Minuten nach
     Ablauf auf `presented`.
 
@@ -833,9 +846,9 @@ fest, ist das Fenster entsprechend länger, nie kürzer.
 | Ebene | Projekt | Was | Anzahl |
 |---|---|---|---|
 | Unit | `Infrastructure.Tests/Unit` | `WishExpiryPolicy`, Fenster- und Lückenregel mit `FakeTimeProvider` | +18 |
-| Integration | `Infrastructure.Tests/Integration` | `WishExpiryService` gegen Postgres (AK22, AK25 bis AK28) | +10 |
+| Integration | `Infrastructure.Tests/Integration` | `WishExpiryService` gegen Postgres (AK24 bis AK27) | +10 |
 | Worker | `Worker.Tests` | nichts: Der Worker ist nur Takt; die Logik liegt in Infrastructure | 0 |
-| Live | lokal, später Pilot | AK31, AK32 | keine |
+| Live | lokal, später Pilot | AK30, AK31 | keine |
 
 ## Files Reference
 
@@ -866,7 +879,8 @@ Hinzufügen und Entfernen über die bestehende Browser-Engine mit dem Token des 
 
 ## Umfang
 
-Tab „Wünsche“ im Channel-Workspace, Abschnitt „Einstellungen“ in diesem Tab, Seite `my-wishes`,
+Tab „Wünsche“ im Channel-Workspace als reine Arbeitsliste, Abschnitt „Wünsche“ im Settings-Tab,
+Seite `my-wishes`,
 Link mit Zähler in der Kopfzeile, i18n, Fehlercodes, Audit-Übersetzungen. Kein Bot-Zustand außer
 einer neutralen Darstellung unbekannter Gründe (K5 ergänzt).
 
@@ -877,21 +891,29 @@ einer neutralen Darstellung unbekannter Gründe (K5 ergänzt).
   `authGuard` nach Vorlage `features/my-votings/`.
 - **Tab** (`channel-workspace-layout.ts:93-110`): `<app-tab-link link="wishes">` hinter
   `canManage() && wishesEnabled()`. Der Guard ist die Prüfung, die Bedingung nur Sichtbarkeit
-  (UI-Designsprache §8.3). Der Settings-Tab bleibt unverändert.
+  (UI-Designsprache §8.3).
+- **Settings-Tab** (E19): Der Link (`channel-workspace-layout.ts:105-110`) und `channelSettingsGuard`
+  hängen nur noch an `canManage`. `channel-settings-page.ts` zeigt `<app-backfill-section>` nur bei
+  `chatLogBackfillEnabled()` und darunter den neuen Abschnitt `<app-wish-settings-section>` nur bei
+  `wishesEnabled()`. Sind beide Schalter aus, zeigt die Seite einen leeren Zustand (§6.2), statt
+  umzuleiten. Das löst D17 und AK14 der Backfill-Spec ab; der bestehende E2E-Fall in
+  `web/e2e/channel-settings.e2e.spec.ts` wird angepasst, und der Commit trägt einen englischen
+  DECISIONS-Eintrag (Regel 3).
 - **Core** (`core/wishes/`): `wish.model.ts`, `wish.service.ts` (alle Routen aus K1),
-  `wish-summary.service.ts` (Zähler als Signal, lädt beim Start der Shell und nach `wish.changed`,
-  entprellt auf 5 s), Typ `wishChanged` in `core/live/live-event.model.ts:16-30`.
+  `wish-summary.service.ts` (Zähler als Signal, lädt beim Start der Shell und danach alle 5 Minuten,
+  pausiert bei verborgenem Fenster, kein SSE), Typ `wishChanged` in `core/live/live-event.model.ts:16-30`.
 - **Features** (`features/wishes/`): `channel-wishes-page.ts` (drei Bereiche: Handlungsbedarf,
   laufend, beendet mit Pagination), `wish-card.ts`, `wish-entry-dialog.ts` (Handeintrag: 7TV-Link
   oder ID, Alias, Laufzeit vorbelegt mit dem Kanal-Default, optional Login des Wünschenden),
-  `wish-adopt-dialog.ts`, `wish-settings-section.ts`, `my-wishes-page.ts`.
+  `wish-adopt-dialog.ts`, `my-wishes-page.ts`; für den Settings-Tab
+  `features/channel-workspace/wish-settings-section.ts`.
 - **Handeintrag:** Der Client löst Emote-ID und Standardnamen aus dem Link über den öffentlichen
   7TV-Read auf, den der Browser schon nutzt, und schickt beides. Normalisierung wie der Server:
   Login getrimmt und kleingeschrieben vor der Prüfung (Regel 9 sinngemäß).
 - **Karte:** Emote-Bild, Alias, Wünschender (falls vorhanden), Quelle, Zeit im Set, Restzeit bzw.
   „seit N Tagen abgelaufen“, Laufzeit, Nutzung im Fenster mit Sparkline (`usage-sparkline.ts`,
   `getDailySeries` je Slot), „Rang N von M“, Hinweis bei `coverageGap`. Aktionen je Zustand nach
-  Abschnitt 5; bei `rejected` der Hinweis auf Twitchs Warteschlange.
+  Abschnitt 5.
 - **Hinzufügen und Entfernen:** über `SevenTvRunArbiter` (ein Lauf zur Zeit, `startLocked` sperrt
   die Knöpfe mit Grund). Hinzufügen nutzt die AddEmote-Mutation; die drei Kopien
   (`seven-tv-restore.service.ts:54`, `seven-tv-undo.service.ts:75`, `seven-tv-import.service.ts:74`)
@@ -904,7 +926,7 @@ einer neutralen Darstellung unbekannter Gründe (K5 ergänzt).
   `summary` erreichbar ist und der Schalter an ist; die Zahl steht am Link, nicht als zweites
   Status-Badge (Kommentar `:128-134`).
 - **i18n:** Schlüsselbereiche `wishes.*` (Seiten, Karte, Dialoge, Zustände `wishes.status.*`,
-  Gründe `wishes.reason.*`), `channelWorkspace.tabs.wishes`, `shell.wishes`, `errors.api.wish_*`,
+  Gründe `wishes.reason.*`), `channelWorkspace.tabs.wishes`, `channelSettings.wishes.*`, `shell.wishes`, `errors.api.wish_*`,
   `audit.actions.wish.*`, in `de.json` und `en.json`. Keine „…“ an Knöpfen.
 - **Design:** gegen `docs/UI-Designsprache.md` §2.1, §4.2 (Entfernen ist destruktiv, Stufe wie das
   Löschen eines Eintrags), §4.3, §6.2 (leerer Zustand je Bereich), §7, §8.1, §8.5, §11. Keine
@@ -912,36 +934,41 @@ einer neutralen Darstellung unbekannter Gründe (K5 ergänzt).
 
 ## Akzeptanzkriterien
 
-33. **AK33** Tab und Route: Verwalter mit `wishesEnabled` sieht den Tab; ohne `canManage` oder ohne
+32. **AK32** Tab und Route: Verwalter mit `wishesEnabled` sieht den Tab; ohne `canManage` oder ohne
     Schalter fehlt er und `/channels/x/wishes` leitet um wie ein abgelehnter Verwalter-Guard.
-34. **AK34** Handeintrag: Der Dialog belegt die Laufzeit mit dem Kanal-Default vor; Werte außerhalb
+33. **AK33** Handeintrag: Der Dialog belegt die Laufzeit mit dem Kanal-Default vor; Werte außerhalb
     1 bis 365 sperren den Knopf mit sichtbarem Grund; ein Login mit Großbuchstaben wird normalisiert
     gesendet.
-35. **AK35** 409 `wish_emote_already_in_set` im Handeintrag öffnet „Bestand übernehmen“ mit den
+34. **AK34** 409 `wish_emote_already_in_set` im Handeintrag öffnet „Bestand übernehmen“ mit den
     gemeldeten Einträgen.
-36. **AK36** Je Zustand zeigt die Karte genau die Aktionen aus Abschnitt 5 (Zustand → Aktionsliste
+35. **AK35** Je Zustand zeigt die Karte genau die Aktionen aus Abschnitt 5 (Zustand → Aktionsliste
     als `computed()`, getestet als Tabelle); ein unbekannter `statusReason` rendert eine neutrale
     Zeile statt eines Fehlers.
-37. **AK37** Probezeit ist aus `probationStartsAtUtc` abgeleitet: Ein Wunsch mit 2 Tagen Laufzeit
+36. **AK36** Probezeit ist aus `probationStartsAtUtc` abgeleitet: Ein Wunsch mit 2 Tagen Laufzeit
     und Vorlauf 7 zeigt ab Start „Probezeit“.
-38. **AK38** Entfernen aus der Karte: Der Lauf bindet über Alias und `addedAt`; weicht der frische
+37. **AK37** Entfernen aus der Karte: Der Lauf bindet über Alias und `addedAt`; weicht der frische
     Read ab, wird nichts gesendet und die Karte meldet es. Nach Erfolg geht genau ein
     `complete-removal` an die Api.
-39. **AK39** Während ein anderer 7TV-Lauf aktiv ist, sind Hinzufügen und Entfernen auf allen Karten
+38. **AK38** Während ein anderer 7TV-Lauf aktiv ist, sind Hinzufügen und Entfernen auf allen Karten
     gesperrt und nennen den Grund (`aria-disabled` plus zugänglicher Name).
-40. **AK40** `wish.changed` auf dem Kanal-Stream lädt die Seite ohne Reload neu; fünf Ereignisse in
-    2 Sekunden auf dem kanalübergreifenden Stream lösen genau eine `summary`-Anfrage aus.
-41. **AK41** Zähler: zeigt `actionCount`, bei 0 keine Zahl; der Link fehlt bei 404 `wishes_disabled`.
-42. **AK42** Einstellungen: im Bot-Modus für einen Twitch-Mod, der nicht aktiviert hat, schreibgeschützt
-    mit Erklärung; Grenzen 1 bis 365, 1 bis 30, 1 bis 90 werden vor dem Senden geprüft.
-43. **AK43** `my-wishes` listet Handlungsbedarf vor Probezeit, innerhalb nach Ablauf aufsteigend,
+39. **AK39** `wish.changed` auf dem Kanal-Stream lädt den Wünsche-Tab ohne Reload neu. Der Zähler
+    lädt beim Seitenaufruf und danach alle 5 Minuten (mit `page.clock`: nach 15 Minuten genau drei
+    weitere `summary`-Anfragen), öffnet keinen eigenen Stream und fragt `/api/channels/mine` nicht
+    ab.
+40. **AK40** Zähler: zeigt `actionCount`, bei 0 keine Zahl; der Link fehlt bei 404 `wishes_disabled`.
+41. **AK41** Settings-Tab: sichtbar für jeden Verwalter, unabhängig vom Backfill-Schalter. Der
+    Backfill-Abschnitt erscheint nur bei `chatLogBackfillEnabled`, der Abschnitt „Wünsche“ nur bei
+    `wishesEnabled` und steht darunter; beide aus ergibt den leeren Zustand. Im Bot-Modus ist der
+    Abschnitt für einen Twitch-Mod, der nicht aktiviert hat, schreibgeschützt mit Erklärung; die
+    Grenzen 1 bis 365 und 1 bis 30 werden vor dem Senden geprüft.
+42. **AK42** `my-wishes` listet Handlungsbedarf vor Probezeit, innerhalb nach Ablauf aufsteigend,
     und nennt je Zeile den Kanal.
-44. **AK44** `api-error-locales.spec.ts` grün mit allen `wish_*`-Codes; `api-error.ts` enthält
+43. **AK43** `api-error-locales.spec.ts` grün mit allen `wish_*`-Codes; `api-error.ts` enthält
     jeden Code aus `ApiErrorCodes.cs` (von Hand gegengeprüft, im PR benannt).
-45. **AK45** Bei 360 px Breite hat die Kopfzeile mit Zähler und einem aktiven Status-Badge keinen
+44. **AK44** Bei 360 px Breite hat die Kopfzeile mit Zähler und einem aktiven Status-Badge keinen
     horizontalen Überlauf und kein abgeschnittenes Element (Audit-Harness, `smallTargets`
     mitgeprüft).
-46. **AK46** Live-Probe im Browser gegen den lokalen Stack mit dem Testkonto: Handeintrag,
+45. **AK45** Live-Probe im Browser gegen den lokalen Stack mit dem Testkonto: Handeintrag,
     Hinzufügen aus der Karte mit eigenem Token, Karte wird nach dem Sync `aktiv`; übernommener,
     abgelaufener Eintrag erscheint in Kopfzeile und Übersicht; Entfernen aus der Karte endet in
     `entfernt`. Auf einem echten Handy über den `lan`-Weg einmal durchgeklickt.
@@ -952,8 +979,8 @@ einer neutralen Darstellung unbekannter Gründe (K5 ergänzt).
 |---|---|---|
 | Vitest, `core/wishes` | `WishService` (`HttpTestingController`), `WishSummaryService` (Entprellen), Guard | +14 |
 | Vitest, Komponenten | nur Entscheidungslogik: Aktionsliste je Zustand, Sperrgründe, Sortierung, Probezeit-Ableitung, Validierung (Regel 12: Verhalten, nicht Vorlage) | +16 |
-| Playwright | `web/e2e/wishes.e2e.spec.ts` mit `e2e/support/mocks.ts`: Handeintrag bis Karte; fälliger Wunsch in Übersicht und Zähler; Entfernen mit gemocktem 7TV; Tab unsichtbar ohne Schalter | +5 |
-| Live | AK46 | 1 Durchgang |
+| Playwright | `web/e2e/wishes.e2e.spec.ts` mit `e2e/support/mocks.ts`: Handeintrag bis Karte; fälliger Wunsch in Übersicht und Zähler; Entfernen mit gemocktem 7TV; Tab unsichtbar ohne Schalter; Settings-Tab mit beiden, einem und keinem Abschnitt | +6 |
+| Live | AK45 | 1 Durchgang |
 
 E2E nur ohne laufende Api auf `:5151`; Import aus `web/e2e/support/test.ts`.
 
@@ -962,7 +989,11 @@ E2E nur ohne laufende Api auf `:5151`; Import aus `web/e2e/support/test.ts`.
 | Datei | Änderung |
 |---|---|
 | `web/src/app/app.routes.ts:52`, `:102-161` | zwei Routen |
-| `web/src/app/features/channel-workspace/channel-workspace-layout.ts:93-110` | Tab |
+| `web/src/app/features/channel-workspace/channel-workspace-layout.ts:93-110` | Tab „Wünsche“; Settings-Link nur noch `canManage` (:105-110) |
+| `web/src/app/features/channel-workspace/channel-settings-page.ts`, `wish-settings-section.ts` | zweiter Abschnitt, Backfill-Abschnitt hinter seinem Schalter, leerer Zustand |
+| `web/src/app/core/guards/` (`channelSettingsGuard`) | nur noch `canManage` |
+| `web/e2e/channel-settings.e2e.spec.ts` | an E19 angepasst |
+| `docs/DECISIONS.md` | englischer Eintrag zu E19 (löst Backfill-D17 ab) |
 | `web/src/app/features/shell/app-shell.ts` | Link mit Zähler |
 | `web/src/app/core/wishes/*` | neu, mit Specs |
 | `web/src/app/features/wishes/*` | neu |
@@ -976,7 +1007,7 @@ E2E nur ohne laufende Api auf `:5151`; Import aus `web/e2e/support/test.ts`.
 
 ## Abhängigkeiten
 
-K1; K2 für AK46.
+K1; K2 für AK45.
 
 ---
 
@@ -1017,11 +1048,13 @@ Keine Route gibt das Token oder das Siegel zurück. Audit: `wishBot.tokenSet`,
 
 **Kanal-Api** (Gruppe aus K1): `GET /api/channels/{c}/wishes/bot` (`{ available, enabled,
 suspendedReason, editorCheckedAtUtc, activatedByLogin, activatedAtUtc, botSevenTvUserId }`),
-`POST …/wishes/bot/activate` (jeder Verwalter; setzt eine Prüfanforderung und stößt den Worker an;
+`POST …/wishes/bot/activate` (jeder Verwalter eines Kanals der Pilot-Liste, sonst nur ein globaler
+Admin, E8, andernfalls 403 `wish_bot_channel_not_listed`; setzt eine Prüfanforderung und stößt den Worker an;
 aktiv wird der Modus erst, wenn der Worker den Editor-Status bestätigt hat; 409
 `wish_bot_unavailable`, wenn Token oder Schalter fehlen), `DELETE …/wishes/bot` (Broadcaster,
 Aktivierender, globaler Admin über `WishSettingsAuthorizationFilter`; beendet jedes Eigentum im
-Kanal, laufende Wünsche werden Erinnerungsfälle). `/permissions` bekommt `wishBotModeAvailable`.
+Kanal, laufende Wünsche werden Erinnerungsfälle). `/permissions` bekommt `wishBotModeAvailable` (Schalter an, Token gültig, kein Notaus, und Kanal
+gelistet oder Aufrufer globaler Admin).
 Audit: `wish.botActivate`, `wish.botDeactivate`.
 
 **Schreib-Client:** `ISevenTvWriteClient` (Core) und Implementierung (Infrastructure), eigener
@@ -1072,25 +1105,25 @@ Löschen mit `typed-confirm-dialog`, Notaus-Schalter, Warteschlangentiefe, Zahl 
 
 ## Akzeptanzkriterien
 
-47. **AK47** Migration `AddWishBot` additiv; genau eine Zeile möglich (zweites Insert scheitert am
+46. **AK46** Migration `AddWishBot` additiv; genau eine Zeile möglich (zweites Insert scheitert am
     CHECK).
-48. **AK48** Versiegeln und Öffnen: Rundlauf liefert das Original; ein verändertes Byte, ein
+47. **AK47** Versiegeln und Öffnen: Rundlauf liefert das Original; ein verändertes Byte, ein
     falscher privater Schlüssel und ein unbekanntes Präfix liefern „kein Token“, keine Ausnahme mit
     Inhalt. Die Api-Assembly-Registrierung enthält keinen `IWishBotTokenOpener` (Test über den
     Service-Provider der `WebApplicationFactory`).
-49. **AK49** `PUT /token`: kein JWT → 400 `wish_bot_token_malformed`; `exp` in der Vergangenheit →
+48. **AK48** `PUT /token`: kein JWT → 400 `wish_bot_token_malformed`; `exp` in der Vergangenheit →
     400 `wish_bot_token_expired`; gültig → 204, `Status = unverified`, ein `WISHBOT:`-Kommando,
     ein Audit-Eintrag ohne Token. Kein Admin → 403; Schalter aus → 404 `wish_bot_disabled` nach dem
     Filter.
-50. **AK50** Keine Antwort irgendeiner Route enthält Token oder Siegel (Test durchsucht alle
+49. **AK49** Keine Antwort irgendeiner Route enthält Token oder Siegel (Test durchsucht alle
     Antworten der Admin- und Kanal-Routen nach dem gesetzten Wert).
-51. **AK51** Das Token erscheint in keinem Log: Test mit Log-Erfassung auf Trace-Stufe über Setzen,
+50. **AK50** Das Token erscheint in keinem Log: Test mit Log-Erfassung auf Trace-Stufe über Setzen,
     Prüfen, Hinzufügen, Entfernen und einen 401-Fehler; weder Token noch `Bearer` plus Wert in
     irgendeiner Zeile.
-52. **AK52** Schreib-Client gegen einen lokalen Stub: verkleidetes 429 → Pause mit 60 s Default,
+51. **AK51** Schreib-Client gegen einen lokalen Stub: verkleidetes 429 → Pause mit 60 s Default,
     `Retry-After` wird übernommen und bei 6 h gekappt; 401 → Token `invalid`, alle Bot-Kanäle im
     Rückfall; unvollständige Seitenfolge beim Lesen → Fehler, kein Schreiben.
-53. **AK53** Eigentum (alle Fälle aus dem Entwurf, R3-5): Bestätigungs-Read mit `addedById` = Bot →
+52. **AK52** Eigentum (alle Fälle aus dem Entwurf, R3-5): Bestätigungs-Read mit `addedById` = Bot →
     Eigentum; fremd → `active` ohne Eigentum; fehlend → ohne Eigentum; kein Eintrag bis 15 min →
     `presented` (`unconfirmed`); Abweichung je eines der vier Merkmale im frischen Read → kein
     `removeEmote`; Umbenennen außerhalb → Eigentum endet; Entfernen und Hinzufügen außerhalb → kein
@@ -1098,17 +1131,21 @@ Löschen mit `typed-confirm-dialog`, Notaus-Schalter, Warteschlangentiefe, Zahl 
     bleibt nach dem Entfernen im Set; Moduswechsel überträgt kein Eigentum; fehlender fremder
     Eintrag im Nach-Read → genau ein Wieder-Hinzufügen, `wish.botRepair`, `presented`
     (`repair_review`).
-54. **AK54** F12: Ein im Bot-Kanal von einem Verwalter per Browser hinzugefügter Wunsch-Eintrag
+53. **AK53** F12: Ein im Bot-Kanal von einem Verwalter per Browser hinzugefügter Wunsch-Eintrag
     wird bei Ablauf `presented` (`not_bot_owned`), der Worker sendet kein `removeEmote`.
-55. **AK55** Rückfall global (R3-10): Token `invalid` → `approved` bleibt und zählt in
+54. **AK54** Rückfall global (R3-10): Token `invalid` → `approved` bleibt und zählt in
     `summary`; `unconfirmed` → `presented` (`unconfirmed`); `RemovalQueuedAtUtc` gesetzt →
     `presented` (`bot_unavailable`). Nach neuem gültigem Token nimmt der Worker nur `approved` auf.
-56. **AK56** Rückfall je Kanal (R3-11): Editor-Prüfung schlägt fehl oder 7TV antwortet auf ein
+55. **AK55** Rückfall je Kanal (R3-11): Editor-Prüfung schlägt fehl oder 7TV antwortet auf ein
     Schreiben mit fehlender Berechtigung → `BotSuspendedReason = not_editor`, ein Audit-Eintrag,
     andere Kanäle laufen weiter.
-57. **AK57** Notaus: `KillSwitch = true` während eines laufenden Durchgangs → spätestens nach dem
-    laufenden Request kein weiterer; Zustand wie AK55. Zwei Worker-Instanzen: nur die mit dem
+56. **AK56** Notaus: `KillSwitch = true` während eines laufenden Durchgangs → spätestens nach dem
+    laufenden Request kein weiterer; Zustand wie AK54. Zwei Worker-Instanzen: nur die mit dem
     Advisory-Lock schreibt.
+57. **AK57** Pilot-Liste (E8): Liste leer → `activate` durch Broadcaster und Mod 403
+    `wish_bot_channel_not_listed`, durch einen globalen Admin erfolgreich; Kanal gelistet →
+    Verwalter erfolgreich; `*` → jeder Kanal. Ein schon aktiver Bot-Kanal, der aus der Liste
+    fällt, läuft weiter. Der manuelle Modus ist von der Liste in keinem Fall berührt.
 58. **AK58** Live-Probe (Testkonto, Bot als Editor): nach `addEmote` durch den Bot zeigt der
     v4-Read `addedById` = 7TV-ID des Bot-Kontos. Ergebnis im PR und in DECISIONS festgehalten.
     **Fällt sie durch, entfällt das automatische Entfernen** (Bot fügt nur hinzu und erinnert), und
@@ -1150,10 +1187,10 @@ Löschen mit `typed-confirm-dialog`, Notaus-Schalter, Warteschlangentiefe, Zahl 
 
 | Ebene | Projekt | Was | Anzahl |
 |---|---|---|---|
-| Unit | `Infrastructure.Tests/Unit` | Siegel (AK48), Eigentumsentscheidung als reine Funktion (AK53), Fehlerzuordnung, JWT-`exp`-Lesen | +30 |
+| Unit | `Infrastructure.Tests/Unit` | Siegel (AK47), Eigentumsentscheidung als reine Funktion (AK52), Fehlerzuordnung, JWT-`exp`-Lesen | +30 |
 | Unit | `Worker.Tests` | Reihenfolge der Vorprüfungen, Bestätigungsplan E11, Pausenregel (rein, ohne Container) | +12 |
-| Integration | `Infrastructure.Tests/Integration` | Bot-Dienst gegen Postgres mit gestubbtem `ISevenTvWriteClient` (AK53 bis AK57), Schreib-Client gegen lokalen HTTP-Stub (AK52), Advisory-Lock | +25 |
-| Api | `Api.Tests` | Admin-Routen, Aktivieren/Abschalten, AK49, AK50 | +10 |
+| Integration | `Infrastructure.Tests/Integration` | Bot-Dienst gegen Postgres mit gestubbtem `ISevenTvWriteClient` (AK52 bis AK56), Schreib-Client gegen lokalen HTTP-Stub (AK51), Advisory-Lock | +25 |
+| Api | `Api.Tests` | Admin-Routen, Aktivieren/Abschalten, AK48, AK49 | +10 |
 | Vitest | Admin-Seite | nur Zustandslogik (Hinweis ab 7 Tagen, Feld wird geleert) | +4 |
 | Live | lokal, Testkonto | AK58 bis AK65; der Transport selbst wird live statt gegen Fakes verifiziert (Regel 11, 16) | 1 Durchgang |
 
@@ -1175,10 +1212,10 @@ entscheiden über Eigentum und Bestätigungsweg.
 | `src/EmotePurge.Infrastructure/Migrations/*_AddWishBot.cs` | neu |
 | `src/EmotePurge.Worker/WishBot/WishBotWorker.cs`, `WorkerServiceRegistration.cs` | neu, Registrierung |
 | `src/EmotePurge.Api/Endpoints/AdminEndpoints.cs:35`, `WishEndpoints.cs`, `Program.cs` | Routen, Registrierung |
-| `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` | `wish_bot_disabled`, `wish_bot_token_malformed`, `wish_bot_token_expired`, `wish_bot_unavailable`, `wish_not_bot_owned` |
+| `src/EmotePurge.Api/Validation/ApiErrorCodes.cs` | `wish_bot_disabled`, `wish_bot_token_malformed`, `wish_bot_token_expired`, `wish_bot_unavailable`, `wish_bot_channel_not_listed`, `wish_not_bot_owned` |
 | `web/src/app/features/admin/wish-bot-page.ts`, `app.routes.ts:60-95`, `core/admin/` | Admin-Seite |
 | `web/src/app/core/i18n/api-error.ts`, `web/public/i18n/*.json` | Codes, `admin.wishBot.*`, `audit.actions.wishBot.*` |
-| `docker-compose*.yml`, `.env.example` | drei Variablen, Schlüssel je nur an einem Dienst |
+| `docker-compose*.yml`, `.env.example` | vier Variablen (mit `WISHES_PILOT_CHANNEL_IDS`), Schlüssel je nur an einem Dienst |
 | `docs/DECISIONS.md`, `docs/Architectur.md:21`, `PRODUCT.md:81`, `docs/Operations.md`, `CLAUDE.md` | nach Abschnitt 7 |
 
 ## Abhängigkeiten
@@ -1221,7 +1258,9 @@ Aktion „Bot entfernen lassen“. Kein Backend außer dem, was K4 liefert.
 - **Rückfallweg**, falls die Probe kein nutzbares Schema liefert oder 7TV eine Annahme durch das
   Bot-Konto verlangt: Der Dialog zeigt eine Anleitung zum Eintragen in 7TV und einen Knopf „Jetzt
   prüfen“, der nur `activate` aufruft.
-- **Abschalten:** Knopf in den Einstellungen für Broadcaster, Aktivierenden und Admin, mit
+- **Ort:** Einstieg zum Aktivieren, Zustand des Bot-Modus und Abschalten liegen im Abschnitt
+  „Wünsche“ des Settings-Tabs (E19), nicht im Wünsche-Tab.
+- **Abschalten:** Knopf in diesem Abschnitt für Broadcaster, Aktivierenden und Admin, mit
   Bestätigung und dem Hinweis, dass laufende Wünsche zu Erinnerungen werden. Das Austragen in 7TV
   bleibt ein getrennter, optionaler Schritt mit eigenem Token.
 - **Karten:** Übersetzungen und Aktionen für `unconfirmed`, `failed` samt Gründen, `presented` mit
@@ -1245,7 +1284,7 @@ Aktion „Bot entfernen lassen“. Kein Backend außer dem, was K4 liefert.
     „Erneut prüfen“; der Modus gilt nicht als aktiv.
 74. **AK74** Abschalten ist für einen Twitch-Mod, der nicht aktiviert hat, nicht angeboten und
     die Api antwortet ihm 403; nach dem Abschalten zeigt keine Karte mehr „Bot entfernt bei Ablauf“.
-75. **AK75** `wishBotModeAvailable = false` (Schalter aus, kein gültiges Token, Notaus): Der
+75. **AK75** `wishBotModeAvailable = false` (Schalter aus, kein gültiges Token, Notaus, Kanal nicht gelistet): Der
     Einstieg fehlt bzw. erklärt den Grund; bestehende Bot-Kanäle zeigen den Rückfallhinweis.
 76. **AK76** Jeder `statusReason` und jeder `failed`-Grund aus Abschnitt 5 hat einen Schlüssel in
     beiden Sprachen (Test über die Liste der Konstanten).
@@ -1274,7 +1313,8 @@ Aktion „Bot entfernen lassen“. Kein Backend außer dem, was K4 liefert.
 | Datei | Änderung |
 |---|---|
 | `web/src/app/core/seven-tv/seven-tv-editor.service.ts` (+ Spec) | neu, Mutation nach AK69 |
-| `web/src/app/features/wishes/wish-bot-activate-dialog.ts`, `wish-settings-section.ts`, `wish-card.ts` | Dialog, Abschalten, Bot-Zustände |
+| `web/src/app/features/wishes/wish-bot-activate-dialog.ts`, `wish-card.ts` | Dialog, Bot-Zustände |
+| `web/src/app/features/channel-workspace/wish-settings-section.ts` | Einstieg, Zustand, Abschalten |
 | `web/src/app/core/wishes/wish.service.ts`, `wish.model.ts` | Bot-Routen |
 | `web/public/i18n/de.json`, `en.json`, `web/src/app/core/i18n/api-error.ts` | Schlüssel |
 | `web/e2e/wishes-bot.e2e.spec.ts`, `web/e2e/support/mocks.ts` | neu |
@@ -1293,18 +1333,18 @@ K3, K4, Probe AK69.
 | Punkt | Aufgelöst in |
 |---|---|
 | R3-1, R3-2, R3-3 | im Entwurf behoben; hier Abschnitt 8 (Quelle), Abschnitt 5 und E10, AK9, AK10 |
-| R3-4 | Abschnitt 5 (`unconfirmed` → `active`, drei Ausgänge der Vorlage), AK53 |
-| R3-5 | AK53 nennt alle Fälle |
+| R3-4 | Abschnitt 5 (`unconfirmed` → `active`, drei Ausgänge der Vorlage), AK52 |
+| R3-5 | AK52 nennt alle Fälle |
 | R3-6 | Abschnitt 7 letzter Absatz, AK67 |
 | R3-7 | E16 |
-| R3-8 | E4, AK25 |
+| R3-8 | E4, AK24 |
 | R3-9 | Abschnitt 13 |
-| R3-10 | Abschnitt 7 Punkt 8, AK55 |
-| R3-11 | Vorprüfung vor jedem Schreiben in K4, AK56 |
+| R3-10 | Abschnitt 7 Punkt 8, AK54 |
+| R3-11 | Vorprüfung vor jedem Schreiben in K4, AK55 |
 | R3-12 | Abschnitt 5 (Ausgänge, „fällig“, kein Timeout, Retry ohne neue Freigabe); Rest als RR7 |
 | R3-13 | entfällt: P3 per Betreiberentscheidung gestrichen; DECISIONS nennt den Betrieb „unofficial“ |
-| R3-14 | E5, AK26; Worker-Ausfälle als RR1 |
-| R3-15 | Probe AK80; bis dahin RR9 |
+| R3-14 | E5, AK25; Worker-Ausfälle als RR1 |
+| R3-15 | Probe AK80; bis dahin RR8 |
 | F2 | K1 (409-Fälle), K4 (`failed` ohne Retry) |
 | F3 | E12, E13 |
 | F4 | 6.5, E14 |
@@ -1313,4 +1353,4 @@ K3, K4, Probe AK69.
 | F8 | E15 |
 | F9 | E4, E5 |
 | F10, F11 | Out of Scope (Abschnitt 15) |
-| F12 | Abschnitt 8, AK54 |
+| F12 | Abschnitt 8, AK53 |
