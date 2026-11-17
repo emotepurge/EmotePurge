@@ -123,6 +123,29 @@ internal static class RowLocks
     }
 
     /// <summary>
+    /// Locks the <c>Wishes</c> rows with the given ids <c>FOR UPDATE</c> and returns the ids found, in lock
+    /// order (ascending by id; wish ids are numeric, so no collation is involved). Wish emotes, plan 2.3: a
+    /// command or the reconcile locks the wish row before it reads and decides, so two of them never both
+    /// compute from the same old state. The order across tables is the channel row first
+    /// (<see cref="LockChannelsByIdsAsync"/>), then the wish rows. A requested id that is not returned does
+    /// not exist (any more).
+    /// </summary>
+    public static async Task<IReadOnlyList<long>> LockWishesByIdsAsync(
+        this AppDbContext db, IReadOnlyCollection<long> wishIds, CancellationToken cancellationToken)
+    {
+        RequireTransaction(db);
+        if (wishIds.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = wishIds.Distinct().ToArray();
+        return await db.Database
+            .SqlQuery<long>($"""SELECT "Id" AS "Value" FROM "Wishes" WHERE "Id" = ANY({ids}) ORDER BY "Id" FOR UPDATE""")
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// In-memory twin of the predicate of <see cref="LockEmotesForReconcileAsync"/>, for the coverage
     /// check after the re-read: <paramref name="emote"/> must have its <see cref="Emote.Slots"/> loaded.
     /// </summary>

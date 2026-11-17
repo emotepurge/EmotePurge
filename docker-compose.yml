@@ -118,6 +118,8 @@ services:
       - ChatLogBackfill__Enabled=${CHAT_LOG_BACKFILL_ENABLED:-false}
       - ChatLogBackfill__RequestDelaySeconds=${CHAT_LOG_BACKFILL_REQUEST_DELAY_SECONDS:-10}
       - ChatLogArchive__BaseUrl=${CHAT_LOG_ARCHIVE_BASE_URL:-https://logs.cyex.app/}
+      # Wish emotes (docs/Operations.md "Wish emotes"): off by default. Same value on api AND worker.
+      - Wishes__Enabled=${WISHES_ENABLED:-false}
       # Read only by images built before #379 part B: keeps a rollback to such an image on the slot flag.
       # Current images ignore it; remove with the Portainer variable after the rollback window (docs/Operations.md).
       - SevenTv__SlotReconcile__Enabled=${SEVENTV_SLOT_RECONCILE_ENABLED:-true}
@@ -196,6 +198,7 @@ services:
       - ChatLogBackfill__Enabled=${CHAT_LOG_BACKFILL_ENABLED:-false}
       - ChatLogBackfill__RequestDelaySeconds=${CHAT_LOG_BACKFILL_REQUEST_DELAY_SECONDS:-10}
       - ChatLogArchive__BaseUrl=${CHAT_LOG_ARCHIVE_BASE_URL:-https://logs.cyex.app/}
+      - Wishes__Enabled=${WISHES_ENABLED:-false}
     networks:
       - emotepurge-network
     depends_on:
