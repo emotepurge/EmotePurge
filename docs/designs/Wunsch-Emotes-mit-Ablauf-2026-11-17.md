@@ -203,7 +203,11 @@ Reihenfolge so gewählt, dass jede Scheibe auch dann Wert hat, wenn eine Probe s
   einem eingetragenen Editor (v3 `actor_id` identisch). Damit ist belegt, dass 7TV den
   Hinzufügenden auch bei Editoren festhält. Offen und in den ersten Lauf von Scheibe 2 auf dem
   Testkonto verschoben: Bot-ID bei Bot-Hinzufügen, `addedById` nach Umbenennen, Sichtbarkeit im
-  v4-Read direkt nach dem Schreiben, Antwort von `addEmote`. Offen: Zweit-Login.
+  v4-Read direkt nach dem Schreiben, Antwort von `addEmote`.
+  **Ergebnis Zweit-Login 2026-11-17: bestanden.** Ein Login desselben Bot-Kontos in einem zweiten
+  Browser stellt ein eigenes Token aus; das erste bleibt gültig (Seite zeigt nach Neuladen weiter
+  das Bot-Konto an, `exp` unverändert). **P2 ist damit bestanden** bis auf die in den ersten
+  Scheibe-2-Lauf verschobenen Punkte. Der Notaus per Logout ist weiterhin ungetestet.
   Als Bot-Konto bei 7tv.app einloggen,
   `exp` ablesen; dann Schreibtest mit dem eigenen Testkonto (Writes dort freigegeben): Bot als
   Editor eintragen, über die v4-Mutation ein Emote hinzufügen und wieder entfernen. Dabei
