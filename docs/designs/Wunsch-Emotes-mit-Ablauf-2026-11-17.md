@@ -198,7 +198,13 @@ Reihenfolge so gewählt, dass jede Scheibe auch dann Wert hat, wenn eine Probe s
 - **P2 7TV-JWT:** Schwelle vorab: bestanden, wenn das Token **mindestens 7 Tage** lebt und einen
   Login desselben Kontos in einem zweiten Browser übersteht. **Ergebnis Lebensdauer 2026-11-17:
   genau 30 Tage** (erster Login des Bot-Kontos, `exp` = 2026-12-17 21:10 MEZ; bestätigt SevenTV#311).
-  Offen: Zweit-Login und Schreibtest. Als Bot-Konto bei 7tv.app einloggen,
+  **Ergebnis `addedById` 2026-11-17 (nur lesend):** öffentlicher v4-Read eines echten Sets mit 501
+  Einträgen und 9 Editoren: `addedById` bei 501 von 501 gefüllt, jede ID gehört dem Inhaber oder
+  einem eingetragenen Editor (v3 `actor_id` identisch). Damit ist belegt, dass 7TV den
+  Hinzufügenden auch bei Editoren festhält. Offen und in den ersten Lauf von Scheibe 2 auf dem
+  Testkonto verschoben: Bot-ID bei Bot-Hinzufügen, `addedById` nach Umbenennen, Sichtbarkeit im
+  v4-Read direkt nach dem Schreiben, Antwort von `addEmote`. Offen: Zweit-Login.
+  Als Bot-Konto bei 7tv.app einloggen,
   `exp` ablesen; dann Schreibtest mit dem eigenen Testkonto (Writes dort freigegeben): Bot als
   Editor eintragen, über die v4-Mutation ein Emote hinzufügen und wieder entfernen. Dabei
   festhalten, ob die v4-Abfrage der Set-Einträge mit `addedAt` den neuen Eintrag samt `added_at`
