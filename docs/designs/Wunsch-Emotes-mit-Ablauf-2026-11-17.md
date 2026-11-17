@@ -3,7 +3,10 @@
 Erzeugt von `/office-hours` am 2026-11-17
 Branch: `main`
 Repo: sensitron/EmotePurge
-Status: APPROVED (2026-11-17, durch den Betreiber; 12 kleinere Prüfpunkte gehen in die Spec)
+Status: APPROVED (2026-11-17, durch den Betreiber; 12 kleinere Prüfpunkte gehen in die Spec).
+Revision 1 am selben Tag nach Codex-Sol-Prüfung (`needs-attention`, 4 × high, 2 × medium) und
+Fable-Schiedsspruch zum Eigentum des Bots: Annahmen 3, 4, 5, 10 und Scheibe 0/2 angepasst,
+Betreiber-Entscheidungen D7 und D8, Ergebnis von P1 eingetragen.
 Modus: Builder
 Vorgänger: keiner. Der letzte Entwurf auf `main` (#148, 7TV-Bestenliste) betrifft ein anderes
 Thema, daher kein `Supersedes`.
@@ -32,8 +35,10 @@ community-belegt). Was Emote Purge zusätzlich hat:
   verlängern oder laufen lassen. Ein beliebtes Wunsch-Emote muss nicht rausfliegen, nur weil die
   Frist um ist; ein totes geht mit gutem Gewissen. Das ist Produktgrundsatz 1 („gemessene Nutzung
   urteilt nicht, der Mensch entscheidet") angewandt.
-- **Der Bot fasst nur an, was er selbst hingelegt hat.** Harte Sicherheitsgrenze, die Emote Purge
-  garantiert (ob andere Bots sie ziehen, ist nicht belegt).
+- **Der Bot fasst nur an, was er selbst hingelegt hat**, belegt über `addedById`, mit frischer
+  Prüfung vor jedem Entfernen und Reparatur, falls es doch den Falschen trifft. Keine harte
+  Garantie (7TV kennt kein bedingtes Entfernen), aber eine Grenze, die Emote Purge sichtbar macht
+  und prüft (ob andere Bots sie ziehen, ist nicht belegt).
 - **Belohnung anlernen statt konfigurieren.** Der Mod löst die Belohnung einmal selbst ein; Emote
   Purge sieht eine unbekannte `custom-reward-id` mit 7TV-Link und fragt „ist das eure
   Wunsch-Belohnung?". Kein Streamer-Login, keine ID abtippen. (Hängt an Probe P1.)
@@ -118,15 +123,23 @@ Evidenzart in Klammern. „Ungeprüft" heißt: trägt das Konzept, muss vor dem 
    Beide Modi sind gleichwertig gewollt; für Editor-Kanäle ist die Automatik der eigentliche Wert.
 3. **Zero-Knowledge wird enger gefasst, nicht aufgegeben:** Nie das 7TV-Token eines *Nutzers* auf
    dem Server; erlaubt ist genau ein Token des eigenen Bot-Kontos, verschlüsselt gespeichert. Seine
-   Reichweite bestimmt jeder Streamer selbst über die Editor-Vergabe in 7TV. DECISIONS-Eintrag und
-   Anpassung von `Architectur.md` im selben Commit.
-4. **Der Bot entfernt ausschließlich Einträge, die er nachweislich selbst über einen Wunsch
-   hinzugefügt hat**, und nur, solange genau dieser Eintrag unverändert im Set liegt (Schlüssel in
-   Scheibe 2).
+   Reichweite bestimmt jeder Streamer selbst über die Editor-Vergabe in 7TV. **Das ist eine
+   geänderte Vertrauensgrenze beim Schreiben** und wird so benannt: Ein gestohlenes laufendes Token
+   kann bis zum Notaus in allen Bot-Kanälen direkt bei 7TV schreiben, an Freigaben und Audit-Log
+   vorbei. In Kauf genommen mit Schutzmaßnahmen (D8, s. Scheibe 2). DECISIONS-Eintrag und Anpassung
+   von `Architectur.md` und `PRODUCT.md` (Zero-Knowledge-Satz, Positionierung) im selben Commit.
+4. **Der Bot entfernt nur Einträge, die er nach bestem Wissen selbst hinzugefügt hat. Eine harte
+   Garantie gibt es nicht**, weil 7TVs `removeEmote` nur Emote-ID und Alias kennt, keine Generation
+   (geprüft per v4-Schema am 2026-11-17; dasselbe Restrisiko wie D33 der Slot-Spec für die
+   Browser-Engine). Eigentum, Prüfung vor dem Entfernen, Restrisiko und Reparatur regelt Scheibe 2
+   (Fable-Schiedsspruch).
 5. **Die vereinbarte Laufzeit ist die Zustimmung (D4).** Die Frist steht von Anfang an in Queue und
    Karte. Im Bot-Modus entfernt der Bot bei Ablauf, auch wenn niemand die Probezeit-Karte gesehen
    hat. **Optional je Kanal: Schutz für beliebte Emotes.** Liegt ein Wunsch-Emote über einer
    festgelegten Nutzungsschwelle, entfernt der Bot es nicht, sondern legt es zur Entscheidung vor.
+   **Ist die Zählung über die Laufzeit lückenhaft oder unbekannt** (Worker-Ausfall, Kanal nicht
+   gejoint, Lücken in der Abdeckung), wird bei eingeschaltetem Schutz immer vorgelegt, nie
+   automatisch entfernt (Sol-Befund 5).
    **Weg zurück:** „wieder hinzufügen" aus dem Wunsch-Datensatz (gleiche Emote-ID, gleicher Alias).
    Im manuellen Modus bleibt es bei der Erinnerung.
 6. **Erfassung zuerst über IRC** (`custom-reward-id`, abhängig von P1), plus **Handeintrag** durch
@@ -136,14 +149,17 @@ Evidenzart in Klammern. „Ungeprüft" heißt: trägt das Konzept, muss vor dem 
 8. **Ablehnen mit Rückerstattung bleibt in Twitchs eigener Warteschlange.**
 9. **Positionierung erweitert** („Purge plus Wünsche"); Datenschutztext und Löschfrist für
    Wünschende.
-10. **Rechte im Bot-Modus (D5): Der Editor-Eintrag in 7TV ist die Zustimmung.** Jeder
-    Kanal-Verwalter (Broadcaster, Twitch-Mod, Admin) darf den Bot-Modus einschalten, **aber nur,
-    wenn Emote Purge geprüft hat, dass das Bot-Konto Editor des Kanals ist**. Den Bot dort
-    eintragen kann nur der Kanalinhaber oder ein 7TV-Editor mit Editor-Verwaltung; das ist die
-    Zustimmung von 7TV-Seite. Freigeben, Verlängern, Frist und Schutzschwelle ändern dürfen
-    ebenfalls alle Kanal-Verwalter. Das Rollenmodell bleibt unverändert. Bewusst in Kauf genommen:
-    Ein Twitch-Mod ohne eigene 7TV-Rechte kann über den Bot ins Set schreiben, sobald jemand mit
-    7TV-Rechten den Bot eingetragen hat. Austragen des Bots in 7TV beendet das sofort.
+10. **Rechte im Bot-Modus (D7, ersetzt D5): Aktivierung mit eigenem 7TV-Token.** Wer den
+    Bot-Modus einschaltet, trägt den Bot **im Browser mit seinem eigenen 7TV-Token** als Editor
+    ein (bestehende Browser-Schreibfläche); 7TV prüft dabei, ob er das darf. Vorher erklärt ein
+    Dialog: Der Bot entfernt Wunsch-Emotes bei Ablauf selbst, und alle Twitch-Mods des Kanals
+    dürfen Wünsche freigeben. Emote Purge hält fest, wer wann aktiviert hat. Danach dürfen alle
+    Kanal-Verwalter (Broadcaster, Twitch-Mod, Admin) freigeben und verlängern; Frist,
+    Schutzschwelle und Abschalten des Bot-Modus bleiben dem Aktivierenden und dem Broadcaster
+    vorbehalten (Spec klärt die Feinheiten). Damit ist ein Twitch-Mod ohne 7TV-Rechte nicht mehr
+    ohne Zustimmung eines 7TV-berechtigten Menschen in der Lage, über den Bot zu schreiben
+    (Sol-Befund 4). Austragen des Bots in 7TV beendet alles sofort; offene Bot-Aktionen gehen dann
+    an den manuellen Ablauf.
 
 ## Betrachtete Varianten
 
@@ -165,6 +181,20 @@ Reihenfolge so gewählt, dass jede Scheibe auch dann Wert hat, wenn eine Probe s
   **Zuschauer-Konto ohne Mod-Status**. Bestanden, wenn `custom-reward-id` und Text auf der anonymen
   Verbindung ankommen. Durchgefallen → Scheibe 3 entfällt, Erfassung bleibt beim Handeintrag;
   EventSub mit Streamer-Login wäre eine eigene, spätere Entscheidung.
+  **Ergebnis 2026-11-17: bestanden für ein Mod-Konto.** Wegwerf-Client (Node, anonym, `CAP REQ
+  :twitch.tv/tags twitch.tv/commands`) 10 min auf einem Kanal mit TTS-Belohnung (Texteingabe);
+  der Betreiber hat mit seinem Mod-Konto „test" eingelöst. Ergebnis: 81 PRIVMSG, genau eine mit
+  `custom-reward-id` (feste UUID), Text vorhanden, zusätzlich `user-id` des Einlösenden. Keine
+  Einlöse-ID, kein Titel, keine Kosten. **Offen:** Einlösung durch ein Konto ohne Mod-Status.
+  - **Laufender Vertrag (Sol-Befund 6):** Die Erfassung über IRC ist „nach bestem Wissen", kein
+    lückenloses Einlöse-Register. Verpasste Einlösungen (Verbindungsabbruch, Tag fällt weg) zeigt
+    die Oberfläche als Abdeckungslücke an, Doppelte werden über die IRC-Nachrichten-ID verworfen,
+    und ein Mod kann nach einer Lücke von Hand nachtragen. Verschwindet der Tag dauerhaft, fällt
+    der Kanal auf den Handeintrag zurück und der Admin sieht einen Hinweis.
+  - **Dokumentierte Alternative:** EventSub `channel.chat.message` liefert
+    `channel_points_custom_reward_id` offiziell, mit einem Token des eigenen Lese-Kontos
+    (`user:read:chat`) statt eines Streamer-Tokens. Setzt voraus, dass der Bot nicht mehr anonym
+    mitliest (vgl. F10). In der Spec von Scheibe 3 gegen den IRC-Tag abwägen.
 - **P2 7TV-JWT:** Schwelle vorab: bestanden, wenn das Token **mindestens 7 Tage** lebt und einen
   Login desselben Kontos in einem zweiten Browser übersteht. Als Bot-Konto bei 7tv.app einloggen,
   `exp` ablesen; dann Schreibtest mit dem eigenen Testkonto (Writes dort freigegeben): Bot als
@@ -172,11 +202,25 @@ Reihenfolge so gewählt, dass jede Scheibe auch dann Wert hat, wenn eine Probe s
   festhalten, ob die v4-Abfrage der Set-Einträge mit `addedAt` den neuen Eintrag samt `added_at`
   direkt nach dem Schreiben zeigt und nach welcher Zeit, und ob die Mutationsantwort `added_at`
   trägt. **Liefert keine der beiden Quellen das `added_at` innerhalb von 5 Minuten, ist Scheibe 2
-  blockiert** (ohne Bestätigung kein Eigentum, also keine Automatik).
+  blockiert** (ohne Bestätigung kein Eigentum, also keine Automatik). Zusätzlich (Fable):
+  1. Ist `addedById` bei einem Bot-Hinzufügen die ID des Bot-Kontos, bei einem menschlichen die
+     des Menschen? Bleibt es beim Umbenennen erhalten?
+  2. Verschränkung: Bot fügt hinzu → Mensch entfernt → Mensch fügt denselben Alias wieder hinzu.
+     Zeigt der Read ein fremdes `addedById` und ein neues `addedAt`?
+  3. Liefert `addEmote { emotes(...) { items { alias addedAt addedById } } }` den neuen Eintrag in
+     derselben Antwort?
+  4. Der Wettlauf mit einem umbenannten Geschwister-Eintrag aus D33 gegen den Bot-Pfad: greifen
+     Erkennung und Wieder-Hinzufügen?
+  5. Ist das Wieder-Hinzufügen nach einem falschen Entfernen möglich (Kapazität, Alias-Konflikt),
+     und welches `addedAt` entsteht?
+  **Lässt sich `addedById` nicht belegen, entfällt das automatische Entfernen;** der Bot-Modus fügt
+  dann nur hinzu und erinnert.
 - **P3 Duldung durch 7TV (Tor vor der Spec von Scheibe 2):** 7TV direkt fragen (SevenTV#311 oder
   Discord), ob ein Bot-Konto als Editor mit Website-JWT schreiben darf und ob es einen
-  Partnerzugang gibt. Bei einem Nein → nur manueller Modus. Bleibt die Antwort aus, entscheidet der
-  Betreiber; Supibot und andere arbeiten seit Jahren so (Beleg, keine Erlaubnis).
+  Partnerzugang gibt. Bei einem Nein → nur manueller Modus. Bleibt die Antwort aus (Wartezeit legt
+  die Spec fest), entscheidet der Betreiber; Supibot und andere arbeiten seit Jahren so (Beleg,
+  keine Erlaubnis). Ein Betrieb ohne Antwort wird im DECISIONS-Eintrag ausdrücklich als
+  „inoffiziell, nicht von 7TV bestätigt" festgehalten (D8).
 
 **Scheibe 1: Wünsche, Probezeit, manueller Modus**
 - Eigenes Wunsch-Datenmodell (Regel 8: 7TV-Emote-ID, nicht das kanalgebundene `Emote`): Kanal,
@@ -231,14 +275,38 @@ Reihenfolge so gewählt, dass jede Scheibe auch dann Wert hat, wenn eine Probe s
   `ChatLogBackfill:Enabled`).
 
 **Scheibe 2: Bot-Modus** (nur nach P2 und P3)
-- DECISIONS-Eintrag „Zero-Knowledge enger gefasst" + `Architectur.md`.
-- Bot-Token: vom Betreiber hinterlegt, verschlüsselt wie `User.TwitchRefreshToken`, nur Admin.
-  Vorwarnung vor `exp` im Admin-Monitoring; erneuert wird von Hand. Ungültiges Token wird erkannt →
-  Kanal fällt automatisch auf Erinnerungen zurück.
+- DECISIONS-Eintrag „Zero-Knowledge enger gefasst" + `Architectur.md` + `PRODUCT.md`.
+- **Bot-Token (D8: in Kauf genommen mit Schutzmaßnahmen):**
+  - Vom Betreiber hinterlegt, verschlüsselt wie `User.TwitchRefreshToken`, nur Admin. Entschlüsselt
+    nur im schreibenden Prozess, nie geloggt (Log-Redaktion prüfen), nie über die Api ausgeliefert.
+  - **Notaus:** Logout des Bot-Kontos auf 7tv.app macht das Token sofort ungültig (SevenTV#311,
+    vor dem Bau in P2 bestätigen); zusätzlich ein Admin-Schalter, der alle Bot-Schreibzugriffe
+    stoppt. Beides steht im Runbook in `docs/Operations.md`.
+  - Vorwarnung vor `exp` im Admin-Monitoring; erneuert wird von Hand.
+  - **Ausfall** (Token ungültig, abgelaufen, Notaus, Editor-Rechte entzogen): Alle Bot-Kanäle
+    fallen auf den manuellen Ablauf zurück. Freigegebene, noch nicht hinzugefügte Wünsche,
+    `unbestätigt`e und fällige Entfernungen erscheinen in der Übersicht als „manuell erledigen".
+  - Vor jedem Schreiben wird der Editor-Status des Bots im Kanal geprüft.
 - Serverseitiger 7TV-Schreiber (Add/Remove), mit derselben Behandlung von Rate-Limits und
   Fehlerformen wie die Browser-Engine; Audit-Log für jede Bot-Schreibaktion.
-- **Eigentumsschlüssel:** Beim Hinzufügen hält der Bot fest, welcher Eintrag es genau ist:
-  7TV-Emote-ID, Alias und 7TVs maßgebliches `added_at`.
+- **Eigentum nach bestem Wissen (Fable-Schiedsspruch 2026-11-17, ersetzt die frühere „Garantie"):**
+  - **Eigentum entsteht nur**, wenn ein v4-Read nach dem Hinzufügen genau einen Eintrag mit
+    Emote-ID, Alias **und `addedById` = 7TV-Konto des Bots** zeigt; dessen `addedAt` wird
+    festgehalten. Fehlt `addedById` oder ist es fremd: kein Eigentum, reiner Erinnerungsfall.
+    Grund: Ein späterer Read beweist nur Anwesenheit, nicht Urheberschaft (Sol-Befund 2); die
+    Mutation `addEmote` liefert das Set, nicht den neuen Eintrag (geprüft per Schema).
+  - **Vor jedem Entfernen** ein frischer Read ohne Wiederverwendung. Stimmen Emote-ID, Alias,
+    `addedAt` und `addedById` nicht exakt, wird nicht entfernt.
+  - **Restrisiko, ausdrücklich akzeptiert:** Ändert ein Editor den Eintrag zwischen diesem Read und
+    dem Entfernen (Fenster deutlich unter einer Sekunde), kann der Bot einen fremden Eintrag
+    entfernen. `removeEmote` kennt nur Emote-ID und Alias (Sol-Befund 1); dieselbe Risikoklasse
+    wie D33 der Slot-Spec.
+  - **Erkennung und Reparatur:** Ein Read direkt nach dem Entfernen prüft, ob ein nicht
+    bot-eigener Eintrag fehlt. Dann fügt der Bot ihn einmal unter demselben Alias wieder hinzu
+    (ohne Eigentum, ohne Frist), schreibt einen Audit-Eintrag und benachrichtigt die
+    Kanal-Verwalter.
+  - Die folgenden Punkte zur Quelle und zu Änderungen außerhalb gelten weiter; „genau diese
+    Generation" heißt ab jetzt: alle vier Merkmale inklusive `addedById` im frischen Read.
   - **Quelle der Bestätigung:** die v4-Abfrage der Set-Einträge mit `addedAt`, also derselbe Pfad,
     mit dem die Browser-Engine nach einem Lauf abrechnet (`seven-tv-delete.service.ts`,
     `loadSevenTvSetEntries(..., { withAddedAt: true })`) und der Vollsync Slots maßgeblich bindet
@@ -258,7 +326,9 @@ Reihenfolge so gewählt, dass jede Scheibe auch dann Wert hat, wenn eine Probe s
   - Liegt dasselbe Emote unter einem zweiten Alias im Set, bleibt dieser Eintrag unberührt.
   - Ein Wechsel von manuellem in Bot-Modus überträgt nie Eigentum an Einträgen, die ein Mensch
     hinzugefügt hat.
-  - Ein Test erzwingt alle vier Fälle.
+  - Tests erzwingen alle Fälle oben: fremdes oder fehlendes `addedById`, `unbestätigt`, Abweichung
+    im frischen Read vor dem Entfernen, Umbenennen und Wieder-Hinzufügen außerhalb, Wieder-Hinzufügen
+    über den Bot, zweiter Alias, Moduswechsel, Erkennung und Reparatur nach falschem Entfernen.
 - Einrichtungsprüfung je Kanal: Ist das Bot-Konto Editor? (Editorenliste lesen.) Ohne Bestätigung
   lässt sich der Bot-Modus nicht einschalten (Annahme 10).
 - Auto-Entfernen bei Ablauf nach Annahme 5, mit optionaler Schutzschwelle.
@@ -293,7 +363,8 @@ Chat-Antworten des Bots; Discord-Webhook je Kanal; EventSub mit Streamer-Login.
   Pilotzeitraum; alle fälligen Wünsche eines Mods über alle Kanäle an einer Stelle sichtbar.
 - Bot-Modus: freigegebener Wunsch ist ohne weiteres Zutun im Set; abgelaufener Wunsch ist nach der
   Probezeit-Frist entfernt oder, bei Schutzschwelle, vorgelegt.
-- Der Bot hat nie einen Eintrag entfernt, den er nicht selbst hinzugefügt hat (Test + Audit-Log).
+- Im Pilot hat der Bot keinen Eintrag entfernt, den er nicht selbst hinzugefügt hat; falls doch,
+  wurde es erkannt und repariert (Tests + Audit-Log).
 - Die Probezeit-Karte zeigt die Nutzung des Wunsch-Emotes über seine Laufzeit.
 
 ## Auslieferung
@@ -310,11 +381,10 @@ Scheibe ein Feature-Flag, Default aus für andere Betreiber.
 
 ## Die Aufgabe
 
-Mach die Proben aus Scheibe 0: Lass einen anonymen Wegwerf-Client in einem Kanal mit Kanalpunkten
-mitlesen, während ein Zuschauer-Konto eine Testbelohnung mit 7TV-Link einlöst (ja oder nein:
-kommt `custom-reward-id` an?). Logg dich als Bot-Konto bei 7tv.app ein, lies `exp` ab und mach den
-Schreibtest auf deinem Testkonto. Und stell 7TV die Frage nach der Duldung. Diese drei Antworten
-entscheiden, ob Scheibe 2 und 3 so gebaut werden wie hier beschrieben.
+P1 ist bis auf die Einlösung durch ein Konto ohne Mod-Status erledigt (2026-11-17). Offen: Logg
+dich als Bot-Konto bei 7tv.app ein, lies `exp` ab und mach den Schreibtest auf deinem Testkonto,
+inklusive der fünf `addedById`-Fälle aus P2. Und stell 7TV die Frage nach der Duldung (P3). Diese
+Antworten entscheiden, ob Scheibe 2 so gebaut wird wie hier beschrieben.
 
 ## Was mir an deiner Denkweise aufgefallen ist
 
