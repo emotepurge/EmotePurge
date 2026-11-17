@@ -221,6 +221,9 @@ Reihenfolge so gewählt, dass jede Scheibe auch dann Wert hat, wenn eine Probe s
   die Spec fest), entscheidet der Betreiber; Supibot und andere arbeiten seit Jahren so (Beleg,
   keine Erlaubnis). Ein Betrieb ohne Antwort wird im DECISIONS-Eintrag ausdrücklich als
   „inoffiziell, nicht von 7TV bestätigt" festgehalten (D8).
+  **Entschieden 2026-11-17: P3 entfällt.** Der Betreiber fragt nicht an (7TV antwortet erfahrungsgemäß
+  nicht, vgl. SevenTV#311 ohne Reaktion) und stützt sich darauf, dass etablierte Bots so arbeiten.
+  Der Bot-Modus läuft damit inoffiziell; das steht so im DECISIONS-Eintrag von Scheibe 2.
 
 **Scheibe 1: Wünsche, Probezeit, manueller Modus**
 - Eigenes Wunsch-Datenmodell (Regel 8: 7TV-Emote-ID, nicht das kanalgebundene `Emote`): Kanal,
@@ -383,7 +386,7 @@ Scheibe ein Feature-Flag, Default aus für andere Betreiber.
 
 P1 ist bis auf die Einlösung durch ein Konto ohne Mod-Status erledigt (2026-11-17). Offen: Logg
 dich als Bot-Konto bei 7tv.app ein, lies `exp` ab und mach den Schreibtest auf deinem Testkonto,
-inklusive der fünf `addedById`-Fälle aus P2. Und stell 7TV die Frage nach der Duldung (P3). Diese
+inklusive der fünf `addedById`-Fälle aus P2 (P3 entfällt per Entscheidung). Diese
 Antworten entscheiden, ob Scheibe 2 so gebaut wird wie hier beschrieben.
 
 ## Was mir an deiner Denkweise aufgefallen ist
