@@ -94,7 +94,7 @@ bleiben als Nebenwege für Korrektur und Nachtrag.
 | E5 | **Zähllücke** (Entscheidung 2): `TrackedSince(kanal)` liegt nach dem Fensterbeginn, **oder** `DeactivatedAtUtc` ist gesetzt, **oder** `IsBotActive` ist falsch, **oder** E4-Fenster unter 24 Stunden. Die Lückenregel greift nur bei eingeschaltetem Schutz; ohne Schutz spielt die Nutzung für das Entfernen keine Rolle. | Eine Deaktivierung mit Reaktivierung im Fenster setzt `TrackingResumedAt` und fällt damit unter die erste Bedingung (`Channel.cs:23`). |
 | E6 | **Ablauf-Lauf alle 15 Minuten** (`Wishes:ExpiryIntervalMinutes`, 1 bis 1440), eigener Worker, erster Lauf 1 Minute nach Start, wartet nicht auf die Boot-Recovery. | Das Beobachtungsziel „binnen 24 h“ und Laufzeiten ab 1 Tag vertragen keinen Tagestakt. Der Lauf berührt keinen Kanal-Purge und braucht die Sperre der Retention nicht. |
 | E7 | **Bot-Token asymmetrisch versiegelt:** Die Api hält nur einen öffentlichen Schlüssel und kann damit setzen, aber nicht lesen. Der private Schlüssel liegt nur am Worker. Details in Abschnitt 7. | Erfüllt „nie zurücklesen“ kryptografisch statt per Disziplin. Vom Betreiber angenommen (W2). |
-| E8 | **Pilot-Liste nur für den Bot-Modus, fail-closed beim Aktivieren und im Betrieb:** `Wishes:PilotChannelIds` (Twitch-Kanal-IDs, kommagetrennt, oder `*` für alle). In einem gelisteten Kanal darf jeder Berechtigte den Bot-Modus aktivieren, in jedem anderen nur ein globaler Admin. **Leer heißt: nirgends, außer durch globale Admins.** Der Bot schreibt nur in Kanälen, die gelistet sind oder deren Aktivierung von einem Konto stammt, das zum Zeitpunkt des Schreibens globaler Admin ist. Fällt ein Kanal aus der Liste, schreibt der Bot dort ab dem nächsten Lauf nicht mehr; der Kanal läuft im manuellen Ablauf wie beim Notaus, die Aktivierung bleibt gespeichert, und der Bot nimmt ohne neuen Editor-Eintrag wieder auf, sobald der Kanal wieder gelistet ist. Der manuelle Modus hängt allein an `Wishes:Enabled`. | Entscheide W7 und X2. Der Bot-Modus ist der Teil mit serverseitigem Schreibzugriff; eine vergessene oder leere Variable darf ihn weder öffnen noch offen halten. Globale Admins bleiben ausgenommen, damit sich der Betrieb ohne Stack-Update prüfen lässt; `*` ist die bewusste, ausgeschriebene Öffnung. |
+| E8 | **Pilot-Liste nur für den Bot-Modus, fail-closed beim Aktivieren und im Betrieb:** `Wishes:PilotChannelIds` (Twitch-Kanal-IDs, kommagetrennt, oder `*` für alle). In einem gelisteten Kanal darf jeder nach E24 Berechtigte den Bot-Modus aktivieren, in jedem anderen nur ein globaler Admin. **Leer heißt: nirgends, außer durch globale Admins.** Der Bot schreibt nur in Kanälen, die gelistet sind oder deren Aktivierung von einem Konto stammt, das zum Zeitpunkt des Schreibens globaler Admin ist. Fällt ein Kanal aus der Liste, schreibt der Bot dort ab dem nächsten Lauf nicht mehr; der Kanal läuft im manuellen Ablauf wie beim Notaus, die Aktivierung bleibt gespeichert, und der Bot nimmt ohne neuen Editor-Eintrag wieder auf, sobald der Kanal wieder gelistet ist. Der manuelle Modus hängt allein an `Wishes:Enabled`. | Entscheide W7 und X2. Der Bot-Modus ist der Teil mit serverseitigem Schreibzugriff; eine vergessene oder leere Variable darf ihn weder öffnen noch offen halten. Globale Admins bleiben ausgenommen, damit sich der Betrieb ohne Stack-Update prüfen lässt; `*` ist die bewusste, ausgeschriebene Öffnung. |
 | E9 | **Abgleich zustandsbasiert statt ereignisbasiert:** Nach jedem erfolgreichen Vollsync, Delta und manuellen Slot-Schreiben läuft `IWishReconcileService.ReconcileChannelAsync(channelId)`, der Wünsche gegen den aktuellen Slot-Bestand vergleicht. Idempotent; der Ablauf-Lauf ruft ihn als Sicherheitsnetz für jeden Kanal mit laufenden Wünschen. | Es gibt keinen Hook für „Slot angelegt/archiviert“ (Abschnitt 2). Ein Vergleich gegen den Ist-Stand heilt verpasste Ereignisse von selbst. |
 | E10 | **Übernahmefenster 6 Stunden** nach `extern entfernt` (Entwurf: „Größenordnung Stunden“). | Deckt Entfernen und Wieder-Hinzufügen über mehrere Sync-Läufe (R3-3), ohne ein späteres, unabhängiges Hinzufügen zu übernehmen. |
 | E11 | **Bestätigungsschwelle im Bot-Modus 15 Minuten:** Lesen direkt nach dem Schreiben, dann nach 30 s, 2 min, 5 min, 15 min. Danach `vorgelegt` mit Grund `unconfirmed`. | P2-Schwelle des Entwurfs war 5 Minuten für die Machbarkeit; der Betrieb bekommt einen Versuch mehr, bevor ein Mensch gerufen wird. |
@@ -109,7 +109,7 @@ bleiben als Nebenwege für Korrektur und Nachtrag.
 | E20 | **Eine Zuordnungsregel für alle Wege** (`WishSlotMatcher`, 6.3): Ein Wunsch ohne Slot wird mit einem Slot verknüpft, der in seinem Fenster im Set auftaucht, egal ob das Emote direkt in 7TV, über Emote Purge oder vom Bot hinzugefügt wurde. Fenster je Zustand: `pending` bis zum Verfall (E3), `approved` unbegrenzt, `removed_externally` 6 Stunden (E10). „Bestand übernehmen“ ist dieselbe Verknüpfung von Hand, für Fälle, die die Regel nicht eindeutig entscheidet. | Runde 2, Punkt 2: vereinheitlichen statt doppeln. Das frühere „Übernahmefenster“ und die Verknüpfung nach dem Handeintrag sind dieselbe Regel mit anderem Fenster. |
 | E21 | **Hinzufügen im Set ist Freigabe.** Taucht zu einem offenen Wunsch der passende Slot auf, wird der Wunsch ohne Klick `active`. Im manuellen Modus folgt daraus nur eine Erinnerung; der Bot entfernt weiterhin nur Einträge mit `addedById` = Bot. | Entscheid X4. Wer in 7TV hinzufügen kann, kann es ohnehin; der Wunsch verfolgt den Eintrag nur. |
 | E22 | **Eigener Schalter für die Erfassung:** `Wishes:Capture:Enabled`, Default `false`. | Der IRC-Tag ist undokumentiert; fällt er weg oder stört die Erfassung, lässt sie sich abschalten, ohne den manuellen Modus mitzunehmen. |
-| E24 | **Aktivieren des Bot-Modus prüft der Server am Aufrufer (D7):** nur der Broadcaster, ein über `ISevenTvEditorService` bestätigter 7TV-Editor des Kanals oder ein globaler Admin; jede Unsicherheit lehnt ab. Ein aktiver Bot-Modus lässt sich nicht erneut aktivieren, der Aktivierende wird nie überschrieben. | Sol-Befund 1: Die Reihenfolge im Browser schützt den Endpunkt nicht. Bleibt der Bot nach dem Abschalten Editor, könnte sonst jeder Twitch-Mod per direktem Aufruf wieder einschalten. Der globale Admin ist der Betreiber und Halter des Bot-Kontos. |
+| E24 | **Aktivieren des Bot-Modus prüft der Server am Aufrufer (D7), in zwei Stufen:** Die Route liegt wie jede Wunsch-Route hinter dem Verwalter-Filter (Broadcaster, Twitch-Mod, globaler Admin) und zusätzlich hinter dem Aktivierungs-Filter. Aktivieren darf damit: der Broadcaster, ein globaler Admin, oder ein Twitch-Mod, den `ISevenTvEditorService` als 7TV-Editor des Kanals bestätigt. Ein reiner Twitch-Mod darf es nicht, ein 7TV-Editor ohne Verwalter-Rolle auch nicht. Jede Unsicherheit lehnt ab. Ein aktiver Bot-Modus lässt sich nicht erneut aktivieren, der Aktivierende wird nie überschrieben. | Sol-Befund 1: Die Reihenfolge im Browser schützt den Endpunkt nicht. Der Verwalter-Filter bleibt, weil die ganze Oberfläche (Settings-Abschnitt, Arbeitsliste, Audit-Feed) nur Verwaltern offensteht; ein Editor ohne diese Rolle hätte einen Bot-Modus eingeschaltet, den er nicht sehen kann. Der globale Admin ist der Betreiber und Halter des Bot-Kontos. |
 | E25 | **Jede Entscheidung verwirft eine eingereihte Bot-Entfernung.** `Wishes.DecisionVersion` zählt bei jeder Verwalter-Aktion und jeder Eigentumsänderung hoch; `RemovalQueuedAtUtc` und `RemovalQueuedVersion` werden dabei im selben Update geleert. Der Bot prüft unmittelbar vor `removeEmote` unter Zeilensperre erneut. | Sol-Befund 2: Ein verlängerter Wunsch durfte sonst trotzdem entfernt werden. |
 | E26 | **Aufräumen ist vom Erfassungs-Schalter unabhängig.** Der Erfassungs-Worker hat einen Haushalts-Takt (jede Minute), der immer läuft: abgelaufene Anlern-Zeilen löschen, alle 15 Minuten offene Wünsche verfallen lassen. Ein abgelaufener Kandidat gilt beim Lesen und Bestätigen als nicht vorhanden. | Sol-Befund 6: Sonst blieben Text und Login eines Kandidaten nach dem Abschalten liegen, und 15 Minuten Takt hielten die 10-Minuten-Zusage nie. |
 
@@ -156,6 +156,7 @@ Zeile, antwortet die Api 409 `wish_state_conflict`):
 |---|---|---|---|
 | (neu) | `approved` | Handeintrag | gilt als Freigabe (Annahme 1) |
 | (neu) | `active` | Bestand übernehmen | Slot schon im Set; nie Bot-Eigentum |
+| `pending`, `approved`, `failed`, `presented` (`unconfirmed`, `already_in_set`) | `active` | Bestand übernehmen mit `wishId` | Verwalter wählt den Slot; verknüpft den vorhandenen Wunsch statt einen neuen anzulegen; `LinkOrigin = adopted`, nie Bot-Eigentum; bei `Permanent`: `kept` |
 | (neu) | `pending` | Chat-Erfassung (K6) | Einlösung einer angelernten Belohnung |
 | `pending` | `active` | Abgleich (E20, E21) | passender Slot taucht im Fenster auf; Start = `AddedAt` des Slots; kein Bot-Eigentum |
 | `pending` | `approved` | Freigeben (K6) | Emote, Alias und Laufzeit dabei setzbar; im Bot-Modus fügt danach der Bot hinzu. Läuft schon ein Wunsch desselben Emotes: stattdessen `merged`, der laufende wird verlängert (E13) |
@@ -167,10 +168,14 @@ Zeile, antwortet die Api 409 `wish_state_conflict`):
 | `approved` | `presented` (`already_in_set`) | Bot | Vor-Read zeigt Emote-ID schon im Set |
 | `approved` | `closed` | Schließen | Verwalter verwirft den freigegebenen Wunsch |
 | `unconfirmed` | `active` | Bestätigungs-Read | genau ein Eintrag mit Emote-ID und Alias: mit `addedById` = Bot entsteht Eigentum, sonst reiner Erinnerungsfall (R3-4) |
-| `unconfirmed` | `presented` (`unconfirmed`) | E11 abgelaufen, oder Bot-Ausfall | Ausgänge: „als Erinnerungsfall verknüpfen“ (→ `active` ohne Eigentum, sobald der Abgleich den Slot findet), „erneut prüfen“ (→ `unconfirmed`, Versuche zurückgesetzt), „schließen“ (→ `closed`) |
+| `unconfirmed` | `presented` (`unconfirmed`) | E11 abgelaufen, oder Bot-Ausfall | braucht eine Entscheidung; die drei Ausgänge stehen in den nächsten Zeilen |
+| `presented` (`unconfirmed`) | `active` | „als Erinnerungsfall verknüpfen“ = Bestand übernehmen mit `wishId` | ohne Eigentum |
+| `presented` (`unconfirmed`) | `unconfirmed` | „erneut prüfen“ (`recheck`) | Versuche und `BotNextAttemptAtUtc` zurückgesetzt; nur bei verfügbarem Bot, sonst 409 `wish_bot_unavailable` |
+| `presented` (`unconfirmed`) | `closed` | „schließen“ (`close`) | kein Slot verknüpft |
 | `failed` | `approved` | Erneut versuchen | braucht keine neue Freigabe: Der Klick eines Verwalters ist die Freigabe (R3-12) |
 | `failed` | `closed` | Schließen | |
-| `active` | `active` | Verlängern | neuer Ablauf nach E12; eine eingereihte Bot-Entfernung ist damit verworfen (E25) |
+| `active` | `active` | Verlängern | neuer Ablauf nach E12; eine eingereihte Bot-Entfernung ist damit verworfen (E25). Verlängern gibt es nur aus `active` und `presented`; ein Wunsch ohne Ablauf (`approved`, `unconfirmed`, `failed`) ändert seine Laufzeit über `PATCH` |
+| `active` (Quelle `irc`, `LinkOrigin = auto`) | `pending` | Zuordnung lösen (`unlink`, K6) | Felder nach K6 zurückgesetzt, Slot gesperrt für diesen Wunsch |
 | `active` | `kept` | Behalten | Eintrag wird ein normaler; Bot-Eigentum endet |
 | `active` | `removed` | Entfernen über Emote Purge | manuell: Browser-Engine, danach Meldung an die Api; Bot: nach bestandener Prüfung (Abschnitt 8) |
 | `active` | `presented` | Ablauf-Lauf bei Fälligkeit | Grund nach der Entscheidungstabelle in K2 |
@@ -257,6 +262,8 @@ Indizes und Constraints:
 | `BotModeActivatedAtUtc` | timestamptz, null | | |
 | `BotEditorCheckedAtUtc` | timestamptz, null | | letzte bestandene Editor-Prüfung |
 | `BotSuspendedReason` | text, null | | `not_editor`, `not_listed`; gesetzt heißt: Kanal läuft im manuellen Ablauf |
+| `BotActivationRequestedAtUtc`, `BotActivationRequestedByTwitchUserId`, `BotActivationRequestedByLogin` | null | | laufende Aktivierung; bei Bestätigung in `BotModeActivated*` übernommen und geleert, bei `not_editor` geleert |
+| `BotActivationError` | text, null | | `not_editor` nach gescheiterter Prüfung; geleert beim nächsten `activate` |
 
 Die Zeile entsteht beim ersten Schreiben; fehlt sie, gelten die Defaults. Eine Änderung der
 Kanal-Defaults wirkt nur auf künftige Wünsche und Verlängerungen, nie rückwirkend auf laufende
@@ -269,12 +276,18 @@ zuordnet. Der Abgleich ruft ihn für jeden Wunsch in `pending`, `approved` und `
 (dort nur innerhalb von 6 Stunden nach `EndedAtUtc`).
 
 - **Kandidaten:** nicht archivierte Slots des Kanals, die mit keinem laufenden Wunsch verknüpft
-  sind und deren `AddedAt` nicht vor dem Fensterbeginn liegt. Fensterbeginn ist `CreatedAtUtc`
-  (`pending`), `ApprovedAtUtc` (`approved`) bzw. `EndedAtUtc` (`removed_externally`), jeweils mit
-  10 Minuten Toleranz nach vorn für vorläufige Slot-Daten.
-- **Treffer über die Emote-ID** (Wunsch kennt die 7TV-Emote-ID, aus Link oder Handeintrag): genau
-  ein Kandidat mit dieser ID wird verknüpft, der Alias am Wunsch folgt dem Slot. Bei mehreren
-  entscheidet der gleiche Alias (ordinal); bleibt es mehrdeutig, verknüpft die Regel nichts.
+  sind, für diesen Wunsch nicht gesperrt sind (`WishSlotExclusions`, K6) und deren `AddedAt` nicht
+  vor dem Fensterbeginn liegt. Fensterbeginn ist `CreatedAtUtc` (`pending`), `ApprovedAtUtc`
+  (`approved`) bzw. `EndedAtUtc` (`removed_externally`), **ohne Toleranz**: Ein Slot mit `AddedAt`
+  vor dem Fensterbeginn ist nie Kandidat, auch nicht um Sekunden; dafür gibt es „Bestand
+  übernehmen“. Ein vorläufiges `AddedAt` ist der Zeitpunkt der Beobachtung und liegt nie vor dem
+  echten, schließt also keinen berechtigten Kandidaten aus.
+- **Treffer über die Emote-ID** (Wunsch kennt die 7TV-Emote-ID, aus Link oder Handeintrag): Gibt
+  es genau einen Kandidaten mit dieser ID, wird er verknüpft, und der Alias am Wunsch folgt dem
+  Slot. Gibt es mehrere, wird der eine verknüpft, dessen Alias dem Alias des Wunsches ordinal
+  gleicht (Aliase sind in einem Set eindeutig, es kann höchstens einer sein). Gibt es mehrere und
+  keiner trägt den Alias des Wunsches, oder hat der Wunsch keinen Alias, verknüpft die Regel
+  nichts.
 - **Treffer über den Namen** (nur K6, Wunsch kennt nur einen Namen): genau ein Kandidat, dessen
   Alias dem Namen ordinal gleicht, wird verknüpft; gibt es keinen, zählt genau einer mit gleichem
   Namen ohne Rücksicht auf Groß- und Kleinschreibung. Jede Mehrdeutigkeit verknüpft nichts und
@@ -289,6 +302,9 @@ zuordnet. Der Abgleich ruft ihn für jeden Wunsch in `pending`, `approved` und `
 - Start ist `AddedAt` des Slots. Ist es noch vorläufig, gilt `StartsAtAuthoritative = false`; wird
   es maßgeblich, verschiebt der Abgleich `StartsAtUtc` und `ExpiresAtUtc` um dieselbe Differenz.
 - Umbenennen und Archivieren nach Abschnitt 5.
+- **Bot-Wünsche:** Ein Wunsch mit gesetztem `BotWriteAtUtc` in `approved` oder `unconfirmed` ist
+  von dieser Regel ausgenommen (K4, Koordination mit dem Abgleich). Ein `active` ohne `SlotId`
+  bekommt seinen Slot nachträglich, ohne dass sich Zustand, Start oder Eigentum ändern.
 - Kanal-Zusammenführung (`ChannelIdentityService`): Der Verlierer darf heute keine Emotes und
   keine Tags haben (`:902-904`), kann aber Wünsche ohne Slot tragen und wird am Ende gelöscht
   (`:1009`). In derselben Transaktion wandern deshalb Wünsche und Einstellungen zum überlebenden
@@ -363,6 +379,10 @@ Ergänzungen an `Wishes`: `RewardId` (bigint, null, FK `ChannelWishRewards`, SET
 `none`). `SevenTvEmoteId`, `EmoteName` und `Alias` werden nullbar, mit CHECK: nur in `pending`,
 `rejected` und `expired` dürfen sie fehlen. `ChannelWishSettings` bekommt `PendingExpiryDays`
 (int, Default 14, 1 bis 90).
+
+`WishSlotExclusions` (gelöste Zuordnungen): `WishId` (FK `Wishes`, Kaskade), `SlotId` (text),
+`CreatedAtUtc`; Primärschlüssel `(WishId, SlotId)`. Kein Fremdschlüssel auf den Slot: Die Sperre
+soll einen später archivierten Slot überleben.
 
 ## 7. Vertrauensgrenze und Bot-Token (D8, Entscheidung 1)
 
@@ -548,8 +568,15 @@ die Pilot-Liste (E8). Der eigene Kanal des Betreibers ist kein Affiliate und hat
   Beweis: Der Wettlauf aus Abschnitt 8 (Erkennungsgrenze) hinterlässt nicht immer eine Spur;
   (c) nur zur Kenntnis: Anteil der erfassten Wünsche, die ohne Handgriff zugeordnet wurden, und
   Zahl der Erfassungslücken.
-- **Auswertung:** SQL-Abfragen über `Wishes` (Ablauf gegen `StatusChangedAtUtc`, `LinkOrigin`) und
-  das Audit-Log; sie stehen im Operations-Runbook. Keine eigene Oberfläche dafür.
+- **Auswertung über das Audit-Log**, nicht über Felder der Wunsch-Zeile: `ExpiresAtUtc` wird beim
+  Verlängern überschrieben, `StatusChangedAtUtc` bei jedem Übergang. Nenner von (a) sind die
+  Einträge `wish.due` im Beobachtungszeitraum, deren Zeitpunkt mindestens 24 Stunden zurückliegt.
+  Zähler sind die davon, zu deren `wishId` binnen 24 Stunden danach ein Eintrag `wish.extend`,
+  `wish.keep`, `wish.remove`, `wish.botRemove` oder `wish.close` folgt. Ein außerhalb von Emote
+  Purge entfernter Eintrag hinterlässt keinen dieser Einträge; solche Fälle zählt der Betreiber aus
+  der Liste der Nicht-Treffer von Hand als erledigt (erwartet: einzelne). (c) zählt `wish.autoLink`
+  gegen die Zahl der erfassten Wünsche. Die Abfragen stehen im Operations-Runbook. Keine eigene
+  Oberfläche dafür.
 
 ## 14. Rollout und Rollback
 
@@ -678,6 +705,12 @@ Alle neun Befunde sind an den zitierten Codestellen nachgeprüft und eingearbeit
 | S8 | Unbestimmte Shared-Chat-Herkunft | K6 (nur `MessageOrigin.Own`), AK-Fälle Parser und Vertragstest |
 | S9 | Zusammenführung verlor Belohnungen | 6.3, K6, AK-Fall „Kanal-Zusammenführung“ |
 
+Runde 5 (Codex-Quality-Gate, neun Unklarheiten) hat keine Produktentscheidung geändert, nur
+Verträge geschlossen: Filterfolge beim Aktivieren (E24), vollständige Übergangstabelle,
+Koordination von Bot und Abgleich über `BotWriteAtUtc`, Felder und Sperrtabelle beim Lösen einer
+Zuordnung, Zuordnung ohne Toleranz, Idempotenz des Ablauf-Laufs, DTO-Felder, Pilot-Messung über
+`wish.due`, Grammatik für Namen.
+
 Dazu: Die Live-Probe zur Einlösung ohne Mod-Status ist bestanden (K6, erstes Akzeptanzkriterium),
 und der Link-Parser nimmt beide 7TV-ID-Formate an.
 
@@ -730,7 +763,7 @@ Fehlervertrag: 400 vor 403 vor 404.
 | `GET /{id}` | `InteractiveRead` | Detail mit `usage` (E4, E16) |
 | `POST /` | `Bookkeeping` | Handeintrag |
 | `POST /adopt` | `Bookkeeping` | Bestand übernehmen |
-| `PATCH /{id}` | `Bookkeeping` | Alias, Laufzeit; nur in `approved`, `failed` |
+| `PATCH /{id}` | `Bookkeeping` | Alias, Laufzeit; nur in `approved`, `failed` (ab K6 auch `pending`); in `unconfirmed` 409, weil der Bot schon geschrieben hat |
 | `POST /{id}/extend`, `/keep`, `/close`, `/retry`, `/re-add`, `/complete-removal`, `/recheck` | `Bookkeeping` | Übergänge aus Abschnitt 5 |
 | `GET /settings` | `InteractiveRead` | Kanal-Einstellungen mit Defaults |
 | `PUT /settings` | `Bookkeeping`, zusätzlich `WishSettingsAuthorizationFilter` | im manuellen Modus jeder Verwalter; im Bot-Modus nur Broadcaster, Aktivierender, globaler Admin, sonst 403 `wish_settings_restricted` |
@@ -763,12 +796,19 @@ PUT  …/wishes/settings     { "defaultDurationDays": 30, "probationLeadDays": 7
 WishDto { id, sevenTvEmoteId, emoteName, alias, source, status, statusReason,
           requesterLogin, durationDays, createdAtUtc, approvedAtUtc, startsAtUtc,
           startsAtAuthoritative, probationStartsAtUtc, expiresAtUtc, endedAtUtc,
-          slotId, extensionCount, permanent, botOwned, mode: "manual" | "bot" }
+          slotId, linkOrigin, extensionCount, permanent, botOwned,
+          botWritePending, botNextAttemptAtUtc, removalQueuedAtUtc,
+          mode: "manual" | "bot" }
 WishDetailDto = WishDto + usage { windowFromUtc, windowToUtc, total, perDayMean,
                                   rank, rankOf, coverageGap }
 ```
 
-`requesterTwitchUserId` verlässt die Api nie. `adopt` ohne `startsAtUtc` nimmt `AddedAt` des Slots;
+`requesterTwitchUserId` verlässt die Api nie. `botWritePending` ist wahr, solange `BotWriteAtUtc`
+gesetzt und der Wunsch noch nicht `active` ist; `removalQueuedAtUtc` zeigt der Karte „wird
+entfernt“. Beide Felder und `botNextAttemptAtUtc` sind bis K4 immer leer. **Tagesnutzung steht
+nicht im DTO:** Die Sparkline der Karte liest den bestehenden Endpunkt
+`GET /api/channels/{c}/usage-stats/daily?slotId=<slotId>&from=<Tag von startsAtUtc>&to=<heute>`;
+ohne `slotId` zeigt die Karte keine Sparkline. `adopt` ohne `startsAtUtc` nimmt `AddedAt` des Slots;
 ein gesetzter Wert darf nicht in der Zukunft und nicht vor `AddedAt` liegen.
 
 Neue `ApiErrorCodes` (Regel 7: je Code `api-error.ts` und `errors.api.*` in de/en; die
@@ -816,10 +856,13 @@ setzt noch nichts eine Einreihung; die Regel steht hier, damit keine spätere Ro
    `wish_emote_already_in_set` mit den Slot-IDs; anschließendes `adopt` mit dieser Slot-ID → 201,
    `status = active`, `botOwned = false`, `startsAtUtc` = `AddedAt` des Slots.
 6. **AK6** Handeintrag für eine Emote-ID mit laufendem Wunsch → 409 `wish_already_running` mit
-   dessen ID; ein anschließendes `extend` auf diesen Wunsch verlängert `ExpiresAtUtc` um den
-   Kanal-Default und erhöht `ExtensionCount` um 1.
-7. **AK7** Abgleich: `approved` plus genau ein neuer Slot gleicher Emote-ID und gleichen Alias →
-   `active`, `SlotId` gesetzt. Mit zwei Kandidaten bleibt der Wunsch `approved`.
+   dessen ID. Ist der laufende `active` oder `presented`, verlängert ein anschließendes `extend`
+   `ExpiresAtUtc` um den Kanal-Default und erhöht `ExtensionCount` um 1. Ist er `approved`, antwortet
+   `extend` 409 `wish_state_conflict`, und `PATCH` mit `durationDays` ändert die Laufzeit.
+7. **AK7** Abgleich: `approved` plus genau ein neuer Slot gleicher Emote-ID → `active`, `SlotId`
+   gesetzt, Alias folgt dem Slot. Zwei neue Slots gleicher Emote-ID, einer mit dem Alias des
+   Wunsches → genau dieser. Zwei neue Slots, keiner mit dem Alias des Wunsches → bleibt
+   `approved`. Ein Slot mit `AddedAt` eine Sekunde vor `ApprovedAtUtc` ist kein Kandidat.
 8. **AK8** Abgleich: Slot mit vorläufigem `AddedAt` → `startsAtAuthoritative = false`; nach dem
    Vollsync mit maßgeblichem Datum sind `StartsAtUtc` und `ExpiresAtUtc` um dieselbe Differenz
    verschoben, `DurationDays` unverändert.
@@ -935,6 +978,14 @@ fällige Wünsche feststellen, Schutz und Lücke bewerten, vorlegen oder zur Bot
   aktiv gesynct wird; ist der letzte erfolgreiche Sync älter als 24 Stunden, gilt das vorläufige
   Datum.
 - Jeder Übergang ist ein bedingtes Update; ein zweiter Lauf über denselben Stand ändert nichts.
+  Der Lauf betrachtet nur Wünsche mit `Status = active`, `ExpiresAtUtc` ≤ jetzt **und
+  `RemovalQueuedAtUtc IS NULL`**; ein schon eingereihter Wunsch wird weder erneut bewertet noch
+  erneut eingereiht, seine Einreihung und ihre Version bleiben unverändert. Ein vorgelegter Wunsch
+  ist nicht mehr `active` und fällt von selbst heraus.
+- Je Fälligkeit schreibt der Lauf genau einen Audit-Eintrag `wish.due` unter `AuditActor.System`
+  (Details `wishId`, `outcome`: der Grund der Vorlage oder `queued`), im selben Update wie die
+  Entscheidung. Nach einer Verlängerung ist die nächste Fälligkeit ein neuer Eintrag. Das ist die
+  Grundlage der Pilot-Messung (Abschnitt 13).
 
 Entscheidung bei Fälligkeit (`WishExpiryPolicy.Decide`, erste zutreffende Zeile gewinnt):
 
@@ -967,8 +1018,10 @@ fest, ist das Fenster entsprechend länger, nie kürzer.
     dieselbe Lage → Zeile 6.
 26. **AK26** Ein Wunsch mit vorläufigem Start wird bei frischem Sync nicht fällig gestellt, bei
     einem letzten Sync vor 25 h schon.
-27. **AK27** Zwei Durchläufe hintereinander über denselben Stand: der zweite ändert keine Zeile und
-    veröffentlicht kein Event.
+27. **AK27** Zwei Durchläufe hintereinander über denselben Stand: der zweite ändert keine Zeile,
+    veröffentlicht kein Event und schreibt keinen Audit-Eintrag. Ein eingereihter Wunsch behält
+    `RemovalQueuedAtUtc` und `RemovalQueuedVersion` unverändert. Je Fälligkeit gibt es genau einen
+    Eintrag `wish.due`; verlängern und erneut ablaufen ergibt einen zweiten.
 28. **AK28** `Wishes:Enabled = false`: genau eine Logzeile, kein Datenbankzugriff danach.
 29. **AK29** Der Worker hat fünfzehn Hosted Services; `LogCaptureWriter` bleibt der erste.
 30. **AK30** Live-Verifikation (Regel 16) lokal: per `adopt` einen Bestandseintrag mit
@@ -1209,8 +1262,8 @@ und alle 60 Sekunden neu lädt. Je Beobachtung:
 
 **Haushalts-Takt (E26):** jede Minute, unabhängig von `Wishes:Capture:Enabled` und von
 `Wishes:Enabled`, erster Takt direkt beim Start: abgelaufene Anlern-Zeilen löschen,
-`LastAliveAtUtc` schreiben; alle 15 Minuten zusätzlich offene Wünsche jenseits von
-`PendingExpiryDays` nach `expired`. Bei `Wishes:Capture:Enabled = false` erzeugt der Manager keine
+`LastAliveAtUtc` schreiben; alle 15 Minuten zusätzlich offene Wünsche, deren `StatusChangedAtUtc` älter ist als
+`PendingExpiryDays`, nach `expired`. Bei `Wishes:Capture:Enabled = false` erzeugt der Manager keine
 Beobachtungen und der Dienst verarbeitet keine, der Haushalts-Takt läuft weiter. Jede Route, die
 den Anlernzustand liest oder bestätigt, behandelt eine Zeile mit `ExpiresAtUtc` ≤ jetzt als nicht
 vorhanden und löscht sie im selben Aufruf.
@@ -1222,18 +1275,60 @@ Kleinschreibung, Pfad `/emotes/<id>`. **Beide ID-Formate** werden angenommen: di
 26 Zeichen (Ziffern und Buchstaben, so in der Live-Probe AK46) und die Hex-ObjectId alter Links
 mit 24 Zeichen. Nach der ID dürfen Query-String, Fragment, Schrägstrich und Satzzeichen folgen,
 davor und danach beliebiger Text. Eine ID anderer Länge ist kein Link. Bei mehreren Links zählt
-der erste. Ohne Link ist das erste Wort, das als Emote-Name gelten kann, `RequestedName` und
-`MatchKind = name`; sonst `none` mit Hinweis `unparsed`. Api und Worker rufen dafür 7TV nicht
-auf; Bild und Standardname eines Link-Wunsches löst die Oberfläche über den öffentlichen 7TV-Read
+der erste.
+
+Ohne Link gilt diese Grammatik für den Namen, in dieser Reihenfolge:
+
+1. Den Text an Leerraum in Tokens teilen.
+2. Tokens verwerfen, die eine Adresse sind (enthalten `://` oder beginnen mit `www.`) oder eine
+   Erwähnung (beginnen mit `@`).
+3. Von jedem übrigen Token am Anfang und am Ende die Zeichen `. , ; ! ? " '` entfernen. Andere
+   Zeichen bleiben, weil Emote-Namen Klammern, Doppelpunkte und Nicht-ASCII-Zeichen tragen
+   können; die Spec stützt sich bewusst nicht auf 7TVs Namensregel, die im Repo nicht steht.
+4. Das **erste** Token mit 2 bis 100 Zeichen, das mindestens einen Buchstaben oder eine Ziffer
+   enthält, ist `RequestedName`, in der Schreibweise des Textes. `MatchKind = name`.
+5. Gibt es keines: `MatchKind = none`, Hinweis `unparsed`.
+
+Groß- und Kleinschreibung bleibt erhalten; verglichen wird erst in der Zuordnung (6.3: ordinal,
+dann ohne Rücksicht auf die Schreibweise, jeweils nur eindeutig). Die Regel rät nicht: Bei „bitte
+KEKW“ ist der Name `bitte`, es taucht kein passender Slot auf, und der Wunsch bleibt offen für
+den Verwalter, der den eingelösten Text sieht.
+
+| Eingelöster Text | `MatchKind` | Ergebnis |
+|---|---|---|
+| `KEKW` | `name` | `KEKW` |
+| `kekw bitte` | `name` | `kekw` |
+| `bitte KEKW` | `name` | `bitte` (kein Raten) |
+| `@streamer KEKW!` | `name` | `KEKW` |
+| `"peepoHappy".` | `name` | `peepoHappy` |
+| `(ditto)` | `name` | `(ditto)` |
+| `https://example.org/x KEKW` | `name` | `KEKW` |
+| `a` | `none` | `unparsed` (zu kurz) |
+| `!!! ???` | `none` | `unparsed` |
+| leer | `none` | `unparsed` |
+| 7TV-Emote-Link plus `KEKW` | `link` | Emote-ID aus dem Link, Name unbeachtet |
+
+Api und Worker rufen für die Auswertung 7TV nicht auf; Bild und Standardname eines Link-Wunsches
+löst die Oberfläche über den öffentlichen 7TV-Read
 auf.
 
 **Zuordnen.** K6 schaltet in `WishSlotMatcher` den Zustand `pending` und den Treffer über den Namen
 frei (6.3). Hinweise am offenen Wunsch: `ambiguous_match` (mehrere Kandidaten), `already_in_set`
 (das Emote lag schon vor der Einlösung im Set), `already_running` (für das Emote läuft schon ein
 Wunsch). Jede automatische Zuordnung schreibt `wish.autoLink` unter `AuditActor.System`. Ein
-Verwalter kann eine automatische Zuordnung binnen der Laufzeit wieder lösen (`POST /{id}/unlink`:
-zurück nach `pending`, der Slot bleibt unberührt und wird für diesen Wunsch nicht erneut
-vorgeschlagen).
+Verwalter kann eine automatische Zuordnung wieder lösen (`POST /{id}/unlink`), solange der Wunsch
+`active` ist, aus dem Chat stammt und `LinkOrigin = auto` trägt; sonst 409 `wish_state_conflict`.
+Wirkung, in einem Update: `Status = pending`, `StatusReason = null`, `StatusChangedAtUtc = jetzt`;
+`SlotId`, `StartsAtUtc`, `ExpiresAtUtc`, `LinkOrigin`, `BotOwnedAddedAtUtc`, `RemovalQueuedAtUtc`
+und `RemovalQueuedVersion` auf null; `StartsAtAuthoritative` und `BotOwned` auf falsch;
+`ExtensionCount` auf 0; `DecisionVersion` plus 1. Unverändert bleiben `DurationDays`,
+`CreatedAtUtc`, `EndedAtUtc` (war null und bleibt null), Einlöser-Daten und, bei einem Wunsch
+mit Link, `SevenTvEmoteId`; bei einem Namens-Wunsch werden `SevenTvEmoteId`, `EmoteName` und
+`Alias` wieder geleert. Der Slot im Set bleibt unberührt. Die Sperre steht dauerhaft in
+`WishSlotExclusions` (6.6): Der Abgleich schlägt diesen Slot diesem Wunsch nie wieder vor,
+„Bestand übernehmen“ darf ihn weiter wählen und löscht dabei die Sperre. Die Verfallsfrist eines
+offenen Wunsches zählt ab `StatusChangedAtUtc`, läuft nach dem Lösen also neu; das
+Zuordnungsfenster beginnt weiter bei `CreatedAtUtc`.
 
 **Kanal-Zusammenführung (Sol-Befund 9).** `ChannelIdentityService` verschiebt in der Transaktion der
 Zusammenführung, vor dem Löschen des Verlierers (`:1009`), auch `ChannelWishRewards`,
@@ -1315,14 +1410,15 @@ Texteingabe erkannt werden. i18n `wishes.pending.*`, `channelSettings.wishes.rew
      Großbuchstaben; mit Query-String, mit Fragment, mit abschließendem Schrägstrich, Punkt oder
      Klammer; Link mitten im Satz; zwei Links (erster zählt) ergeben je `link` mit genau der ID.
      Eine ID mit 23, 25 oder 27 Zeichen, ein anderer Host und ein anderer Pfad ergeben keinen
-     Link. Nur ein Name → `name`; leerer Text und Text ohne brauchbares Wort → `none`.
+     Link. Für Namen jede Zeile der Beispieltabelle aus K6 (Eingabe → `MatchKind` und Ergebnis).
 55. **AK55** Zuordnung über Link: offener Wunsch, danach taucht ein Slot mit dieser Emote-ID auf,
      gleich ob durch Vollsync, Delta oder manuelles Slot-Schreiben → `active`, `StartsAtUtc` =
      `AddedAt` des Slots, `LinkOrigin = auto`, `BotOwned` falsch, ein Audit-Eintrag `wish.autoLink`.
 56. **AK56** Zuordnung über Namen: genau ein neuer Slot mit gleichem Alias → `active`, Emote-ID
      aus dem Slot; zwei neue Slots, die nur in der Groß- und Kleinschreibung abweichen → bleibt
      `pending` mit `ambiguous_match`.
-57. **AK57** Kein Treffer außerhalb des Fensters: Slot älter als die Einlösung → `pending` mit
+57. **AK57** Kein Treffer außerhalb des Fensters: Slot mit `AddedAt` vor `CreatedAtUtc` des
+     Wunsches, auch um eine Sekunde (keine Toleranz, 6.3) → `pending` mit
      `already_in_set`; Slot taucht nach dem Verfall auf → Wunsch bleibt `expired`.
 58. **AK58** Zwei offene Wünsche für dasselbe Emote, ein neuer Slot: der ältere wird `active`,
      der jüngere bleibt `pending` mit `already_running`; dessen Freigabe verlängert den laufenden
@@ -1332,8 +1428,12 @@ Texteingabe erkannt werden. i18n `wishes.pending.*`, `channelSettings.wishes.rew
      200, einmal 409.
 60. **AK60** Verfall: `PendingExpiryDays = 14`, Alter 15 Tage → `expired`; `PendingExpiryDays = 1`,
      Alter 23 h bleibt `pending`, 25 h verfällt.
-61. **AK61** `unlink` setzt einen automatisch zugeordneten Wunsch nach `pending` zurück, der Slot
-     bleibt im Set, und derselbe Slot wird diesem Wunsch nicht erneut zugeordnet.
+61. **AK61** `unlink` setzt einen automatisch zugeordneten Wunsch nach `pending` zurück und leert
+     genau die in K6 genannten Felder (Start, Ablauf, Slot, Herkunft, Eigentum, Einreihung);
+     `EndedAtUtc` bleibt null. Der Slot bleibt im Set; der nächste Abgleich ordnet ihn diesem
+     Wunsch nicht erneut zu, auch nach einem Worker-Neustart (Zeile in `WishSlotExclusions`), wohl
+     aber einem anderen offenen Wunsch desselben Emotes. `unlink` auf einen von Hand übernommenen
+     oder vom Bot bestätigten Wunsch → 409.
 62. **AK62** Lücken: getrennte Verbindung von 5 Minuten → eine Zeile mit `disconnect` für jeden
      Kanal mit aktiver Belohnung, keine für Kanäle ohne; 30 Sekunden → keine Zeile; Worker-Neustart
      → `worker_restart` ab `LastAliveAtUtc`. Retention löscht Lücken nach 30 Tagen.
@@ -1394,7 +1494,7 @@ Texteingabe erkannt werden. i18n `wishes.pending.*`, `channelSettings.wishes.rew
 | `src/EmotePurge.Worker/WishCapture/RewardRedemptionParser.cs`, `WishCaptureWorker.cs`, `RewardObservationQueue.cs` | neu |
 | `src/EmotePurge.Worker/TwitchConnectionWatchdog.cs`, `WorkerServiceRegistration.cs:56-70` | Lückenquelle, Registrierung |
 | `src/EmotePurge.Core/Chat/SharedChatRule.cs:23` | unverändert genutzt |
-| `src/EmotePurge.Core/Entities/ChannelWishReward.cs`, `WishRewardLearning.cs`, `WishCaptureGap.cs`, `WishCaptureState.cs` | neu |
+| `src/EmotePurge.Core/Entities/ChannelWishReward.cs`, `WishRewardLearning.cs`, `WishCaptureGap.cs`, `WishCaptureState.cs`, `WishSlotExclusion.cs` | neu |
 | `src/EmotePurge.Core/Entities/Wish.cs`, `ChannelWishSettings.cs` | Spalten aus 6.6 |
 | `src/EmotePurge.Core/Services/WishTextParser.cs`, `IWishCaptureService.cs`, `WishSlotMatcher.cs`, `WishTransitions.cs` | neu bzw. um `pending` und Namens-Treffer erweitert |
 | `src/EmotePurge.Core/Messaging/BotCommands.cs:22` | `WishCapturePrefix = "WISHCAPTURE:"` |
@@ -1449,13 +1549,21 @@ Gruppe):
 Keine Route gibt das Token oder das Siegel zurück. Audit: `wishBot.tokenSet`,
 `wishBot.tokenDelete`, `wishBot.killSwitch` (Details nur `expiresAtUtc` bzw. `enabled`).
 
-**Kanal-Api** (Gruppe aus K1): `GET /api/channels/{c}/wishes/bot` (`{ available, enabled,
-suspendedReason, editorCheckedAtUtc, activatedByLogin, activatedAtUtc, botSevenTvUserId }`),
-`POST …/wishes/bot/activate` (hinter dem neuen `WishBotActivationAuthorizationFilter`, E24: nur der
-Broadcaster, ein 7TV-Editor des Kanals oder ein globaler Admin. Editor heißt:
-`ISevenTvEditorService.GetEditorGrantsAsync` für die Twitch-ID des Aufrufers antwortet `Ok`, und
-die Grants enthalten die Twitch-ID dieses Kanals. `NoSevenTvAccount` und nicht enthalten → 403
-`wish_bot_activation_forbidden`; `Unavailable` → 503, nie ein Durchlassen. Ein reiner Twitch-Mod
+**Kanal-Api** (Gruppe aus K1): `GET /api/channels/{c}/wishes/bot` (`{ available, listed, enabled,
+activationPending, activationRequestedAtUtc, activationError, canActivate, canDeactivate,
+suspendedReason, editorCheckedAtUtc, activatedByLogin, activatedAtUtc, botSevenTvUserId }`;
+`activationPending` ist wahr zwischen `activate` und der Bestätigung des Workers,
+`activationError` ist `not_editor`, wenn der Worker den Bot nicht als Editor fand, und beendet das
+Warten; `canActivate` und `canDeactivate` spiegeln E24 und D7 für den Aufrufer, die Route bleibt
+die Prüfung),
+`POST …/wishes/bot/activate` (Filterfolge: `ChannelNameValidationFilter` →
+`ChannelManagementAuthorizationFilter` → neuer `WishBotActivationAuthorizationFilter`, E24. Der
+erste Autorisierungsfilter lehnt jeden ab, der den Kanal nicht verwaltet, auch einen 7TV-Editor
+ohne Twitch-Rolle (403). Der zweite lässt von den Verwaltern nur durch: den Broadcaster, einen
+globalen Admin, und einen Twitch-Mod, für den `ISevenTvEditorService.GetEditorGrantsAsync` mit
+seiner Twitch-ID `Ok` antwortet und dessen Grants die Twitch-ID dieses Kanals enthalten.
+`NoSevenTvAccount` oder Kanal nicht enthalten → 403 `wish_bot_activation_forbidden`;
+`Unavailable` → 503, nie ein Durchlassen. Ein reiner Twitch-Mod
 ist damit ausgeschlossen, auch wenn der Bot schon Editor ist. Dazu die Pilot-Liste, E8: 403
 `wish_bot_channel_not_listed`. Ist der Bot-Modus schon aktiv: 409 `wish_bot_already_active`, der
 gespeicherte Aktivierende wird nie überschrieben; er ändert sich nur durch Abschalten und eine
@@ -1489,9 +1597,24 @@ aus Abschnitt 7 Punkt 8 an.
 
 Abläufe:
 
-- **Hinzufügen:** Vor-Read; Emote-ID schon im Set → `presented` (`already_in_set`), kein Schreiben.
-  Sonst `addEmote`; Erfolg → `unconfirmed`; Ablehnung → `failed` mit Grund, kein Retry. 429 →
-  `PausedUntilUtc`, der Wunsch bleibt `approved`.
+- **Hinzufügen:** Zuerst die Absicht festschreiben: ein bedingtes Update auf `Status = approved`
+  und `BotWriteAtUtc IS NULL` setzt `BotWriteAtUtc` und erhöht `DecisionVersion`, in eigener
+  Transaktion **vor** jedem 7TV-Aufruf. Trifft es keine Zeile (der Abgleich oder ein Verwalter war
+  schneller), schreibt der Bot nicht. Danach Vor-Read; Emote-ID schon im Set → `BotWriteAtUtc`
+  leeren, `presented` (`already_in_set`), kein Schreiben. Sonst `addEmote`; Erfolg →
+  `unconfirmed`; Ablehnung → `BotWriteAtUtc` leeren, `failed` mit Grund, kein Retry. 429 →
+  `BotWriteAtUtc` leeren, `PausedUntilUtc`, der Wunsch bleibt `approved`. Findet der Bot nach
+  einem Absturz einen `approved` mit gesetztem `BotWriteAtUtc`, behandelt er ihn wie
+  `unconfirmed` und fügt nicht erneut hinzu.
+- **Koordination mit dem Abgleich:** Der Abgleich (6.3) fasst einen Wunsch mit gesetztem
+  `BotWriteAtUtc` in `approved` oder `unconfirmed` nicht an; nur der Bestätigungsweg des Bots führt
+  ihn nach `active`. Damit gewinnt immer genau einer: Hat der Abgleich den Wunsch schon auf
+  `active` gesetzt, scheitert das Festschreiben der Absicht, der Bot schreibt nicht, und der
+  Wunsch ist ein Erinnerungsfall ohne Eigentum (das Emote kam nicht vom Bot). Hat der Bot die
+  Absicht festgeschrieben, wartet der Abgleich, und das Eigentum entscheidet sich allein am
+  `addedById` des Bestätigungs-Reads. Den Slot zu einem vom Bot bestätigten Wunsch verknüpft der
+  Abgleich nachträglich: `active` ohne `SlotId` mit `BotOwnedAddedAtUtc` oder `StartsAtUtc` wird
+  dem Slot gleicher Emote-ID und gleichen Alias zugeordnet, ohne Zustand oder Eigentum zu ändern.
 - **Bestätigen:** nach E11. Genau ein Eintrag mit Emote-ID und Alias: `addedById` = Bot → `active`
   mit Eigentum und maßgeblichem Start; sonst `active` ohne Eigentum. Kein Eintrag nach 15 min →
   `presented` (`unconfirmed`).
@@ -1572,11 +1695,18 @@ Löschen mit `typed-confirm-dialog`, Notaus-Schalter, Warteschlangentiefe, Zahl 
 82. **AK82** Aktivieren prüft den Aufrufer (E24, Sol-Befund 1), an der echten Route: Bot ist
     Editor, ein Berechtigter schaltet ab, der Bot bleibt in 7TV Editor → direktes
     `POST …/wishes/bot/activate` durch einen reinen Twitch-Mod 403
-    `wish_bot_activation_forbidden`, der Modus bleibt aus. Broadcaster, bestätigter 7TV-Editor
-    und globaler Admin → angenommen. Editor-Auskunft `Unavailable` → 503, `NoSevenTvAccount` →
-    403. Aktivieren bei aktivem Modus → 409 `wish_bot_already_active`,
+    `wish_bot_activation_forbidden`, der Modus bleibt aus. Angenommen werden genau: Broadcaster,
+    globaler Admin, Twitch-Mod mit bestätigtem 7TV-Editor-Grant für diesen Kanal. Ein
+    7TV-Editor ohne Twitch-Rolle → 403 vom Verwalter-Filter. Editor-Auskunft `Unavailable` →
+    503, `NoSevenTvAccount` → 403. Aktivieren bei aktivem Modus → 409 `wish_bot_already_active`,
     `BotModeActivatedBy*` unverändert.
-83. **AK83** Einreihen, dann entscheiden (E25, Sol-Befund 2): Ablauf-Lauf reiht ein, danach
+83. **AK83** Bot gegen Abgleich: Ein Sync verknüpft einen `approved` (Mensch hat in 7TV
+    hinzugefügt), bevor der Bot die Absicht festschreibt → der Bot sendet kein `addEmote`, Wunsch
+    `active` ohne Eigentum. Der Bot hat die Absicht festgeschrieben, dann läuft ein Sync, der den
+    neuen Slot sieht → der Abgleich ändert den Wunsch nicht; der Bestätigungs-Read setzt `active`
+    mit Eigentum, der nächste Abgleich trägt nur `SlotId` nach. Absturz zwischen `addEmote` und
+    `unconfirmed` → nach dem Neustart kein zweites `addEmote`. Einreihen, dann entscheiden (E25,
+    Sol-Befund 2): Ablauf-Lauf reiht ein, danach
     `extend` → `RemovalQueuedAtUtc` ist null, der Bot sendet kein `removeEmote`, der Eintrag bleibt.
     Dasselbe für `keep`, `PATCH` der Laufzeit und Abschalten des Bot-Modus. Nebenläufig: `extend`
     wird festgeschrieben, nachdem der Bot den Wunsch ausgewählt, aber bevor er die Zeile gesperrt
@@ -1590,7 +1720,8 @@ Löschen mit `typed-confirm-dialog`, Notaus-Schalter, Warteschlangentiefe, Zahl 
     `wish_state_conflict`; Nicht-Verwalter 403.
 85. **AK85** Pilot-Liste (E8): Liste leer → `activate` durch Broadcaster und Mod 403
     `wish_bot_channel_not_listed`, durch einen globalen Admin erfolgreich; Kanal gelistet →
-    Verwalter erfolgreich; `*` → jeder Kanal. Im Betrieb: Ein aktiver Bot-Kanal fällt aus der
+    die nach E24 Berechtigten erfolgreich, ein reiner Twitch-Mod weiterhin 403
+    `wish_bot_activation_forbidden`; `*` → jeder Kanal, gleiche Berechtigten. Im Betrieb: Ein aktiver Bot-Kanal fällt aus der
     Liste → der nächste Lauf schreibt dort nicht, `BotSuspendedReason = not_listed`, offene
     Bot-Aktionen wie in AK79; `BotModeEnabled` und der Aktivierende bleiben gespeichert; wieder
     gelistet → der Bot nimmt ohne neue Aktivierung auf, was noch `approved` ist. Der manuelle
@@ -1707,7 +1838,8 @@ Aktion „Bot entfernen lassen“. Kein Backend außer dem, was K4 liefert.
   (`shared/seven-tv/seven-tv-token-prompt-dialog.ts`), falls kein Token in der Sitzung liegt.
 - **Ablauf:** Editor-Mutation mit minimaler Berechtigung (nur Emote-Sets verwalten, sofern das
   Schema das trennt) über `SevenTvRunArbiter` → `POST …/wishes/bot/activate` → Warten auf die
-  Bestätigung des Workers (Abfrage `GET …/wishes/bot` nach `wish.changed`, höchstens 60 s) →
+  Bestätigung des Workers (Abfrage `GET …/wishes/bot` nach `wish.changed`, höchstens 60 s, bis
+  `activationPending` falsch ist; dann entscheidet `enabled` oder `activationError`) →
   Erfolgs- oder Fehlzustand mit Grund. Das Token des Verwalters verlässt den Browser nicht.
 - **Rückfallweg**, falls die Probe kein nutzbares Schema liefert oder 7TV eine Annahme durch das
   Bot-Konto verlangt: Der Dialog zeigt eine Anleitung zum Eintragen in 7TV und einen Knopf „Jetzt
