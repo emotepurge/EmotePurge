@@ -8,8 +8,8 @@ using Npgsql;
 namespace EmotePurge.Infrastructure.Services;
 
 /// <summary>
-/// The manager-facing wish service, part 1 (plan T4): manual entry, "take over from the set", settings and
-/// the reads. See <see cref="IWishService"/> for the contract.
+/// The manager-facing wish service: manual entry, "take over from the set", settings and the reads (plan T4),
+/// and the transition commands on an existing wish (plan T5). See <see cref="IWishService"/> for the contract.
 /// <para>
 /// <b>Locks (plan 2.3).</b> Every write opens a transaction and takes the channel row first
 /// (<see cref="RowLocks.LockChannelsByIdsAsync"/>, <c>FOR NO KEY UPDATE</c>), because it inserts a row with
@@ -18,7 +18,8 @@ namespace EmotePurge.Infrastructure.Services;
 /// <c>FOR UPDATE</c>, waits for the reserved key. An adoption with a wish id then locks that wish row
 /// (<see cref="RowLocks.LockWishesByIdsAsync"/>) and only afterwards reads it, so the state it decides on is
 /// the committed one and stays so. Because of that lock the state is stable within the transaction; the
-/// unique indexes remain as a belt and map to the conflict outcomes, never to a 500.
+/// unique indexes remain as a belt and map to the conflict outcomes, never to a 500. The transition commands
+/// change an existing wish only and therefore take just its row lock (<see cref="RunTransitionAsync"/>).
 /// </para>
 /// </summary>
 public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPublisher, TimeProvider timeProvider) : IWishService
@@ -373,6 +374,196 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings));
     }
 
+    public Task<WishCommandResult> UpdateAsync(
+        string channelName, long wishId, UpdateWishRequest request, AuditActor actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (request.DurationDays is { } days && !IsDurationInRange(days))
+        {
+            return Task.FromResult(WishCommandResult.Of(WishOutcome.DurationOutOfRange));
+        }
+
+        var alias = request.Alias?.Trim();
+        if (alias is not null && !IsValidAlias(alias))
+        {
+            return Task.FromResult(WishCommandResult.Of(WishOutcome.AliasInvalid));
+        }
+
+        return RunTransitionAsync(channelName, wishId, actor, AuditActions.WishUpdate, (wish, _, _, _) =>
+        {
+            var target = WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.Edit);
+            if (target is null)
+            {
+                return CommandStep.ConflictTask;
+            }
+
+            wish.Status = target;
+            wish.Alias = alias ?? wish.Alias;
+            wish.DurationDays = request.DurationDays ?? wish.DurationDays;
+            return CommandStep.DoneTask;
+        }, cancellationToken);
+    }
+
+    public Task<WishCommandResult> ExtendAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
+        RunTransitionAsync(channelName, wishId, actor, AuditActions.WishExtend, (wish, settings, now, _) =>
+        {
+            var target = WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.Extend);
+            if (target is null)
+            {
+                return CommandStep.ConflictTask;
+            }
+
+            // E12: by the channel's default, from the current expiry or from now when that has passed. A live
+            // wish always has an expiry; "now" only guards a row that lost it.
+            var extensionDays = settings.DefaultDurationDays;
+            wish.Status = target;
+            wish.ExpiresAtUtc = WishSchedule.ExtendedExpiresAt(wish.ExpiresAtUtc ?? now, now, extensionDays);
+            wish.ExtensionCount++;
+            return Task.FromResult(new CommandStep(null, AuditDurationDays: extensionDays));
+        }, cancellationToken);
+
+    public Task<WishCommandResult> KeepAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
+        RunTransitionAsync(channelName, wishId, actor, AuditActions.WishKeep, (wish, _, _, _) =>
+        {
+            var target = WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.Keep);
+            if (target is null)
+            {
+                return CommandStep.ConflictTask;
+            }
+
+            // The entry becomes an ordinary one: bot ownership ends.
+            wish.Status = target;
+            wish.BotOwned = false;
+            wish.BotOwnedAddedAtUtc = null;
+            return CommandStep.DoneTask;
+        }, cancellationToken);
+
+    public Task<WishCommandResult> CloseAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
+        RunTransitionAsync(channelName, wishId, actor, AuditActions.WishClose, (wish, _, _, _) =>
+        {
+            var target = WishTransitions.Target(
+                wish.Status, wish.StatusReason, WishAction.Close, new WishTransitionContext(HasSlot: wish.SlotId is not null));
+            if (target is null)
+            {
+                return CommandStep.ConflictTask;
+            }
+
+            wish.Status = target;
+            return CommandStep.DoneTask;
+        }, cancellationToken);
+
+    public Task<WishCommandResult> RetryAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
+        RunTransitionAsync(channelName, wishId, actor, AuditActions.WishRetry, (wish, _, now, _) =>
+        {
+            var target = WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.Retry);
+            if (target is null)
+            {
+                return CommandStep.ConflictTask;
+            }
+
+            // The manager's click is the approval (R3-12). The bot's attempt fields are K4's to reset.
+            wish.Status = target;
+            wish.ApprovedAtUtc = now;
+            return CommandStep.DoneTask;
+        }, cancellationToken);
+
+    public Task<WishCommandResult> ReAddAsync(
+        string channelName, long wishId, ReAddWishRequest request, AuditActor actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var permanent = string.Equals(request.Mode, WishReAddMode.Permanent, StringComparison.Ordinal);
+        if (!permanent && !string.Equals(request.Mode, WishReAddMode.Timed, StringComparison.Ordinal))
+        {
+            return Task.FromResult(WishCommandResult.Of(WishOutcome.ModeInvalid));
+        }
+
+        if (request.DurationDays is { } days && !IsDurationInRange(days))
+        {
+            return Task.FromResult(WishCommandResult.Of(WishOutcome.DurationOutOfRange));
+        }
+
+        return RunTransitionAsync(channelName, wishId, actor, AuditActions.WishReAdd, async (wish, settings, now, ct) =>
+        {
+            var target = WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.ReAdd);
+            if (target is null)
+            {
+                return CommandStep.Conflict;
+            }
+
+            // E13 under the row lock; without the channel lock a concurrent manual entry can still slip in, and
+            // the running index catches that on save (SaveOrConflictAsync).
+            var running = await FindRunningWishIdAsync(wish.ChannelId, wish.SevenTvEmoteId, ct);
+            if (running is not null && running != wish.Id)
+            {
+                return new CommandStep(new WishCommandResult(WishOutcome.AlreadyRunning, ConflictingWishId: running));
+            }
+
+            // A new run: fresh approval, duration or permanent, no start, expiry or slot generation until the
+            // reconcile links a slot again. SlotId and FirstActivatedAtUtc are history and stay (plan T5, finding 20).
+            wish.Status = target;
+            wish.Permanent = permanent;
+            wish.DurationDays = request.DurationDays ?? (permanent ? wish.DurationDays : settings.DefaultDurationDays);
+            wish.ApprovedAtUtc = now;
+            wish.StartsAtUtc = null;
+            wish.StartsAtAuthoritative = false;
+            wish.ExpiresAtUtc = null;
+            wish.ExtensionCount = 0;
+            wish.SlotAddedAtUtc = null;
+            wish.SlotConfirmedAtUtc = null;
+            wish.BotOwned = false;
+            wish.BotOwnedAddedAtUtc = null;
+            return CommandStep.Done;
+        }, cancellationToken);
+    }
+
+    public Task<WishCommandResult> CompleteRemovalAsync(
+        string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
+        RunTransitionAsync(channelName, wishId, actor, AuditActions.WishRemove, (wish, _, now, _) =>
+        {
+            var target = WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.Remove);
+            if (target is null)
+            {
+                return CommandStep.ConflictTask;
+            }
+
+            // The race between sync and success report (AK11): an external removal the reconcile saw first turns
+            // into our removal only within the adoption window after it was observed.
+            if (wish.Status == WishStatus.RemovedExternally
+                && (wish.EndedAtUtc is not { } endedAt || now > endedAt + WishLimits.AdoptionWindow))
+            {
+                return CommandStep.ConflictTask;
+            }
+
+            wish.Status = target;
+            return CommandStep.DoneTask;
+        }, cancellationToken);
+
+    public async Task<WishCommandResult> RecheckAsync(
+        string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channelName);
+        ArgumentNullException.ThrowIfNull(actor);
+
+        var channelId = await ResolveChannelIdAsync(channelName, cancellationToken);
+        if (channelId is null)
+        {
+            return WishCommandResult.Of(WishOutcome.ChannelNotFound);
+        }
+
+        var exists = await db.Wishes.AsNoTracking().AnyAsync(w => w.Id == wishId && w.ChannelId == channelId, cancellationToken);
+        if (!exists)
+        {
+            return WishCommandResult.Of(WishOutcome.WishNotFound);
+        }
+
+        // Plan finding 8: the only transition (presented/unconfirmed -> unconfirmed) needs an available bot, which
+        // K1 does not have, so every state is a conflict and nothing is locked or written. K4 replaces this with
+        // the WishTransitions lookup and its own wish_bot_unavailable.
+        return WishCommandResult.Of(WishOutcome.StateConflict);
+    }
+
     public async Task<PagedResult<WishDto>?> ListAsync(
         string channelName, WishListView view, int page, int pageSize, CancellationToken cancellationToken = default)
     {
@@ -490,15 +681,82 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         }
     }
 
+    // The transition commands (plan T5, 2.3). They change an existing wish only, so they take only its row lock,
+    // no channel lock: lock FOR UPDATE, read only then (scoped to the channel), let the command decide on that
+    // committed state and change the tracked row. The lock replaces a state predicate in the UPDATE: a command
+    // that waited sees the state the other one committed and decides on it. On success every command counts the
+    // decision and drops a queued bot removal (E25), stamps a state change, and saves, audits and commits in one
+    // transaction; one wish.changed follows the commit. A refusal leaves the transaction to roll back.
+    private async Task<WishCommandResult> RunTransitionAsync(
+        string channelName,
+        long wishId,
+        AuditActor actor,
+        string auditAction,
+        Func<Wish, EffectiveSettings, DateTime, CancellationToken, Task<CommandStep>> decide,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(channelName);
+        ArgumentNullException.ThrowIfNull(actor);
+
+        var channelId = await ResolveChannelIdAsync(channelName, cancellationToken);
+        if (channelId is null)
+        {
+            return WishCommandResult.Of(WishOutcome.ChannelNotFound);
+        }
+
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        await db.LockWishesByIdsAsync([wishId], cancellationToken);
+        var wish = await db.Wishes.FirstOrDefaultAsync(w => w.Id == wishId && w.ChannelId == channelId, cancellationToken);
+        if (wish is null)
+        {
+            return WishCommandResult.Of(WishOutcome.WishNotFound);
+        }
+
+        var settings = await LoadSettingsAsync(channelId, cancellationToken);
+        var now = Now();
+        var previousStatus = wish.Status;
+        var step = await decide(wish, settings, now, cancellationToken);
+        if (step.Refusal is not null)
+        {
+            db.ChangeTracker.Clear();
+            return step.Refusal;
+        }
+
+        wish.DecisionVersion++;
+        wish.RemovalQueuedAtUtc = null;
+        wish.RemovalQueuedVersion = null;
+        if (!string.Equals(previousStatus, wish.Status, StringComparison.Ordinal))
+        {
+            // No target of a manager command carries a reason; an end state starts the retention clock, the way
+            // back out of one clears it.
+            wish.StatusChangedAtUtc = now;
+            wish.StatusReason = null;
+            wish.EndedAtUtc = WishStatus.IsEnded(wish.Status) ? now : null;
+        }
+
+        var conflict = await SaveOrConflictAsync(transaction, channelId, wish.SevenTvEmoteId, cancellationToken);
+        if (conflict is not null)
+        {
+            return conflict;
+        }
+
+        var channel = ChannelName.Normalize(channelName);
+        await AuditAndCommitAsync(transaction, actor, auditAction, channel, wish, cancellationToken, step.AuditDurationDays);
+        await changedPublisher.PublishAsync(channel, cancellationToken);
+        return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings));
+    }
+
     // The audit entry needs the wish id, which an insert only has after its first save; both saves are in
-    // the one transaction, so the entry exists if and only if the command committed.
+    // the one transaction, so the entry exists if and only if the command committed. durationDays is the wish's
+    // duration, or what the command says instead (an extension records its length).
     private async Task AuditAndCommitAsync(
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction,
         AuditActor actor,
         string action,
         string channelName,
         Wish wish,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? auditDurationDays = null)
     {
         db.AddAuditEntry(
             actor,
@@ -506,7 +764,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             channelName: channelName,
             targetType: "wish",
             targetId: wish.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            details: new { wishId = wish.Id, sevenTvEmoteId = wish.SevenTvEmoteId, durationDays = wish.DurationDays });
+            details: new { wishId = wish.Id, sevenTvEmoteId = wish.SevenTvEmoteId, durationDays = auditDurationDays ?? wish.DurationDays });
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }
@@ -607,6 +865,15 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         settings.IsBotMode ? "bot" : "manual");
 
     private sealed record LockedChannel(string ChannelName, int? ActiveEmoteSetCapacity);
+
+    // What a transition command decided: a refusal, or success with an optional durationDays for the audit entry.
+    private sealed record CommandStep(WishCommandResult? Refusal, int? AuditDurationDays = null)
+    {
+        public static readonly CommandStep Done = new((WishCommandResult?)null);
+        public static readonly CommandStep Conflict = new(WishCommandResult.Of(WishOutcome.StateConflict));
+        public static readonly Task<CommandStep> DoneTask = Task.FromResult(Done);
+        public static readonly Task<CommandStep> ConflictTask = Task.FromResult(Conflict);
+    }
 
     private sealed record EffectiveSettings(
         int DefaultDurationDays,

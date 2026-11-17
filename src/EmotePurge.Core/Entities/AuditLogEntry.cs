@@ -60,6 +60,9 @@ public static class AuditActions
     public const string WishRetry = "wish.retry";
     public const string WishReAdd = "wish.readd";
     public const string WishSettings = "wish.settings";
+
+    /// <summary>PATCH of alias or duration; not in the spec's list, added so no manager action goes unrecorded.</summary>
+    public const string WishUpdate = "wish.update";
 }
 
 /// <summary>

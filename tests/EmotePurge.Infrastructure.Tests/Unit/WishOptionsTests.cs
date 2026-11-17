@@ -68,14 +68,15 @@ public class WishOptionsTests
     }
 
     [Fact]
-    public void AuditActions_AreTheNineWishStrings()
+    public void AuditActions_AreTheTenWishStrings()
     {
+        // The spec's nine plus wish.update for the PATCH (see DECISIONS "Wish emotes, child 1", (j)).
         Assert.Equal(
-            ["wish.create", "wish.adopt", "wish.extend", "wish.keep", "wish.remove", "wish.close", "wish.retry", "wish.readd", "wish.settings"],
+            ["wish.create", "wish.adopt", "wish.extend", "wish.keep", "wish.remove", "wish.close", "wish.retry", "wish.readd", "wish.settings", "wish.update"],
             [
                 AuditActions.WishCreate, AuditActions.WishAdopt, AuditActions.WishExtend, AuditActions.WishKeep,
                 AuditActions.WishRemove, AuditActions.WishClose, AuditActions.WishRetry, AuditActions.WishReAdd,
-                AuditActions.WishSettings,
+                AuditActions.WishSettings, AuditActions.WishUpdate,
             ]);
     }
 

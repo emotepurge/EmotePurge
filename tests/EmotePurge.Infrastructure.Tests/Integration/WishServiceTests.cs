@@ -16,7 +16,7 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 // the channel-lock ordering and the one-event-per-commit rule. Every test seeds its own channel in the
 // shared database and only ever looks at that channel's rows.
 [Collection("Postgres")]
-public class WishServiceTests(PostgresFixture fixture)
+public partial class WishServiceTests(PostgresFixture fixture)
 {
     private static readonly AuditActor Actor = new("4242", "wishmod");
 

@@ -49,6 +49,11 @@ public class WishTransitionsTests
         new(Ext, null, "return", Cond.ReasonStood, "presented"),
         new(Ext, null, "return", Cond.NoReasonStood, "active"),
 
+        // PATCH (edit): a self-transition in the states before 7TV was written to.
+        new(Pen, null, "edit", Cond.Always, "pending"),
+        new(App, null, "edit", Cond.Always, "approved"),
+        new(Fai, null, "edit", Cond.Always, "failed"),
+
         // Pending (K6).
         new(Pen, null, "approve", Cond.Always, "approved"),
         new(Pen, null, "reject", Cond.Always, "rejected"),
@@ -112,7 +117,7 @@ public class WishTransitionsTests
 
     private static readonly string[] AllActions =
     [
-        "create", "adopt_new", "capture", "adopt", "extend", "keep", "close", "retry", "readd", "remove", "recheck",
+        "create", "adopt_new", "capture", "edit", "adopt", "extend", "keep", "close", "retry", "readd", "remove", "recheck",
         "approve", "reject", "unlink", "link", "return", "external_removal", "present", "expire",
         "merge_into_running", "merge_channels", "bot_write", "bot_reject", "bot_already_in_set", "bot_confirm",
         "bot_unconfirmed",
@@ -177,7 +182,7 @@ public class WishTransitionsTests
                         checkedCombinations++;
                     }
 
-        Assert.Equal(13 * 18 * 26 * 16, checkedCombinations);
+        Assert.Equal(13 * 18 * 27 * 16, checkedCombinations);
     }
 
     [Fact]

@@ -17,7 +17,9 @@ public static class WishAction
     public const string AdoptNew = "adopt_new";
     public const string Capture = "capture";
 
-    // Manager commands.
+    // Manager commands. Edit is the PATCH of alias and duration: a self-transition that only names the
+    // states in which the wish may still be edited.
+    public const string Edit = "edit";
     public const string Adopt = "adopt";
     public const string Extend = "extend";
     public const string Keep = "keep";
@@ -46,7 +48,7 @@ public static class WishAction
 
     public static readonly IReadOnlyList<string> All =
     [
-        Create, AdoptNew, Capture, Adopt, Extend, Keep, Close, Retry, ReAdd, Remove, Recheck, Approve, Reject, Unlink,
+        Create, AdoptNew, Capture, Edit, Adopt, Extend, Keep, Close, Retry, ReAdd, Remove, Recheck, Approve, Reject, Unlink,
         Link, Return, ExternalRemoval, Present, Expire, MergeIntoRunning, MergeChannels,
         BotWrite, BotReject, BotAlreadyInSet, BotConfirm, BotUnconfirmed,
     ];
@@ -141,6 +143,12 @@ public static class WishTransitions
         // Back from an external removal: the state before, with the old deadline.
         rows.Add(new Row(WishStatus.RemovedExternally, null, WishAction.Return,
             c => c.HadPresentedReason ? WishStatus.Presented : WishStatus.Active, null));
+
+        // PATCH of alias and duration: only before anything was written to 7TV (approved, failed; pending from
+        // K6 on). Not in unconfirmed, because the bot has written already.
+        Add(WishStatus.Pending, WishAction.Edit, WishStatus.Pending);
+        Add(WishStatus.Approved, WishAction.Edit, WishStatus.Approved);
+        Add(WishStatus.Failed, WishAction.Edit, WishStatus.Failed);
 
         // Pending (K6).
         Add(WishStatus.Pending, WishAction.Approve, WishStatus.Approved);

@@ -5,8 +5,9 @@ namespace EmotePurge.Core.Services;
 /// settings, and the reads of the list and of one wish. Every method takes the channel name as the
 /// caller spelled it and normalizes it through <see cref="Entities.ChannelName.Normalize"/>.
 /// <para>
-/// Every write is one transaction that takes the channel row lock first (plan 2.3), checks, writes the
-/// row and its audit entry together, and publishes <c>wish.changed</c> after the commit. A refusal
+/// Every write is one transaction that takes its row locks first (plan 2.3: the channel row before an insert or
+/// a <c>SlotId</c> write; a command that only changes an existing wish takes just that wish's row), checks,
+/// writes the row and its audit entry together, and publishes <c>wish.changed</c> after the commit. A refusal
 /// writes nothing, audits nothing and publishes nothing. The handler maps
 /// <see cref="WishCommandResult.Outcome"/> to a status and an error code and decides nothing itself.
 /// </para>
@@ -51,6 +52,63 @@ public interface IWishService
     /// </summary>
     Task<WishCommandResult> AdoptAsync(
         string channelName, AdoptWishRequest request, AuditActor actor, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// PATCH: changes alias and/or duration while the wish may still be edited (<c>approved</c>, <c>failed</c>;
+    /// <c>pending</c> from K6 on). Audited as <c>wish.update</c>. Refusals: <see cref="WishOutcome.DurationOutOfRange"/>,
+    /// <see cref="WishOutcome.AliasInvalid"/> and the common ones of the transition commands (see <see cref="ExtendAsync"/>).
+    /// </summary>
+    Task<WishCommandResult> UpdateAsync(
+        string channelName, long wishId, UpdateWishRequest request, AuditActor actor, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Extends an <c>active</c> or <c>presented</c> wish by the channel's default duration (E12: from the current
+    /// expiry, or from now when that has passed); a <c>presented</c> wish returns to <c>active</c>. Audited as
+    /// <c>wish.extend</c> with the extension length as <c>durationDays</c>.
+    /// <para>
+    /// The transition commands (<see cref="UpdateAsync"/> to <see cref="RecheckAsync"/>) share their refusals:
+    /// <see cref="WishOutcome.ChannelNotFound"/>, <see cref="WishOutcome.WishNotFound"/> (also for a wish of another
+    /// channel) and <see cref="WishOutcome.StateConflict"/> (the state does not allow the command, also when it
+    /// changed while the command waited for the row lock). A refusal writes, audits and publishes nothing; a
+    /// success counts the decision (E25) and publishes <c>wish.changed</c> once.
+    /// </para>
+    /// </summary>
+    Task<WishCommandResult> ExtendAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
+
+    /// <summary><c>active</c> or <c>presented</c> to <c>kept</c>; bot ownership ends. Audited as <c>wish.keep</c>.</summary>
+    Task<WishCommandResult> KeepAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// <c>approved</c>, <c>failed</c>, and <c>presented</c> without a linked slot, to <c>closed</c>. Audited as
+    /// <c>wish.close</c>.
+    /// </summary>
+    Task<WishCommandResult> CloseAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
+
+    /// <summary><c>failed</c> to <c>approved</c> with a fresh approval time. Audited as <c>wish.retry</c>.</summary>
+    Task<WishCommandResult> RetryAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// <c>removed</c> or <c>removed_externally</c> back to <c>approved</c>, timed (duration or the channel default) or
+    /// permanent; start, expiry and slot generation are cleared, <c>SlotId</c> and <c>FirstActivatedAtUtc</c> stay.
+    /// Audited as <c>wish.readd</c>. Further refusals: <see cref="WishOutcome.ModeInvalid"/>,
+    /// <see cref="WishOutcome.DurationOutOfRange"/>, <see cref="WishOutcome.AlreadyRunning"/> (another wish for the
+    /// emote runs again, with its id).
+    /// </summary>
+    Task<WishCommandResult> ReAddAsync(
+        string channelName, long wishId, ReAddWishRequest request, AuditActor actor, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The browser engine reports a removal: <c>active</c> or <c>presented</c> to <c>removed</c>, and
+    /// <c>removed_externally</c> to <c>removed</c> within the adoption window after <c>EndedAtUtc</c> (E10, AK11).
+    /// Audited as <c>wish.remove</c>.
+    /// </summary>
+    Task<WishCommandResult> CompleteRemovalAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// "Check again" (<c>presented</c> with reason <c>unconfirmed</c>). Its only transition needs the bot, which K1
+    /// does not have (plan finding 8): in K1 every state answers <see cref="WishOutcome.StateConflict"/>; K4 fills it.
+    /// </summary>
+    Task<WishCommandResult> RecheckAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
 
     /// <summary>One page of the channel's wishes in a view; null when the channel is unknown.</summary>
     Task<PagedResult<WishDto>?> ListAsync(
@@ -116,7 +174,10 @@ public enum WishOutcome
     SlotAlreadyLinked,
 
     /// <summary>The wish is not in a state the command accepts, or changed under it.</summary>
-    StateConflict
+    StateConflict,
+
+    /// <summary>The <c>mode</c> of a re-add is neither <c>timed</c> nor <c>permanent</c>.</summary>
+    ModeInvalid
 }
 
 /// <summary>
@@ -190,6 +251,22 @@ public sealed record AdoptWishRequest(
     long? WishId,
     int? DurationDays,
     DateTime? StartsAtUtc);
+
+/// <summary>Body of the PATCH: a null field stays as it is.</summary>
+public sealed record UpdateWishRequest(string? Alias, int? DurationDays);
+
+/// <summary>
+/// Body of the re-add: <see cref="Mode"/> is one of <see cref="WishReAddMode"/>; a timed re-add without a
+/// duration takes the channel's default, a permanent one keeps the wish's duration.
+/// </summary>
+public sealed record ReAddWishRequest(string? Mode, int? DurationDays);
+
+/// <summary>The values of <see cref="ReAddWishRequest.Mode"/>, as on the wire.</summary>
+public static class WishReAddMode
+{
+    public const string Timed = "timed";
+    public const string Permanent = "permanent";
+}
 
 /// <summary>Body of the settings write: all three values, a null threshold switches protection off.</summary>
 public sealed record UpdateWishSettingsRequest(
