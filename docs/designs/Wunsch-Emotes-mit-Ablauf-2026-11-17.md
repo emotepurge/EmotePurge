@@ -185,7 +185,10 @@ Reihenfolge so gewählt, dass jede Scheibe auch dann Wert hat, wenn eine Probe s
   :twitch.tv/tags twitch.tv/commands`) 10 min auf einem Kanal mit TTS-Belohnung (Texteingabe);
   der Betreiber hat mit seinem Mod-Konto „test" eingelöst. Ergebnis: 81 PRIVMSG, genau eine mit
   `custom-reward-id` (feste UUID), Text vorhanden, zusätzlich `user-id` des Einlösenden. Keine
-  Einlöse-ID, kein Titel, keine Kosten. **Offen:** Einlösung durch ein Konto ohne Mod-Status.
+  Einlöse-ID, kein Titel, keine Kosten. **Nachtrag 2026-11-17 abends: auch für ein Konto ohne
+  Mod-Status bestanden** (`mod=0`, `user-type` leer, kein VIP, nur Sub-Abzeichen): gleiche feste
+  `custom-reward-id`, Nachrichten-`id` vorhanden, kein `source-room-id`; der Text war ein
+  7TV-Emote-Link. P1 ist damit vollständig bestanden (Spec AK46).
   - **Laufender Vertrag (Sol-Befund 6):** Die Erfassung über IRC ist „nach bestem Wissen", kein
     lückenloses Einlöse-Register. Verpasste Einlösungen (Verbindungsabbruch, Tag fällt weg) zeigt
     die Oberfläche als Abdeckungslücke an, Doppelte werden über die IRC-Nachrichten-ID verworfen,
@@ -410,7 +413,7 @@ Scheibe ein Feature-Flag, Default aus für andere Betreiber.
 
 ## Die Aufgabe
 
-P1 ist bis auf die Einlösung durch ein Konto ohne Mod-Status erledigt (2026-11-17). Offen: Logg
+P1 ist vollständig bestanden (2026-11-17, auch für ein Konto ohne Mod-Status). Offen: Logg
 dich als Bot-Konto bei 7tv.app ein, lies `exp` ab und mach den Schreibtest auf deinem Testkonto,
 inklusive der fünf `addedById`-Fälle aus P2 (P3 entfällt per Entscheidung). Diese
 Antworten entscheiden, ob Scheibe 2 so gebaut wird wie hier beschrieben.
