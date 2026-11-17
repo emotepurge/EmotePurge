@@ -196,7 +196,9 @@ Reihenfolge so gewählt, dass jede Scheibe auch dann Wert hat, wenn eine Probe s
     (`user:read:chat`) statt eines Streamer-Tokens. Setzt voraus, dass der Bot nicht mehr anonym
     mitliest (vgl. F10). In der Spec von Scheibe 3 gegen den IRC-Tag abwägen.
 - **P2 7TV-JWT:** Schwelle vorab: bestanden, wenn das Token **mindestens 7 Tage** lebt und einen
-  Login desselben Kontos in einem zweiten Browser übersteht. Als Bot-Konto bei 7tv.app einloggen,
+  Login desselben Kontos in einem zweiten Browser übersteht. **Ergebnis Lebensdauer 2026-11-17:
+  genau 30 Tage** (erster Login des Bot-Kontos, `exp` = 2026-12-17 21:10 MEZ; bestätigt SevenTV#311).
+  Offen: Zweit-Login und Schreibtest. Als Bot-Konto bei 7tv.app einloggen,
   `exp` ablesen; dann Schreibtest mit dem eigenen Testkonto (Writes dort freigegeben): Bot als
   Editor eintragen, über die v4-Mutation ein Emote hinzufügen und wieder entfernen. Dabei
   festhalten, ob die v4-Abfrage der Set-Einträge mit `addedAt` den neuen Eintrag samt `added_at`
