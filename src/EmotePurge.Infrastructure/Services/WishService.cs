@@ -408,17 +408,18 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
     public Task<WishCommandResult> ExtendAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
         RunTransitionAsync(channelName, wishId, actor, AuditActions.WishExtend, (wish, settings, now, _) =>
         {
-            var target = WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.Extend);
-            if (target is null)
+            // Only a wish with an expiry can be extended; one without changes its duration through PATCH.
+            var target = WishTransitions.Target(
+                wish.Status, wish.StatusReason, WishAction.Extend, new WishTransitionContext(HasExpiry: wish.ExpiresAtUtc is not null));
+            if (target is null || wish.ExpiresAtUtc is not { } expiresAt)
             {
                 return CommandStep.ConflictTask;
             }
 
-            // E12: by the channel's default, from the current expiry or from now when that has passed. A live
-            // wish always has an expiry; "now" only guards a row that lost it.
+            // E12: by the channel's default, from the current expiry or from now when that has passed.
             var extensionDays = settings.DefaultDurationDays;
             wish.Status = target;
-            wish.ExpiresAtUtc = WishSchedule.ExtendedExpiresAt(wish.ExpiresAtUtc ?? now, now, extensionDays);
+            wish.ExpiresAtUtc = WishSchedule.ExtendedExpiresAt(expiresAt, now, extensionDays);
             wish.ExtensionCount++;
             return Task.FromResult(new CommandStep(null, AuditDurationDays: extensionDays));
         }, cancellationToken);

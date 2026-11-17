@@ -62,11 +62,16 @@ public static class WishAction
 /// <param name="Permanent">The wish is permanent; linking then ends in <c>kept</c>.</param>
 /// <param name="HadPresentedReason">For <c>return</c>: a reason stood when the wish was removed externally, so it comes back as <c>presented</c>.</param>
 /// <param name="IrcAutoLinked">For <c>unlink</c>: source <c>irc</c> and link origin <c>auto</c>.</param>
+/// <param name="HasExpiry">
+/// The wish has an expiry; <c>extend</c> needs it. A wish without one (for example <c>presented</c> with reason
+/// <c>unconfirmed</c> or <c>already_in_set</c>) changes its duration through <c>PATCH</c>, not by extending (spec 5).
+/// </param>
 public readonly record struct WishTransitionContext(
     bool HasSlot = false,
     bool Permanent = false,
     bool HadPresentedReason = false,
-    bool IrcAutoLinked = false);
+    bool IrcAutoLinked = false,
+    bool HasExpiry = false);
 
 /// <summary>
 /// The one place that knows which wish transitions exist: (state, reason, action) to target state, or
@@ -177,7 +182,7 @@ public static class WishTransitions
         Add(WishStatus.Failed, WishAction.Close, WishStatus.Closed);
 
         // Active.
-        Add(WishStatus.Active, WishAction.Extend, WishStatus.Active);
+        Add(WishStatus.Active, WishAction.Extend, WishStatus.Active, when: c => c.HasExpiry);
         Add(WishStatus.Active, WishAction.Unlink, WishStatus.Pending, when: c => c.IrcAutoLinked);
         Add(WishStatus.Active, WishAction.Keep, WishStatus.Kept);
         Add(WishStatus.Active, WishAction.Remove, WishStatus.Removed);
@@ -185,7 +190,7 @@ public static class WishTransitions
         Add(WishStatus.Active, WishAction.ExternalRemoval, WishStatus.RemovedExternally);
 
         // Presented.
-        Add(WishStatus.Presented, WishAction.Extend, WishStatus.Active);
+        Add(WishStatus.Presented, WishAction.Extend, WishStatus.Active, when: c => c.HasExpiry);
         Add(WishStatus.Presented, WishAction.Keep, WishStatus.Kept);
         Add(WishStatus.Presented, WishAction.Remove, WishStatus.Removed);
         Add(WishStatus.Presented, WishAction.Close, WishStatus.Closed, when: c => !c.HasSlot);

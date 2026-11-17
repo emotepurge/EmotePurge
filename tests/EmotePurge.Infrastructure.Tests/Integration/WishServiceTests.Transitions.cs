@@ -99,6 +99,11 @@ public partial class WishServiceTests
                 Assert.Equal(Now, row.StatusChangedAtUtc);
                 Assert.Null(row.StatusReason);
             }
+            else
+            {
+                // PATCH in approved/failed/pending, extend on active: no state change, so the clock of the state stays.
+                Assert.Equal(Now.AddDays(-1), row.StatusChangedAtUtc);
+            }
 
             AssertPublishedOnce(channel);
         }
@@ -190,6 +195,32 @@ public partial class WishServiceTests
         Assert.Equal(Now.AddDays(30), result.Wish.ExpiresAtUtc);
         Assert.Equal(3, result.Wish.ExtensionCount);
         Assert.Null(result.Wish.EndedAtUtc);
+    }
+
+    // A wish without an expiry (e.g. presented while unconfirmed or already in the set) is not extended into an
+    // active wish without start and slot; its duration changes through PATCH (spec 5).
+    [Theory]
+    [InlineData(WishStatus.Presented, WishStatusReason.Unconfirmed)]
+    [InlineData(WishStatus.Presented, WishStatusReason.AlreadyInSet)]
+    [InlineData(WishStatus.Active, null)]
+    public async Task Extend_AWishWithoutExpiry_IsAConflict_AndLeavesNoTrace(string status, string? reason)
+    {
+        var channel = await SeedChannelAsync();
+        var wishId = await SeedRowAsync(channel, status, w =>
+        {
+            w.StatusReason = reason;
+            w.StartsAtUtc = null;
+            w.ExpiresAtUtc = null;
+        });
+        var before = await SnapshotAsync(wishId);
+
+        var result = await Sut().ExtendAsync(channel.Name, wishId, Actor);
+
+        Assert.Equal(WishOutcome.StateConflict, result.Outcome);
+        Assert.Equal(before, await SnapshotAsync(wishId));
+        await using var db = fixture.CreateDbContext();
+        Assert.False(await db.AuditLogEntries.AnyAsync(a => a.ChannelName == channel.Name));
+        _ = _publisher.DidNotReceiveWithAnyArgs().PublishAsync(default!, default!, default);
     }
 
     // AK6: manual entry for a running emote → conflict with its id; while it is approved, extend conflicts and

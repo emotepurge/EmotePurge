@@ -11,7 +11,7 @@ namespace EmotePurge.Infrastructure.Tests.Unit;
 /// </summary>
 public class WishTransitionsTests
 {
-    private enum Cond { Always, NoSlot, Permanent, NotPermanent, IrcAuto, ReasonStood, NoReasonStood }
+    private enum Cond { Always, NoSlot, Permanent, NotPermanent, IrcAuto, ReasonStood, NoReasonStood, HasExpiry }
 
     private sealed record Expected(string From, string[]? Reasons, string Action, Cond When, string To);
 
@@ -81,7 +81,7 @@ public class WishTransitionsTests
         new(Fai, null, "close", Cond.Always, "closed"),
 
         // Active.
-        new(Act, null, "extend", Cond.Always, "active"),
+        new(Act, null, "extend", Cond.HasExpiry, "active"),
         new(Act, null, "unlink", Cond.IrcAuto, "pending"),
         new(Act, null, "keep", Cond.Always, "kept"),
         new(Act, null, "remove", Cond.Always, "removed"),
@@ -89,7 +89,7 @@ public class WishTransitionsTests
         new(Act, null, "external_removal", Cond.Always, "removed_externally"),
 
         // Presented.
-        new(Pre, null, "extend", Cond.Always, "active"),
+        new(Pre, null, "extend", Cond.HasExpiry, "active"),
         new(Pre, null, "keep", Cond.Always, "kept"),
         new(Pre, null, "remove", Cond.Always, "removed"),
         new(Pre, null, "close", Cond.NoSlot, "closed"),
@@ -151,9 +151,10 @@ public class WishTransitionsTests
             foreach (var permanent in new[] { false, true })
                 foreach (var stood in new[] { false, true })
                     foreach (var ircAuto in new[] { false, true })
-                    {
-                        contexts.Add(new WishTransitionContext(hasSlot, permanent, stood, ircAuto));
-                    }
+                        foreach (var hasExpiry in new[] { false, true })
+                        {
+                            contexts.Add(new WishTransitionContext(hasSlot, permanent, stood, ircAuto, hasExpiry));
+                        }
 
         var checkedCombinations = 0;
         foreach (var state in AllStates)
@@ -182,7 +183,7 @@ public class WishTransitionsTests
                         checkedCombinations++;
                     }
 
-        Assert.Equal(13 * 18 * 27 * 16, checkedCombinations);
+        Assert.Equal(13 * 18 * 27 * 32, checkedCombinations);
     }
 
     [Fact]
@@ -228,7 +229,7 @@ public class WishTransitionsTests
         foreach (var state in WishStatus.Ended)
             foreach (var action in AllActions)
             {
-                var allowed = WishTransitions.IsAllowed(state, null, action, new WishTransitionContext(true, true, true, true));
+                var allowed = WishTransitions.IsAllowed(state, null, action, new WishTransitionContext(true, true, true, true, true));
                 var expectedAllowed =
                     (state is "removed" or "removed_externally" && action == "readd")
                     || (state == "removed_externally" && action is "return" or "remove");
@@ -245,6 +246,7 @@ public class WishTransitionsTests
         Cond.IrcAuto => c.IrcAutoLinked,
         Cond.ReasonStood => c.HadPresentedReason,
         Cond.NoReasonStood => !c.HadPresentedReason,
+        Cond.HasExpiry => c.HasExpiry,
         _ => throw new ArgumentOutOfRangeException(nameof(cond)),
     };
 }
