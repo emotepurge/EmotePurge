@@ -2748,7 +2748,12 @@
         "title": "Ended",
         "empty": "No wish has ended yet",
         "emptyHint": "Removed, kept and closed wishes are listed here."
-      }
+      },
+      "header": {
+        "entry": "Add by hand",
+        "adopt": "Take over from the set"
+      },
+      "setFull": "The wish is filed, but the set is full. A slot has to be freed before the emote can go in."
     },
     "confirm": {
       "keep": "Keep “{{ name }}” for good? The emote stays in the set and the wish is done.",

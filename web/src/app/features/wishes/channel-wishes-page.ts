@@ -15,6 +15,7 @@ import {
   WritableSignal,
 } from '@angular/core';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { EMPTY, filter, interval, Observable, pairwise, switchMap } from 'rxjs';
 
@@ -29,6 +30,7 @@ import { CHANNEL_RELOAD_DEBOUNCE_MS, liveReload, liveReopened } from '../../core
 import { PagedResult } from '../../core/models/paged-result.model';
 import { pageVisible } from '../../core/page-visibility/page-visibility';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
+import { SevenTvEmoteLookup } from '../../core/seven-tv/seven-tv-emote-lookup';
 import {
   SEVEN_TV_RUN_KIND_LABEL_KEY,
   SevenTvRunArbiter,
@@ -43,6 +45,12 @@ import { openConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { SkeletonRows } from '../../shared/ui/skeleton-rows';
+import {
+  openWishAdoptDialog,
+  WishAdoptDialogData,
+  WishAdoptDialogResult,
+} from './wish-adopt-dialog';
+import { openWishEntryDialog, WishEntryDialogResult } from './wish-entry-dialog';
 import { WishRow } from './wish-row';
 import { WishUsageStore } from './wish-usage';
 
@@ -56,14 +64,15 @@ const CLOCK_TICK_MS = 60_000;
 
 /**
  * The actions this page carries out. The action table knows more; a row renders only what is in
- * here, so nothing offers an action that is not built yet: T6 adds `adopt`, T7 `edit` and `reAdd`,
- * T8 `add7tv`, T9 `remove`.
+ * here, so nothing offers an action that is not built yet: T7 adds `edit` and `reAdd`, T8 `add7tv`,
+ * T9 `remove`. `adopt` opens the take-over dialog instead of sending a command (T6).
  */
 const OFFERED_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
   'extend',
   'retry',
   'keep',
   'close',
+  'adopt',
 ]);
 
 /** Id of the page's one status line that names a blocking 7TV run (plan 2.7). */
@@ -119,6 +128,31 @@ type PinnedState =
   ],
   template: `
     <div class="flex flex-col gap-8">
+      <!-- The two side ways of filing a wish (plan T6). Both only book in EmotePurge, so they stand
+           on a coarse pointer too. -->
+      <div class="flex flex-col gap-3">
+        <div class="flex flex-wrap gap-2">
+          <button type="button" appButton="primary" (click)="openEntry()">
+            {{ 'wishes.page.header.entry' | transloco }}
+          </button>
+          <button type="button" appButton="neutral" (click)="openAdopt({})">
+            {{ 'wishes.page.header.adopt' | transloco }}
+          </button>
+        </div>
+        <!-- The set-full hint arrives after the dialog closed: the permanently mounted region speaks
+             it (§4.4), the visible banner is aria-hidden so it is not read twice. -->
+        <p role="status" class="sr-only">
+          @if (setFullNotice()) {
+            {{ 'wishes.page.setFull' | transloco }}
+          }
+        </p>
+        @if (setFullNotice()) {
+          <app-notice-banner variant="warning" aria-hidden="true">{{
+            'wishes.page.setFull' | transloco
+          }}</app-notice-banner>
+        }
+      </div>
+
       <!-- The one place that names a blocking 7TV run; the locked 7TV buttons point at the visible
            line via aria-describedby (plan 2.7). The sr-only region stays mounted so the text is
            announced when it appears (§4.5); the visible twin is aria-hidden so it is not read twice.
@@ -296,6 +330,7 @@ type PinnedState =
           [sevenTvLocked]="sevenTvLocked()"
           [lockDescriptionId]="lockDescriptionId()"
           [busy]="pendingIds().has(wish.id)"
+          [knownStill]="isKnownStill(wish.sevenTvEmoteId)"
           [usage]="usageStore.blockFor(wish)"
           [trackUsage]="section !== 'ended'"
           (seen)="usageStore.setVisible(wish, $event)"
@@ -316,6 +351,9 @@ export class ChannelWishesPage {
   private readonly arbiter = inject(SevenTvRunArbiter);
   private readonly injector = inject(Injector);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
+  private readonly lookup = inject(SevenTvEmoteLookup);
 
   protected readonly isCoarse = inject(PointerModeService).isCoarse;
 
@@ -346,6 +384,9 @@ export class ChannelWishesPage {
   private pinnedSeq = 0;
   protected readonly pinnedActionError = signal<string | null>(null);
 
+  /** A wish filed by hand landed in a full set (`setFull`); stays until the next filing. */
+  protected readonly setFullNotice = signal(false);
+
   /** Wishes whose action request is on the way; their row's buttons wait. */
   protected readonly pendingIds = signal<ReadonlySet<number>>(new Set());
 
@@ -353,6 +394,11 @@ export class ChannelWishesPage {
   private focusedTarget: number | null = null;
 
   private readonly targetId = computed(() => parseWishId(this.wish()));
+
+  /** The two lists loaded on entry have answered (with rows or an error). */
+  private readonly listsSettled = computed(() =>
+    this.alwaysLoaded.every((section) => section.result() !== null || section.loadError() !== null),
+  );
 
   private readonly loadedIds = computed(() => {
     const ids = new Set<number>();
@@ -421,9 +467,7 @@ export class ChannelWishesPage {
     effect(() => {
       const id = this.targetId();
       const loaded = this.loadedIds();
-      const settled = this.alwaysLoaded.every(
-        (section) => section.result() !== null || section.loadError() !== null,
-      );
+      const settled = this.listsSettled();
       const pinned = this.pinned();
       untracked(() => this.resolveTarget(id, loaded, settled, pinned));
     });
@@ -489,6 +533,10 @@ export class ChannelWishesPage {
     if (!this.offered.has(action) || this.pendingIds().has(wish.id)) {
       return;
     }
+    if (action === 'adopt') {
+      this.openAdopt({ wish, sevenTvEmoteId: wish.sevenTvEmoteId });
+      return;
+    }
     if (!isConfirmedAction(action)) {
       this.runAction(sectionId, wish, action);
       return;
@@ -504,6 +552,81 @@ export class ChannelWishesPage {
     });
   }
 
+  protected isKnownStill(sevenTvEmoteId: string): boolean {
+    return this.lookup.isKnownStill(sevenTvEmoteId);
+  }
+
+  protected openEntry(): void {
+    const channel = this.channel();
+    this.setFullNotice.set(false);
+    openWishEntryDialog(this.dialog, { channelName: channel }).closed.subscribe((result) => {
+      if (channel === this.channel()) {
+        this.onEntryClosed(result);
+      }
+    });
+  }
+
+  /** The take-over dialog: from the header (all entries), a row (that wish) or the 409 of the entry. */
+  protected openAdopt(options: Omit<WishAdoptDialogData, 'channelName'>): void {
+    const channel = this.channel();
+    openWishAdoptDialog(this.dialog, { channelName: channel, ...options }).closed.subscribe(
+      (result) => {
+        if (channel === this.channel()) {
+          this.onAdoptClosed(result);
+        }
+      },
+    );
+  }
+
+  private onEntryClosed(result: WishEntryDialogResult | undefined): void {
+    switch (result?.kind) {
+      case 'created':
+        this.setFullNotice.set(result.setFull);
+        this.reloadAll();
+        return;
+      case 'extended':
+        this.reloadAll();
+        return;
+      case 'jump':
+        this.jumpTo(result.wishId);
+        return;
+      case 'adopt':
+        this.openAdopt({
+          sevenTvEmoteId: result.sevenTvEmoteId,
+          slotIds: result.slotIds,
+          ...(result.wish ? { wish: result.wish } : {}),
+        });
+        return;
+      default:
+        return;
+    }
+  }
+
+  private onAdoptClosed(result: WishAdoptDialogResult | undefined): void {
+    if (result?.kind === 'adopted') {
+      this.reloadAll();
+    } else if (result?.kind === 'jump') {
+      this.jumpTo(result.wishId);
+    }
+  }
+
+  /**
+   * "Zum Wunsch" from a dialog: the jump target of plan 2.4 (`?wish=`), which focuses a loaded row or
+   * pins the wish above the sections when no loaded list holds it. The same id again focuses again.
+   */
+  private jumpTo(id: number): void {
+    this.focusedTarget = null;
+    if (this.targetId() === id) {
+      this.resolveTarget(id, this.loadedIds(), this.listsSettled(), this.pinned());
+      return;
+    }
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { wish: id },
+      queryParamsHandling: 'merge',
+    });
+  }
+
   private startChannel(channel: string): void {
     for (const section of [this.open, this.running, this.ended]) {
       section.seq++;
@@ -516,6 +639,7 @@ export class ChannelWishesPage {
     this.pinnedSeq++;
     this.pinned.set(null);
     this.pinnedActionError.set(null);
+    this.setFullNotice.set(false);
     this.focusedTarget = null;
     this.usageStore.reset();
     if (channel) {

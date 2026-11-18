@@ -2748,7 +2748,12 @@
         "title": "Beendet",
         "empty": "Noch kein Wunsch beendet",
         "emptyHint": "Entfernte, behaltene und geschlossene Wünsche stehen hier."
-      }
+      },
+      "header": {
+        "entry": "Nachtragen",
+        "adopt": "Bestand übernehmen"
+      },
+      "setFull": "Der Wunsch ist angelegt, aber das Set ist voll. Bevor das Emote hinein kann, muss ein Platz frei werden."
     },
     "confirm": {
       "keep": "„{{ name }}“ dauerhaft behalten? Das Emote bleibt im Set, der Wunsch ist damit abgeschlossen.",

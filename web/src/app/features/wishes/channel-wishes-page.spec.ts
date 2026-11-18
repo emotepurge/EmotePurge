@@ -1,6 +1,8 @@
 import { Dialog } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { By } from '@angular/platform-browser';
+import { provideRouter, Router } from '@angular/router';
 import { TranslocoTestingModule } from '@jsverse/transloco';
 import { Subject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,9 +12,13 @@ import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { LIVE_CONNECTION_RELEASE_FACTORY } from '../../core/live/live-connection-release.factory';
 import { CHANNEL_RELOAD_DEBOUNCE_MS } from '../../core/live/live-reload';
 import { PagedResult } from '../../core/models/paged-result.model';
+import { SevenTvEmoteLookup } from '../../core/seven-tv/seven-tv-emote-lookup';
 import type { Wish, WishDetail, WishListView, WishUsage } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
 import { ChannelWishesPage, WISH_SAFETY_RELOAD_MS } from './channel-wishes-page';
+import { WishAdoptDialog } from './wish-adopt-dialog';
+import { WishEntryDialog } from './wish-entry-dialog';
+import { WishRow } from './wish-row';
 import { WISH_USAGE_TTL_MS } from './wish-usage';
 
 const READY_STATE_OPEN = 1;
@@ -155,6 +161,7 @@ describe('ChannelWishesPage', () => {
   let actions: { name: string; id: number; answer: Subject<Wish> }[];
   let dialogs: Subject<boolean>[];
   let openDialog: ReturnType<typeof vi.fn>;
+  let stillIds: Set<string>;
   const fixtures: ComponentFixture<ChannelWishesPage>[] = [];
 
   beforeEach(() => {
@@ -164,6 +171,7 @@ describe('ChannelWishesPage', () => {
     getCalls = [];
     actions = [];
     dialogs = [];
+    stillIds = new Set();
     openDialog = vi.fn(() => {
       const closed = new Subject<boolean>();
       dialogs.push(closed);
@@ -208,6 +216,11 @@ describe('ChannelWishesPage', () => {
           },
         },
         { provide: Dialog, useValue: { open: openDialog } },
+        provideRouter([]),
+        {
+          provide: SevenTvEmoteLookup,
+          useValue: { isKnownStill: (id: string) => stillIds.has(id) },
+        },
         {
           provide: EVENT_SOURCE_FACTORY,
           useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
@@ -781,6 +794,104 @@ describe('ChannelWishesPage', () => {
       settle(fixture, [wish(1)], [], 'b');
 
       expect(section(fixture, 'open').textContent).not.toContain('10 Nutzungen');
+    });
+  });
+  describe('header and the two filing dialogs', () => {
+    function openCall(index: number): { component: unknown; data: Record<string, unknown> } {
+      const [component, config] = openDialog.mock.calls[index] as [
+        unknown,
+        { data: Record<string, unknown> },
+      ];
+      return { component, data: config.data };
+    }
+
+    function closeWith(index: number, result: unknown): void {
+      (dialogs[index] as Subject<unknown>).next(result);
+      dialogs[index].complete();
+    }
+
+    function header(fixture: ComponentFixture<ChannelWishesPage>): HTMLElement {
+      return fixture.nativeElement as HTMLElement;
+    }
+
+    it('opens the manual entry and the take-over of all entries for the normalised channel', () => {
+      const fixture = create('Chan');
+      settle(fixture);
+      buttonIn(header(fixture), de.wishes.page.header.entry).click();
+      buttonIn(header(fixture), de.wishes.page.header.adopt).click();
+      expect(openCall(0)).toEqual({ component: WishEntryDialog, data: { channelName: 'chan' } });
+      expect(openCall(1)).toEqual({ component: WishAdoptDialog, data: { channelName: 'chan' } });
+    });
+
+    it('reloads after a filed wish and says when the set was full', () => {
+      const fixture = create();
+      settle(fixture);
+      const before = listCalls.length;
+      buttonIn(header(fixture), de.wishes.page.header.entry).click();
+      closeWith(0, { kind: 'created', wish: wish(9, { status: 'approved' }), setFull: true });
+      fixture.detectChanges();
+      expect(calls('open').length + calls('running').length).toBe(before + 2);
+      const status = fixture.nativeElement.querySelector('p[role="status"].sr-only');
+      expect(status.textContent).toContain(de.wishes.page.setFull);
+    });
+
+    it('turns the take-over exit of the entry into the take-over dialog with its entries and wish', () => {
+      const fixture = create();
+      settle(fixture);
+      buttonIn(header(fixture), de.wishes.page.header.entry).click();
+      const approved = wish(4, { status: 'approved', slotId: null });
+      closeWith(0, { kind: 'adopt', sevenTvEmoteId: 'emoteX', slotIds: ['s1'], wish: approved });
+      expect(openCall(1)).toEqual({
+        component: WishAdoptDialog,
+        data: { channelName: 'chan', sevenTvEmoteId: 'emoteX', slotIds: ['s1'], wish: approved },
+      });
+    });
+
+    it('opens the take-over for the row’s wish, narrowed to its emote', () => {
+      const fixture = create();
+      const approved = wish(4, { status: 'approved', slotId: null, expiresAtUtc: null });
+      settle(fixture, [approved]);
+      buttonIn(section(fixture, 'open'), de.wishes.actions.adopt).click();
+      expect(openCall(0)).toEqual({
+        component: WishAdoptDialog,
+        data: { channelName: 'chan', wish: approved, sevenTvEmoteId: 'emote4' },
+      });
+      closeWith(0, { kind: 'adopted', wish: { ...approved, status: 'active' } });
+      expect(calls('open')).toHaveLength(2);
+    });
+
+    it('jumps to a wish a dialog names through the query parameter', () => {
+      const fixture = create();
+      settle(fixture);
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+      buttonIn(header(fixture), de.wishes.page.header.adopt).click();
+      closeWith(0, { kind: 'jump', wishId: 12 });
+      expect(navigate).toHaveBeenCalledWith(
+        [],
+        expect.objectContaining({ queryParams: { wish: 12 }, queryParamsHandling: 'merge' }),
+      );
+    });
+
+    it('focuses the row again when the dialog names the wish already targeted', async () => {
+      const fixture = create('chan', '1');
+      settle(fixture, [wish(1)]);
+      await fixture.whenStable();
+      (document.activeElement as HTMLElement | null)?.blur();
+      buttonIn(header(fixture), de.wishes.page.header.adopt).click();
+      closeWith(0, { kind: 'jump', wishId: 1 });
+      fixture.detectChanges();
+      await fixture.whenStable();
+      expect(document.activeElement?.getAttribute('data-wish-id')).toBe('1');
+    });
+
+    it('tells a row that this session’s 7TV read found its emote not animated', () => {
+      stillIds.add('emote2');
+      const fixture = create();
+      settle(fixture, [], [wish(1), wish(2)]);
+      const known = fixture.debugElement
+        .queryAll(By.directive(WishRow))
+        .map((row) => (row.componentInstance as WishRow).knownStill());
+      expect(known).toEqual([false, true]);
     });
   });
 });
