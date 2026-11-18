@@ -18,7 +18,9 @@ public interface IWishService
     Task<WishSettingsDto?> GetSettingsAsync(string channelName, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Upserts the settings (audited as <c>wish.settings</c>). Refusals: <see cref="WishOutcome.SettingsOutOfRange"/>,
+    /// Upserts the settings (audited as <c>wish.settings</c>). With <see cref="UpdateWishSettingsRequest.KeepProtectionThreshold"/>
+    /// the stored threshold stays as it is and no decision is superseded (plan #485 2.1a); otherwise the sent value,
+    /// null switching protection off. Refusals: <see cref="WishOutcome.SettingsOutOfRange"/>,
     /// <see cref="WishOutcome.ChannelNotFound"/>.
     /// </summary>
     Task<WishCommandResult> UpdateSettingsAsync(
@@ -36,16 +38,21 @@ public interface IWishService
     /// Manual entry: creates a wish in <c>approved</c> (source <c>manual</c>). Refusals:
     /// <see cref="WishOutcome.EmoteIdInvalid"/>, <see cref="WishOutcome.DurationOutOfRange"/>,
     /// <see cref="WishOutcome.AliasInvalid"/>, <see cref="WishOutcome.RequesterInvalid"/>,
-    /// <see cref="WishOutcome.ChannelNotFound"/>, <see cref="WishOutcome.EmoteAlreadyInSet"/> (with slot ids,
-    /// checked before) and <see cref="WishOutcome.AlreadyRunning"/> (with the running wish's id).
+    /// <see cref="WishOutcome.ChannelNotFound"/>, <see cref="WishOutcome.EmoteAlreadyInSet"/> (with slot ids and the id
+    /// of a running wish of the emote or null, checked before) and <see cref="WishOutcome.AlreadyRunning"/> (with the
+    /// running wish's id).
     /// </summary>
     Task<WishCommandResult> CreateAsync(
         string channelName, CreateWishRequest request, AuditActor actor, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// "Take over from the set": links a slot that is already in the set, either to a new wish (<c>active</c>,
-    /// source <c>adopted</c>) or, with <see cref="AdoptWishRequest.WishId"/>, to an existing one. Refusals:
-    /// <see cref="WishOutcome.SlotNotFound"/>, <see cref="WishOutcome.SlotAlreadyLinked"/>,
+    /// source <c>adopted</c>) or, with <see cref="AdoptWishRequest.WishId"/>, to an existing one. Bound to the entry the
+    /// manager picked (plan #485 2.1a): under the channel lock, right after loading the slot, a slot whose alias or
+    /// <c>AddedAt</c> (as an instant at database precision, null only matching null) differs from
+    /// <see cref="AdoptWishRequest.ExpectedAlias"/>/<see cref="AdoptWishRequest.ExpectedAddedAtUtc"/> is
+    /// <see cref="WishOutcome.SlotNotFound"/>. Refusals: <see cref="WishOutcome.RequestInvalid"/> (no expected alias),
+    /// <see cref="WishOutcome.SlotNotFound"/>, <see cref="WishOutcome.SlotAlreadyLinked"/> (with the holder's id),
     /// <see cref="WishOutcome.WishNotFound"/>, <see cref="WishOutcome.StateConflict"/>,
     /// <see cref="WishOutcome.AlreadyRunning"/>, <see cref="WishOutcome.StartsAtInvalid"/>,
     /// <see cref="WishOutcome.DurationOutOfRange"/>, <see cref="WishOutcome.ChannelNotFound"/>.
@@ -98,11 +105,18 @@ public interface IWishService
         string channelName, long wishId, ReAddWishRequest request, AuditActor actor, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// The browser engine reports a removal: <c>active</c> or <c>presented</c> to <c>removed</c>, and
-    /// <c>removed_externally</c> to <c>removed</c> within the adoption window after <c>EndedAtUtc</c> (E10, AK11).
-    /// Audited as <c>wish.remove</c>.
+    /// The browser engine reports a removal of the entry named in <paramref name="request"/> (plan #485 2.1a, the
+    /// ten-row table, the first row that applies wins). Locks the channel row, then the wish row, and reads only then,
+    /// so the report stands in line with every slot writer. A request without slot, generation or set, or with an
+    /// unknown evidence, is <see cref="WishOutcome.RequestInvalid"/>; a set that is not the channel's active one, or a
+    /// generation that is not the wish's, is <see cref="WishOutcome.StateConflict"/>; a wish already <c>removed</c>
+    /// answers success without any write (a repeated report); a replacement visible in the slot inventory is a
+    /// conflict; otherwise <c>active</c>/<c>presented</c> becomes <c>removed</c> (ended now) and
+    /// <c>removed_externally</c> within the adoption window becomes <c>removed</c> keeping its <c>EndedAtUtc</c>.
+    /// Audited as <c>wish.remove</c> with slot, generation and set. Further refusals as for the transition commands.
     /// </summary>
-    Task<WishCommandResult> CompleteRemovalAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
+    Task<WishCommandResult> CompleteRemovalAsync(
+        string channelName, long wishId, CompleteWishRemovalRequest request, AuditActor actor, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// "Check again" (<c>presented</c> with reason <c>unconfirmed</c>). Its only transition needs the bot, which K1
@@ -183,20 +197,31 @@ public enum WishOutcome
     /// <summary>The slot does not exist, is not active, belongs to another channel or does not fit the wish.</summary>
     SlotNotFound,
 
-    /// <summary>Another live wish (<c>active</c> or <c>presented</c>) holds the slot.</summary>
+    /// <summary>
+    /// Another wish (<c>active</c>, <c>presented</c> or <c>kept</c>) holds the slot;
+    /// <see cref="WishCommandResult.ConflictingWishId"/> names it.
+    /// </summary>
     SlotAlreadyLinked,
 
     /// <summary>The wish is not in a state the command accepts, or changed under it.</summary>
     StateConflict,
 
     /// <summary>The <c>mode</c> of a re-add is neither <c>timed</c> nor <c>permanent</c>.</summary>
-    ModeInvalid
+    ModeInvalid,
+
+    /// <summary>
+    /// A required field of the body is missing or one has a value outside its set: the report of a removal without
+    /// slot, generation or set, or with an unknown evidence; an adoption without the expected alias.
+    /// </summary>
+    RequestInvalid
 }
 
 /// <summary>
 /// The result of a command: the outcome plus the payload that belongs to it. <see cref="Wish"/> or
 /// <see cref="Settings"/> on success, <see cref="SlotIds"/> and <see cref="ConflictingWishId"/> on the
-/// matching conflicts, <see cref="SetFull"/> as the hint of a manual entry.
+/// matching conflicts (the running wish of <see cref="WishOutcome.AlreadyRunning"/> and
+/// <see cref="WishOutcome.EmoteAlreadyInSet"/>, the holder of <see cref="WishOutcome.SlotAlreadyLinked"/>),
+/// <see cref="SetFull"/> as the hint of a manual entry.
 /// </summary>
 public sealed record WishCommandResult(
     WishOutcome Outcome,
@@ -324,12 +349,41 @@ public sealed record CreateWishRequest(
     int? DurationDays,
     string? RequesterLogin);
 
-/// <summary>Body of "take over from the set"; without a start date the slot's <c>AddedAt</c> counts.</summary>
+/// <summary>
+/// Body of "take over from the set"; without a start date the slot's <c>AddedAt</c> counts.
+/// <see cref="ExpectedAlias"/> (required) and <see cref="ExpectedAddedAtUtc"/> are the alias and the
+/// <c>addedAtUtc</c> of the entry the manager picked from <c>GET …/wishes/slots</c>, returned verbatim; a null
+/// <see cref="ExpectedAddedAtUtc"/> means an undated entry was picked (plan #485 2.1a).
+/// </summary>
 public sealed record AdoptWishRequest(
     string SlotId,
+    string? ExpectedAlias,
+    DateTime? ExpectedAddedAtUtc,
     long? WishId,
     int? DurationDays,
     DateTime? StartsAtUtc);
+
+/// <summary>
+/// Body of <c>complete-removal</c> (plan #485 2.1a): what the client's run removed. <see cref="SlotId"/> and
+/// <see cref="SlotAddedAtUtc"/> are the wish's slot and generation verbatim from the DTO, <see cref="EmoteSetId"/>
+/// the set the run wrote against; all three are required. <see cref="Evidence"/> is optional and goes into the
+/// audit entry only: one of <see cref="WishRemovalEvidence"/>.
+/// </summary>
+public sealed record CompleteWishRemovalRequest(
+    string? SlotId,
+    DateTime? SlotAddedAtUtc,
+    string? EmoteSetId,
+    string? Evidence = null);
+
+/// <summary>The values of <see cref="CompleteWishRemovalRequest.Evidence"/>, as on the wire.</summary>
+public static class WishRemovalEvidence
+{
+    /// <summary>7TV acknowledged the REMOVE.</summary>
+    public const string Acknowledged = "acknowledged";
+
+    /// <summary>Only the re-read found the entry missing (plan #485 R20).</summary>
+    public const string Absent = "absent";
+}
 
 /// <summary>Body of the PATCH: a null field stays as it is.</summary>
 public sealed record UpdateWishRequest(string? Alias, int? DurationDays);
@@ -347,8 +401,13 @@ public static class WishReAddMode
     public const string Permanent = "permanent";
 }
 
-/// <summary>Body of the settings write: all three values, a null threshold switches protection off.</summary>
+/// <summary>
+/// Body of the settings write: a null threshold switches protection off. With
+/// <see cref="KeepProtectionThreshold"/> (the threshold was not sent, plan #485 2.1a) the stored threshold stays and
+/// <see cref="ProtectionThresholdPerDay"/> is ignored.
+/// </summary>
 public sealed record UpdateWishSettingsRequest(
     int DefaultDurationDays,
     int ProbationLeadDays,
-    decimal? ProtectionThresholdPerDay);
+    decimal? ProtectionThresholdPerDay,
+    bool KeepProtectionThreshold = false);

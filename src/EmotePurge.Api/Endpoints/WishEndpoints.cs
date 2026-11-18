@@ -105,7 +105,7 @@ public static class WishEndpoints
 
         group.MapPut("/settings", async (
             string channelName,
-            UpdateWishSettingsRequest? request,
+            UpdateWishSettingsBody? request,
             HttpContext httpContext,
             WishOptions options,
             IWishService wishService,
@@ -124,7 +124,7 @@ public static class WishEndpoints
             var actor = httpContext.User.TryBuildAuditActor();
             return actor is null
                 ? Results.Unauthorized()
-                : MapResult(await wishService.UpdateSettingsAsync(channelName, request, actor, ct), StatusCodes.Status200OK);
+                : MapResult(await wishService.UpdateSettingsAsync(channelName, request.ToRequest(), actor, ct), StatusCodes.Status200OK);
         })
         .AddEndpointFilter<WishSettingsAuthorizationFilter>()
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
@@ -254,7 +254,33 @@ public static class WishEndpoints
         MapTransition(group, "/{id:long}/keep", (s, c, id, a, ct) => s.KeepAsync(c, id, a, ct));
         MapTransition(group, "/{id:long}/close", (s, c, id, a, ct) => s.CloseAsync(c, id, a, ct));
         MapTransition(group, "/{id:long}/retry", (s, c, id, a, ct) => s.RetryAsync(c, id, a, ct));
-        MapTransition(group, "/{id:long}/complete-removal", (s, c, id, a, ct) => s.CompleteRemovalAsync(c, id, a, ct));
+        // Plan #485 2.1a: the report names slot, generation and set, so it has a body and a handler of its own.
+        group.MapPost("/{id:long}/complete-removal", async (
+            string channelName,
+            long id,
+            CompleteWishRemovalRequest? request,
+            HttpContext httpContext,
+            WishOptions options,
+            IWishService wishService,
+            CancellationToken ct) =>
+        {
+            if (!options.Enabled)
+            {
+                return WishesDisabled();
+            }
+
+            if (request is null)
+            {
+                return InvalidBody();
+            }
+
+            var actor = httpContext.User.TryBuildAuditActor();
+            return actor is null
+                ? Results.Unauthorized()
+                : MapResult(await wishService.CompleteRemovalAsync(channelName, id, request, actor, ct), StatusCodes.Status200OK);
+        })
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
         // K1 registers the route; the command refuses every state until K4 gives it its one transition.
         MapTransition(group, "/{id:long}/recheck", (s, c, id, a, ct) => s.RecheckAsync(c, id, a, ct));
 
@@ -301,8 +327,10 @@ public static class WishEndpoints
     /// <summary>
     /// The one place an outcome becomes a status and an error code. Public so the mapping test can run every
     /// <see cref="WishOutcome"/> through it. Outcomes without a code of their own reuse existing ones:
-    /// <see cref="WishOutcome.EmoteIdInvalid"/> is <c>emote_ids_invalid</c>, and <see cref="WishOutcome.StartsAtInvalid"/>
-    /// and <see cref="WishOutcome.ModeInvalid"/> are <c>invalid_request_body</c>.
+    /// <see cref="WishOutcome.EmoteIdInvalid"/> is <c>emote_ids_invalid</c>, and <see cref="WishOutcome.StartsAtInvalid"/>,
+    /// <see cref="WishOutcome.ModeInvalid"/> and <see cref="WishOutcome.RequestInvalid"/> are <c>invalid_request_body</c>.
+    /// The three conflicts that concern another wish name it as <c>wishId</c> (plan #485 2.1a; null when
+    /// <c>wish_emote_already_in_set</c> has no running wish).
     /// </summary>
     internal static IResult MapResult(WishCommandResult result, int successStatus)
     {
@@ -340,15 +368,21 @@ public static class WishEndpoints
                 return Results.BadRequest(new { errorCode = ApiErrorCodes.WishSettingsOutOfRange });
             case WishOutcome.StartsAtInvalid:
             case WishOutcome.ModeInvalid:
+            case WishOutcome.RequestInvalid:
                 return InvalidBody();
             case WishOutcome.EmoteAlreadyInSet:
-                return Results.Conflict(new { errorCode = ApiErrorCodes.WishEmoteAlreadyInSet, slotIds = result.SlotIds ?? [] });
+                return Results.Conflict(new
+                {
+                    errorCode = ApiErrorCodes.WishEmoteAlreadyInSet,
+                    slotIds = result.SlotIds ?? [],
+                    wishId = result.ConflictingWishId
+                });
             case WishOutcome.AlreadyRunning:
                 return Results.Conflict(new { errorCode = ApiErrorCodes.WishAlreadyRunning, wishId = result.ConflictingWishId });
             case WishOutcome.SlotNotFound:
                 return Results.NotFound(new { errorCode = ApiErrorCodes.WishSlotNotFound });
             case WishOutcome.SlotAlreadyLinked:
-                return Results.Conflict(new { errorCode = ApiErrorCodes.WishSlotAlreadyLinked });
+                return Results.Conflict(new { errorCode = ApiErrorCodes.WishSlotAlreadyLinked, wishId = result.ConflictingWishId });
             case WishOutcome.StateConflict:
                 return Results.Conflict(new { errorCode = ApiErrorCodes.WishStateConflict });
             default:
@@ -432,6 +466,32 @@ internal sealed record WishSettingsReadDto(
             canEdit)
     {
     }
+}
+
+/// <summary>
+/// The wire body of <c>PUT …/wishes/settings</c>. A threshold that is absent from the JSON keeps the stored one, an
+/// explicit <c>null</c> switches protection off, a value sets it (plan #485 2.1a, Sol-P2-4). System.Text.Json calls
+/// the <c>init</c> accessor only for a property present in the body, which is what tells "absent" from <c>null</c>.
+/// </summary>
+internal sealed record UpdateWishSettingsBody(int DefaultDurationDays, int ProbationLeadDays)
+{
+    private readonly decimal? _protectionThresholdPerDay;
+
+    public decimal? ProtectionThresholdPerDay
+    {
+        get => _protectionThresholdPerDay;
+        init
+        {
+            _protectionThresholdPerDay = value;
+            ThresholdSent = true;
+        }
+    }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool ThresholdSent { get; private init; }
+
+    public UpdateWishSettingsRequest ToRequest() =>
+        new(DefaultDurationDays, ProbationLeadDays, ProtectionThresholdPerDay, KeepProtectionThreshold: !ThresholdSent);
 }
 
 /// <summary>The manual entry's answer: the wish plus the hint that the set was at capacity (never a refusal).</summary>

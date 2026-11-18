@@ -38,6 +38,9 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         _factory.ChannelAccess.IsGlobalAdmin(Arg.Any<TwitchPrincipalInfo>()).Returns(false);
     }
 
+    private const string RemovalBody =
+        """{"slotId":"slot-1","slotAddedAtUtc":"2026-11-02T10:00:00.123456Z","emoteSetId":"01H0000000000000000000SET1","evidence":"acknowledged"}""";
+
     public static TheoryData<string, string, string?> Routes => new()
     {
         { "GET", "/api/channels/{0}/wishes", null },
@@ -46,14 +49,14 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         { "GET", "/api/channels/{0}/wishes/slots", null },
         { "PUT", "/api/channels/{0}/wishes/settings", """{"defaultDurationDays":30,"probationLeadDays":7,"protectionThresholdPerDay":null}""" },
         { "POST", "/api/channels/{0}/wishes", """{"sevenTvEmoteId":"01H0000000000000000000000A"}""" },
-        { "POST", "/api/channels/{0}/wishes/adopt", """{"slotId":"01H0000000000000000000000B"}""" },
+        { "POST", "/api/channels/{0}/wishes/adopt", """{"slotId":"01H0000000000000000000000B","expectedAlias":"Kappa","expectedAddedAtUtc":null}""" },
         { "PATCH", "/api/channels/{0}/wishes/7", """{"alias":"Kappa"}""" },
         { "POST", "/api/channels/{0}/wishes/7/extend", null },
         { "POST", "/api/channels/{0}/wishes/7/keep", null },
         { "POST", "/api/channels/{0}/wishes/7/close", null },
         { "POST", "/api/channels/{0}/wishes/7/retry", null },
         { "POST", "/api/channels/{0}/wishes/7/re-add", """{"mode":"timed"}""" },
-        { "POST", "/api/channels/{0}/wishes/7/complete-removal", null },
+        { "POST", "/api/channels/{0}/wishes/7/complete-removal", RemovalBody },
         { "POST", "/api/channels/{0}/wishes/7/recheck", null },
     };
 
@@ -130,6 +133,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     [InlineData("POST", "/api/channels/handofblood/wishes/adopt")]
     [InlineData("PATCH", "/api/channels/handofblood/wishes/7")]
     [InlineData("POST", "/api/channels/handofblood/wishes/7/re-add")]
+    [InlineData("POST", "/api/channels/handofblood/wishes/7/complete-removal")]
     [InlineData("PUT", "/api/channels/handofblood/wishes/settings")]
     public async Task SwitchOff_ChecksTheSwitch_BeforeTheBody(string method, string path)
     {
@@ -148,6 +152,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     [InlineData("POST", "/api/channels/handofblood/wishes/adopt")]
     [InlineData("PATCH", "/api/channels/handofblood/wishes/7")]
     [InlineData("POST", "/api/channels/handofblood/wishes/7/re-add")]
+    [InlineData("POST", "/api/channels/handofblood/wishes/7/complete-removal")]
     [InlineData("PUT", "/api/channels/handofblood/wishes/settings")]
     public async Task SwitchOn_AnEmptyOrUnbindableBody_Answers400InvalidRequestBody(string method, string path)
     {
@@ -343,6 +348,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         { WishOutcome.EmoteIdInvalid, HttpStatusCode.BadRequest, ApiErrorCodes.EmoteIdsInvalid },
         { WishOutcome.StartsAtInvalid, HttpStatusCode.BadRequest, ApiErrorCodes.InvalidRequestBody },
         { WishOutcome.ModeInvalid, HttpStatusCode.BadRequest, ApiErrorCodes.InvalidRequestBody },
+        { WishOutcome.RequestInvalid, HttpStatusCode.BadRequest, ApiErrorCodes.InvalidRequestBody },
         { WishOutcome.DurationOutOfRange, HttpStatusCode.BadRequest, ApiErrorCodes.WishDurationOutOfRange },
         { WishOutcome.AliasInvalid, HttpStatusCode.BadRequest, ApiErrorCodes.WishAliasInvalid },
         { WishOutcome.RequesterInvalid, HttpStatusCode.BadRequest, ApiErrorCodes.WishRequesterInvalid },
@@ -372,11 +378,27 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
             Assert.Equal(["slot-a", "slot-b"], slotIds.EnumerateArray().Select(s => s.GetString()));
         }
 
-        Assert.Equal(outcome == WishOutcome.AlreadyRunning, json.RootElement.TryGetProperty("wishId", out var wishId));
-        if (outcome == WishOutcome.AlreadyRunning)
+        // Plan #485 2.1a: the three conflicts about another wish name it.
+        var namesAWish = outcome is WishOutcome.AlreadyRunning or WishOutcome.SlotAlreadyLinked or WishOutcome.EmoteAlreadyInSet;
+        Assert.Equal(namesAWish, json.RootElement.TryGetProperty("wishId", out var wishId));
+        if (namesAWish)
         {
             Assert.Equal(42, wishId.GetInt64());
         }
+    }
+
+    // wish_emote_already_in_set without a running wish still carries the field, as null.
+    [Fact]
+    public async Task EmoteAlreadyInSet_WithoutARunningWish_CarriesWishIdNull()
+    {
+        _factory.Wishes.CreateAsync(Arg.Any<string>(), Arg.Any<CreateWishRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(new WishCommandResult(WishOutcome.EmoteAlreadyInSet, SlotIds: ["slot-a"]));
+
+        var response = await SendAsync(_factory, "POST", $"/api/channels/{Channel}/wishes", """{"sevenTvEmoteId":"01H0000000000000000000000A"}""");
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("wishId").ValueKind);
     }
 
     [Fact]
@@ -441,6 +463,103 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal(Channel, args[0]);
         Assert.Equal(7L, args[1]);
         Assert.Equal(userId, ((AuditActor)args[2]!).TwitchUserId);
+    }
+
+    // ---- Plan #485 T0b: the bodies of complete-removal, adopt and the settings write ----
+
+    [Fact]
+    public async Task CompleteRemoval_ForwardsTheReportedEntryVerbatim_AndAnswers200()
+    {
+        _factory.Wishes.CompleteRemovalAsync(
+                Arg.Any<string>(), Arg.Any<long>(), Arg.Any<CompleteWishRemovalRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(new WishCommandResult(WishOutcome.Success, Wish: Wish()));
+
+        var response = await SendAsync(_factory, "POST", $"/api/channels/{Channel}/wishes/7/complete-removal", RemovalBody);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var call = Assert.Single(_factory.Wishes.ReceivedCalls(), c => c.GetMethodInfo().Name == nameof(IWishService.CompleteRemovalAsync));
+        var args = call.GetArguments();
+        Assert.Equal((Channel, 7L), ((string)args[0]!, (long)args[1]!));
+        var request = (CompleteWishRemovalRequest)args[2]!;
+        Assert.Equal(
+            new CompleteWishRemovalRequest(
+                "slot-1", new DateTime(2026, 11, 2, 10, 0, 0, DateTimeKind.Utc).AddTicks(1_234_560), "01H0000000000000000000SET1", "acknowledged"),
+            request with { SlotAddedAtUtc = request.SlotAddedAtUtc?.ToUniversalTime() });
+    }
+
+    // A JSON null body is no report: the handler answers 400 itself and never calls the service (the empty and the
+    // unbindable body are in SwitchOn_AnEmptyOrUnbindableBody_Answers400InvalidRequestBody).
+    [Fact]
+    public async Task CompleteRemoval_WithANullBody_Answers400_WithoutCallingTheService()
+    {
+        var response = await SendAsync(_factory, "POST", $"/api/channels/{Channel}/wishes/7/complete-removal", "null");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidRequestBody, await ReadErrorCodeAsync(response));
+        Assert.Empty(_factory.Wishes.ReceivedCalls());
+    }
+
+    // A body without one of the three fields reaches the service with the gaps as null; the service refuses it
+    // (RequestInvalid), and that is a 400.
+    [Fact]
+    public async Task CompleteRemoval_WithAPartialBody_ForwardsTheGaps_AndTheRefusalIs400()
+    {
+        _factory.Wishes.CompleteRemovalAsync(
+                Arg.Any<string>(), Arg.Any<long>(), Arg.Any<CompleteWishRemovalRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(WishCommandResult.Of(WishOutcome.RequestInvalid));
+
+        var response = await SendAsync(_factory, "POST", $"/api/channels/{Channel}/wishes/7/complete-removal", """{"slotId":"slot-1"}""");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidRequestBody, await ReadErrorCodeAsync(response));
+        await _factory.Wishes.Received(1).CompleteRemovalAsync(
+            Channel, 7, new CompleteWishRemovalRequest("slot-1", null, null, null), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Adopt_ForwardsTheExpectedAliasAndDate_AndAnAbsentAliasAsNull()
+    {
+        _factory.Wishes.AdoptAsync(Arg.Any<string>(), Arg.Any<AdoptWishRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(new WishCommandResult(WishOutcome.Success, Wish: Wish()), WishCommandResult.Of(WishOutcome.RequestInvalid));
+        var path = $"/api/channels/{Channel}/wishes/adopt";
+
+        var bound = await SendAsync(
+            _factory, "POST", path, """{"slotId":"s1","expectedAlias":"Kappa","expectedAddedAtUtc":"2026-11-02T10:00:00.123456Z","wishId":5}""");
+        var withoutAlias = await SendAsync(_factory, "POST", path, """{"slotId":"s1"}""");
+
+        Assert.Equal(HttpStatusCode.Created, bound.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, withoutAlias.StatusCode);
+        Assert.Equal(ApiErrorCodes.InvalidRequestBody, await ReadErrorCodeAsync(withoutAlias));
+        var requests = _factory.Wishes.ReceivedCalls()
+            .Where(c => c.GetMethodInfo().Name == nameof(IWishService.AdoptAsync))
+            .Select(c => (AdoptWishRequest)c.GetArguments()[1]!)
+            .ToList();
+        Assert.Equal(2, requests.Count);
+        Assert.Equal(
+            ("s1", "Kappa", (DateTime?)new DateTime(2026, 11, 2, 10, 0, 0, DateTimeKind.Utc).AddTicks(1_234_560), (long?)5),
+            (requests[0].SlotId, requests[0].ExpectedAlias, requests[0].ExpectedAddedAtUtc?.ToUniversalTime(), requests[0].WishId));
+        Assert.Equal(("s1", (string?)null, (DateTime?)null), (requests[1].SlotId, requests[1].ExpectedAlias, requests[1].ExpectedAddedAtUtc));
+    }
+
+    // Sol-P2-4 at the real binding: an absent threshold keeps the stored one, an explicit null switches protection
+    // off, a value sets it.
+    [Theory]
+    [InlineData("""{"defaultDurationDays":14,"probationLeadDays":5}""", true, null)]
+    [InlineData("""{"defaultDurationDays":14,"probationLeadDays":5,"protectionThresholdPerDay":null}""", false, null)]
+    [InlineData("""{"defaultDurationDays":14,"probationLeadDays":5,"protectionThresholdPerDay":2.5}""", false, "2.5")]
+    public async Task PutSettings_TellsAnAbsentThresholdFromNull(string body, bool keep, string? threshold)
+    {
+        _factory.Wishes.CanChangeSettingsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(new WishCommandResult(WishOutcome.Success, Settings: Settings()));
+
+        var response = await SendAsync(_factory, "PUT", $"/api/channels/{Channel}/wishes/settings", body);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var expected = new UpdateWishSettingsRequest(
+            14, 5, threshold is null ? null : decimal.Parse(threshold, System.Globalization.CultureInfo.InvariantCulture), keep);
+        await _factory.Wishes.Received(1).UpdateSettingsAsync(Channel, expected, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
     }
 
     // ---- Wire shape ----

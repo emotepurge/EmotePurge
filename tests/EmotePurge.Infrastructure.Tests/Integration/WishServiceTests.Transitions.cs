@@ -19,7 +19,8 @@ public partial class WishServiceTests
     private static readonly string[] Commands =
         ["patch", "extend", "keep", "close", "retry", "readd", "complete-removal", "recheck"];
 
-    // (state, command) -> state after success. Seeded rows have no slot; presented carries reason
+    // (state, command) -> state after success. Seeded rows have no slot, except for complete-removal, which runs on
+    // a row bound to a slot generation and reports exactly that (plan #485 2.1a); presented carries reason
     // "unconfirmed" (the one reason recheck would need); removed_externally ended one hour ago.
     private static readonly Dictionary<(string State, string Command), string> Allowed = new()
     {
@@ -52,6 +53,9 @@ public partial class WishServiceTests
         ["complete-removal"] = "wish.remove",
     };
 
+    // Succeed without any trace: a repeated removal report of a wish already removed (row 5 of plan #485 2.1a).
+    private static readonly HashSet<(string State, string Command)> SucceedWithoutTrace = [("removed", "complete-removal")];
+
     public static TheoryData<string, string> StateCommandPairs()
     {
         var data = new TheoryData<string, string>();
@@ -76,7 +80,9 @@ public partial class WishServiceTests
     public async Task Matrix_EveryStateAndCommand_SucceedsExactlyWhereListed_ElseConflictsWithoutATrace(string state, string command)
     {
         var channel = await SeedChannelAsync();
-        var wishId = await SeedRowAsync(channel, state);
+        var wishId = command == "complete-removal"
+            ? (await SeedBoundRowAsync(channel, state)).WishId
+            : await SeedRowAsync(channel, state);
         var before = await SnapshotAsync(wishId);
 
         var result = await RunAsync(command, channel, wishId);
@@ -84,7 +90,15 @@ public partial class WishServiceTests
         await using var db = fixture.CreateDbContext();
         var row = await db.Wishes.AsNoTracking().SingleAsync(w => w.Id == wishId);
         var audit = await db.AuditLogEntries.Where(a => a.ChannelName == channel.Name).ToListAsync();
-        if (Allowed.TryGetValue((state, command), out var target))
+        if (SucceedWithoutTrace.Contains((state, command)))
+        {
+            Assert.Equal(WishOutcome.Success, result.Outcome);
+            Assert.Equal(state, result.Wish!.Status);
+            Assert.Equal(before, JsonSerializer.Serialize(row));
+            Assert.Empty(audit);
+            _ = _publisher.DidNotReceiveWithAnyArgs().PublishAsync(default!, default!, default);
+        }
+        else if (Allowed.TryGetValue((state, command), out var target))
         {
             Assert.Equal(WishOutcome.Success, result.Outcome);
             Assert.Equal(target, row.Status);
@@ -94,6 +108,12 @@ public partial class WishServiceTests
             Assert.Null(row.RemovalQueuedVersion);
             Assert.Equal(AuditActionOf[command], Assert.Single(audit).Action);
             Assert.Equal(WishStatus.IsEnded(target), row.EndedAtUtc is not null);
+            if (WishStatus.IsEnded(state) && WishStatus.IsEnded(target))
+            {
+                // From one end state into another the retention clock stays (plan #485 2.1a).
+                Assert.Equal(Now.AddHours(-1), row.EndedAtUtc);
+            }
+
             if (target != state)
             {
                 Assert.Equal(Now, row.StatusChangedAtUtc);
@@ -438,47 +458,6 @@ public partial class WishServiceTests
         _ = _publisher.DidNotReceiveWithAnyArgs().PublishAsync(default!, default!, default);
     }
 
-    // ------------------------------------------------------------------------------------ complete-removal
-
-    // AK11, command part: an external removal the reconcile saw first becomes ours within six hours.
-    [Theory]
-    [InlineData(5, true)]
-    [InlineData(6, true)]
-    [InlineData(7, false)]
-    public async Task CompleteRemoval_AfterAnExternalRemoval_OnlyWithinSixHours(int hoursAgo, bool accepted)
-    {
-        var channel = await SeedChannelAsync();
-        var wishId = await SeedRowAsync(channel, WishStatus.RemovedExternally, w => w.EndedAtUtc = Now.AddHours(-hoursAgo));
-        var before = await SnapshotAsync(wishId);
-
-        var result = await Sut().CompleteRemovalAsync(channel.Name, wishId, Actor);
-
-        if (accepted)
-        {
-            Assert.Equal(WishOutcome.Success, result.Outcome);
-            Assert.Equal((WishStatus.Removed, (DateTime?)Now), (result.Wish!.Status, result.Wish.EndedAtUtc));
-        }
-        else
-        {
-            Assert.Equal(WishOutcome.StateConflict, result.Outcome);
-            Assert.Equal(before, await SnapshotAsync(wishId));
-        }
-    }
-
-    [Fact]
-    public async Task CompleteRemoval_Twice_TheSecondIsAConflict_WithoutASecondAuditEntry()
-    {
-        var channel = await SeedChannelAsync();
-        var wishId = await SeedRowAsync(channel, WishStatus.Active);
-
-        Assert.Equal(WishOutcome.Success, (await Sut().CompleteRemovalAsync(channel.Name, wishId, Actor)).Outcome);
-        Assert.Equal(WishOutcome.StateConflict, (await Sut().CompleteRemovalAsync(channel.Name, wishId, Actor)).Outcome);
-
-        await using var db = fixture.CreateDbContext();
-        Assert.Equal(1, await db.AuditLogEntries.CountAsync(a => a.ChannelName == channel.Name && a.Action == AuditActions.WishRemove));
-        Assert.Equal(SeededDecisionVersion + 1, (await db.Wishes.SingleAsync(w => w.Id == wishId)).DecisionVersion);
-    }
-
     // ------------------------------------------------------------------------------------ concurrency
 
     // AK3: two keeps at once on separate contexts: exactly one wins, one audit entry.
@@ -581,7 +560,7 @@ public partial class WishServiceTests
         var presented = await SeedRowAsync(channel, WishStatus.Presented, Secret);
         var failed = await SeedRowAsync(channel, WishStatus.Failed, Secret);
         var removed = await SeedRowAsync(channel, WishStatus.Removed, Secret);
-        var external = await SeedRowAsync(channel, WishStatus.RemovedExternally, Secret);
+        var external = (await SeedBoundRowAsync(channel, WishStatus.RemovedExternally, Secret)).WishId;
 
         Assert.True((await Sut().UpdateAsync(channel.Name, approved, new UpdateWishRequest("SecretPatched", 10), Actor)).IsSuccess);
         Assert.True((await Sut().ExtendAsync(channel.Name, active, Actor)).IsSuccess);
@@ -589,7 +568,7 @@ public partial class WishServiceTests
         Assert.True((await Sut().RetryAsync(channel.Name, failed, Actor)).IsSuccess);
         Assert.True((await Sut().CloseAsync(channel.Name, approved, Actor)).IsSuccess);
         Assert.True((await Sut().ReAddAsync(channel.Name, removed, new ReAddWishRequest("timed", null), Actor)).IsSuccess);
-        Assert.True((await Sut().CompleteRemovalAsync(channel.Name, external, Actor)).IsSuccess);
+        Assert.True((await ReportRemovalAsync(channel, external)).IsSuccess);
 
         await using var db = fixture.CreateDbContext();
         var entries = await db.AuditLogEntries.Where(a => a.ChannelName == channel.Name).ToListAsync();
@@ -599,7 +578,11 @@ public partial class WishServiceTests
             Assert.DoesNotContain("Secret", e.DetailsJson!, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("viewer", e.DetailsJson!, StringComparison.OrdinalIgnoreCase);
             using var json = JsonDocument.Parse(e.DetailsJson!);
-            Assert.Equal(["durationDays", "sevenTvEmoteId", "wishId"], json.RootElement.EnumerateObject().Select(p => p.Name).Order().ToArray());
+            // A booked removal also names the reported entry (plan #485 2.1a): ids and one instant.
+            string[] keys = e.Action == AuditActions.WishRemove
+                ? ["durationDays", "emoteSetId", "sevenTvEmoteId", "slotAddedAtUtc", "slotId", "wishId"]
+                : ["durationDays", "sevenTvEmoteId", "wishId"];
+            Assert.Equal(keys, json.RootElement.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal).ToArray());
             Assert.Equal(("wish", e.TargetId), (e.TargetType, json.RootElement.GetProperty("wishId").GetInt64().ToString(System.Globalization.CultureInfo.InvariantCulture)));
         });
     }
@@ -608,6 +591,11 @@ public partial class WishServiceTests
 
     private Task<WishCommandResult> RunAsync(string command, Seeded channel, long wishId, AppDbContext? db = null)
     {
+        if (command == "complete-removal")
+        {
+            return ReportRemovalAsync(channel, wishId, db: db);
+        }
+
         var sut = Sut(db);
         return command switch
         {
@@ -617,7 +605,6 @@ public partial class WishServiceTests
             "close" => sut.CloseAsync(channel.Name, wishId, Actor),
             "retry" => sut.RetryAsync(channel.Name, wishId, Actor),
             "readd" => sut.ReAddAsync(channel.Name, wishId, new ReAddWishRequest("timed", null), Actor),
-            "complete-removal" => sut.CompleteRemovalAsync(channel.Name, wishId, Actor),
             "recheck" => sut.RecheckAsync(channel.Name, wishId, Actor),
             _ => throw new ArgumentOutOfRangeException(nameof(command), command, null),
         };

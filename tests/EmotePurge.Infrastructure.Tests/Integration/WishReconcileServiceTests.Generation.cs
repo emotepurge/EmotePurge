@@ -110,7 +110,7 @@ public partial class WishReconcileServiceTests
         var slot = await SeedSlotAsync(emote, "Kappa", addedAt, fromRest: slotKind == "rest");
 
         var result = await WishSut().AdoptAsync(
-            channel.Name, new AdoptWishRequest(slot, null, null, explicitStart ? Now.AddDays(-1) : null), Actor);
+            channel.Name, await WishAdoptRequests.ForCurrentAsync(fixture, slot, null, null, explicitStart ? Now.AddDays(-1) : null), Actor);
 
         Assert.Equal(WishOutcome.Success, result.Outcome);
         Assert.Equal((addedAt, slotKind == "rest"), (result.Wish!.SlotAddedAtUtc, result.Wish.StartsAtAuthoritative));
@@ -124,7 +124,7 @@ public partial class WishReconcileServiceTests
         var channel = await SeedChannelAsync();
         var emote = await SeedEmoteAsync(channel);
         var slot = await SeedSlotAsync(emote, "Kappa", null);
-        var wishId = (await WishSut().AdoptAsync(channel.Name, new AdoptWishRequest(slot, null, null, null), Actor)).Wish!.Id;
+        var wishId = (await WishSut().AdoptAsync(channel.Name, await WishAdoptRequests.ForCurrentAsync(fixture, slot, null, null, null), Actor)).Wish!.Id;
         await AssertTheDtoFollowsTheSlotAsync(channel, wishId, slot, expectAuthoritative: false);
 
         await UpdateSlotAsync(slot, s => (s.AddedAt, s.AddedAtFromRest) = (Now.AddDays(-1), true));

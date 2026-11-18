@@ -466,7 +466,7 @@ public partial class WishReconcileServiceTests(PostgresFixture fixture)
 
         var second = await SeedSlotAsync(emote, "Other", archivedAt.AddMinutes(30));
         _clock.Advance(TimeSpan.FromMinutes(10));
-        var adopted = await WishSut().AdoptAsync(channel.Name, new AdoptWishRequest(second, null, 30, null), Actor);
+        var adopted = await WishSut().AdoptAsync(channel.Name, await WishAdoptRequests.ForCurrentAsync(fixture, second, null, 30, null), Actor);
         Assert.True(adopted.IsSuccess);
         var b = adopted.Wish!.Id;
 
@@ -587,7 +587,7 @@ public partial class WishReconcileServiceTests(PostgresFixture fixture)
         await ReconcileAsync(channel);
         await UpdateSlotAsync(slot, s => (s.IsArchived, s.ArchivedAt, s.AddedAt) = (false, null, Now.AddMinutes(-30)));
 
-        var result = await WishSut().AdoptAsync(channel.Name, new AdoptWishRequest(slot, null, 30, null), Actor);
+        var result = await WishSut().AdoptAsync(channel.Name, await WishAdoptRequests.ForCurrentAsync(fixture, slot, null, 30, null), Actor);
 
         Assert.Equal(WishOutcome.Success, result.Outcome);
         Assert.Equal((WishStatus.Active, slot), (result.Wish!.Status, result.Wish.SlotId));
@@ -601,7 +601,7 @@ public partial class WishReconcileServiceTests(PostgresFixture fixture)
         var emote = await SeedEmoteAsync(channel);
         var (slot, _) = await SeedKeptAsync(channel, emote);
 
-        var result = await WishSut().AdoptAsync(channel.Name, new AdoptWishRequest(slot, null, 30, null), Actor);
+        var result = await WishSut().AdoptAsync(channel.Name, await WishAdoptRequests.ForCurrentAsync(fixture, slot, null, 30, null), Actor);
 
         Assert.Equal(WishOutcome.SlotAlreadyLinked, result.Outcome);
     }
@@ -622,7 +622,7 @@ public partial class WishReconcileServiceTests(PostgresFixture fixture)
         var provisional = Now.AddDays(-1);
         var slot = await SeedSlotAsync(emote, "Kappa", slotDated ? provisional : null, fromRest: false);
         DateTime? requested = explicitStart ? Now.AddHours(-12) : null;
-        var adopted = await WishSut().AdoptAsync(channel.Name, new AdoptWishRequest(slot, null, 30, requested), Actor);
+        var adopted = await WishSut().AdoptAsync(channel.Name, await WishAdoptRequests.ForCurrentAsync(fixture, slot, null, 30, requested), Actor);
         Assert.True(adopted.IsSuccess);
         var wishId = adopted.Wish!.Id;
         var before = await WishAsync(wishId);
@@ -671,7 +671,7 @@ public partial class WishReconcileServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync();
         var emote = await SeedEmoteAsync(channel);
         var slot = await SeedSlotAsync(emote, "Kappa", null, fromRest: false);
-        var adopted = await WishSut().AdoptAsync(channel.Name, new AdoptWishRequest(slot, null, 30, null), Actor);
+        var adopted = await WishSut().AdoptAsync(channel.Name, await WishAdoptRequests.ForCurrentAsync(fixture, slot, null, 30, null), Actor);
         Assert.True(adopted.IsSuccess);
         var wishId = adopted.Wish!.Id;
         var adoptedAt = Now;

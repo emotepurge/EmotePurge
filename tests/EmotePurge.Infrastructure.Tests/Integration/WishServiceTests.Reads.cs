@@ -205,8 +205,11 @@ public partial class WishServiceTests
         Assert.Equal((kept, (long?)null), (entries[keptSlot].HeldByWishId, entries[keptSlot].RunningWishId));
         // The holder of this very slot is no "other running wish" of it.
         Assert.Equal((active, (long?)null, false), (entries[activeSlot].HeldByWishId, entries[activeSlot].RunningWishId, entries[activeSlot].RunningWishAdoptable));
-        Assert.Equal(WishOutcome.SlotAlreadyLinked, (await AdoptAsync(channel, keptSlot)).Outcome);
-        Assert.Equal(WishOutcome.SlotAlreadyLinked, (await AdoptAsync(channel, activeSlot)).Outcome);
+        // Plan #485 T0b: both conflicts name the holder, a kept one too.
+        var onKept = await AdoptAsync(channel, keptSlot);
+        var onActive = await AdoptAsync(channel, activeSlot);
+        Assert.Equal((WishOutcome.SlotAlreadyLinked, (long?)kept), (onKept.Outcome, onKept.ConflictingWishId));
+        Assert.Equal((WishOutcome.SlotAlreadyLinked, (long?)active), (onActive.Outcome, onActive.ConflictingWishId));
     }
 
     // An emote under two aliases: the second entry names the wish running at the first, and that wish does not

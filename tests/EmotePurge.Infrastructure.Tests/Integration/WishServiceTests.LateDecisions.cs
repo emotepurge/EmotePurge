@@ -30,13 +30,19 @@ public partial class WishServiceTests
             "close" => WishStatus.Presented,
             _ => WishStatus.Active
         };
-        var wishId = await SeedRowAsync(channel, status, w =>
+        void Configure(Wish w)
         {
             w.ExpiresAtUtc = expires;
             w.EndedAtUtc = status == WishStatus.RemovedExternally ? Now.AddHours(-1) : null;
-        });
+        }
 
-        var result = await RunLateCommandAsync(command, channel.Name, wishId);
+        // The removal report runs on a row bound to a slot generation (plan #485 2.1a); a bound presented wish
+        // could not be closed, so the other commands keep their slotless rows.
+        var wishId = command == "complete-removal"
+            ? (await SeedBoundRowAsync(channel, status, Configure)).WishId
+            : await SeedRowAsync(channel, status, Configure);
+
+        var result = await RunLateCommandAsync(command, channel, wishId);
 
         Assert.Equal(WishOutcome.Success, result.Outcome);
         await using var db = fixture.CreateDbContext();
@@ -52,9 +58,11 @@ public partial class WishServiceTests
             Assert.False(details.TryGetProperty("previousExpiresAtUtc", out _));
         }
 
-        // AK19: nothing but ids, the duration and the previous expiry.
+        // AK19: nothing but ids, the duration, the previous expiry and, on a removal, the reported entry.
         var names = details.EnumerateObject().Select(p => p.Name).Order().ToArray();
-        Assert.Subset(new HashSet<string> { "wishId", "sevenTvEmoteId", "durationDays", "previousExpiresAtUtc" }, names.ToHashSet());
+        Assert.Subset(
+            new HashSet<string> { "wishId", "sevenTvEmoteId", "durationDays", "previousExpiresAtUtc", "slotId", "slotAddedAtUtc", "emoteSetId" },
+            names.ToHashSet());
     }
 
     // The previous value, not the new expiry, and the boundary (expiry equal to now) counts as overdue.
@@ -110,11 +118,11 @@ public partial class WishServiceTests
         Assert.False(await db.AuditLogEntries.AnyAsync(a => a.ChannelName == channel.Name));
     }
 
-    private Task<WishCommandResult> RunLateCommandAsync(string command, string channelName, long wishId) => command switch
+    private Task<WishCommandResult> RunLateCommandAsync(string command, Seeded channel, long wishId) => command switch
     {
-        "extend" => Sut().ExtendAsync(channelName, wishId, Actor),
-        "keep" => Sut().KeepAsync(channelName, wishId, Actor),
-        "close" => Sut().CloseAsync(channelName, wishId, Actor),
-        _ => Sut().CompleteRemovalAsync(channelName, wishId, Actor)
+        "extend" => Sut().ExtendAsync(channel.Name, wishId, Actor),
+        "keep" => Sut().KeepAsync(channel.Name, wishId, Actor),
+        "close" => Sut().CloseAsync(channel.Name, wishId, Actor),
+        _ => ReportRemovalAsync(channel, wishId)
     };
 }

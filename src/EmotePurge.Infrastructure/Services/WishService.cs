@@ -20,7 +20,9 @@ namespace EmotePurge.Infrastructure.Services;
 /// (<see cref="RowLocks.LockWishesByIdsAsync"/>) and only afterwards reads it, so the state it decides on is
 /// the committed one and stays so. Because of that lock the state is stable within the transaction; the
 /// unique indexes remain as a belt and map to the conflict outcomes, never to a 500. The transition commands
-/// change an existing wish only and therefore take just its row lock (<see cref="RunTransitionAsync"/>). A
+/// change an existing wish only and therefore take just its row lock (<see cref="RunTransitionAsync"/>); the
+/// removal report is the exception, it reads the slot inventory and so takes the channel row first like every
+/// slot writer (<see cref="CompleteRemovalAsync"/>, plan #485 2.1a). A
 /// settings change that changes the protection threshold locks, after the channel row, the channel's active
 /// wish rows as well (<see cref="SupersedeActiveDecisionsAsync"/>, plan #484 2.6).
 /// </para>
@@ -57,7 +59,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
         if (!IsDurationInRange(request.DefaultDurationDays)
             || request.ProbationLeadDays is < WishLimits.ProbationLeadDaysMin or > WishLimits.ProbationLeadDaysMax
-            || (request.ProtectionThresholdPerDay is { } requested && !IsThresholdInRange(requested)))
+            || (!request.KeepProtectionThreshold && request.ProtectionThresholdPerDay is { } requested && !IsThresholdInRange(requested)))
         {
             return WishCommandResult.Of(WishOutcome.SettingsOutOfRange);
         }
@@ -82,9 +84,12 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             db.ChannelWishSettings.Add(row);
         }
 
-        // A missing row is "protection off", which is also what the fresh row above carries.
+        // A missing row is "protection off", which is also what the fresh row above carries. A threshold that was
+        // not sent keeps the stored one (plan #485 2.1a): unchanged, so no decision is superseded.
         var previousThreshold = row.ProtectionThresholdPerDay;
-        var threshold = request.ProtectionThresholdPerDay is { } raw ? Math.Round(raw, 2) : (decimal?)null;
+        var threshold = request.KeepProtectionThreshold
+            ? previousThreshold
+            : request.ProtectionThresholdPerDay is { } raw ? Math.Round(raw, 2) : (decimal?)null;
         if (threshold != previousThreshold)
         {
             await SupersedeActiveDecisionsAsync(channelId, cancellationToken);
@@ -200,7 +205,9 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         var slotIds = await ActiveSlotIdsAsync(channelId, emoteId, cancellationToken);
         if (slotIds.Count > 0)
         {
-            return new WishCommandResult(WishOutcome.EmoteAlreadyInSet, SlotIds: slotIds);
+            // Plan #485 2.1a: the running wish of the emote (or null), so the client reaches it off the loaded page.
+            var running = await FindRunningWishIdAsync(channelId, emoteId, cancellationToken);
+            return new WishCommandResult(WishOutcome.EmoteAlreadyInSet, SlotIds: slotIds, ConflictingWishId: running);
         }
 
         var runningId = await FindRunningWishIdAsync(channelId, emoteId, cancellationToken);
@@ -250,6 +257,13 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(actor);
 
+        // The entry the manager picked is named by alias and generation (plan #485 2.1a); without the alias the
+        // body does not say which stay it means.
+        if (request.ExpectedAlias is null)
+        {
+            return WishCommandResult.Of(WishOutcome.RequestInvalid);
+        }
+
         if (request.DurationDays is { } requested && !IsDurationInRange(requested))
         {
             return WishCommandResult.Of(WishOutcome.DurationOutOfRange);
@@ -283,7 +297,12 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         var slot = await db.EmoteSlots.Include(s => s.Emote)
             .Where(AdoptableIn(channelId))
             .FirstOrDefaultAsync(s => s.Id == request.SlotId, cancellationToken);
+        // Bound to the picked generation, before any other check on the slot (Sol-R2-P2-4): the same slot id under
+        // another alias or with another AddedAt (a revived row, a date that arrived meanwhile) is not the entry the
+        // manager saw, so it "does not exist like that any more".
         if (slot is null
+            || !string.Equals(slot.Name, request.ExpectedAlias, StringComparison.Ordinal)
+            || !SameInstant(slot.AddedAt, request.ExpectedAddedAtUtc)
             || (wish is not null && wish.SevenTvEmoteId.Length > 0
                 && !string.Equals(wish.SevenTvEmoteId, slot.Emote.SevenTvEmoteId, StringComparison.Ordinal)))
         {
@@ -307,10 +326,10 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         }
 
         var ownId = wish?.Id;
-        var linked = await db.Wishes.AnyAsync(w => w.SlotId == slot.Id && HoldingStatuses.Contains(w.Status) && w.Id != ownId, cancellationToken);
-        if (linked)
+        var holderId = await FindHolderIdAsync(slot.Id, ownId, cancellationToken);
+        if (holderId is not null)
         {
-            return WishCommandResult.Of(WishOutcome.SlotAlreadyLinked);
+            return new WishCommandResult(WishOutcome.SlotAlreadyLinked, ConflictingWishId: holderId);
         }
 
         var running = await FindRunningWishIdAsync(channelId, slot.Emote.SevenTvEmoteId, cancellationToken);
@@ -378,7 +397,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             wish.FirstActivatedAtUtc ??= now;
         }
 
-        var conflict = await SaveOrConflictAsync(transaction, channelId, wish.SevenTvEmoteId, cancellationToken);
+        var conflict = await SaveOrConflictAsync(transaction, channelId, wish.SevenTvEmoteId, cancellationToken, slot.Id);
         if (conflict is not null)
         {
             return conflict;
@@ -536,27 +555,109 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         }, cancellationToken);
     }
 
-    public Task<WishCommandResult> CompleteRemovalAsync(
-        string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
-        RunTransitionAsync(channelName, wishId, actor, AuditActions.WishRemove, (wish, _, now, _) =>
+    public async Task<WishCommandResult> CompleteRemovalAsync(
+        string channelName, long wishId, CompleteWishRemovalRequest request, AuditActor actor, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channelName);
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(actor);
+
+        // Row 1 (plan #485 2.1a): the report names slot, generation and set; evidence is optional but closed.
+        if (string.IsNullOrEmpty(request.SlotId)
+            || request.SlotAddedAtUtc is not { } reportedGeneration
+            || string.IsNullOrEmpty(request.EmoteSetId)
+            || (request.Evidence is not null
+                && request.Evidence is not (WishRemovalEvidence.Acknowledged or WishRemovalEvidence.Absent)))
         {
-            var target = WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.Remove);
-            if (target is null)
-            {
-                return CommandStep.ConflictTask;
-            }
+            return WishCommandResult.Of(WishOutcome.RequestInvalid);
+        }
 
-            // The race between sync and success report (AK11): an external removal the reconcile saw first turns
-            // into our removal only within the adoption window after it was observed.
-            if (wish.Status == WishStatus.RemovedExternally
-                && (wish.EndedAtUtc is not { } endedAt || now > endedAt + WishLimits.AdoptionWindow))
-            {
-                return CommandStep.ConflictTask;
-            }
+        var channelId = await ResolveChannelIdAsync(channelName, cancellationToken);
+        if (channelId is null)
+        {
+            return WishCommandResult.Of(WishOutcome.ChannelNotFound);
+        }
 
-            wish.Status = target;
-            return CommandStep.DoneTask;
-        }, cancellationToken, recordPreviousExpiry: true);
+        // The channel row before the wish row, and every read behind both (Sol-R2-P1-2): every slot writer holds the
+        // channel row for its inventory transaction, so the report sees the inventory before or after a sync,
+        // never halfway. Not RunTransitionAsync, which takes only the wish row.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        if ((await db.LockChannelsByIdsAsync([channelId], cancellationToken)).Count == 0)
+        {
+            return WishCommandResult.Of(WishOutcome.ChannelNotFound);
+        }
+
+        await db.LockWishesByIdsAsync([wishId], cancellationToken);
+        var channel = await db.Channels.AsNoTracking()
+            .Where(c => c.Id == channelId)
+            .Select(c => new { c.ChannelName, c.ActiveEmoteSetId })
+            .SingleAsync(cancellationToken);
+        var wish = await db.Wishes.FirstOrDefaultAsync(w => w.Id == wishId && w.ChannelId == channelId, cancellationToken);
+
+        // Row 2.
+        if (wish is null)
+        {
+            return WishCommandResult.Of(WishOutcome.WishNotFound);
+        }
+
+        // Row 3: the set is proven only by being the channel's active set right now; slots are entries of it.
+        // Row 4: the reported generation must be the one the wish is bound to (also: re-bound, reset by a re-add).
+        if (!string.Equals(request.EmoteSetId, channel.ActiveEmoteSetId, StringComparison.Ordinal)
+            || !string.Equals(request.SlotId, wish.SlotId, StringComparison.Ordinal)
+            || !SameInstant(wish.SlotAddedAtUtc, reportedGeneration))
+        {
+            return WishCommandResult.Of(WishOutcome.StateConflict);
+        }
+
+        var settings = await LoadSettingsAsync(channelId, cancellationToken);
+
+        // Row 5: already booked (a lost 200, a second report of the same run): the same answer, no write at all.
+        if (wish.Status == WishStatus.Removed)
+        {
+            var bookedImage = await ImageUrlOfAsync(channelId, wish.SevenTvEmoteId, cancellationToken);
+            return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings, bookedImage));
+        }
+
+        // Row 6: the pending wish reconcile would bind the wish to an entry the inventory already shows.
+        if ((wish.Status is WishStatus.Active or WishStatus.Presented or WishStatus.RemovedExternally)
+            && await ReplacementVisibleAsync(channelId, wish, reportedGeneration, cancellationToken))
+        {
+            return WishCommandResult.Of(WishOutcome.StateConflict);
+        }
+
+        // Rows 7 to 10 through the transition table: active, presented and removed_externally go to removed, every
+        // other state is a conflict. An external removal the reconcile saw first becomes ours only within the
+        // adoption window after it was observed (AK11).
+        var now = Now();
+        var target = WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.Remove);
+        if (target is null
+            || (wish.Status == WishStatus.RemovedExternally
+                && (wish.EndedAtUtc is not { } endedAt || now > endedAt + WishLimits.AdoptionWindow)))
+        {
+            return WishCommandResult.Of(WishOutcome.StateConflict);
+        }
+
+        var previousExpiry = wish.ExpiresAtUtc is { } expiry && expiry <= now ? expiry : (DateTime?)null;
+        var previousStatus = wish.Status;
+        wish.Status = target;
+        CountDecision(wish);
+        StampStateChange(wish, previousStatus, now);
+
+        var conflict = await SaveOrConflictAsync(transaction, channelId, wish.SevenTvEmoteId, cancellationToken);
+        if (conflict is not null)
+        {
+            return conflict;
+        }
+
+        // A paper trail of what was reported, not a basis for any check: ids and one instant, no names (AK19).
+        var removal = new RemovalReport(wish.SlotId!, wish.SlotAddedAtUtc!.Value, request.EmoteSetId, request.Evidence);
+        await AuditAndCommitAsync(
+            transaction, actor, AuditActions.WishRemove, channel.ChannelName, wish, cancellationToken, previousExpiresAtUtc: previousExpiry,
+            removal: removal);
+        await changedPublisher.PublishAsync(channel.ChannelName, cancellationToken);
+        var imageUrl = await ImageUrlOfAsync(channelId, wish.SevenTvEmoteId, cancellationToken);
+        return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings, imageUrl));
+    }
 
     public async Task<WishCommandResult> RecheckAsync(
         string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default)
@@ -841,13 +942,57 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             .FirstOrDefaultAsync(cancellationToken);
     }
 
+    // The wish holding the slot (active, presented, kept: the states of IX_Wishes_SlotId_Live), other than ownId.
+    private Task<long?> FindHolderIdAsync(string slotId, long? ownId, CancellationToken cancellationToken) =>
+        db.Wishes
+            .Where(w => w.SlotId == slotId && HoldingStatuses.Contains(w.Status) && w.Id != ownId)
+            .Select(w => (long?)w.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+    // "Replacement visible" (plan #485 2.1a, row 6 of complete-removal, Sol-R3-P1), read behind the channel lock:
+    // among the channel's adoptable slots of the wish's emote, (a) the wish's own slot row with an AddedAt that is
+    // not the reported generation (a revived row), or (b) any other row under the wish's alias that no other wish
+    // holds, whatever its date (before, after or none). Deliberately wider than the reconcile's return window:
+    // the report does not know when the stay ended, and one conflict too many books nothing wrong. The own row
+    // with the reported generation is no replacement, nor is an entry under another alias (E13).
+    private async Task<bool> ReplacementVisibleAsync(
+        string channelId, Wish wish, DateTime reportedGeneration, CancellationToken cancellationToken)
+    {
+        var slots = await db.EmoteSlots.AsNoTracking()
+            .Where(AdoptableIn(channelId))
+            .Where(s => s.Emote.SevenTvEmoteId == wish.SevenTvEmoteId && (s.Id == wish.SlotId || s.Name == wish.Alias))
+            .Select(s => new { s.Id, s.Name, s.AddedAt })
+            .ToListAsync(cancellationToken);
+        if (slots.Exists(s => s.Id == wish.SlotId && !SameInstant(s.AddedAt, reportedGeneration)))
+        {
+            return true;
+        }
+
+        var others = slots
+            .Where(s => s.Id != wish.SlotId && string.Equals(s.Name, wish.Alias, StringComparison.Ordinal))
+            .Select(s => s.Id)
+            .ToList();
+        if (others.Count == 0)
+        {
+            return false;
+        }
+
+        var held = await db.Wishes.AsNoTracking()
+            .Where(w => w.SlotId != null && others.Contains(w.SlotId) && HoldingStatuses.Contains(w.Status) && w.Id != wish.Id)
+            .Select(w => w.SlotId!)
+            .ToListAsync(cancellationToken);
+        return others.Exists(id => !held.Contains(id, StringComparer.Ordinal));
+    }
+
     // Saves the staged wish. A hit on one of the two partial unique indexes is a conflict, not an error: the
-    // channel lock makes it unreachable in practice, the index is the belt. Rolls the transaction back then.
+    // channel lock makes it unreachable in practice, the index is the belt. Rolls the transaction back then and
+    // names the winner: the running wish of the emote, or the holder of slotId when the caller links one.
     private async Task<WishCommandResult?> SaveOrConflictAsync(
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction,
         string channelId,
         string sevenTvEmoteId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? slotId = null)
     {
         try
         {
@@ -858,10 +1003,13 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         {
             await transaction.RollbackAsync(cancellationToken);
             db.ChangeTracker.Clear();
-            long? runningId = outcome == WishOutcome.AlreadyRunning
-                ? await FindRunningWishIdAsync(channelId, sevenTvEmoteId, cancellationToken)
-                : null;
-            return new WishCommandResult(outcome, ConflictingWishId: runningId);
+            long? conflictingId = outcome switch
+            {
+                WishOutcome.AlreadyRunning => await FindRunningWishIdAsync(channelId, sevenTvEmoteId, cancellationToken),
+                WishOutcome.SlotAlreadyLinked when slotId is not null => await FindHolderIdAsync(slotId, null, cancellationToken),
+                _ => null
+            };
+            return new WishCommandResult(outcome, ConflictingWishId: conflictingId);
         }
     }
 
@@ -909,17 +1057,8 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             return step.Refusal;
         }
 
-        wish.DecisionVersion++;
-        wish.RemovalQueuedAtUtc = null;
-        wish.RemovalQueuedVersion = null;
-        if (!string.Equals(previousStatus, wish.Status, StringComparison.Ordinal))
-        {
-            // No target of a manager command carries a reason; an end state starts the retention clock, the way
-            // back out of one clears it.
-            wish.StatusChangedAtUtc = now;
-            wish.StatusReason = null;
-            wish.EndedAtUtc = WishStatus.IsEnded(wish.Status) ? now : null;
-        }
+        CountDecision(wish);
+        StampStateChange(wish, previousStatus, now);
 
         var conflict = await SaveOrConflictAsync(transaction, channelId, wish.SevenTvEmoteId, cancellationToken);
         if (conflict is not null)
@@ -945,13 +1084,33 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         Wish wish,
         CancellationToken cancellationToken,
         int? auditDurationDays = null,
-        DateTime? previousExpiresAtUtc = null)
+        DateTime? previousExpiresAtUtc = null,
+        RemovalReport? removal = null)
     {
-        var durationDays = auditDurationDays ?? wish.DurationDays;
-        // previousExpiresAtUtc only on a late decision (contract 2.7); the details stay free of alias, name and login.
-        object details = previousExpiresAtUtc is { } previous
-            ? new { wishId = wish.Id, sevenTvEmoteId = wish.SevenTvEmoteId, durationDays, previousExpiresAtUtc = previous }
-            : new { wishId = wish.Id, sevenTvEmoteId = wish.SevenTvEmoteId, durationDays };
+        // previousExpiresAtUtc only on a late decision (contract 2.7), the reported entry only on a booked removal
+        // (plan #485 2.1a); the details stay free of alias, name and login.
+        var details = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["wishId"] = wish.Id,
+            ["sevenTvEmoteId"] = wish.SevenTvEmoteId,
+            ["durationDays"] = auditDurationDays ?? wish.DurationDays
+        };
+        if (previousExpiresAtUtc is { } previous)
+        {
+            details["previousExpiresAtUtc"] = previous;
+        }
+
+        if (removal is not null)
+        {
+            details["slotId"] = removal.SlotId;
+            details["slotAddedAtUtc"] = removal.SlotAddedAtUtc;
+            details["emoteSetId"] = removal.EmoteSetId;
+            if (removal.Evidence is { } evidence)
+            {
+                details["evidence"] = evidence;
+            }
+        }
+
         db.AddAuditEntry(
             actor,
             action,
@@ -972,6 +1131,49 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
                 _ => null
             }
             : null;
+
+    // A successful command counts as a decision (E25) and drops a queued bot removal.
+    private static void CountDecision(Wish wish)
+    {
+        wish.DecisionVersion++;
+        wish.RemovalQueuedAtUtc = null;
+        wish.RemovalQueuedVersion = null;
+    }
+
+    // No target of a manager command carries a reason. Entering an end state starts the retention clock, the way
+    // back out of one clears it, and a move from one end state into another keeps the clock (plan #485 2.1a:
+    // removed_externally -> removed keeps the time the entry left the set).
+    private static void StampStateChange(Wish wish, string previousStatus, DateTime now)
+    {
+        if (string.Equals(previousStatus, wish.Status, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        wish.StatusChangedAtUtc = now;
+        wish.StatusReason = null;
+        wish.EndedAtUtc = !WishStatus.IsEnded(wish.Status) ? null
+            : WishStatus.IsEnded(previousStatus) ? wish.EndedAtUtc ?? now
+            : now;
+    }
+
+    // Two instants as the database stores them (timestamptz, microseconds): a value sent by a client is compared
+    // after the same truncation a write would apply. Null matches only null.
+    internal static bool SameInstant(DateTime? stored, DateTime? sent) =>
+        stored is null || sent is null
+            ? stored is null && sent is null
+            : ToDatabasePrecision(stored.Value) == ToDatabasePrecision(sent.Value);
+
+    private static DateTime ToDatabasePrecision(DateTime value)
+    {
+        var utc = value.Kind switch
+        {
+            DateTimeKind.Unspecified => DateTime.SpecifyKind(value, DateTimeKind.Utc),
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => value
+        };
+        return new DateTime(utc.Ticks - (utc.Ticks % (TimeSpan.TicksPerMillisecond / 1000)), DateTimeKind.Utc);
+    }
 
     // The start of an adoption (plan finding 7): the explicit date if it lies between the slot's AddedAt and
     // now; else the slot's AddedAt; else, for an undated slot, now. Authoritative only when the slot's own date
@@ -1067,6 +1269,9 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         settings.IsBotMode ? "bot" : "manual");
 
     private sealed record LockedChannel(string ChannelName, int? ActiveEmoteSetCapacity);
+
+    // What a booked removal reported, for its audit entry only.
+    private sealed record RemovalReport(string SlotId, DateTime SlotAddedAtUtc, string EmoteSetId, string? Evidence);
 
     // What a transition command decided: a refusal, or success with an optional durationDays for the audit entry.
     private sealed record CommandStep(WishCommandResult? Refusal, int? AuditDurationDays = null)
