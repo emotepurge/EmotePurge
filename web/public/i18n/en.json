@@ -2931,7 +2931,20 @@
       "rejected": "7TV refused: {{ message }}"
     },
     "remove": {
-      "tooSlow": "7TV answers too slowly to check the entry safely. Nothing was removed."
+      "tooSlow": "7TV answers too slowly to check the entry safely. Nothing was removed.",
+      "confirm": {
+        "title": "Remove the wished emote from 7TV?",
+        "alias": "Name in the set",
+        "addedAt": "Added on",
+        "set": "Set",
+        "intro": "Exactly this entry leaves the active set. The wish ends with it; restoring from the run brings back only the emote.",
+        "submit": "Remove"
+      },
+      "blocked": {
+        "noEntry": "This wish’s entry is not known yet. Removing is possible after the next sync.",
+        "provisional": "7TV has not confirmed the add date yet. Removing is possible after the next sync.",
+        "invalid": "This entry’s add date cannot be used. Try again after the next sync."
+      }
     }
   }
 }

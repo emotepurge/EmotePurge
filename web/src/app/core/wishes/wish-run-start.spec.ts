@@ -489,6 +489,22 @@ describe('wish-run-start', () => {
       expect(hooks.aborted).not.toHaveBeenCalled();
     });
 
+    it('hands the confirmation the set name the pre-check listed, and only that', () => {
+      const confirm = vi.fn(() => of(false));
+      start({ confirm });
+      answer(reads.sets, setList(SET_A));
+      answer(reads.stored, { activeEmoteSetId: SET_A } as EmoteSetStatus);
+      answer(reads.prechecks, {
+        status: 'editable',
+        target: { ownerTwitchChannelId: null, setName: 'Herbst' } as never,
+      });
+
+      expect(confirm).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ activeEmoteSetId: SET_A, activeEmoteSetName: 'Herbst' }),
+      );
+      expect(hooks.dismissed).toHaveBeenCalledOnce();
+    });
+
     it('reports busy when the engine refuses the start it was asked for', () => {
       hooks.start.mockReturnValue(false);
       start();

@@ -215,27 +215,32 @@ export class DeleteConfirmDialog {
     return this.data.warningLoading() ? 'massDelete.checkingSharedSets' : null;
   });
 
-  // Only surface the alarming (red) block when the check actually *ran* and found something to
-  // flag — `available: false` means the check itself failed, not that the set was confirmed
-  // foreign; conflating the two produced a guaranteed false alarm on every network hiccup.
-  protected readonly hasSharedSetWarning = computed<EmoteSetWarning | null>(() => {
-    const w = this.data.warning();
-    if (!w?.available) {
-      return null;
-    }
-    const flagged =
-      !w.isOwnSet ||
-      w.otherTrackedChannelsSharingSet.length > 0 ||
-      w.otherModeratedChannelsSharingSet.length > 0;
-    return flagged ? w : null;
-  });
+  protected readonly hasSharedSetWarning = computed(() => sharedSetWarningOf(this.data.warning()));
 
-  // Separate, neutrally-worded (amber, not red) notice for "we couldn't tell" — distinct from
-  // the red "we checked and it's shared" case above.
-  protected readonly ownershipCheckUnavailable = computed(() => {
-    const w = this.data.warning();
-    return w !== null && !w.available;
-  });
+  protected readonly ownershipCheckUnavailable = computed(() =>
+    ownershipCheckUnavailable(this.data.warning()),
+  );
+}
+
+/** The shared-set finding worth the alarming (red) block, `null` otherwise. Only when the check
+ *  actually *ran* and found something to flag — `available: false` means the check itself failed,
+ *  not that the set was confirmed foreign; conflating the two produced a guaranteed false alarm on
+ *  every network hiccup. Shared with the wish removal's confirmation (#485). */
+export function sharedSetWarningOf(warning: EmoteSetWarning | null): EmoteSetWarning | null {
+  if (!warning?.available) {
+    return null;
+  }
+  const flagged =
+    !warning.isOwnSet ||
+    warning.otherTrackedChannelsSharingSet.length > 0 ||
+    warning.otherModeratedChannelsSharingSet.length > 0;
+  return flagged ? warning : null;
+}
+
+/** Whether the shared-set check could not tell — the separate, neutrally-worded (amber, not red)
+ *  notice, distinct from the red "we checked and it's shared" case above. */
+export function ownershipCheckUnavailable(warning: EmoteSetWarning | null): boolean {
+  return warning !== null && !warning.available;
 }
 
 export function openDeleteConfirmDialog(

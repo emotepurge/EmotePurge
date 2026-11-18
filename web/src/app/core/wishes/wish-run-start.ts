@@ -103,6 +103,9 @@ export interface FrozenWishStart {
   readonly wish: FrozenWish;
   /** The active set from the authoritative read at the click. */
   readonly activeEmoteSetId: string;
+  /** That set's name as the shared pre-check listed it; absent when it named none. Only for what a
+   *  confirmation shows (T9), never compared. */
+  readonly activeEmoteSetName?: string;
   /** The owner the shared pre-check resolved (owner-hint design 3.6), for a run that reports it. */
   readonly ownerTwitchChannelId: string | null;
   /** The 7TV token the start was confirmed with. Kept in memory only, never logged. */
@@ -366,6 +369,7 @@ export function runWishStart(
                       channelName,
                       wish: frozenWish,
                       activeEmoteSetId: freeze.activeEmoteSetId,
+                      ...(check.setName ? { activeEmoteSetName: check.setName } : {}),
                       ownerTwitchChannelId: check.ownerTwitchChannelId,
                       token,
                     },
@@ -499,7 +503,7 @@ function ensureToken(
 }
 
 type EditableCheck =
-  | { kind: 'ok'; ownerTwitchChannelId: string | null }
+  | { kind: 'ok'; ownerTwitchChannelId: string | null; setName: string | undefined }
   | { kind: 'abort'; reason: WishStartAbortReason };
 
 /** Phase 2, the shared pre-check: "cannot be checked" is not "not allowed", but both stop here. */
@@ -519,7 +523,11 @@ function checkEditable(
     map((resolution): EditableCheck => {
       switch (resolution.status) {
         case 'editable':
-          return { kind: 'ok', ownerTwitchChannelId: resolution.target.ownerTwitchChannelId };
+          return {
+            kind: 'ok',
+            ownerTwitchChannelId: resolution.target.ownerTwitchChannelId,
+            setName: resolution.target.setName,
+          };
         case 'notEditable':
           return { kind: 'abort', reason: 'targetNotEditable' };
         case 'notSelectable':

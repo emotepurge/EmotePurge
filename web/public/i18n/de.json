@@ -2931,7 +2931,20 @@
       "rejected": "7TV hat abgelehnt: {{ message }}"
     },
     "remove": {
-      "tooSlow": "7TV antwortet zu langsam, um den Eintrag sicher zu prüfen. Es wurde nichts entfernt."
+      "tooSlow": "7TV antwortet zu langsam, um den Eintrag sicher zu prüfen. Es wurde nichts entfernt.",
+      "confirm": {
+        "title": "Wunsch-Emote aus 7TV entfernen?",
+        "alias": "Name im Set",
+        "addedAt": "Hinzugefügt am",
+        "set": "Set",
+        "intro": "Entfernt wird genau dieser Eintrag aus dem aktiven Set. Der Wunsch ist danach beendet; ein Wiederherstellen aus dem Lauf holt nur das Emote zurück.",
+        "submit": "Entfernen"
+      },
+      "blocked": {
+        "noEntry": "Der Eintrag dieses Wunsches ist noch nicht bekannt. Entfernen ist nach dem nächsten Sync möglich.",
+        "provisional": "Das Hinzufügedatum ist noch nicht von 7TV bestätigt. Entfernen ist nach dem nächsten Sync möglich.",
+        "invalid": "Das Hinzufügedatum dieses Eintrags lässt sich nicht verwenden. Nach dem nächsten Sync erneut versuchen."
+      }
     }
   }
 }
