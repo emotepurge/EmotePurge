@@ -1048,10 +1048,13 @@ public class ChannelIdentityService(
     /// <remarks>
     /// <para>
     /// <b>Collision.</b> Both channels may run a wish for the same 7TV emote, which the partial unique
-    /// index allows once per channel (E13). Of such a pair the younger one (greater <c>CreatedAtUtc</c>, on a
-    /// tie the greater id) ends as <c>merged</c> with <c>MergedIntoWishId</c> pointing at the older one, before
-    /// the move, so the index never sees two. Ending it counts as a decision (E25): <c>DecisionVersion</c> + 1
-    /// and a queued bot removal is dropped. The older one keeps its state, start and expiry as they are.
+    /// index allows once per channel (E13). Of such a pair the wish with a trace in 7TV wins (operator ruling
+    /// 2026-11-18): a <c>SlotId</c> in a state that holds its link (<c>unconfirmed</c>, <c>active</c>,
+    /// <c>presented</c>; an <c>approved</c> wish's <c>SlotId</c> is history), or a set <c>BotWriteAtUtc</c>.
+    /// Only when both or neither have one, the older wins (smaller <c>CreatedAtUtc</c>, on a tie the smaller id).
+    /// The other ends as <c>merged</c> with <c>MergedIntoWishId</c> pointing at the winner, before the move, so
+    /// the index never sees two. Ending it counts as a decision (E25): <c>DecisionVersion</c> + 1 and a queued
+    /// bot removal is dropped. The winner keeps its state, start and expiry as they are.
     /// </para>
     /// <para>
     /// <b>Settings.</b> The survivor's row wins; only when it has none does the loser's move over, otherwise the
@@ -1091,25 +1094,30 @@ public class ChannelIdentityService(
                 .Where(w => (w.ChannelId == loserId || w.ChannelId == survivorId)
                     && loserEmoteIds.Contains(w.SevenTvEmoteId)
                     && running.Contains(w.Status))
-                .Select(w => new { w.Id, w.ChannelId, w.SevenTvEmoteId, w.CreatedAtUtc })
+                .Select(w => new { w.Id, w.ChannelId, w.SevenTvEmoteId, w.CreatedAtUtc, w.Status, w.SlotId, w.BotWriteAtUtc })
                 .ToListAsync(ct);
 
             var now = DateTime.UtcNow;
             foreach (var pair in contenders.GroupBy(w => w.SevenTvEmoteId, StringComparer.Ordinal).Where(g => g.Count() > 1))
             {
-                // At most one per channel (the index), so a pair is exactly one of each.
-                var ordered = pair.OrderBy(w => w.CreatedAtUtc).ThenBy(w => w.Id).ToList();
-                var older = ordered[0];
-                var younger = ordered[^1];
+                // At most one per channel (the index), so a pair is exactly one of each. A trace in 7TV first,
+                // then age.
+                var ordered = pair
+                    .OrderByDescending(w => HasSevenTvTrace(w.Status, w.SlotId, w.BotWriteAtUtc))
+                    .ThenBy(w => w.CreatedAtUtc)
+                    .ThenBy(w => w.Id)
+                    .ToList();
+                var winner = ordered[0];
+                var other = ordered[^1];
                 endedAsMerged += await db.Wishes
-                    .Where(w => w.Id == younger.Id)
+                    .Where(w => w.Id == other.Id)
                     .ExecuteUpdateAsync(
                         setters => setters
                             .SetProperty(w => w.Status, WishStatus.Merged)
                             .SetProperty(w => w.StatusReason, (string?)null)
                             .SetProperty(w => w.StatusChangedAtUtc, now)
                             .SetProperty(w => w.EndedAtUtc, now)
-                            .SetProperty(w => w.MergedIntoWishId, older.Id)
+                            .SetProperty(w => w.MergedIntoWishId, winner.Id)
                             .SetProperty(w => w.DecisionVersion, w => w.DecisionVersion + 1)
                             .SetProperty(w => w.RemovalQueuedAtUtc, (DateTime?)null)
                             .SetProperty(w => w.RemovalQueuedVersion, (int?)null),
@@ -1177,6 +1185,11 @@ public class ChannelIdentityService(
         var cutoff = DateTime.UtcNow - UnresolvableLoginGracePeriod;
         return row.CreatedAt < cutoff && (row.LastSyncedAtUtc is null || row.LastSyncedAtUtc < cutoff);
     }
+
+    // A running wish has left a trace in 7TV when it holds a slot link (an approved wish's SlotId is
+    // history, a re-add keeps it) or the bot has written for it (K4).
+    private static bool HasSevenTvTrace(string status, string? slotId, DateTime? botWriteAtUtc) =>
+        (slotId is not null && status != WishStatus.Approved) || botWriteAtUtc is not null;
 
     // The snapshot one pass works from. A record rather than a tuple so the projection reads as
     // named facts about a channel; the two timestamps serve the D2 grace period (#245).

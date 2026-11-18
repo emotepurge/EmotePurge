@@ -148,6 +148,70 @@ public partial class ChannelIdentityServiceTests
         Assert.Equal((pair.SurvivorId, 20), (only.ChannelId, only.DefaultDurationDays));
     }
 
+    // Operator ruling 2026-11-18: a trace in 7TV beats age. The survivor's linked active wish is the younger
+    // one. Against an older approved wish without a trace it wins, also when that approved wish still carries
+    // an old SlotId (history, not a link). Against an older wish with a trace of its own (BotWriteAtUtc,
+    // prepared for K4) both stand alike and the age rule decides.
+    [Theory]
+    [InlineData("olderUntraced", true)]
+    [InlineData("olderWithHistorySlot", true)]
+    [InlineData("olderBotWritten", false)]
+    public async Task Merge_OnARunningCollision_TheWishWithA7TvTraceWins_ElseTheOlder(string variant, bool linkedWins)
+    {
+        var pair = await SeedMergePairAsync();
+        var emoteId = Guid.NewGuid().ToString("N")[..24];
+        var early = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+        var linkedSlot = await SeedSurvivorSlotAsync(pair.SurvivorId, emoteId, "Alias");
+        var historySlot = await SeedSurvivorSlotAsync(pair.SurvivorId, Guid.NewGuid().ToString("N")[..24], "Old");
+
+        long linkedWish, olderWish;
+        await using (var seed = fixture.CreateDbContext())
+        {
+            var linked = MergeWish(pair.SurvivorId, WishStatus.Active, early.AddDays(3), emoteId);
+            linked.SlotId = linkedSlot;
+            linked.LinkOrigin = WishLinkOrigin.Adopted;
+            linked.StartsAtUtc = early.AddDays(3);
+            linked.ExpiresAtUtc = early.AddDays(33);
+            var older = MergeWish(pair.LoserId, WishStatus.Approved, early, emoteId);
+            if (variant == "olderWithHistorySlot")
+            {
+                older.SlotId = historySlot;
+            }
+
+            if (variant == "olderBotWritten")
+            {
+                older.BotWriteAtUtc = early.AddHours(1);
+            }
+
+            seed.Wishes.AddRange(linked, older);
+            await seed.SaveChangesAsync();
+            (linkedWish, olderWish) = (linked.Id, older.Id);
+        }
+
+        await using var db = fixture.CreateDbContext();
+        var summary = await CreateHarness(db, [pair.Identity]).Service.ReconcileActiveChannelsAsync();
+
+        Assert.Equal(1, summary?.Merged);
+        var (winnerId, endedId) = linkedWins ? (linkedWish, olderWish) : (olderWish, linkedWish);
+        await using var verify = fixture.CreateDbContext();
+        var rows = await verify.Wishes.AsNoTracking()
+            .Where(w => w.Id == linkedWish || w.Id == olderWish)
+            .ToDictionaryAsync(w => w.Id);
+        Assert.All(rows.Values, w => Assert.Equal(pair.SurvivorId, w.ChannelId));
+        var ended = rows[endedId];
+        Assert.Equal(WishStatus.Merged, ended.Status);
+        Assert.Equal(winnerId, ended.MergedIntoWishId);
+        Assert.Equal(1, ended.DecisionVersion);
+        var winner = rows[winnerId];
+        Assert.Null(winner.EndedAtUtc);
+        Assert.Equal(0, winner.DecisionVersion);
+        Assert.Equal(linkedWins ? WishStatus.Active : WishStatus.Approved, winner.Status);
+        if (linkedWins)
+        {
+            Assert.Equal(linkedSlot, winner.SlotId);
+        }
+    }
+
     // Sol-R2-1, manual entry in the survivor for an emote a running wish of the loser carries. Entry first:
     // the merge waits for the channel row, then ends the (younger) new wish as merged. Merge first: the entry
     // waits for the channel row, then finds the moved wish and answers wish_already_running.
@@ -313,6 +377,31 @@ public partial class ChannelIdentityServiceTests
         var survivor = await SeedChannelAsync(db, $"wmold{suffix}", twitchId);
         var loser = await SeedChannelAsync(db, $"wmnew{suffix}", twitchChannelId: null);
         return new MergePair(survivor.Id, survivor.ChannelName, loser.Id, loser.ChannelName, new TwitchUserIdentity(twitchId, loser.ChannelName));
+    }
+
+    // A dated, active slot of the survivor (the loser may hold no emotes, or the merge is refused).
+    private async Task<string> SeedSurvivorSlotAsync(string channelId, string sevenTvEmoteId, string alias)
+    {
+        await using var db = fixture.CreateDbContext();
+        var emote = new Emote
+        {
+            ChannelId = channelId,
+            Name = alias,
+            SevenTvEmoteId = sevenTvEmoteId,
+            ImageUrl = "https://cdn.7tv.app/emote/example/2x.webp"
+        };
+        db.Emotes.Add(emote);
+        await db.SaveChangesAsync();
+        var slot = new EmoteSlot
+        {
+            EmoteId = emote.Id,
+            Name = alias,
+            AddedAt = new DateTime(2026, 8, 4, 0, 0, 0, DateTimeKind.Utc),
+            AddedAtFromRest = true
+        };
+        db.EmoteSlots.Add(slot);
+        await db.SaveChangesAsync();
+        return slot.Id;
     }
 
     private static Wish MergeWish(string channelId, string status, DateTime createdAtUtc, string? emoteId = null) => new()
