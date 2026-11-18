@@ -14,11 +14,13 @@ namespace EmotePurge.Infrastructure.Services;
 /// <see cref="IWishReconcileService"/> for the contract.
 /// <para>
 /// <b>Flow.</b> (1) One pre-check query without a wall clock: does the channel have a wish in <c>approved</c>,
-/// <c>active</c> or <c>presented</c>, or an open returner (plan Sol-R2-3)? No: return without a transaction.
+/// <c>active</c> or <c>presented</c>, an open returner (plan Sol-R2-3), or a kept wish to release? No: return
+/// without a transaction.
 /// (2) Transaction: the channel row (<c>FOR NO KEY UPDATE</c>), then the affected wish rows (<c>FOR UPDATE</c>,
 /// ascending id), then the slots. (3) Linked <c>active</c> and <c>presented</c> wishes against their slot:
 /// archived, unchanged (rename, confirmation refresh, authoritative healing), date confirmation, or generation
-/// change. (4) Unlinked <c>approved</c> and <c>removed_externally</c> wishes through <see cref="WishSlotMatcher"/>.
+/// change; then <c>kept</c> wishes whose stay is over give their slot back. (4) Unlinked <c>approved</c> and
+/// <c>removed_externally</c> wishes through <see cref="WishSlotMatcher"/>.
 /// (5) Every changed wish is saved on its own behind a savepoint; a hit on a wish unique index rolls back to
 /// it and leaves that wish as it was. (6) Commit, then at most one <c>wish.changed</c>, only for a change a
 /// client can see.
@@ -83,7 +85,8 @@ public sealed class WishReconcileService(
     // admissible slot (plan finding 7) of the same emote with the wish's alias lies in the matcher's window
     // around EndedAtUtc and is held by no other wish (a running link or a kept one). The bounds come from
     // WishLimits like the matcher's, and nothing compares with "now": a run days later still finds the
-    // returner, an old row without a candidate never triggers a run.
+    // returner, an old row without a candidate never triggers a run. A kept wish is affected only while its
+    // stay is over and it still holds the slot (see ReleaseKept).
     private static IQueryable<Wish> Affected(AppDbContext db, string channelId)
     {
         var reconciled = ReconciledStatuses;
@@ -105,7 +108,11 @@ public sealed class WishReconcileService(
                         && s.Name == w.Alias
                         && s.AddedAt >= w.EndedAtUtc - lookBack
                         && s.AddedAt <= w.EndedAtUtc + window
-                        && !db.Wishes.Any(l => l.SlotId == s.Id && linkHolding.Contains(l.Status))))));
+                        && !db.Wishes.Any(l => l.SlotId == s.Id && linkHolding.Contains(l.Status))))
+                || (w.Status == WishStatus.Kept
+                    && w.SlotId != null
+                    && db.EmoteSlots.Any(s => s.Id == w.SlotId
+                        && (s.IsArchived || (s.AddedAt != null && w.SlotConfirmedAtUtc != null && s.AddedAt > w.SlotConfirmedAtUtc))))));
     }
 
     // Steps 2 to 6. Returns the channel name to announce, or null when nothing a client sees has changed.
@@ -160,6 +167,16 @@ public sealed class WishReconcileService(
             if (pass.SlotById(wish.SlotId!) is { } slot)
             {
                 pass.ReconcileLinked(wish, slot);
+                await SaveOneAsync(db, transaction, channelId, wish, cancellationToken);
+            }
+        }
+
+        // Step 3b: kept wishes whose stay is over give their slot back, before step 4 looks for candidates.
+        foreach (var wish in wishes.Where(w => w.Status == WishStatus.Kept && w.SlotId is not null).OrderBy(w => w.Id).ToList())
+        {
+            if (pass.SlotById(wish.SlotId!) is { } slot)
+            {
+                ReleaseKept(wish, slot);
                 await SaveOneAsync(db, transaction, channelId, wish, cancellationToken);
             }
         }
@@ -221,6 +238,19 @@ public sealed class WishReconcileService(
             : null;
 
     private static bool IsLive(string status) => status is WishStatus.Active or WishStatus.Presented;
+
+    // A kept wish holds its entry only while it is in the set (operator ruling 2026-11-18): once the slot
+    // is archived, or carries a date after the wish's last confirmation (it left and came back unseen, the
+    // rule of a live wish with unknown generation), the stay is over and the slot is free again. Only the
+    // link goes; state, dates and the generation stay as the record of the stay.
+    private static void ReleaseKept(Wish wish, SlotRow slot)
+    {
+        if (slot.IsArchived
+            || (slot.AddedAt is { } addedAt && wish.SlotConfirmedAtUtc is { } lastSeen && addedAt > lastSeen))
+        {
+            wish.SlotId = null;
+        }
+    }
 
     // The decisions of one run over in-memory state. Tracked wishes change in place; the sets of running
     // emotes and live links are derived from them on every question, so a wish moved earlier in the run

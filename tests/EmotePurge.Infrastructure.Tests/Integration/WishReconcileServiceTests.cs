@@ -489,27 +489,54 @@ public partial class WishReconcileServiceTests(PostgresFixture fixture)
         AssertNothingPublished();
     }
 
-    // The matcher's candidates leave out a kept wish's slot too: a slot the kept wish holds, back in the set
-    // after the approval of a new wish for the emote, stays the kept wish's, and the new wish stays approved.
-    [Fact]
-    public async Task AKeptWishsSlot_IsNoCandidate_ForANewApprovedWishOfTheEmote()
+    // Operator ruling 2026-11-18, second part: a kept wish holds its entry only while it is in the set. The
+    // slot is archived and later resumed under the same alias (the same row, a new date): the kept wish gives
+    // it back, and a new approved wish of the emote links to it in the same run. With a missed archive hook
+    // the date after the kept wish's last confirmation proves the new stay.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AKeptWish_ReleasesItsSlot_WhenTheEntryLeftTheSet_AndANewApprovedWishLinksToIt(bool missedArchiveHook)
     {
         var channel = await SeedChannelAsync();
         var emote = await SeedEmoteAsync(channel);
-        var slot = await SeedSlotAsync(emote, "Kappa", Now.AddDays(-3));
-        var kept = await SeedWishAsync(channel, emote, WishStatus.Kept, w =>
-        {
-            w.Alias = "Kappa";
-            w.SlotId = slot;
-            w.LinkOrigin = WishLinkOrigin.Auto;
-            w.EndedAtUtc = Now.AddDays(-2);
-        });
+        var (slot, kept) = await SeedKeptAsync(channel, emote);
         var approved = await SeedWishAsync(channel, emote, WishStatus.Approved, w =>
         {
             w.Alias = "Kappa";
             w.ApprovedAtUtc = Now.AddHours(-2);
         });
-        await UpdateSlotAsync(slot, s => s.AddedAt = Now.AddHours(-1));
+
+        await UpdateSlotAsync(slot, s => (s.IsArchived, s.ArchivedAt) = (true, Now.AddHours(-1)));
+        if (!missedArchiveHook)
+        {
+            await ReconcileAsync(channel);
+            Assert.Equal((WishStatus.Kept, (string?)null), ((await WishAsync(kept)).Status, (await WishAsync(kept)).SlotId));
+        }
+
+        var resumedAt = Now.AddMinutes(-30);
+        await UpdateSlotAsync(slot, s => (s.IsArchived, s.ArchivedAt, s.AddedAt) = (false, null, resumedAt));
+
+        await ReconcileAsync(channel);
+
+        var released = await WishAsync(kept);
+        Assert.Equal((WishStatus.Kept, (string?)null), (released.Status, released.SlotId));
+        var linked = await WishAsync(approved);
+        Assert.Equal((WishStatus.Active, slot, resumedAt), (linked.Status, linked.SlotId, linked.StartsAtUtc));
+    }
+
+    // While the entry stays in the set the kept wish keeps it: a new approved wish of the emote does not link.
+    [Fact]
+    public async Task AKeptWishsSlot_InTheSet_IsNoCandidate_ForANewApprovedWishOfTheEmote()
+    {
+        var channel = await SeedChannelAsync();
+        var emote = await SeedEmoteAsync(channel);
+        var (slot, kept) = await SeedKeptAsync(channel, emote);
+        var approved = await SeedWishAsync(channel, emote, WishStatus.Approved, w =>
+        {
+            w.Alias = "Kappa";
+            w.ApprovedAtUtc = Now.AddDays(-4);
+        });
         var before = await SnapshotAsync(approved);
 
         await ReconcileAsync(channel);
@@ -519,19 +546,30 @@ public partial class WishReconcileServiceTests(PostgresFixture fixture)
         AssertNothingPublished();
     }
 
+    // The adoption of a resumed slot succeeds once the kept wish has given it back.
+    [Fact]
+    public async Task Adopt_OfAResumedSlotAKeptWishHeld_Succeeds()
+    {
+        var channel = await SeedChannelAsync();
+        var emote = await SeedEmoteAsync(channel);
+        var (slot, _) = await SeedKeptAsync(channel, emote);
+        await UpdateSlotAsync(slot, s => (s.IsArchived, s.ArchivedAt) = (true, Now.AddHours(-1)));
+        await ReconcileAsync(channel);
+        await UpdateSlotAsync(slot, s => (s.IsArchived, s.ArchivedAt, s.AddedAt) = (false, null, Now.AddMinutes(-30)));
+
+        var result = await WishSut().AdoptAsync(channel.Name, new AdoptWishRequest(slot, null, 30, null), Actor);
+
+        Assert.Equal(WishOutcome.Success, result.Outcome);
+        Assert.Equal((WishStatus.Active, slot), (result.Wish!.Status, result.Wish.SlotId));
+    }
+
     // The adoption refuses a slot a kept wish holds, before the index would.
     [Fact]
     public async Task Adopt_OfASlotAKeptWishHolds_IsSlotAlreadyLinked()
     {
         var channel = await SeedChannelAsync();
         var emote = await SeedEmoteAsync(channel);
-        var slot = await SeedSlotAsync(emote, "Kappa", Now.AddDays(-3));
-        await SeedWishAsync(channel, emote, WishStatus.Kept, w =>
-        {
-            w.Alias = "Kappa";
-            w.SlotId = slot;
-            w.EndedAtUtc = Now.AddDays(-2);
-        });
+        var (slot, _) = await SeedKeptAsync(channel, emote);
 
         var result = await WishSut().AdoptAsync(channel.Name, new AdoptWishRequest(slot, null, 30, null), Actor);
 
@@ -875,6 +913,24 @@ public partial class WishReconcileServiceTests(PostgresFixture fixture)
             w.FirstActivatedAtUtc = Now;
             configure?.Invoke(w);
         });
+
+    // A kept wish on an entry in the set since three days ago, last confirmed two days ago when it was kept.
+    private async Task<(string SlotId, long WishId)> SeedKeptAsync(Seeded channel, Emote emote)
+    {
+        var addedAt = Now.AddDays(-3);
+        var slot = await SeedSlotAsync(emote, "Kappa", addedAt);
+        var wish = await SeedWishAsync(channel, emote, WishStatus.Kept, w =>
+        {
+            w.Alias = "Kappa";
+            w.SlotId = slot;
+            w.LinkOrigin = WishLinkOrigin.Auto;
+            w.StartsAtUtc = addedAt;
+            w.SlotAddedAtUtc = addedAt;
+            w.SlotConfirmedAtUtc = Now.AddDays(-2);
+            w.EndedAtUtc = Now.AddDays(-2);
+        });
+        return (slot, wish);
+    }
 
     private sealed record Seeded(string Id, string Name);
 }
