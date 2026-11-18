@@ -271,6 +271,24 @@ describe('SevenTvRunArbiter with stub participants', () => {
     expect(arbiter.startLocked()).toBe(false);
   });
 
+  // #485 (plan 2.5, 3b iii): a start that holds its own check asks only about the other kinds.
+  it('reports a start check of another kind as foreign, and its own kind never', () => {
+    const wishPending = signal(true);
+    const deletePending = signal(false);
+    arbiter.register({ ...stubParticipant('wish'), startCheckPending: wishPending });
+    arbiter.register({ ...stubParticipant('delete'), startCheckPending: deletePending });
+
+    expect(arbiter.startPending()).toBe(true);
+    expect(arbiter.foreignStartPending('wish')).toBe(false);
+    expect(arbiter.foreignStartPending('delete')).toBe(true);
+
+    deletePending.set(true);
+    expect(arbiter.foreignStartPending('wish')).toBe(true);
+
+    wishPending.set(false);
+    expect(arbiter.foreignStartPending('delete')).toBe(false);
+  });
+
   it('notes nothing for a refusal while only a start check is pending — no run blocked it', () => {
     arbiter.register({ ...stubParticipant('restore'), startCheckPending: signal(true) });
 
@@ -780,7 +798,7 @@ describe('refusedStartMessage', () => {
   });
 
   it('has an entry for every SevenTvRunKind, so the compiler catches a future one going missing', () => {
-    const kinds: SevenTvRunKind[] = ['delete', 'restore', 'import', 'undo'];
+    const kinds: SevenTvRunKind[] = ['delete', 'restore', 'import', 'undo', 'wish'];
     for (const kind of kinds) {
       expect(SEVEN_TV_RUN_KIND_LABEL_KEY[kind]).toBe(`sevenTvRun.kind.${kind}`);
     }

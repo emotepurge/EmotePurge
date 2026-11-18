@@ -2212,7 +2212,8 @@
       "delete": "der Löschlauf",
       "restore": "die Wiederherstellung",
       "import": "die Übertragung",
-      "undo": "die Rücknahme der Ersetzungen"
+      "undo": "die Rücknahme der Ersetzungen",
+      "wish": "das Hinzufügen eines Wunsch-Emotes"
     },
     "tagReport": {
       "pending": "Wird beim Tag vermerkt …",

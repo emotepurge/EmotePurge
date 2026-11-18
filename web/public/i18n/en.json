@@ -2212,7 +2212,8 @@
       "delete": "the deletion run",
       "restore": "the restore",
       "import": "the transfer",
-      "undo": "the replace undo"
+      "undo": "the replace undo",
+      "wish": "adding a wished emote"
     },
     "tagReport": {
       "pending": "Recording on the tag …",
