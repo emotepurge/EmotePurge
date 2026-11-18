@@ -19,7 +19,9 @@ namespace EmotePurge.Infrastructure.Services;
 /// (<see cref="RowLocks.LockWishesByIdsAsync"/>) and only afterwards reads it, so the state it decides on is
 /// the committed one and stays so. Because of that lock the state is stable within the transaction; the
 /// unique indexes remain as a belt and map to the conflict outcomes, never to a 500. The transition commands
-/// change an existing wish only and therefore take just its row lock (<see cref="RunTransitionAsync"/>).
+/// change an existing wish only and therefore take just its row lock (<see cref="RunTransitionAsync"/>). A
+/// settings change that changes the protection threshold locks, after the channel row, the channel's active
+/// wish rows as well (<see cref="SupersedeActiveDecisionsAsync"/>, plan #484 2.6).
 /// </para>
 /// </summary>
 public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPublisher, TimeProvider timeProvider) : IWishService
@@ -51,7 +53,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
         if (!IsDurationInRange(request.DefaultDurationDays)
             || request.ProbationLeadDays is < WishLimits.ProbationLeadDaysMin or > WishLimits.ProbationLeadDaysMax
-            || (request.ProtectionThresholdPerDay is { } raw && !IsThresholdInRange(raw)))
+            || (request.ProtectionThresholdPerDay is { } requested && !IsThresholdInRange(requested)))
         {
             return WishCommandResult.Of(WishOutcome.SettingsOutOfRange);
         }
@@ -76,9 +78,17 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             db.ChannelWishSettings.Add(row);
         }
 
+        // A missing row is "protection off", which is also what the fresh row above carries.
+        var previousThreshold = row.ProtectionThresholdPerDay;
+        var threshold = request.ProtectionThresholdPerDay is { } raw ? Math.Round(raw, 2) : (decimal?)null;
+        if (threshold != previousThreshold)
+        {
+            await SupersedeActiveDecisionsAsync(channelId, cancellationToken);
+        }
+
         row.DefaultDurationDays = request.DefaultDurationDays;
         row.ProbationLeadDays = request.ProbationLeadDays;
-        row.ProtectionThresholdPerDay = request.ProtectionThresholdPerDay is { } threshold ? Math.Round(threshold, 2) : null;
+        row.ProtectionThresholdPerDay = threshold;
 
         db.AddAuditEntry(
             actor,
@@ -680,6 +690,36 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             .Where(c => c.Id == channelId)
             .Select(c => new LockedChannel(c.ChannelName, c.ActiveEmoteSetCapacity))
             .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    // A protection change is a decision (E25; plan #484 2.6, Sol-P1-1): behind the channel lock, lock the channel's
+    // active wishes ascending by id, read them only afterwards, bump their DecisionVersion and drop a queued
+    // removal, so a removal queued under the old threshold can never be carried out under the new one. The
+    // caller commits this together with the settings row and its audit entry. Presented wishes stay untouched
+    // (before K4 none carries a queue; K4 decides for bot-remove).
+    private async Task SupersedeActiveDecisionsAsync(string channelId, CancellationToken cancellationToken)
+    {
+        // Under the channel lock no writer can turn a wish active (the reconcile and adopt take that lock first);
+        // a wish that left active meanwhile is filtered out by the re-read behind the wish locks.
+        var ids = await db.Wishes
+            .Where(w => w.ChannelId == channelId && w.Status == WishStatus.Active)
+            .Select(w => w.Id)
+            .ToListAsync(cancellationToken);
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
+        await db.LockWishesByIdsAsync(ids, cancellationToken);
+        var wishes = await db.Wishes
+            .Where(w => ids.Contains(w.Id) && w.ChannelId == channelId && w.Status == WishStatus.Active)
+            .ToListAsync(cancellationToken);
+        foreach (var wish in wishes)
+        {
+            wish.DecisionVersion++;
+            wish.RemovalQueuedAtUtc = null;
+            wish.RemovalQueuedVersion = null;
+        }
     }
 
     private async Task<EffectiveSettings> LoadSettingsAsync(string channelId, CancellationToken cancellationToken)
