@@ -2758,6 +2758,24 @@
       "running": "In 7TV läuft gerade {{ kind }}. Bis dahin sind die 7TV-Aktionen hier gesperrt.",
       "settling": "In 7TV wird gerade {{ kind }} abgeschlossen. Bis dahin sind die 7TV-Aktionen hier gesperrt.",
       "starting": "Ein 7TV-Vorgang wird gerade gestartet. Bis dahin sind die 7TV-Aktionen hier gesperrt."
+    },
+    "usage": {
+      "total": {
+        "one": "{{ count }} Nutzung",
+        "other": "{{ count }} Nutzungen"
+      },
+      "mean": "Ø {{ mean }} pro Tag",
+      "rank": "Rang {{ rank }} von {{ of }}",
+      "window": {
+        "sinceStart": "seit dem Start",
+        "lastDays": {
+          "one": "letzter Tag",
+          "other": "letzte {{ count }} Tage"
+        }
+      },
+      "gap": "Die Zählung deckt dieses Fenster nicht ganz ab.",
+      "limited": "Die Nutzung ist gerade nicht abrufbar, später erneut versuchen.",
+      "sparkline": "Nutzung pro Tag,"
     }
   }
 }

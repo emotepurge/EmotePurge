@@ -1,4 +1,13 @@
-import { Component, computed, inject, input, output } from '@angular/core';
+import {
+  afterRenderEffect,
+  Component,
+  computed,
+  ElementRef,
+  inject,
+  input,
+  output,
+  viewChild,
+} from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 
 import { LanguageService } from '../../core/i18n/language.service';
@@ -16,9 +25,11 @@ import {
   wishActions,
 } from '../../core/wishes/wish-view';
 import { emotePageUrl } from '../../shared/emotes/emote-url';
+import { UsageSparkline } from '../../shared/emotes/usage-sparkline';
 import { Button } from '../../shared/ui/button';
 import { StatusBadge, StatusBadgeTone } from '../../shared/ui/status-badge';
 import { WishImage } from './wish-image';
+import { usageSeries, usageWindowLabel, WishUsageBlock } from './wish-usage';
 
 /** The thirteen statuses of spec 5 that have a name; anything else reads as "unknown". */
 const KNOWN_STATUSES: ReadonlySet<string> = new Set([
@@ -63,9 +74,9 @@ interface TextPart {
  */
 @Component({
   selector: 'app-wish-row',
-  imports: [Button, StatusBadge, TranslocoPipe, WishImage],
+  imports: [Button, StatusBadge, TranslocoPipe, UsageSparkline, WishImage],
   template: `
-    <div class="flex flex-col gap-3 sm:flex-row sm:items-start">
+    <div #root class="flex flex-col gap-3 sm:flex-row sm:items-start">
       <div class="flex min-w-0 flex-1 items-start gap-3">
         <app-wish-image
           [imageUrl]="wish().imageUrl"
@@ -93,6 +104,32 @@ interface TextPart {
               <span>{{ part.key | transloco: part.params }}</span>
             }
           </p>
+          @if (usageView(); as view) {
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+              @if (view.series; as points) {
+                <div class="h-8 w-28 shrink-0">
+                  <app-usage-sparkline
+                    [points]="points"
+                    [ariaLabel]="
+                      ('wishes.usage.sparkline' | transloco) +
+                      ' ' +
+                      (view.window.key | transloco: view.window.params)
+                    "
+                  />
+                </div>
+              }
+              <p class="flex flex-wrap gap-x-3 text-xs text-fg-secondary">
+                @for (part of view.parts; track part.key) {
+                  <span>{{ part.key | transloco: part.params }}</span>
+                }
+              </p>
+            </div>
+            @if (view.gap) {
+              <p class="text-xs text-fg-muted">{{ 'wishes.usage.gap' | transloco }}</p>
+            }
+          } @else if (usage()?.state === 'limited') {
+            <p class="text-xs text-fg-muted">{{ 'wishes.usage.limited' | transloco }}</p>
+          }
           @if (sevenTvHint()) {
             <p class="text-xs text-fg-secondary">{{ 'wishes.row.sevenTvHint' | transloco }}</p>
           }
@@ -164,9 +201,21 @@ export class WishRow {
   /** Passed on to the picture rule (plan 2.10); set from the 7TV read of this session (T6). */
   readonly knownStill = input(false);
 
+  /**
+   * The usage of this wish's window, handed in by the page (T5); `null` shows nothing. The row
+   * decides nothing about it: numbers and line come from the one `usage` object (Sol-P2-11).
+   */
+  readonly usage = input<WishUsageBlock | null>(null);
+  /** The page wants to know when this row is in view (usage loads only then). */
+  readonly trackUsage = input(false);
+
   readonly action = output<WishAction>();
+  /** Whether the row is in the viewport; only while `trackUsage` is set, and only on change. */
+  readonly seen = output<boolean>();
 
   private readonly languageService = inject(LanguageService);
+
+  private readonly root = viewChild.required<ElementRef<HTMLElement>>('root');
 
   protected readonly titleId = computed(() => `wish-title-${this.wish().id}`);
 
@@ -223,6 +272,43 @@ export class WishRow {
       default:
         return null;
     }
+  });
+
+  protected readonly usageView = computed(() => {
+    const block = this.usage();
+    const usage = block?.state === 'ready' ? block.usage : null;
+    if (!usage) {
+      return null;
+    }
+    const locale = toLocale(this.languageService.lang());
+    const window = usageWindowLabel(usage, this.wish().startsAtUtc);
+    const windowPart: TextPart =
+      window.kind === 'sinceStart'
+        ? { key: 'wishes.usage.window.sinceStart' }
+        : {
+            key: pluralKey(window.days, 'wishes.usage.window.lastDays'),
+            params: { count: window.days },
+          };
+    const parts: TextPart[] = [
+      {
+        key: pluralKey(usage.total, 'wishes.usage.total'),
+        params: { count: usage.total.toLocaleString(locale) },
+      },
+      {
+        key: 'wishes.usage.mean',
+        params: { mean: usage.perDayMean.toLocaleString(locale, { maximumFractionDigits: 1 }) },
+      },
+    ];
+    if (usage.rank !== null && usage.rankOf !== null) {
+      parts.push({ key: 'wishes.usage.rank', params: { rank: usage.rank, of: usage.rankOf } });
+    }
+    parts.push(windowPart);
+    return {
+      parts,
+      series: usageSeries(usage),
+      gap: usage.coverageGap,
+      window: windowPart,
+    };
   });
 
   protected readonly details = computed<TextPart[]>(() => {
@@ -285,6 +371,25 @@ export class WishRow {
   protected readonly destructive = computed(() =>
     this.visibleActions().filter((action) => DESTRUCTIVE_ACTIONS.has(action)),
   );
+
+  constructor() {
+    // Without IntersectionObserver the row never reports; the usage block then stays out.
+    afterRenderEffect((onCleanup) => {
+      if (!this.trackUsage() || typeof IntersectionObserver === 'undefined') {
+        return;
+      }
+      let last: boolean | null = null;
+      const observer = new IntersectionObserver((hits) => {
+        const now = hits[hits.length - 1].isIntersecting;
+        if (now !== last) {
+          last = now;
+          this.seen.emit(now);
+        }
+      });
+      observer.observe(this.root().nativeElement);
+      onCleanup(() => observer.disconnect());
+    });
+  }
 
   protected actionKey(action: WishAction): string {
     return `wishes.actions.${action}`;

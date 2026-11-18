@@ -3,9 +3,10 @@ import { TranslocoTestingModule } from '@jsverse/transloco';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import de from '../../../../public/i18n/de.json';
-import type { Wish } from '../../core/wishes/wish.model';
+import type { Wish, WishUsage } from '../../core/wishes/wish.model';
 import type { WishAction } from '../../core/wishes/wish-view';
 import { WishRow } from './wish-row';
+import type { WishUsageBlock } from './wish-usage';
 
 const NOW = new Date('2026-11-18T12:00:00Z');
 
@@ -81,6 +82,7 @@ describe('WishRow', () => {
       lockDescriptionId?: string | null;
       busy?: boolean;
       now?: Date;
+      usage?: WishUsageBlock | null;
     } = {},
   ): void {
     fixture = TestBed.createComponent(WishRow);
@@ -91,6 +93,7 @@ describe('WishRow', () => {
     fixture.componentRef.setInput('sevenTvLocked', inputs.sevenTvLocked ?? false);
     fixture.componentRef.setInput('lockDescriptionId', inputs.lockDescriptionId ?? null);
     fixture.componentRef.setInput('busy', inputs.busy ?? false);
+    fixture.componentRef.setInput('usage', inputs.usage ?? null);
     emitted = [];
     fixture.componentInstance.action.subscribe((action) => emitted.push(action));
     fixture.detectChanges();
@@ -219,5 +222,73 @@ describe('WishRow', () => {
     const link: HTMLAnchorElement = fixture.nativeElement.querySelector('a');
     expect(link.getAttribute('href')).toBe('https://7tv.app/emotes/emote7');
     expect(link.getAttribute('target')).toBe('_blank');
+  });
+
+  describe('usage block', () => {
+    const usage: WishUsage = {
+      windowFromUtc: '2026-11-11T12:00:00Z',
+      windowToUtc: '2026-11-18T12:00:00Z',
+      total: 234,
+      perDayMean: 17,
+      rank: 3,
+      rankOf: 12,
+      coverageGap: false,
+      daily: [
+        { date: '2026-11-16', useCount: 4 },
+        { date: '2026-11-17', useCount: 9 },
+        { date: '2026-11-18', useCount: 2 },
+      ],
+    };
+
+    function line(): SVGPolylineElement | null {
+      return fixture.nativeElement.querySelector('app-usage-sparkline polyline');
+    }
+
+    it('shows sum, mean, rank and the window beside a line of the same series', () => {
+      render(wish({ startsAtUtc: '2026-10-01T00:00:00Z' }), {
+        usage: { state: 'ready', usage },
+      });
+
+      const text: string = fixture.nativeElement.textContent;
+      expect(text).toContain('234 Nutzungen');
+      expect(text).toContain('Ø 17 pro Tag');
+      expect(text).toContain('Rang 3 von 12');
+      expect(text).toContain('letzte 7 Tage');
+      expect(line()).not.toBeNull();
+    });
+
+    it('says "since the start" when the window opens at the wish start', () => {
+      render(wish({ startsAtUtc: usage.windowFromUtc }), { usage: { state: 'ready', usage } });
+
+      expect(fixture.nativeElement.textContent).toContain(de.wishes.usage.window.sinceStart);
+    });
+
+    it('names a rank only with both values, and a counting gap when there is one', () => {
+      render(wish(), {
+        usage: { state: 'ready', usage: { ...usage, rank: null, rankOf: null, coverageGap: true } },
+      });
+
+      const text: string = fixture.nativeElement.textContent;
+      expect(text).not.toContain('Rang');
+      expect(text).toContain(de.wishes.usage.gap);
+    });
+
+    it('shows the numbers without a line when the window has one or two days', () => {
+      render(wish(), {
+        usage: { state: 'ready', usage: { ...usage, daily: usage.daily?.slice(0, 2) } },
+      });
+
+      expect(fixture.nativeElement.textContent).toContain('234 Nutzungen');
+      expect(line()).toBeNull();
+    });
+
+    it('shows no block without usage, and "later" when rate limited', () => {
+      render(wish());
+      expect(fixture.nativeElement.textContent).not.toContain('Nutzung');
+
+      render(wish(), { usage: { state: 'limited', usage: null } });
+      expect(fixture.nativeElement.textContent).toContain(de.wishes.usage.limited);
+      expect(line()).toBeNull();
+    });
   });
 });

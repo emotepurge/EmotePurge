@@ -44,6 +44,7 @@ import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { SkeletonRows } from '../../shared/ui/skeleton-rows';
 import { WishRow } from './wish-row';
+import { WishUsageStore } from './wish-usage';
 
 const PAGE_SIZE = 20;
 
@@ -295,6 +296,9 @@ type PinnedState =
           [sevenTvLocked]="sevenTvLocked()"
           [lockDescriptionId]="lockDescriptionId()"
           [busy]="pendingIds().has(wish.id)"
+          [usage]="usageStore.blockFor(wish)"
+          [trackUsage]="section !== 'ended'"
+          (seen)="usageStore.setVisible(wish, $event)"
           (action)="onAction(section, wish, $event)"
         />
       </li>
@@ -324,6 +328,13 @@ export class ChannelWishesPage {
 
   protected readonly now = signal(new Date());
 
+  /** Usage of the visible open/running rows, one `GET /{id}` each, valid five minutes (T5). */
+  protected readonly usageStore = new WishUsageStore(
+    (id) => this.wishService.get(this.channel(), id),
+    () => Date.now(),
+    () => this.visible(),
+  );
+
   private readonly open = createSection('open');
   private readonly running = createSection('running');
   protected readonly ended = createSection('ended');
@@ -351,6 +362,13 @@ export class ChannelWishesPage {
     }
     return ids;
   });
+
+  /** The wishes on screen that may show usage: the two loaded lists and the pinned row. */
+  private readonly usageRows = computed<Wish[]>(() => [
+    ...(this.open.result()?.items ?? []),
+    ...(this.running.result()?.items ?? []),
+    ...(this.pinnedWish() ? [this.pinnedWish() as Wish] : []),
+  ]);
 
   /** The pinned state for the current target, unless a loaded list holds the wish by now. */
   protected readonly pinnedView = computed(() => {
@@ -410,16 +428,28 @@ export class ChannelWishesPage {
       untracked(() => this.resolveTarget(id, loaded, settled, pinned));
     });
 
+    // A row that scrolled into view gets its usage here, and a state change reaches it as a new key.
+    effect(() => {
+      const rows = this.usageRows();
+      untracked(() => this.usageStore.sync(rows));
+    });
+
     interval(CLOCK_TICK_MS)
       .pipe(takeUntilDestroyed())
-      .subscribe(() => this.now.set(new Date()));
+      .subscribe(() => {
+        this.now.set(new Date());
+        // Safety net for the five-minute value life: a visible row whose value ran out loads again.
+        this.usageStore.tick();
+      });
 
     liveReload(this.liveUrl, {
       accept: [LIVE_EVENT_TYPES.wishChanged, LIVE_EVENT_TYPES.channelSynced],
       debounceMs: CHANNEL_RELOAD_DEBOUNCE_MS,
     }).subscribe(() => this.reloadAll());
 
-    liveReopened(this.liveUrl).subscribe(() => this.reloadAll());
+    // Reopened stream and a window that is visible again: counts may have moved unseen, so every
+    // held usage value runs out (plan 2.4 c, d) before the lists reload.
+    liveReopened(this.liveUrl).subscribe(() => this.reloadAfterGap());
 
     const visible$ = toObservable(this.visible);
     visible$
@@ -428,7 +458,7 @@ export class ChannelWishesPage {
         filter(([was, is]) => !was && is),
         takeUntilDestroyed(),
       )
-      .subscribe(() => this.reloadAll());
+      .subscribe(() => this.reloadAfterGap());
     visible$
       .pipe(
         switchMap((isVisible) => (isVisible ? interval(WISH_SAFETY_RELOAD_MS) : EMPTY)),
@@ -487,10 +517,16 @@ export class ChannelWishesPage {
     this.pinned.set(null);
     this.pinnedActionError.set(null);
     this.focusedTarget = null;
+    this.usageStore.reset();
     if (channel) {
       this.load(this.open);
       this.load(this.running);
     }
+  }
+
+  private reloadAfterGap(): void {
+    this.usageStore.expireAll();
+    this.reloadAll();
   }
 
   /** Every loaded view once, plus the pinned wish; the ended list only while it is open. */
@@ -584,6 +620,8 @@ export class ChannelWishesPage {
     this.wishService.get(channel, id).subscribe({
       next: (wish) => {
         if (current()) {
+          // The detail carries the usage of its window: the pinned row needs no second request.
+          this.usageStore.seed(wish, wish.usage);
           this.pinned.set({ id, kind: 'found', wish });
         }
       },

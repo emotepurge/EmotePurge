@@ -2758,6 +2758,24 @@
       "running": "Busy in 7TV: {{ kind }} is still running. Until it is done, the 7TV actions here are locked.",
       "settling": "Busy in 7TV: {{ kind }} is still being finished. Until it is done, the 7TV actions here are locked.",
       "starting": "A 7TV run is starting. Until then, the 7TV actions here are locked."
+    },
+    "usage": {
+      "total": {
+        "one": "{{ count }} use",
+        "other": "{{ count }} uses"
+      },
+      "mean": "avg. {{ mean }} per day",
+      "rank": "rank {{ rank }} of {{ of }}",
+      "window": {
+        "sinceStart": "since the start",
+        "lastDays": {
+          "one": "last day",
+          "other": "last {{ count }} days"
+        }
+      },
+      "gap": "Counting does not fully cover this window.",
+      "limited": "Usage is not available right now, try again later.",
+      "sparkline": "Usage per day,"
     }
   }
 }

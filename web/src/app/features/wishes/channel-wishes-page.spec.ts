@@ -10,9 +10,10 @@ import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { LIVE_CONNECTION_RELEASE_FACTORY } from '../../core/live/live-connection-release.factory';
 import { CHANNEL_RELOAD_DEBOUNCE_MS } from '../../core/live/live-reload';
 import { PagedResult } from '../../core/models/paged-result.model';
-import type { Wish, WishDetail, WishListView } from '../../core/wishes/wish.model';
+import type { Wish, WishDetail, WishListView, WishUsage } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
 import { ChannelWishesPage, WISH_SAFETY_RELOAD_MS } from './channel-wishes-page';
+import { WISH_USAGE_TTL_MS } from './wish-usage';
 
 const READY_STATE_OPEN = 1;
 const READY_STATE_CONNECTING = 0;
@@ -45,6 +46,42 @@ class FakeEventSource {
     this.readyState = READY_STATE_OPEN;
     this.onopen?.();
   }
+}
+
+/** jsdom has no layout: rows report "in view" only when a test says so. */
+class FakeIntersectionObserver {
+  static instances: FakeIntersectionObserver[] = [];
+
+  readonly targets = new Set<Element>();
+
+  constructor(private readonly callback: (hits: { isIntersecting: boolean }[]) => void) {
+    FakeIntersectionObserver.instances.push(this);
+  }
+
+  observe(target: Element): void {
+    this.targets.add(target);
+  }
+
+  disconnect(): void {
+    this.targets.clear();
+  }
+
+  show(isIntersecting: boolean): void {
+    this.callback([{ isIntersecting }]);
+  }
+}
+
+function usageOf(total: number): WishUsage {
+  return {
+    windowFromUtc: '2026-11-11T12:00:00Z',
+    windowToUtc: '2026-11-18T12:00:00Z',
+    total,
+    perDayMean: 1,
+    rank: null,
+    rankOf: null,
+    coverageGap: false,
+    daily: [],
+  };
 }
 
 interface ListCall {
@@ -606,6 +643,144 @@ describe('ChannelWishesPage', () => {
       vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
 
       expect(getCalls.map((call) => call.id)).toEqual([5, 5]);
+    });
+  });
+
+  describe('usage in the rows (T5, Sol-R2-P2-6)', () => {
+    /** Every row's observer reports "in view"; returns how many rows there were. */
+    function showRows(fixture: ComponentFixture<ChannelWishesPage>, visible = true): void {
+      FakeIntersectionObserver.instances
+        .filter((observer) => observer.targets.size > 0)
+        .forEach((observer) => observer.show(visible));
+      fixture.detectChanges();
+    }
+
+    function answerGet(index: number, wishValue: Wish, total: number): void {
+      getCalls[index].answer.next({ ...wishValue, usage: usageOf(total) });
+    }
+
+    beforeEach(() => {
+      FakeIntersectionObserver.instances = [];
+      vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('asks nothing for a row that has not been in view, then once for the visible one', () => {
+      const fixture = create();
+      settle(fixture, [wish(1)], []);
+      expect(getCalls).toEqual([]);
+
+      showRows(fixture);
+      expect(getCalls.map((call) => call.id)).toEqual([1]);
+      answerGet(0, wish(1), 471);
+      fixture.detectChanges();
+      expect(section(fixture, 'open').textContent).toContain('471 Nutzungen');
+    });
+
+    it('does not ask for "ended" rows', () => {
+      const fixture = create();
+      settle(fixture);
+      fixture.componentInstance['toggleEnded']();
+      last('ended').answer.next(page([wish(3, { status: 'closed' })]));
+      fixture.detectChanges();
+      showRows(fixture);
+
+      expect(getCalls).toEqual([]);
+    });
+
+    it('shows changed counts for the same key only after the five minutes', () => {
+      const fixture = create();
+      settle(fixture, [wish(1)], []);
+      showRows(fixture);
+      answerGet(0, wish(1), 10);
+      fixture.detectChanges();
+
+      vi.advanceTimersByTime(WISH_USAGE_TTL_MS - 60_000);
+      expect(getCalls).toHaveLength(1);
+
+      vi.advanceTimersByTime(60_000);
+      expect(getCalls).toHaveLength(2);
+      // The old value stands until the new one arrives.
+      expect(section(fixture, 'open').textContent).toContain('10 Nutzungen');
+      answerGet(1, wish(1), 25);
+      fixture.detectChanges();
+      expect(section(fixture, 'open').textContent).toContain('25 Nutzungen');
+    });
+
+    it('loads again at once for a changed key from a list reload', () => {
+      const fixture = create();
+      settle(fixture, [wish(1)], []);
+      showRows(fixture);
+      answerGet(0, wish(1), 10);
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('open').answer.next(page([wish(1, { expiresAtUtc: '2026-12-30T10:00:00Z' })]));
+      last('running').answer.next(page([]));
+      fixture.detectChanges();
+
+      expect(getCalls).toHaveLength(2);
+    });
+
+    it('lets held values run out when its stream opens again, and not on a plain reload', () => {
+      const fixture = create();
+      settle(fixture, [wish(1)], []);
+      const stream = streamOf('chan');
+      stream.onopen?.();
+      showRows(fixture);
+      answerGet(0, wish(1), 10);
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('open').answer.next(page([wish(1)]));
+      last('running').answer.next(page([]));
+      expect(getCalls).toHaveLength(1);
+
+      stream.reopen();
+      expect(getCalls).toHaveLength(2);
+    });
+
+    it('lets held values run out when the window becomes visible again', () => {
+      const fixture = create();
+      settle(fixture, [wish(1)], []);
+      showRows(fixture);
+      answerGet(0, wish(1), 10);
+
+      setVisibility('hidden');
+      fixture.detectChanges();
+      vi.advanceTimersByTime(WISH_USAGE_TTL_MS * 2);
+      expect(getCalls).toHaveLength(1);
+
+      setVisibility('visible');
+      fixture.detectChanges();
+      expect(getCalls).toHaveLength(2);
+    });
+
+    it('takes the pinned row’s usage from its own detail without a second request', () => {
+      const fixture = create('chan', '5');
+      settle(fixture);
+      answerGet(0, wish(5), 77);
+      fixture.detectChanges();
+      showRows(fixture);
+
+      expect(getCalls).toHaveLength(1);
+      expect(section(fixture, 'pinned').textContent).toContain('77 Nutzungen');
+    });
+
+    it('forgets everything on a channel switch', () => {
+      const fixture = create('a');
+      settle(fixture, [wish(1)], [], 'a');
+      showRows(fixture);
+      answerGet(0, wish(1), 10);
+
+      fixture.componentRef.setInput('channelName', 'b');
+      fixture.detectChanges();
+      settle(fixture, [wish(1)], [], 'b');
+
+      expect(section(fixture, 'open').textContent).not.toContain('10 Nutzungen');
     });
   });
 });
