@@ -269,6 +269,7 @@
       "tags": "Tags",
       "voting": "Voting",
       "activity": "Activity",
+      "wishes": "Wishes",
       "settings": "Settings"
     },
     "activity": {
@@ -2656,6 +2657,107 @@
     "errors": {
       "emote_ids_invalid": "This is not a valid 7TV emote link or emote ID.",
       "adopt_start_invalid": "The start date lies in the future or before the entry was added to the set."
+    },
+    "status": {
+      "pending": "Open",
+      "approved": "Approved",
+      "unconfirmed": "Unconfirmed",
+      "failed": "Failed",
+      "active": "Active",
+      "presented": "Presented",
+      "rejected": "Rejected",
+      "expired": "Lapsed",
+      "removed": "Removed",
+      "removed_externally": "Removed elsewhere",
+      "kept": "Kept",
+      "closed": "Closed",
+      "merged": "Merged",
+      "unknown": "Unknown state"
+    },
+    "reason": {
+      "expired": "Its time is up. Decide whether the emote stays.",
+      "unconfirmed_start": "7TV has not yet confirmed when the emote entered the set, so a person decides here.",
+      "other": "This one needs a decision."
+    },
+    "source": {
+      "irc": "From chat",
+      "manual": "Entered by hand",
+      "adopted": "Taken over from the set"
+    },
+    "actions": {
+      "add7tv": "Add in 7TV",
+      "adopt": "Link to an entry",
+      "edit": "Edit",
+      "close": "Close",
+      "retry": "Try again",
+      "extend": "Extend",
+      "keep": "Keep",
+      "remove": "Remove",
+      "reAdd": "Add again"
+    },
+    "row": {
+      "probation": "Probation",
+      "remaining": {
+        "days": {
+          "one": "{{ count }} day left",
+          "other": "{{ count }} days left"
+        },
+        "hours": {
+          "one": "{{ count }} hour left",
+          "other": "{{ count }} hours left"
+        },
+        "expiredDays": {
+          "one": "expired {{ count }} day ago",
+          "other": "expired {{ count }} days ago"
+        },
+        "expiredToday": "expired today"
+      },
+      "requester": "wished by {{ login }}",
+      "duration": {
+        "one": "runs {{ count }} day",
+        "other": "runs {{ count }} days"
+      },
+      "permanent": "permanent",
+      "inSetSince": "in the set since {{ date }}",
+      "inSetSinceProvisional": "in the set since {{ date }} (provisional)",
+      "extensions": {
+        "one": "extended once",
+        "other": "extended {{ count }} times"
+      },
+      "ended": "ended on {{ date }}",
+      "sevenTvHint": "If you add or remove the emote directly in 7TV, EmotePurge picks it up with the next sync.",
+      "openOnSevenTv": "View on 7TV"
+    },
+    "page": {
+      "reload": "Load again",
+      "pinned": {
+        "title": "Wish you were looking for",
+        "gone": "This wish no longer exists."
+      },
+      "open": {
+        "title": "Needs action",
+        "empty": "Nothing to decide right now",
+        "emptyHint": "Presented and approved wishes show up here as soon as someone has to act."
+      },
+      "running": {
+        "title": "Running",
+        "empty": "No wish is running right now",
+        "emptyHint": "Once a wished emote is in the set, its time runs here."
+      },
+      "ended": {
+        "title": "Ended",
+        "empty": "No wish has ended yet",
+        "emptyHint": "Removed, kept and closed wishes are listed here."
+      }
+    },
+    "confirm": {
+      "keep": "Keep “{{ name }}” for good? The emote stays in the set and the wish is done.",
+      "close": "Close the wish “{{ name }}”? It ends without any change in 7TV."
+    },
+    "lock": {
+      "running": "Busy in 7TV: {{ kind }} is still running. Until it is done, the 7TV actions here are locked.",
+      "settling": "Busy in 7TV: {{ kind }} is still being finished. Until it is done, the 7TV actions here are locked.",
+      "starting": "A 7TV run is starting. Until then, the 7TV actions here are locked."
     }
   }
 }

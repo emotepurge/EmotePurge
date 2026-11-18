@@ -269,6 +269,7 @@
       "tags": "Tags",
       "voting": "Votings",
       "activity": "Aktivität",
+      "wishes": "Wünsche",
       "settings": "Einstellungen"
     },
     "activity": {
@@ -2656,6 +2657,107 @@
     "errors": {
       "emote_ids_invalid": "Das ist kein gültiger 7TV-Link und keine gültige Emote-ID.",
       "adopt_start_invalid": "Das Startdatum liegt in der Zukunft oder vor dem Hinzufügen des Eintrags zum Set."
+    },
+    "status": {
+      "pending": "Offen",
+      "approved": "Freigegeben",
+      "unconfirmed": "Unbestätigt",
+      "failed": "Fehlgeschlagen",
+      "active": "Aktiv",
+      "presented": "Vorgelegt",
+      "rejected": "Abgelehnt",
+      "expired": "Verfallen",
+      "removed": "Entfernt",
+      "removed_externally": "Extern entfernt",
+      "kept": "Behalten",
+      "closed": "Geschlossen",
+      "merged": "Zusammengeführt",
+      "unknown": "Unbekannter Zustand"
+    },
+    "reason": {
+      "expired": "Die Laufzeit ist um. Entscheide, ob das Emote bleibt.",
+      "unconfirmed_start": "Wann das Emote ins Set kam, hat 7TV noch nicht bestätigt. Deshalb entscheidet hier ein Mensch.",
+      "other": "Hier ist eine Entscheidung nötig."
+    },
+    "source": {
+      "irc": "Aus dem Chat",
+      "manual": "Nachgetragen",
+      "adopted": "Aus dem Bestand übernommen"
+    },
+    "actions": {
+      "add7tv": "In 7TV hinzufügen",
+      "adopt": "Mit Eintrag verknüpfen",
+      "edit": "Bearbeiten",
+      "close": "Schließen",
+      "retry": "Erneut versuchen",
+      "extend": "Verlängern",
+      "keep": "Behalten",
+      "remove": "Entfernen",
+      "reAdd": "Wieder hinzufügen"
+    },
+    "row": {
+      "probation": "Probezeit",
+      "remaining": {
+        "days": {
+          "one": "noch {{ count }} Tag",
+          "other": "noch {{ count }} Tage"
+        },
+        "hours": {
+          "one": "noch {{ count }} Stunde",
+          "other": "noch {{ count }} Stunden"
+        },
+        "expiredDays": {
+          "one": "seit {{ count }} Tag abgelaufen",
+          "other": "seit {{ count }} Tagen abgelaufen"
+        },
+        "expiredToday": "heute abgelaufen"
+      },
+      "requester": "gewünscht von {{ login }}",
+      "duration": {
+        "one": "{{ count }} Tag Laufzeit",
+        "other": "{{ count }} Tage Laufzeit"
+      },
+      "permanent": "dauerhaft",
+      "inSetSince": "im Set seit {{ date }}",
+      "inSetSinceProvisional": "im Set seit {{ date }} (vorläufig)",
+      "extensions": {
+        "one": "{{ count }}-mal verlängert",
+        "other": "{{ count }}-mal verlängert"
+      },
+      "ended": "beendet am {{ date }}",
+      "sevenTvHint": "Fügst du das Emote direkt in 7TV hinzu oder entfernst es dort, erkennt EmotePurge das beim nächsten Sync.",
+      "openOnSevenTv": "Auf 7TV ansehen"
+    },
+    "page": {
+      "reload": "Erneut laden",
+      "pinned": {
+        "title": "Gesuchter Wunsch",
+        "gone": "Diesen Wunsch gibt es nicht mehr."
+      },
+      "open": {
+        "title": "Handlungsbedarf",
+        "empty": "Gerade ist nichts zu entscheiden",
+        "emptyHint": "Vorgelegte und freigegebene Wünsche erscheinen hier, sobald jemand etwas tun muss."
+      },
+      "running": {
+        "title": "Laufend",
+        "empty": "Gerade läuft kein Wunsch",
+        "emptyHint": "Sobald ein gewünschtes Emote im Set ist, läuft hier seine Frist."
+      },
+      "ended": {
+        "title": "Beendet",
+        "empty": "Noch kein Wunsch beendet",
+        "emptyHint": "Entfernte, behaltene und geschlossene Wünsche stehen hier."
+      }
+    },
+    "confirm": {
+      "keep": "„{{ name }}“ dauerhaft behalten? Das Emote bleibt im Set, der Wunsch ist damit abgeschlossen.",
+      "close": "Wunsch „{{ name }}“ schließen? Er endet, ohne dass in 7TV etwas geändert wird."
+    },
+    "lock": {
+      "running": "In 7TV läuft gerade {{ kind }}. Bis dahin sind die 7TV-Aktionen hier gesperrt.",
+      "settling": "In 7TV wird gerade {{ kind }} abgeschlossen. Bis dahin sind die 7TV-Aktionen hier gesperrt.",
+      "starting": "Ein 7TV-Vorgang wird gerade gestartet. Bis dahin sind die 7TV-Aktionen hier gesperrt."
     }
   }
 }

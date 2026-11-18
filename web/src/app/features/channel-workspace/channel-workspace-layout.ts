@@ -102,6 +102,10 @@ const LOCKED_BY_BROADCASTER_KEY = 'errors.api.channel_locked_by_broadcaster';
         @if (canManage()) {
           <app-tab-link link="activity" [label]="'channelWorkspace.tabs.activity' | transloco" />
         }
+        <!-- Same condition as the route's channelWishesGuard (#485, E19). -->
+        @if (canManage() && wishesEnabled()) {
+          <app-tab-link link="wishes" [label]="'channelWorkspace.tabs.wishes' | transloco" />
+        }
         <!-- The tab holds the backfill section and the wish settings (#485, E19), each behind its
              own operator switch; with both off there is nothing to show, so the tab goes too. -->
         @if (canManage() && (chatLogBackfillEnabled() || wishesEnabled())) {

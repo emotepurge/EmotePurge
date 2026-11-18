@@ -286,6 +286,7 @@ describe('ChannelWorkspaceLayout — tabs', () => {
                   tags: 'Tags',
                   voting: 'Votings',
                   activity: 'Aktivität',
+                  wishes: 'Wünsche',
                   settings: 'Einstellungen',
                 },
               },
@@ -367,9 +368,31 @@ describe('ChannelWorkspaceLayout — tabs', () => {
     );
   });
 
-  // Until T4 mounts the route there is no wishes link, whatever the switch says.
-  it('shows no wishes link yet', () => {
-    expect(tabLabels({ ...PERMISSIONS, wishesEnabled: true })).not.toContain('Wünsche');
+  // #485, E19: the wishes tab needs the manager right and the switch, and sits between activity
+  // and settings.
+  it('shows the wishes tab after activity for a manager while the wishes switch is on', () => {
+    expect(tabLabels({ ...PERMISSIONS, wishesEnabled: true })).toEqual([
+      'Nutzung',
+      'Tags',
+      'Votings',
+      'Aktivität',
+      'Wünsche',
+      'Einstellungen',
+    ]);
+  });
+
+  it('hides the wishes tab while the wishes switch is off', () => {
+    expect(tabLabels({ ...PERMISSIONS, chatLogBackfillEnabled: true })).not.toContain('Wünsche');
+  });
+
+  it('hides the wishes tab from a non-manager even with the switch on', () => {
+    expect(tabLabels({ ...PERMISSIONS, canManage: false, wishesEnabled: true })).not.toContain(
+      'Wünsche',
+    );
+  });
+
+  it('hides the wishes tab when the permissions call fails', () => {
+    expect(tabLabels('error')).not.toContain('Wünsche');
   });
 
   it('hides the settings tab from a non-manager even with the switch on', () => {
