@@ -2,7 +2,7 @@ import { HttpRequest, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { firstValueFrom } from 'rxjs';
+import { Subject, firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -15,6 +15,8 @@ import {
   MAX_CONSECUTIVE_ENTRY_READ_FAILURES,
   REPORT_TIMEOUT_MS,
   SevenTvDeleteService,
+  WISH_OBSERVATION_MAX_AGE_MS,
+  WishBindingSkipReason,
 } from './seven-tv-delete.service';
 import { TagRemovalResult } from '../tags/emote-tag.model';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
@@ -3408,6 +3410,278 @@ describe('SevenTvDeleteService', () => {
       expect(error).toHaveBeenCalled();
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
       expect(service.run()?.phase).toBe('closed');
+    });
+  });
+
+  // #485, plan 2.6 (Sol-R2-P1-1, Sol-R3): a wish's entry row checks token, active set, generation
+  // and the age of its observation before every attempt.
+  describe('the wish binding of an entry row', () => {
+    let verifications: Subject<WishBindingSkipReason | null>[];
+
+    beforeEach(() => {
+      verifications = [];
+    });
+
+    function wishRow(addedAt = T1): DeleteQueueEmote {
+      return {
+        ...entryRow('7tv-x', 'aaa', addedAt),
+        wishBinding: {
+          activeEmoteSetId: 'set-1',
+          token: 'write-token',
+          verifySetAndToken: () => {
+            const verdict = new Subject<WishBindingSkipReason | null>();
+            verifications.push(verdict);
+            return verdict;
+          },
+        },
+      };
+    }
+
+    function startWish(row = wishRow(), setId = 'set-1') {
+      return service.startDeleteRun(setId, 'sensitron', [row], 'sensitron', null);
+    }
+
+    /** Answers the oldest open check of active set and token. */
+    function verify(verdict: WishBindingSkipReason | null) {
+      const pending = verifications.shift();
+      expect(pending).toBeDefined();
+      pending!.next(verdict);
+      pending!.complete();
+    }
+
+    /** One page of a multi-page dated read. */
+    function datedPage(entries: readonly LiveEntry[], totalCount: number, pageCount: number) {
+      const single = datedSetPage(entries, totalCount);
+      single.data.emoteSets.emoteSet.emotes.pageCount = pageCount;
+      return single;
+    }
+
+    function answerRateLimited() {
+      httpMock.expectOne(isRemove).flush(rateLimitResponse(1));
+    }
+
+    const LIVE_A: LiveEntry = { id: '7tv-x', alias: 'aaa', addedAt: T1 };
+
+    it('checks the token and the active set first, then reads the set, then removes the entry', () => {
+      startWish();
+
+      httpMock.expectNone(isSetRead);
+      expect(verifications).toHaveLength(1);
+      verify(null);
+      httpMock.expectNone(isRemove);
+      answerRead([LIVE_A]);
+
+      expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+      expect(rowOf('7tv-x#slot-aaa')?.status).toBe('done');
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('reads the set again for a second attempt within five seconds, never reusing the first read', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerRateLimited();
+
+      vi.advanceTimersByTime(1500);
+      verify(null);
+      answerRead([LIVE_A]);
+
+      expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(verifications).toHaveLength(0);
+    });
+
+    it('sends no second REMOVE when the read after a 429 shows the alias under a new generation', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerRateLimited();
+
+      vi.advanceTimersByTime(1500);
+      verify(null);
+      answerRead([{ id: '7tv-x', alias: 'aaa', addedAt: T2 }]);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
+        status: 'cancelled',
+        skipReason: { key: 'usageStats.delete.departedSinceLoad' },
+      });
+    });
+
+    it('sends no second REMOVE when the active set changed during the 429 pause, without reading the set', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerRateLimited();
+
+      vi.advanceTimersByTime(1500);
+      verify('setChanged');
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isSetRead);
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
+        status: 'cancelled',
+        skipReason: { key: 'wishes.start.setChanged' },
+      });
+    });
+
+    it('sends no second REMOVE when the token was removed during the 429 pause', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerRateLimited();
+      tokenService.clearToken();
+
+      vi.advanceTimersByTime(1500);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      expect(verifications).toHaveLength(0);
+      httpMock.expectNone(isSetRead);
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe('wishes.start.tokenChanged');
+    });
+
+    it('sends no second REMOVE when another token was stored during the 429 pause', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerRateLimited();
+      tokenService.setToken('another-token');
+
+      vi.advanceTimersByTime(1500 + DELETE_DELAY_MS);
+
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe('wishes.start.tokenChanged');
+    });
+
+    it('sends nothing when the token is swapped while the set is being read', () => {
+      startWish();
+      verify(null);
+      tokenService.setToken('another-token');
+      answerRead([LIVE_A]);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe('wishes.start.tokenChanged');
+    });
+
+    it.each([
+      [
+        'throttled or failed',
+        (pending: Subject<WishBindingSkipReason | null>) => pending.next('setUnverified'),
+      ],
+      [
+        'erroring',
+        (pending: Subject<WishBindingSkipReason | null>) => pending.error(new Error('x')),
+      ],
+      ['empty', (pending: Subject<WishBindingSkipReason | null>) => pending.complete()],
+    ])('sends nothing when the check of the active set is %s', (_label, answer) => {
+      startWish();
+      answer(verifications.shift()!);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isSetRead);
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
+        status: 'cancelled',
+        skipReason: { key: 'wishes.start.setUnverified' },
+      });
+    });
+
+    it('sends nothing when the run is not against the frozen active set', () => {
+      startWish(wishRow(), 'set-2');
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      expect(verifications).toHaveLength(0);
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe('wishes.start.setChanged');
+    });
+
+    describe('an observation older than five seconds', () => {
+      const OTHER: LiveEntry = { id: '7tv-o', alias: 'ooo', addedAt: T3 };
+
+      /** A two-page read: page 1 holds OTHER, page 2 `last`; the verification re-read of page 1
+       *  answers after `verifyMs`. */
+      function answerTwoPageRead(last: LiveEntry, verifyMs: number) {
+        httpMock.expectOne(isSetRead).flush(datedPage([OTHER], 2, 2));
+        httpMock.expectOne(isSetRead).flush(datedPage([last], 2, 2));
+        const verification = httpMock.expectOne(isSetRead);
+        expect(verification.request.body.variables.page).toBe(1);
+        vi.advanceTimersByTime(verifyMs);
+        verification.flush(datedPage([OTHER], 2, 2));
+      }
+
+      it('reads exactly once more when the target sits on the last page of a slow read, then sends', () => {
+        startWish();
+        verify(null);
+        answerTwoPageRead(LIVE_A, WISH_OBSERVATION_MAX_AGE_MS + 1000);
+        httpMock.expectNone(isRemove);
+
+        answerTwoPageRead(LIVE_A, 100);
+
+        expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+        expect(verifications).toHaveLength(0);
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+
+      it('sends nothing when the second read shows the entry replaced by a new generation', () => {
+        startWish();
+        verify(null);
+        answerTwoPageRead(LIVE_A, WISH_OBSERVATION_MAX_AGE_MS + 1000);
+
+        answerTwoPageRead({ id: '7tv-x', alias: 'aaa', addedAt: T2 }, 100);
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+        httpMock.expectNone(isSetRead);
+        httpMock.expectNone(isRemove);
+        expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe(
+          'usageStats.delete.departedSinceLoad',
+        );
+      });
+
+      it('skips the row when the second read is too slow as well', () => {
+        startWish();
+        verify(null);
+        answerTwoPageRead(LIVE_A, WISH_OBSERVATION_MAX_AGE_MS + 1000);
+
+        answerTwoPageRead(LIVE_A, WISH_OBSERVATION_MAX_AGE_MS + 1000);
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+        httpMock.expectNone(isSetRead);
+        httpMock.expectNone(isRemove);
+        expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
+          status: 'cancelled',
+          skipReason: { key: 'wishes.remove.tooSlow' },
+        });
+      });
+
+      it('counts an entry on a verified page from its verification, not from the first pass', () => {
+        startWish();
+        verify(null);
+        // The target on page 1: the slow verification re-read observes it again.
+        httpMock.expectOne(isSetRead).flush(datedPage([LIVE_A], 2, 2));
+        vi.advanceTimersByTime(WISH_OBSERVATION_MAX_AGE_MS + 1000);
+        httpMock.expectOne(isSetRead).flush(datedPage([OTHER], 2, 2));
+        httpMock.expectOne(isSetRead).flush(datedPage([LIVE_A], 2, 2));
+
+        expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+    });
+
+    it('keeps the token out of the row, the record and the report', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerRemove();
+      const report = httpMock.expectOne(SYNC_ENDPOINT);
+
+      expect(JSON.stringify(service.queue())).not.toContain('write-token');
+      expect(JSON.stringify(service.run())).not.toContain('write-token');
+      expect(JSON.stringify(report.request.body)).not.toContain('write-token');
+      report.flush(deletedAnswer());
     });
   });
 });

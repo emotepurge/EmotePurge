@@ -2929,6 +2929,9 @@
       "nameTaken": "7TV hat abgelehnt: Der Name ist im Set schon vergeben.",
       "tokenInvalid": "7TV hat das Token nicht angenommen. Bitte ein neues 7TV-Token eintragen und erneut versuchen.",
       "rejected": "7TV hat abgelehnt: {{ message }}"
+    },
+    "remove": {
+      "tooSlow": "7TV antwortet zu langsam, um den Eintrag sicher zu prüfen. Es wurde nichts entfernt."
     }
   }
 }

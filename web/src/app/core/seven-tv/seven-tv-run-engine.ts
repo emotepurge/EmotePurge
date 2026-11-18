@@ -152,7 +152,12 @@ export type SkipReasonKey =
   | 'usageStats.delete.noAlias'
   | 'usageStats.delete.departedSinceLoad'
   | 'usageStats.delete.gapHidden'
-  | 'usageStats.delete.gapIdRow';
+  | 'usageStats.delete.gapIdRow'
+  // A wish-bound entry row's checks before its removal (#485, plan 2.6).
+  | 'wishes.start.tokenChanged'
+  | 'wishes.start.setChanged'
+  | 'wishes.start.setUnverified'
+  | 'wishes.remove.tooSlow';
 
 export interface SkipReason {
   key: SkipReasonKey;
