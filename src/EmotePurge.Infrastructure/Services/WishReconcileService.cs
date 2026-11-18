@@ -30,7 +30,9 @@ namespace EmotePurge.Infrastructure.Services;
 /// stamps with the same instant as its stand-in start. A start the manager chose through <c>adopt</c>, or the old
 /// start a returned wish kept, stays; only the generation and the authoritative flag follow the slot. While the
 /// generation is unknown and the slot undated the confirmation stamp is not refreshed, so that equality holds
-/// until the slot gets its date.
+/// until the slot gets its date. A date after that stamp is a generation change, not a confirmation: the slot
+/// left and came back unseen. A stand-in start that returns then takes the returned slot's date, so it still
+/// follows the later authoritative one.
 /// </para>
 /// </summary>
 public sealed class WishReconcileService(
@@ -264,8 +266,16 @@ public sealed class WishReconcileService(
 
             if (wish.SlotAddedAtUtc is not { } generation)
             {
-                // Generation not known yet (adoption of an undated slot): the slot's date is a confirmation,
-                // never a change of generation.
+                // Generation not known yet (adoption of an undated slot). A date after the last confirmation
+                // proves a stay the reconcile never saw begin (a missed archive hook, then a restore with a
+                // provisional date): a generation change, removed at that confirmation, and step 4 of this run
+                // decides on the return (operator ruling 2026-11-18). Any other date is a confirmation.
+                if (wish.SlotConfirmedAtUtc is { } lastSeen && addedAt > lastSeen)
+                {
+                    RemoveExternally(wish, lastSeen);
+                    return;
+                }
+
                 ConfirmDate(wish, slot, startFromSlot: wish.StartsAtUtc == wish.SlotConfirmedAtUtc);
                 return;
             }
@@ -385,7 +395,10 @@ public sealed class WishReconcileService(
         }
 
         // removed_externally -> the state before, with the old deadline and without ownership: presented with
-        // the reason that stayed, else active. LinkOrigin stays (the link continues the same entry).
+        // the reason that stayed, else active. LinkOrigin stays (the link continues the same entry). A stand-in
+        // start is the exception: it was never the date of any stay, so it takes the returned slot's date and
+        // from then on follows the slot's authoritative date like a start taken from it (operator ruling
+        // 2026-11-18).
         private void Return(Wish wish, SlotRow slot)
         {
             var target = WishTransitions.Target(
@@ -401,6 +414,11 @@ public sealed class WishReconcileService(
             wish.EndedAtUtc = null;
             wish.SlotId = slot.Id;
             wish.Alias = slot.Name;
+            if (HasStandInStart(wish) && slot.AddedAt is { } returnedAt)
+            {
+                MoveStart(wish, returnedAt);
+            }
+
             HoldGeneration(wish, slot);
             if (target == WishStatus.Active)
             {
@@ -428,18 +446,9 @@ public sealed class WishReconcileService(
         // slot's authoritative date only when it was taken from the slot.
         private void ConfirmDate(Wish wish, SlotRow slot, bool startFromSlot)
         {
-            if (startFromSlot && slot.AddedAtFromRest && wish.StartsAtUtc is { } oldStart && slot.AddedAt is { } newStart)
+            if (startFromSlot && slot.AddedAtFromRest && slot.AddedAt is { } newStart)
             {
-                if (wish.ExpiresAtUtc is { } oldExpiry)
-                {
-                    var shifted = WishSchedule.Shift(oldStart, oldExpiry, newStart);
-                    wish.StartsAtUtc = shifted.StartsAtUtc;
-                    wish.ExpiresAtUtc = shifted.ExpiresAtUtc;
-                }
-                else
-                {
-                    wish.StartsAtUtc = newStart;
-                }
+                MoveStart(wish, newStart);
             }
 
             HoldGeneration(wish, slot);
@@ -497,6 +506,31 @@ public sealed class WishReconcileService(
 
             return linked;
         }
+
+        // The start (and the expiry by the same difference) moves to newStart; a wish without a start stays.
+        private static void MoveStart(Wish wish, DateTime newStart)
+        {
+            if (wish.StartsAtUtc is not { } oldStart)
+            {
+                return;
+            }
+
+            if (wish.ExpiresAtUtc is { } oldExpiry)
+            {
+                var shifted = WishSchedule.Shift(oldStart, oldExpiry, newStart);
+                wish.StartsAtUtc = shifted.StartsAtUtc;
+                wish.ExpiresAtUtc = shifted.ExpiresAtUtc;
+            }
+            else
+            {
+                wish.StartsAtUtc = newStart;
+            }
+        }
+
+        // The "now" an adoption of an undated slot stood in with, while the reconcile has not learned the
+        // slot's generation yet (see the class remarks).
+        private static bool HasStandInStart(Wish wish) =>
+            wish.SlotAddedAtUtc is null && wish.StartsAtUtc is not null && wish.StartsAtUtc == wish.SlotConfirmedAtUtc;
     }
 
     private sealed record SlotRow(

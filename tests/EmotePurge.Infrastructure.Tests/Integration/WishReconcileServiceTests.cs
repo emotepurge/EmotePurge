@@ -592,6 +592,57 @@ public partial class WishReconcileServiceTests(PostgresFixture fixture)
         AssertPublishedOnce(channel);
     }
 
+    // Operator ruling 2026-11-18 (T7 review, minor 1): adoption of an undated slot, the archive hook is missed,
+    // the report restores the slot with a provisional date. While the generation is unknown, a date after the
+    // last confirmation is a generation change: the re-entry is seen (removed at the adoption's stamp and back
+    // in the same run, the slot lies in the window), the stand-in start takes the provisional date, and the
+    // later REST confirmation moves it once more, to the authoritative date.
+    [Fact]
+    public async Task StandInStart_AfterAMissedArchiveHookAndAProvisionalRestore_FollowsTheLaterRestConfirmation()
+    {
+        var channel = await SeedChannelAsync();
+        var emote = await SeedEmoteAsync(channel);
+        var slot = await SeedSlotAsync(emote, "Kappa", null, fromRest: false);
+        var adopted = await WishSut().AdoptAsync(channel.Name, new AdoptWishRequest(slot, null, 30, null), Actor);
+        Assert.True(adopted.IsSuccess);
+        var wishId = adopted.Wish!.Id;
+        var adoptedAt = Now;
+        var before = await WishAsync(wishId);
+        Assert.Equal((adoptedAt, adoptedAt, (DateTime?)null), (before.StartsAtUtc, before.SlotConfirmedAtUtc, before.SlotAddedAtUtc));
+
+        // Archived without a reconcile seeing it (missed hook), then restored by the report with a provisional date.
+        _clock.Advance(TimeSpan.FromHours(1));
+        await UpdateSlotAsync(slot, s => (s.IsArchived, s.ArchivedAt) = (true, Now));
+        _clock.Advance(TimeSpan.FromHours(1));
+        var provisional = Now;
+        await UpdateSlotAsync(slot, s => (s.IsArchived, s.ArchivedAt, s.AddedAt, s.AddedAtFromRest) = (false, null, provisional, false));
+        _publisher.ClearReceivedCalls();
+
+        await ReconcileAsync(channel);
+
+        var restored = await WishAsync(wishId);
+        Assert.Equal((WishStatus.Active, slot, (DateTime?)null), (restored.Status, restored.SlotId, restored.EndedAtUtc));
+        Assert.Equal((provisional, provisional.AddDays(30), false), (restored.StartsAtUtc, restored.ExpiresAtUtc, restored.StartsAtAuthoritative));
+        Assert.Equal((provisional, Now), (restored.SlotAddedAtUtc, restored.SlotConfirmedAtUtc));
+        // The re-entry was seen: the state went through removed_externally and back in this run.
+        Assert.Equal((Now, before.FirstActivatedAtUtc), (restored.StatusChangedAtUtc, restored.FirstActivatedAtUtc));
+        AssertPublishedOnce(channel);
+
+        // The REST sync confirms the stay with 7TV's date, a little before our provisional one.
+        var authoritative = provisional.AddMinutes(-2);
+        await UpdateSlotAsync(slot, s => (s.AddedAt, s.AddedAtFromRest) = (authoritative, true));
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        _publisher.ClearReceivedCalls();
+
+        await ReconcileAsync(channel);
+
+        var confirmed = await WishAsync(wishId);
+        Assert.Equal(WishStatus.Active, confirmed.Status);
+        Assert.Equal((authoritative, authoritative.AddDays(30), true), (confirmed.StartsAtUtc, confirmed.ExpiresAtUtc, confirmed.StartsAtAuthoritative));
+        Assert.Equal(authoritative, confirmed.SlotAddedAtUtc);
+        AssertPublishedOnce(channel);
+    }
+
     // ------------------------------------------------------------------------------------ K4 exceptions
 
     [Fact]
