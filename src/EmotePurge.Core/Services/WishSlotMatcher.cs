@@ -31,7 +31,8 @@ public sealed record WishMatchResult(string? SlotId, string? NoMatchReason)
 /// <summary>
 /// The one rule that links a wish without a slot to a slot (spec 6.3, E20), pure. One rule per state;
 /// K6 adds <c>pending</c> through its own window functions without touching the two existing rules.
-/// The caller passes only admissible slots and has already removed those linked to other running wishes.
+/// The caller passes only admissible slots and has already removed those held by other wishes (a running
+/// link or a kept one).
 /// </summary>
 public static class WishSlotMatcher
 {

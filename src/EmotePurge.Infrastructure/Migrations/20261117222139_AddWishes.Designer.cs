@@ -1386,7 +1386,7 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.HasIndex("SlotId")
                         .IsUnique()
                         .HasDatabaseName("IX_Wishes_SlotId_Live")
-                        .HasFilter("\"SlotId\" IS NOT NULL AND \"Status\" IN ('active', 'presented')");
+                        .HasFilter("\"SlotId\" IS NOT NULL AND \"Status\" IN ('active', 'presented', 'kept')");
 
                     b.HasIndex("ChannelId", "SevenTvEmoteId")
                         .IsUnique()

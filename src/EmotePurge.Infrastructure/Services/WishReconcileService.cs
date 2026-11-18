@@ -49,9 +49,11 @@ public sealed class WishReconcileService(
     // The states the reconcile always looks at; removed_externally only as an open returner.
     private static readonly string[] ReconciledStatuses = [WishStatus.Approved, WishStatus.Active, WishStatus.Presented];
 
-    // The running states whose SlotId is a live link. An approved wish's SlotId is history (a re-add keeps
-    // it, plan finding 5), so its old slot stays a candidate.
-    private static readonly string[] LinkHoldingStatuses = [WishStatus.Unconfirmed, WishStatus.Active, WishStatus.Presented];
+    // The states whose SlotId holds the slot against other wishes: the running ones with a live link, and
+    // kept, which keeps its entry for good (operator ruling 2026-11-18). An approved wish's SlotId is history
+    // (a re-add keeps it, plan finding 5), so its old slot stays a candidate.
+    private static readonly string[] LinkHoldingStatuses =
+        [WishStatus.Unconfirmed, WishStatus.Active, WishStatus.Presented, WishStatus.Kept];
 
     private static readonly string[] RunningStatuses = [.. WishStatus.Running];
 
@@ -77,9 +79,9 @@ public sealed class WishReconcileService(
     // The wishes a run looks at, as one query: the pre-check is its Any, the run locks its ids. An open
     // returner is a removed_externally wish whose emote has no running wish in the channel and for which an
     // admissible slot (plan finding 7) of the same emote with the wish's alias lies in the matcher's window
-    // around EndedAtUtc and is linked to no running wish. The bounds come from WishLimits like the matcher's,
-    // and nothing compares with "now": a run days later still finds the returner, an old row without a
-    // candidate never triggers a run.
+    // around EndedAtUtc and is held by no other wish (a running link or a kept one). The bounds come from
+    // WishLimits like the matcher's, and nothing compares with "now": a run days later still finds the
+    // returner, an old row without a candidate never triggers a run.
     private static IQueryable<Wish> Affected(AppDbContext db, string channelId)
     {
         var reconciled = ReconciledStatuses;
@@ -134,7 +136,9 @@ public sealed class WishReconcileService(
         await db.LockWishesByIdsAsync(ids, cancellationToken);
         var wishes = await db.Wishes.Where(w => ids.Contains(w.Id) && w.ChannelId == channelId).ToListAsync(cancellationToken);
         var others = await db.Wishes.AsNoTracking()
-            .Where(w => w.ChannelId == channelId && !ids.Contains(w.Id) && RunningStatuses.Contains(w.Status))
+            .Where(w => w.ChannelId == channelId
+                && !ids.Contains(w.Id)
+                && (RunningStatuses.Contains(w.Status) || (w.Status == WishStatus.Kept && w.SlotId != null)))
             .Select(w => new OtherWish(w.SevenTvEmoteId, w.Status, w.SlotId))
             .ToListAsync(cancellationToken);
 
@@ -295,7 +299,7 @@ public sealed class WishReconcileService(
             RemoveExternally(wish, wish.SlotConfirmedAtUtc ?? now);
         }
 
-        // Step 4: the matcher decides, among admissible slots linked to no other running wish.
+        // Step 4: the matcher decides, among admissible slots held by no other wish (running link or kept).
         public void ReconcileUnlinked(Wish wish)
         {
             switch (wish.Status)
@@ -469,7 +473,8 @@ public sealed class WishReconcileService(
             wishes.Any(w => w.Id != wish.Id
                     && WishStatus.IsRunning(w.Status)
                     && string.Equals(w.SevenTvEmoteId, wish.SevenTvEmoteId, StringComparison.Ordinal))
-                || others.Any(o => string.Equals(o.SevenTvEmoteId, wish.SevenTvEmoteId, StringComparison.Ordinal));
+                || others.Any(o => WishStatus.IsRunning(o.Status)
+                    && string.Equals(o.SevenTvEmoteId, wish.SevenTvEmoteId, StringComparison.Ordinal));
 
         private HashSet<string> LinkedSlotIdsExcept(Wish wish)
         {
@@ -504,8 +509,8 @@ public sealed class WishReconcileService(
         DateTime? ArchivedAt,
         bool SeedUnsettled);
 
-    // A running wish of the channel outside this run's locked set (unconfirmed, or one that became running
-    // after the ids were read).
+    // A wish of the channel outside this run's locked set: a running one (unconfirmed, or one that became
+    // running after the ids were read), or a kept one holding its slot.
     private sealed record OtherWish(string SevenTvEmoteId, string Status, string? SlotId);
 
     // What a client can see of a wish (the WishDto's stored fields). A change of these is what announces

@@ -67,6 +67,36 @@ public class WishSchemaTests(PostgresFixture fixture)
         Assert.Equal("23505", Assert.IsType<PostgresException>(ex.InnerException).SqlState);
     }
 
+    // Operator ruling 2026-11-18: a kept wish holds its slot like a live one; other ended wishes do not.
+    [Fact]
+    public async Task AKeptWishHoldsItsSlot_AgainstLiveAndKeptWishes_NotAgainstOtherEndedOnes()
+    {
+        var seeded = await SeedAsync();
+        await using var db = fixture.CreateDbContext();
+        var kept = NewWish(seeded.ChannelId, "emote1", WishStatus.Kept);
+        kept.SlotId = seeded.SlotId;
+        kept.EndedAtUtc = DateTime.UtcNow;
+        var removed = NewWish(seeded.ChannelId, "emote2", WishStatus.RemovedExternally);
+        removed.SlotId = seeded.SlotId;
+        removed.EndedAtUtc = DateTime.UtcNow;
+        db.Wishes.AddRange(kept, removed);
+        await db.SaveChangesAsync();
+
+        // Distinct emote ids keep the (channel, emote) index out of the way.
+        var clashes = new[] { (WishStatus.Active, "emote3"), (WishStatus.Presented, "emote4"), (WishStatus.Kept, "emote5") };
+        foreach (var (status, emoteId) in clashes)
+        {
+            await using var attempt = fixture.CreateDbContext();
+            var clash = NewWish(seeded.ChannelId, emoteId, status);
+            clash.SlotId = seeded.SlotId;
+            clash.EndedAtUtc = WishStatus.IsEnded(status) ? DateTime.UtcNow : null;
+            attempt.Wishes.Add(clash);
+            var ex = await Assert.ThrowsAsync<DbUpdateException>(() => attempt.SaveChangesAsync());
+            var postgres = Assert.IsType<PostgresException>(ex.InnerException);
+            Assert.Equal(("23505", "IX_Wishes_SlotId_Live"), (postgres.SqlState, postgres.ConstraintName));
+        }
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(366)]

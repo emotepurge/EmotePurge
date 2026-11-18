@@ -499,11 +499,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .HasFilter(
                     $"\"Status\" IN ('{WishStatus.Approved}', '{WishStatus.Unconfirmed}', '{WishStatus.Active}', '{WishStatus.Presented}')");
 
-            // One live wish per slot; ended wishes keep their SlotId without competing for it.
+            // One slot-holding wish per slot: a live one, or a kept one, which keeps its entry for good
+            // (operator ruling 2026-11-18). Other ended wishes keep their SlotId without competing for it.
             entity.HasIndex(w => w.SlotId)
                 .IsUnique()
                 .HasDatabaseName("IX_Wishes_SlotId_Live")
-                .HasFilter($"\"SlotId\" IS NOT NULL AND \"Status\" IN ('{WishStatus.Active}', '{WishStatus.Presented}')");
+                .HasFilter($"\"SlotId\" IS NOT NULL AND \"Status\" IN ('{WishStatus.Active}', '{WishStatus.Presented}', '{WishStatus.Kept}')");
 
             // Retention sweeps only rows that carry requester data.
             entity.HasIndex(w => w.EndedAtUtc)

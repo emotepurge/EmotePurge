@@ -137,7 +137,7 @@ namespace EmotePurge.Infrastructure.Migrations
                 table: "Wishes",
                 column: "SlotId",
                 unique: true,
-                filter: "\"SlotId\" IS NOT NULL AND \"Status\" IN ('active', 'presented')");
+                filter: "\"SlotId\" IS NOT NULL AND \"Status\" IN ('active', 'presented', 'kept')");
 
             migrationBuilder.CreateIndex(
                 name: "IX_Wishes_Status_ExpiresAtUtc",

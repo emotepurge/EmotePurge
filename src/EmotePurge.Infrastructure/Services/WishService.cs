@@ -291,8 +291,9 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         }
 
         var ownId = wish?.Id;
-        var live = new[] { WishStatus.Active, WishStatus.Presented };
-        var linked = await db.Wishes.AnyAsync(w => w.SlotId == slot.Id && live.Contains(w.Status) && w.Id != ownId, cancellationToken);
+        // The states of IX_Wishes_SlotId_Live: a kept wish holds its entry like a live one.
+        var holding = new[] { WishStatus.Active, WishStatus.Presented, WishStatus.Kept };
+        var linked = await db.Wishes.AnyAsync(w => w.SlotId == slot.Id && holding.Contains(w.Status) && w.Id != ownId, cancellationToken);
         if (linked)
         {
             return WishCommandResult.Of(WishOutcome.SlotAlreadyLinked);

@@ -445,6 +445,99 @@ public partial class WishReconcileServiceTests(PostgresFixture fixture)
         AssertPublishedOnce(channel);
     }
 
+    // ------------------------------------------------------------------------------------ kept holds its slot
+
+    // Operator ruling 2026-11-18 (T7 review): A is removed externally, the emote comes back under another
+    // alias and is adopted as B, 7TV renames it back to A's alias, B is kept. The entry is B's for good: A
+    // does not return onto it, and the pre-check does not even start a run for A.
+    [Fact]
+    public async Task AKeptWish_HoldsItsSlot_AnExternallyRemovedWishDoesNotReturnOntoIt()
+    {
+        var channel = await SeedChannelAsync();
+        var emote = await SeedEmoteAsync(channel);
+        var addedAt = Now.AddDays(-3);
+        var first = await SeedSlotAsync(emote, "Kappa", addedAt);
+        var a = await SeedLinkedAsync(channel, emote, first, addedAt, alias: "Kappa");
+        var archivedAt = Now.AddHours(1);
+        await UpdateSlotAsync(first, s => (s.IsArchived, s.ArchivedAt) = (true, archivedAt));
+        _clock.Advance(TimeSpan.FromHours(2));
+        await ReconcileAsync(channel);
+        Assert.Equal(WishStatus.RemovedExternally, (await WishAsync(a)).Status);
+
+        var second = await SeedSlotAsync(emote, "Other", archivedAt.AddMinutes(30));
+        _clock.Advance(TimeSpan.FromMinutes(10));
+        var adopted = await WishSut().AdoptAsync(channel.Name, new AdoptWishRequest(second, null, 30, null), Actor);
+        Assert.True(adopted.IsSuccess);
+        var b = adopted.Wish!.Id;
+
+        await UpdateSlotAsync(second, s => s.Name = "Kappa");
+        await ReconcileAsync(channel);
+        Assert.Equal((WishStatus.Active, "Kappa"), ((await WishAsync(b)).Status, (await WishAsync(b)).Alias));
+        Assert.Equal(WishStatus.RemovedExternally, (await WishAsync(a)).Status);
+
+        Assert.True((await WishSut().KeepAsync(channel.Name, b, Actor)).IsSuccess);
+        var removedBefore = await SnapshotAsync(a);
+        _publisher.ClearReceivedCalls();
+        var hook = new CommandHook(_ => false, _ => Task.CompletedTask);
+
+        await ReconcileAsync(channel, hook);
+
+        Assert.Equal(removedBefore, await SnapshotAsync(a));
+        var kept = await WishAsync(b);
+        Assert.Equal((WishStatus.Kept, second), (kept.Status, kept.SlotId));
+        Assert.Equal(1, hook.Count(_ => true));
+        AssertNothingPublished();
+    }
+
+    // The matcher's candidates leave out a kept wish's slot too: a slot the kept wish holds, back in the set
+    // after the approval of a new wish for the emote, stays the kept wish's, and the new wish stays approved.
+    [Fact]
+    public async Task AKeptWishsSlot_IsNoCandidate_ForANewApprovedWishOfTheEmote()
+    {
+        var channel = await SeedChannelAsync();
+        var emote = await SeedEmoteAsync(channel);
+        var slot = await SeedSlotAsync(emote, "Kappa", Now.AddDays(-3));
+        var kept = await SeedWishAsync(channel, emote, WishStatus.Kept, w =>
+        {
+            w.Alias = "Kappa";
+            w.SlotId = slot;
+            w.LinkOrigin = WishLinkOrigin.Auto;
+            w.EndedAtUtc = Now.AddDays(-2);
+        });
+        var approved = await SeedWishAsync(channel, emote, WishStatus.Approved, w =>
+        {
+            w.Alias = "Kappa";
+            w.ApprovedAtUtc = Now.AddHours(-2);
+        });
+        await UpdateSlotAsync(slot, s => s.AddedAt = Now.AddHours(-1));
+        var before = await SnapshotAsync(approved);
+
+        await ReconcileAsync(channel);
+
+        Assert.Equal(before, await SnapshotAsync(approved));
+        Assert.Equal((WishStatus.Kept, slot), ((await WishAsync(kept)).Status, (await WishAsync(kept)).SlotId));
+        AssertNothingPublished();
+    }
+
+    // The adoption refuses a slot a kept wish holds, before the index would.
+    [Fact]
+    public async Task Adopt_OfASlotAKeptWishHolds_IsSlotAlreadyLinked()
+    {
+        var channel = await SeedChannelAsync();
+        var emote = await SeedEmoteAsync(channel);
+        var slot = await SeedSlotAsync(emote, "Kappa", Now.AddDays(-3));
+        await SeedWishAsync(channel, emote, WishStatus.Kept, w =>
+        {
+            w.Alias = "Kappa";
+            w.SlotId = slot;
+            w.EndedAtUtc = Now.AddDays(-2);
+        });
+
+        var result = await WishSut().AdoptAsync(channel.Name, new AdoptWishRequest(slot, null, 30, null), Actor);
+
+        Assert.Equal(WishOutcome.SlotAlreadyLinked, result.Outcome);
+    }
+
     // ------------------------------------------------------------------------------------ adopt hand-off (T4 M4)
 
     // An adopted start the manager chose stays; one the adoption took from the slot (or stood in for an
