@@ -17,6 +17,8 @@ internal static class AuditLogWrites
     /// Stages an entry — it is not persisted until the caller saves. <paramref name="details"/> is
     /// serialized to the jsonb column; pass an anonymous object with camelCase members
     /// (e.g. <c>new { emoteCount = 12 }</c>), which System.Text.Json writes through unchanged.
+    /// <paramref name="occurredAtUtc"/> defaults to the wall clock; a writer whose own reads depend on the stamp
+    /// (the wish expiry run, which searches its earlier entries from the expiry on) passes its clock's time.
     /// </summary>
     public static void AddAuditEntry(
         this AppDbContext db,
@@ -25,11 +27,12 @@ internal static class AuditLogWrites
         string? channelName = null,
         string? targetType = null,
         string? targetId = null,
-        object? details = null)
+        object? details = null,
+        DateTime? occurredAtUtc = null)
     {
         db.AuditLogEntries.Add(new AuditLogEntry
         {
-            OccurredAtUtc = DateTime.UtcNow,
+            OccurredAtUtc = occurredAtUtc ?? DateTime.UtcNow,
             ActorTwitchUserId = actor.TwitchUserId,
             ActorLogin = actor.Login,
             Action = action,

@@ -41,6 +41,23 @@ public class WishRegistrationTests
             provider.GetRequiredService<IWishReconcileService>(), scope.ServiceProvider.GetRequiredService<IWishReconcileService>());
     }
 
+    // The expiry run (#484 T3) resolves per scope whatever the switch (the worker checks the switch, not the
+    // container), and the stand-in bot availability is registered and never available until K4 replaces it.
+    [Theory]
+    [InlineData("true")]
+    [InlineData("false")]
+    [InlineData(null)]
+    public async Task WishExpiry_Resolves_WhateverTheSwitch_AndTheDefaultBotIsNeverAvailable(string? value)
+    {
+        using var provider = BuildProvider(value);
+        using var scope = provider.CreateScope();
+
+        Assert.IsType<WishExpiryService>(scope.ServiceProvider.GetRequiredService<IWishExpiryService>());
+        var availability = provider.GetRequiredService<IWishBotAvailability>();
+        Assert.IsType<WishBotNeverAvailable>(availability);
+        Assert.False(await availability.IsAvailableAsync());
+    }
+
     // The trigger parameters of SevenTvSyncService and EmoteService are optional (null = no hook), so a
     // miswired graph would silently drop the hook. A recording double behind the registration cannot be
     // reached without a database, so this reads the injected field instead — by its type, not its name, which
