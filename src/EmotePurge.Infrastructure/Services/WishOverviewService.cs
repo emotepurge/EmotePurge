@@ -31,8 +31,13 @@ public sealed class WishOverviewService(
             return [];
         }
 
+        // The reload keeps the authorized channel scope: a channel merge that commits during the role checks
+        // moves a selected wish to a channel the caller was never checked for, and that wish drops out.
         var ids = candidates.Where(c => manageable.ContainsKey(c.ChannelId)).Select(c => c.WishId).ToList();
-        var rows = await db.Wishes.AsNoTracking().Where(w => ids.Contains(w.Id)).ToListAsync(cancellationToken);
+        var channelIds = manageable.Keys.ToList();
+        var rows = await db.Wishes.AsNoTracking()
+            .Where(w => ids.Contains(w.Id) && channelIds.Contains(w.ChannelId))
+            .ToListAsync(cancellationToken);
         return rows
             .OrderBy(w => w.ExpiresAtUtc is null)
             .ThenBy(w => w.ExpiresAtUtc)

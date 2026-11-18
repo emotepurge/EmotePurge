@@ -165,6 +165,32 @@ public class WishOverviewServiceTests(PostgresFixture fixture, RedisFixture redi
         Assert.Empty(access.ReceivedCalls());
     }
 
+    // A channel merge (ChannelIdentityService.MoveWishesAsync) commits while the role checks run: the selected
+    // wish now belongs to the survivor, which the caller was never checked for. The reload stays inside the
+    // authorized channels, so the moved wish drops out instead of failing the whole list.
+    [Fact]
+    public async Task Mine_AWishMovedToAnUncheckedChannelDuringTheRoleChecks_DropsOut()
+    {
+        var loser = await SeedChannelAsync("merge_loser");
+        var survivor = await SeedChannelAsync("merge_survivor");
+        var moved = await SeedWishAsync(loser, WishStatus.Approved);
+        var stays = await SeedWishAsync(loser, WishStatus.Failed);
+        var access = Substitute.For<IChannelAccessService>();
+        access.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), "merge_loser", Arg.Any<CancellationToken>())
+            .Returns(async _ =>
+            {
+                await using var db = CreateDb();
+                await db.Wishes.Where(w => w.Id == moved).ExecuteUpdateAsync(s => s.SetProperty(w => w.ChannelId, survivor));
+                return true;
+            });
+
+        var rows = await Sut(access).ListMineAsync(Principal("u-merge"));
+
+        var row = Assert.Single(rows);
+        Assert.Equal(("merge_loser", stays), (row.ChannelName, row.Wish.Id));
+        await access.DidNotReceive().CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), "merge_survivor", Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public void NeitherReadRoutesThroughTheMyChannelsService()
     {
