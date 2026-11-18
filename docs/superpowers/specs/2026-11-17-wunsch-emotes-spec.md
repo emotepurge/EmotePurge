@@ -131,7 +131,7 @@ Zustände (`Wish.Status`, als Zeichenkette gespeichert, die Werte sind Vertrag):
 | `removed_externally` | extern entfernt | außerhalb von Emote Purge entfernt | ja, mit Rückweg (E10) |
 | `kept` | behalten | Eintrag bleibt dauerhaft, Wunsch geschlossen | ja |
 | `closed` | geschlossen | ohne Aktion in 7TV beendet | ja |
-| `merged` | zusammengeführt | ging als Verlängerung in einen laufenden Wunsch auf (K6), oder war bei einer Kanal-Zusammenführung der jüngere von zwei laufenden | ja |
+| `merged` | zusammengeführt | ging als Verlängerung in einen laufenden Wunsch auf (K6), oder unterlag bei einer Kanal-Zusammenführung einem anderen laufenden Wunsch (Regel siehe 6.5) | ja |
 
 K1 legt alle Werte an. Die Übergänge aus `pending` und das Aufgehen in `merged` baut K6; in K1 bis
 K5 gibt es dafür keinen Endpunkt, keinen Worker-Zweig und keine Oberfläche.
@@ -314,8 +314,10 @@ zuordnet. Der Abgleich ruft ihn für jeden Wunsch in `pending`, `approved` und `
 - Kanal-Zusammenführung (`ChannelIdentityService`): Der Verlierer darf heute keine Emotes und
   keine Tags haben (`:902-904`), kann aber Wünsche ohne Slot tragen und wird am Ende gelöscht
   (`:1009`). In derselben Transaktion wandern deshalb Wünsche und Einstellungen zum überlebenden
-  Kanal (dessen Einstellungen gewinnen); kollidiert der partielle Eindeutigkeitsindex, endet der
-  jüngere Wunsch als `merged`. K6 erweitert das um Belohnungen, Anlernzustand und Lücken (K6).
+  Kanal (dessen Einstellungen gewinnen); kollidiert der partielle Eindeutigkeitsindex, gewinnt
+  der Wunsch mit Spur in 7TV (verknüpfter Slot in `unconfirmed`, `active` oder `presented`, ab K4
+  auch ein Bot-Schreibvorgang), der andere endet als `merged`; stehen beide gleich da, endet der
+  jüngere (Betreiberentscheidung 18.11.). K6 erweitert das um Belohnungen, Anlernzustand und Lücken (K6).
 
 K1 baut die Regel mit den Treffern über die Emote-ID und der Spalte `LinkOrigin`; K6 ergänzt den
 Zustand `pending` und den Treffer über den Namen.
