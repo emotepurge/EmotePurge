@@ -1430,6 +1430,15 @@
       }
     }
   },
+  "myWishes": {
+    "title": "My wishes",
+    "actionNeeded": "Needs action",
+    "probation": "Probation",
+    "empty": "Nothing to do.",
+    "emptyHint": "No wish is waiting for a decision, and none is in its probation period.",
+    "loadFailed": "The wishes could not be loaded.",
+    "retry": "Reload"
+  },
   "myVotings": {
     "noSessions": "You haven't voted in any session yet.",
     "noSessionsHint": "You'll find voting sessions in the channels where you're a viewer, mod or broadcaster."

@@ -1430,6 +1430,15 @@
       }
     }
   },
+  "myWishes": {
+    "title": "Meine Wünsche",
+    "actionNeeded": "Handlungsbedarf",
+    "probation": "Probezeit",
+    "empty": "Nichts zu tun.",
+    "emptyHint": "Es wartet kein Wunsch auf eine Entscheidung, und keiner ist in der Probezeit.",
+    "loadFailed": "Die Wünsche konnten nicht geladen werden.",
+    "retry": "Erneut laden"
+  },
   "myVotings": {
     "noSessions": "Du hast noch in keiner Abstimmung mitgemacht.",
     "noSessionsHint": "Abstimmungen findest du in den Channels, in denen du Zuschauer, Mod oder Broadcaster bist."

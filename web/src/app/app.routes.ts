@@ -56,6 +56,14 @@ export const routes: Routes = [
         canActivate: [authGuard],
       },
       {
+        // Cross-channel as well: wishes needing a decision or in probation over every managed
+        // channel. A 404 `wishes_disabled` is answered by the page itself (back to the overview).
+        path: 'my-wishes',
+        loadComponent: () =>
+          import('./features/my-wishes/my-wishes-page').then((m) => m.MyWishesPage),
+        canActivate: [authGuard],
+      },
+      {
         // Global-admin area. The guard reads the cached /me; every endpoint behind these pages is
         // additionally protected server-side by GlobalAdminAuthorizationFilter.
         path: 'admin',
