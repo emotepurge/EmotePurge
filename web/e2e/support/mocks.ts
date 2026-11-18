@@ -2632,9 +2632,19 @@ export async function mockSevenTvSetBackend(
   options: {
     addedAtOnAdd?: string;
     onRemove?: (backend: MockSevenTvSetBackend, variables: Record<string, unknown>) => void;
+    /**
+     * Refuses the REMOVE with these GQL errors, leaving the set as it is: called with the zero-based
+     * number of the REMOVE request, `undefined` lets it through. A rate-limit answer is
+     * `[{ message, extensions: { status: 429, headers: { reset: '2' } } }]`.
+     */
+    rejectRemove?: (
+      index: number,
+      variables: Record<string, unknown>,
+    ) => SevenTvGqlErrorFixture[] | undefined;
   } = {},
 ): Promise<MockSevenTvSetBackend> {
   const requests: MockSevenTvRecordedRequest[] = [];
+  let removeIndex = 0;
   const backend: MockSevenTvSetBackend = {
     live: [...live],
     requests,
@@ -2647,7 +2657,11 @@ export async function mockSevenTvSetBackend(
     const emoteId = request.variables['emoteId'] as string;
     const alias = request.variables['alias'] as string | undefined;
     switch (kind) {
-      case 'removeEmote':
+      case 'removeEmote': {
+        const refusal = options.rejectRemove?.(removeIndex++, request.variables);
+        if (refusal !== undefined) {
+          return { errors: refusal };
+        }
         backend.live = backend.live.filter(
           (entry) => !(entry.id === emoteId && (alias === undefined || entry.alias === alias)),
         );
@@ -2655,6 +2669,7 @@ export async function mockSevenTvSetBackend(
         return {
           data: { emoteSets: { emoteSet: { removeEmote: { id: request.variables['setId'] } } } },
         };
+      }
       case 'addEmote':
         backend.live.push({
           id: emoteId,
@@ -3433,4 +3448,570 @@ export async function mockBackfillRemove(
     );
   });
   return { bodies: () => bodies };
+}
+
+// ---------------------------------------------------------------------------
+// Wish emotes (#485, K3). One stateful stand-in for `/api/channels/{c}/wishes/**`, the header's
+// summary and `my-wishes`, plus the 7TV reads a wish run needs besides the GQL set backend above.
+// ---------------------------------------------------------------------------
+
+const WISH_DAY_MS = 86_400_000;
+
+/**
+ * Wraps a route handler that may be held back (`gate`): when the page gave the request up while it
+ * was held (an unsubscribed read, a navigation), answering it fails with a protocol error that is no
+ * finding. Anything else still surfaces.
+ */
+function whenHeld(handler: (route: Route) => Promise<unknown>): (route: Route) => Promise<void> {
+  return async (route) => {
+    try {
+      await handler(route);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/already handled|closed|Invalid InterceptionId|fulfillRequest|aborted/i.test(message)) {
+        throw error;
+      }
+    }
+  };
+}
+
+/** An ISO instant `days` from now (negative: in the past), whole milliseconds. */
+export function wishInstant(days: number): string {
+  return new Date(Date.now() + days * WISH_DAY_MS).toISOString();
+}
+
+/** A 26-character ULID (the id form 7TV issues) that differs only in its last letters. */
+export function wishUlid(suffix: string): string {
+  return `01JK${'A'.repeat(22 - suffix.length)}${suffix}`.toUpperCase();
+}
+
+/** A wish as the Api sends it (`Wish` of `wish.model.ts`). Dates are relative to now; override freely. */
+export type MockWish = Record<string, unknown> & { id: number };
+
+/**
+ * One wish DTO. Defaults to an `active` manual wish that holds a slot, runs for 14 days, started five
+ * days ago and is not yet in its probation. `imageUrl` is the stored still on the CDN.
+ */
+export function buildWish(id: number, overrides: Record<string, unknown> = {}): MockWish {
+  return {
+    id,
+    sevenTvEmoteId: wishUlid(`W${id}`),
+    emoteName: `Wish${id}`,
+    alias: `wish${id}`,
+    source: 'manual',
+    status: 'active',
+    statusReason: null,
+    requesterLogin: null,
+    durationDays: 14,
+    createdAtUtc: wishInstant(-6),
+    approvedAtUtc: wishInstant(-6),
+    startsAtUtc: wishInstant(-5),
+    startsAtAuthoritative: true,
+    probationStartsAtUtc: wishInstant(8),
+    expiresAtUtc: wishInstant(9),
+    endedAtUtc: null,
+    slotId: `slot-${id}`,
+    slotAddedAtUtc: '2026-11-14T10:00:00.123456Z',
+    imageUrl: `https://cdn.7tv.app/emote/wish${id}/static.webp`,
+    linkOrigin: 'auto',
+    extensionCount: 0,
+    permanent: false,
+    botOwned: false,
+    botWritePending: false,
+    botNextAttemptAtUtc: null,
+    removalQueuedAtUtc: null,
+    mode: 'manual',
+    ...overrides,
+  };
+}
+
+/** The `usage` of a wish detail (`WishUsage`), with a daily series that sums to `total`. */
+export function buildWishUsage(total = 10): Record<string, unknown> {
+  return {
+    windowFromUtc: wishInstant(-5),
+    windowToUtc: wishInstant(0),
+    total,
+    perDayMean: Math.round((total / 5) * 10) / 10,
+    rank: null,
+    rankOf: null,
+    coverageGap: false,
+    daily: [],
+  };
+}
+
+/** One entry of `GET …/wishes/slots`; the free, unheld case unless overridden. */
+export function buildWishSlot(slotId: string, overrides: Record<string, unknown> = {}) {
+  return {
+    slotId,
+    sevenTvEmoteId: wishUlid(
+      slotId
+        .toUpperCase()
+        .replace(/[^0-9A-Z]/g, '')
+        .slice(-6),
+    ),
+    alias: slotId,
+    addedAtUtc: '2026-11-10T08:00:00.000000Z',
+    addedAtAuthoritative: true,
+    imageUrl: null as string | null,
+    heldByWishId: null as number | null,
+    runningWishId: null as number | null,
+    runningWishAdoptable: false,
+    ...overrides,
+  };
+}
+
+export type MockWishCallKind =
+  | 'list'
+  | 'detail'
+  | 'slots'
+  | 'settings-read'
+  | 'settings-write'
+  | 'create'
+  | 'adopt'
+  | 'update'
+  | 'extend'
+  | 'keep'
+  | 'close'
+  | 'retry'
+  | 'recheck'
+  | 'complete-removal'
+  | 're-add';
+
+/** One request the wish backend saw, in arrival order. `body` is the parsed JSON body, if any. */
+export interface MockWishCall {
+  index: number;
+  kind: MockWishCallKind;
+  method: string;
+  id: number | null;
+  view: string | null;
+  page: number | null;
+  sevenTvEmoteId: string | null;
+  body: Record<string, unknown> | null;
+}
+
+export interface MockWishSettings {
+  defaultDurationDays: number;
+  probationLeadDays: number;
+  protectionThresholdPerDay: number | null;
+  botModeEnabled: boolean;
+  botSuspendedReason: string | null;
+  canEdit: boolean;
+}
+
+export interface MockWishBackend {
+  /** The three lists the channel page asks for, newest answer first; a spec may change them any time. */
+  open: MockWish[];
+  running: MockWish[];
+  ended: MockWish[];
+  /** Page size is whatever the page asks for; nothing to set. Per-wish overrides of `GET /{id}`: a
+   *  wish object, or an HTTP status to answer with. */
+  details: Map<number, MockWish | number>;
+  /** The `usage` object of `GET /{id}`; a missing key answers `buildWishUsage()`, `null` answers null. */
+  usage: Map<number, Record<string, unknown> | null>;
+  slots: ReturnType<typeof buildWishSlot>[];
+  settings: MockWishSettings;
+  calls: MockWishCall[];
+  /**
+   * Awaited before the request is answered: return a promise to hold it back (the order in which
+   * answers arrive is the spec's to choose), nothing to answer at once.
+   */
+  gate?: (call: MockWishCall) => Promise<void> | void;
+  /**
+   * Replaces the default answer of a write: `{ status, body }` answers with exactly that, `undefined`
+   * keeps the default (which also moves the wish between the lists the way the Api would).
+   */
+  onCommand?: (call: MockWishCall, backend: MockWishBackend) => MockWishCommandAnswer | undefined;
+  /** The calls of one kind, optionally for one wish. */
+  of(kind: MockWishCallKind, id?: number): MockWishCall[];
+  /** A wish by id in any of the three lists. */
+  find(id: number): MockWish | undefined;
+}
+
+export interface MockWishCommandAnswer {
+  /** The HTTP status; 0 fails the connection instead (a network error). */
+  status: number;
+  body?: unknown;
+}
+
+/**
+ * `/api/channels/{channelName}/wishes/**` — lists (`view`, `page`, `pageSize`), the detail, the slots,
+ * the settings and every command, recorded with their bodies. Defaults make a command do what the Api
+ * does closely enough for a flow to continue (a created wish is `approved` and lands in "open", a kept
+ * or closed one in "ended"); {@link MockWishBackend.onCommand} replaces any of them, and
+ * {@link MockWishBackend.gate} holds any request back. Register before `page.goto`.
+ */
+export async function mockWishBackend(
+  page: Page,
+  channelName: string,
+  init: Partial<Pick<MockWishBackend, 'open' | 'running' | 'ended' | 'slots'>> & {
+    settings?: Partial<MockWishSettings>;
+  } = {},
+): Promise<MockWishBackend> {
+  const backend: MockWishBackend = {
+    open: init.open ?? [],
+    running: init.running ?? [],
+    ended: init.ended ?? [],
+    details: new Map(),
+    usage: new Map(),
+    slots: init.slots ?? [],
+    settings: {
+      defaultDurationDays: 14,
+      probationLeadDays: 3,
+      protectionThresholdPerDay: null,
+      botModeEnabled: false,
+      botSuspendedReason: null,
+      canEdit: true,
+      ...init.settings,
+    },
+    calls: [],
+    of: (kind, id) =>
+      backend.calls.filter((call) => call.kind === kind && (id === undefined || call.id === id)),
+    find: (id) => [...backend.open, ...backend.running, ...backend.ended].find((w) => w.id === id),
+  };
+  const lists = ['open', 'running', 'ended'] as const;
+  const move = (id: number, to: (typeof lists)[number] | null, patch: Record<string, unknown>) => {
+    const wish = backend.find(id);
+    if (wish === undefined) {
+      return undefined;
+    }
+    for (const name of lists) {
+      backend[name] = backend[name].filter((w) => w.id !== id);
+    }
+    const next = { ...wish, ...patch };
+    if (to !== null) {
+      backend[to] = [next, ...backend[to]];
+    }
+    return next;
+  };
+
+  const prefix = `/api/channels/${channelName}/wishes`;
+  await page.route(
+    (url) => url.pathname === prefix || url.pathname.startsWith(`${prefix}/`),
+    whenHeld(async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const rest = url.pathname.slice(prefix.length).split('/').filter(Boolean);
+      const method = request.method();
+      const bodyText = request.postData();
+      const body = bodyText ? (JSON.parse(bodyText) as Record<string, unknown>) : null;
+      const numeric = rest[0] !== undefined && /^\d+$/.test(rest[0]) ? Number(rest[0]) : null;
+
+      let kind: MockWishCallKind;
+      if (rest.length === 0) {
+        kind = method === 'GET' ? 'list' : 'create';
+      } else if (rest[0] === 'slots') {
+        kind = 'slots';
+      } else if (rest[0] === 'settings') {
+        kind = method === 'GET' ? 'settings-read' : 'settings-write';
+      } else if (rest[0] === 'adopt') {
+        kind = 'adopt';
+      } else if (numeric !== null && rest.length === 1) {
+        kind = method === 'GET' ? 'detail' : 'update';
+      } else {
+        kind = rest[1] as MockWishCallKind;
+      }
+      const call: MockWishCall = {
+        index: backend.calls.length,
+        kind,
+        method,
+        id: numeric,
+        view: url.searchParams.get('view'),
+        page: url.searchParams.has('page') ? Number(url.searchParams.get('page')) : null,
+        sevenTvEmoteId: url.searchParams.get('sevenTvEmoteId'),
+        body,
+      };
+      backend.calls.push(call);
+      // The state a list answer shows is the one at the moment the request arrived, not the one a
+      // held-back answer is finally released in: that is what makes an old answer arriving last old.
+      const view = (call.view ?? 'open') as (typeof lists)[number];
+      const snapshot = kind === 'list' ? backend[view] : [];
+      await backend.gate?.(call);
+
+      if (kind === 'list') {
+        const pageNumber = call.page ?? 1;
+        const pageSize = Number(url.searchParams.get('pageSize') ?? '20');
+        const all = snapshot;
+        return fulfillJson(route, 200, {
+          items: all.slice((pageNumber - 1) * pageSize, pageNumber * pageSize),
+          page: pageNumber,
+          pageSize,
+          totalCount: all.length,
+          totalPages: Math.max(1, Math.ceil(all.length / pageSize)),
+        });
+      }
+      if (kind === 'detail') {
+        const override = backend.details.get(call.id as number);
+        if (typeof override === 'number') {
+          return fulfillJson(route, override, { errorCode: 'wish_not_found' });
+        }
+        const wish = override ?? backend.find(call.id as number);
+        if (wish === undefined) {
+          return fulfillJson(route, 404, { errorCode: 'wish_not_found' });
+        }
+        const usage = backend.usage.has(wish.id) ? backend.usage.get(wish.id) : buildWishUsage();
+        return fulfillJson(route, 200, { ...wish, usage });
+      }
+      if (kind === 'slots') {
+        const only = call.sevenTvEmoteId;
+        return fulfillJson(
+          route,
+          200,
+          backend.slots.filter((slot) => only === null || slot.sevenTvEmoteId === only),
+        );
+      }
+      if (kind === 'settings-read') {
+        return fulfillJson(route, 200, backend.settings);
+      }
+      const custom = backend.onCommand?.(call, backend);
+      if (custom !== undefined) {
+        // Status 0: the connection fails (no answer at all), as a network error does.
+        return custom.status === 0
+          ? route.abort('failed')
+          : fulfillJson(route, custom.status, custom.body ?? null);
+      }
+      if (kind === 'settings-write') {
+        const { canEdit: _canEdit, ...saved } = {
+          ...backend.settings,
+          ...(body as Partial<MockWishSettings>),
+        };
+        backend.settings = { ...saved, canEdit: backend.settings.canEdit };
+        return fulfillJson(route, 200, saved);
+      }
+      if (kind === 'create') {
+        const created = buildWish(
+          Math.max(
+            100,
+            ...[...backend.open, ...backend.running, ...backend.ended].map((w) => w.id + 1),
+          ),
+          {
+            status: 'approved',
+            source: 'manual',
+            sevenTvEmoteId: body?.['sevenTvEmoteId'],
+            emoteName: body?.['emoteName'] ?? body?.['alias'],
+            alias: body?.['alias'],
+            durationDays: body?.['durationDays'],
+            requesterLogin: body?.['requesterLogin'] ?? null,
+            slotId: null,
+            slotAddedAtUtc: null,
+            startsAtUtc: null,
+            probationStartsAtUtc: null,
+            expiresAtUtc: null,
+          },
+        );
+        backend.open = [created, ...backend.open];
+        return fulfillJson(route, 201, { ...created, setFull: false });
+      }
+      if (kind === 'adopt') {
+        const slot = backend.slots.find((s) => s.slotId === body?.['slotId']);
+        const givenId = typeof body?.['wishId'] === 'number' ? (body['wishId'] as number) : null;
+        const patch = {
+          status: 'active',
+          slotId: slot?.slotId ?? body?.['slotId'],
+          slotAddedAtUtc: slot?.addedAtUtc ?? null,
+          alias: slot?.alias ?? body?.['expectedAlias'],
+          durationDays: body?.['durationDays'],
+          source: 'adopted',
+          linkOrigin: 'adopted',
+          startsAtUtc: wishInstant(0),
+          expiresAtUtc: wishInstant(Number(body?.['durationDays'] ?? 14)),
+        };
+        const adopted =
+          (givenId !== null ? move(givenId, 'running', patch) : undefined) ??
+          buildWish(Math.max(100, ...[...backend.running].map((w) => w.id + 1)), {
+            ...patch,
+            sevenTvEmoteId: slot?.sevenTvEmoteId,
+          });
+        if (givenId === null) {
+          backend.running = [adopted, ...backend.running];
+        }
+        return fulfillJson(route, 200, adopted);
+      }
+      const id = call.id as number;
+      const known = backend.find(id);
+      if (known === undefined) {
+        return fulfillJson(route, 404, { errorCode: 'wish_not_found' });
+      }
+      switch (kind) {
+        case 'keep':
+          return fulfillJson(
+            route,
+            200,
+            move(id, 'ended', { status: 'kept', endedAtUtc: wishInstant(0) }),
+          );
+        case 'close':
+          return fulfillJson(
+            route,
+            200,
+            move(id, 'ended', { status: 'closed', endedAtUtc: wishInstant(0) }),
+          );
+        case 'complete-removal':
+          return fulfillJson(
+            route,
+            200,
+            move(id, 'ended', { status: 'removed', endedAtUtc: wishInstant(0), slotId: null }),
+          );
+        case 'extend':
+          return fulfillJson(
+            route,
+            200,
+            move(id, 'running', {
+              status: 'active',
+              extensionCount: Number(known['extensionCount'] ?? 0) + 1,
+              expiresAtUtc: wishInstant(23),
+            }),
+          );
+        default:
+          return fulfillJson(route, 200, known);
+      }
+    }),
+  );
+  return backend;
+}
+
+/** A counting stand-in for `GET /api/wishes/summary`; `set` changes what the next request sees. */
+export interface MockWishSummaryHandle {
+  requests(): number;
+  set(actionCount: number | 'disabled'): void;
+}
+
+export async function mockWishSummaryLive(
+  page: Page,
+  initial: number | 'disabled',
+): Promise<MockWishSummaryHandle> {
+  let current = initial;
+  let count = 0;
+  await page.route('**/api/wishes/summary', (route) => {
+    count += 1;
+    return current === 'disabled'
+      ? fulfillJson(route, 404, { errorCode: 'wishes_disabled' })
+      : fulfillJson(route, 200, { actionCount: current });
+  });
+  return {
+    requests: () => count,
+    set: (next) => {
+      current = next;
+    },
+  };
+}
+
+/**
+ * GET /api/wishes/mine — the cross-channel list behind `/my-wishes`. A number answers with that
+ * status. The handle's `items` may be replaced between requests; `requests` counts them.
+ */
+export async function mockWishMine(
+  page: Page,
+  items: { channelName: string; wish: MockWish }[] | number,
+): Promise<{ items: { channelName: string; wish: MockWish }[]; requests(): number }> {
+  const handle = { items: typeof items === 'number' ? [] : items, requests: () => count };
+  let count = 0;
+  await page.route('**/api/wishes/mine', (route) => {
+    count += 1;
+    return typeof items === 'number'
+      ? fulfillJson(route, items, { errorCode: 'wishes_disabled' })
+      : fulfillJson(route, 200, handle.items);
+  });
+  return handle;
+}
+
+/** What {@link mockAuthoritativeEmoteSets} answers with and what it saw. */
+export interface MockAuthoritativeEmoteSets {
+  /** 7TV's own active set (`refresh=true`). `null`: the channel has none. */
+  activeEmoteSetId: string | null;
+  /** What a request without `refresh` sees (the Api's 60 s copy); defaults to the same. */
+  cachedActiveEmoteSetId?: string | null;
+  /** A status to answer with instead (503 — "not shown"). */
+  failWith?: number;
+  /** One entry per request: whether it carried `refresh=true`. */
+  calls: { refresh: boolean }[];
+  /** Awaited before request number `index` (0-based) is answered. */
+  gate?: (index: number) => Promise<void> | void;
+}
+
+/**
+ * GET /api/seventv/channels/{c}/emote-sets with or without `?refresh=true` — the authoritative read
+ * of the channel's active set that every wish run starts from (plan 2.5). Not the glob of
+ * `mockForeignChannelEmoteSets`: that one never matches a URL with a query.
+ */
+export async function mockAuthoritativeEmoteSets(
+  page: Page,
+  channelName: string,
+  activeEmoteSetId: string | null = 'set-1',
+): Promise<MockAuthoritativeEmoteSets> {
+  const state: MockAuthoritativeEmoteSets = { activeEmoteSetId, calls: [] };
+  await page.route(
+    (url) => url.pathname === `/api/seventv/channels/${channelName}/emote-sets`,
+    whenHeld(async (route) => {
+      const index = state.calls.length;
+      const refresh = new URL(route.request().url()).searchParams.get('refresh') === 'true';
+      state.calls.push({ refresh });
+      await state.gate?.(index);
+      if (state.failWith !== undefined) {
+        return fulfillJson(route, state.failWith, {
+          errorCode: 'foreign_channel_seventv_unavailable',
+        });
+      }
+      const shown = refresh
+        ? state.activeEmoteSetId
+        : (state.cachedActiveEmoteSetId ?? state.activeEmoteSetId);
+      return fulfillJson(route, 200, {
+        activeEmoteSetId: shown,
+        sets: shown
+          ? [
+              {
+                id: shown,
+                name: 'Hauptset',
+                capacity: 1000,
+                kind: 'NORMAL',
+                isActive: true,
+                isPersonal: false,
+                ownerDisplayName: null,
+                observations: [],
+              },
+            ]
+          : [],
+      });
+    }),
+  );
+  return state;
+}
+
+/**
+ * The 7TV single read the wish forms make (`emote(id:)` on `https://7tv.io/v4/gql`), answered from
+ * `emotes` by the id the page asks for (its canonical ULID); an id not in the map is unknown to 7TV.
+ * `gate` holds the answer of one read back (the order of answers is the spec's to choose). Do not
+ * combine with {@link mockSevenTvGql}: both route the same URL — the 7TV set backend answers this
+ * read itself.
+ */
+export async function mockSevenTvEmoteReads(
+  page: Page,
+  emotes: Record<string, { name: string; animated?: boolean }>,
+  options: { gate?: (id: string, index: number) => Promise<void> | void } = {},
+): Promise<{ requests: string[] }> {
+  const requests: string[] = [];
+  await page.route(
+    'https://7tv.io/v4/gql',
+    whenHeld(async (route) => {
+      const body = route.request().postDataJSON() as { variables: { id?: string } };
+      const id = String(body.variables.id);
+      const index = requests.length;
+      requests.push(id);
+      await options.gate?.(id, index);
+      const known = emotes[id];
+      return fulfillJson(route, 200, {
+        data: {
+          emotes: {
+            emote: known
+              ? {
+                  id,
+                  defaultName: known.name,
+                  deleted: false,
+                  flags: { animated: known.animated ?? false },
+                }
+              : null,
+          },
+        },
+      });
+    }),
+  );
+  return { requests };
 }
