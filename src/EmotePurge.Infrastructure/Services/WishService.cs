@@ -433,7 +433,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             wish.ExpiresAtUtc = WishSchedule.ExtendedExpiresAt(expiresAt, now, extensionDays);
             wish.ExtensionCount++;
             return Task.FromResult(new CommandStep(null, AuditDurationDays: extensionDays));
-        }, cancellationToken);
+        }, cancellationToken, recordPreviousExpiry: true);
 
     public Task<WishCommandResult> KeepAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
         RunTransitionAsync(channelName, wishId, actor, AuditActions.WishKeep, (wish, _, _, _) =>
@@ -449,7 +449,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             wish.BotOwned = false;
             wish.BotOwnedAddedAtUtc = null;
             return CommandStep.DoneTask;
-        }, cancellationToken);
+        }, cancellationToken, recordPreviousExpiry: true);
 
     public Task<WishCommandResult> CloseAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
         RunTransitionAsync(channelName, wishId, actor, AuditActions.WishClose, (wish, _, _, _) =>
@@ -463,7 +463,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
             wish.Status = target;
             return CommandStep.DoneTask;
-        }, cancellationToken);
+        }, cancellationToken, recordPreviousExpiry: true);
 
     public Task<WishCommandResult> RetryAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
         RunTransitionAsync(channelName, wishId, actor, AuditActions.WishRetry, (wish, _, now, _) =>
@@ -550,7 +550,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
             wish.Status = target;
             return CommandStep.DoneTask;
-        }, cancellationToken);
+        }, cancellationToken, recordPreviousExpiry: true);
 
     public async Task<WishCommandResult> RecheckAsync(
         string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default)
@@ -784,7 +784,8 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         AuditActor actor,
         string auditAction,
         Func<Wish, EffectiveSettings, DateTime, CancellationToken, Task<CommandStep>> decide,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool recordPreviousExpiry = false)
     {
         ArgumentNullException.ThrowIfNull(channelName);
         ArgumentNullException.ThrowIfNull(actor);
@@ -806,6 +807,8 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         var settings = await LoadSettingsAsync(channelId, cancellationToken);
         var now = Now();
         var previousStatus = wish.Status;
+        // Contract 2.7: a decision on an overdue wish keeps the expiry it replaced; read before the command changes it.
+        var previousExpiry = recordPreviousExpiry && wish.ExpiresAtUtc is { } expiry && expiry <= now ? expiry : (DateTime?)null;
         var step = await decide(wish, settings, now, cancellationToken);
         if (step.Refusal is not null)
         {
@@ -832,7 +835,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         }
 
         var channel = ChannelName.Normalize(channelName);
-        await AuditAndCommitAsync(transaction, actor, auditAction, channel, wish, cancellationToken, step.AuditDurationDays);
+        await AuditAndCommitAsync(transaction, actor, auditAction, channel, wish, cancellationToken, step.AuditDurationDays, previousExpiry);
         await changedPublisher.PublishAsync(channel, cancellationToken);
         return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings));
     }
@@ -847,15 +850,21 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         string channelName,
         Wish wish,
         CancellationToken cancellationToken,
-        int? auditDurationDays = null)
+        int? auditDurationDays = null,
+        DateTime? previousExpiresAtUtc = null)
     {
+        var durationDays = auditDurationDays ?? wish.DurationDays;
+        // previousExpiresAtUtc only on a late decision (contract 2.7); the details stay free of alias, name and login.
+        object details = previousExpiresAtUtc is { } previous
+            ? new { wishId = wish.Id, sevenTvEmoteId = wish.SevenTvEmoteId, durationDays, previousExpiresAtUtc = previous }
+            : new { wishId = wish.Id, sevenTvEmoteId = wish.SevenTvEmoteId, durationDays };
         db.AddAuditEntry(
             actor,
             action,
             channelName: channelName,
             targetType: "wish",
             targetId: wish.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            details: new { wishId = wish.Id, sevenTvEmoteId = wish.SevenTvEmoteId, durationDays = auditDurationDays ?? wish.DurationDays });
+            details: details);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }
