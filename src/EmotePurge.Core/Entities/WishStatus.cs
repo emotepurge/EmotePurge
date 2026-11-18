@@ -79,6 +79,9 @@ public static class WishStatusReason
     public const string OwnershipLost = "ownership_lost";
     public const string Unconfirmed = "unconfirmed";
     public const string BotUnavailable = "bot_unavailable";
+
+    /// <summary>The start is only provisional (EventAPI date) when the expiry falls due; never a reason for a bot removal (plan finding 21).</summary>
+    public const string UnconfirmedStart = "unconfirmed_start";
     public const string AlreadyInSet = "already_in_set";
     public const string RepairReview = "repair_review";
 
@@ -95,7 +98,7 @@ public static class WishStatusReason
     public const string Unparsed = "unparsed";
 
     public static readonly IReadOnlyList<string> Presented =
-        [Expired, Protected, CoverageGap, NotBotOwned, OwnershipLost, Unconfirmed, BotUnavailable, AlreadyInSet, RepairReview];
+        [Expired, Protected, CoverageGap, NotBotOwned, OwnershipLost, Unconfirmed, BotUnavailable, UnconfirmedStart, AlreadyInSet, RepairReview];
 
     public static readonly IReadOnlyList<string> Failed = [AliasConflict, SetFull, EmoteGone, NotEditor, Unknown];
 
@@ -150,4 +153,10 @@ public static class WishLimits
     /// wish, absorbing 7TV timestamps that lie before our own observation (plan finding 6, F1 variant c).
     /// </summary>
     public static readonly TimeSpan ReturnLookBack = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// How long a due wish with only a provisional start is held back by the expiry run (waiting for the
+    /// authoritative 7TV date), counted from the expiry and from the channel's last full sync.
+    /// </summary>
+    public static readonly TimeSpan ProvisionalStartGrace = TimeSpan.FromHours(24);
 }

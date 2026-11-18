@@ -126,7 +126,7 @@ public class WishTransitionsTests
     private static readonly string?[] AllReasons =
     [
         null, "expired", "protected", "coverage_gap", "not_bot_owned", "ownership_lost", "unconfirmed",
-        "bot_unavailable", "already_in_set", "repair_review", "alias_conflict", "set_full", "emote_gone",
+        "bot_unavailable", "unconfirmed_start", "already_in_set", "repair_review", "alias_conflict", "set_full", "emote_gone",
         "not_editor", "unknown", "ambiguous_match", "already_running", "unparsed",
     ];
 
@@ -183,7 +183,7 @@ public class WishTransitionsTests
                         checkedCombinations++;
                     }
 
-        Assert.Equal(13 * 18 * 27 * 32, checkedCombinations);
+        Assert.Equal(13 * 19 * 27 * 32, checkedCombinations);
     }
 
     [Fact]

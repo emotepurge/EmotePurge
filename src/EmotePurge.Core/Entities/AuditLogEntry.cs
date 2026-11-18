@@ -61,6 +61,9 @@ public static class AuditActions
     public const string WishReAdd = "wish.readd";
     public const string WishSettings = "wish.settings";
 
+    /// <summary>An active wish fell due. Written by the expiry worker under <see cref="AuditActor.System"/>, not by a request.</summary>
+    public const string WishDue = "wish.due";
+
     /// <summary>PATCH of alias or duration; not in the spec's list, added so no manager action goes unrecorded.</summary>
     public const string WishUpdate = "wish.update";
 }
