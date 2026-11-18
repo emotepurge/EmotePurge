@@ -202,6 +202,8 @@ services:
       - ChatLogBackfill__RequestDelaySeconds=${CHAT_LOG_BACKFILL_REQUEST_DELAY_SECONDS:-10}
       - ChatLogArchive__BaseUrl=${CHAT_LOG_ARCHIVE_BASE_URL:-https://logs.cyex.app/}
       - Wishes__Enabled=${WISHES_ENABLED:-false}
+      # Minutes between two runs of the wish expiry worker (1 to 1440); read by the worker only.
+      - Wishes__ExpiryIntervalMinutes=${WISHES_EXPIRY_INTERVAL_MINUTES:-15}
     networks:
       - emotepurge-network
     depends_on:

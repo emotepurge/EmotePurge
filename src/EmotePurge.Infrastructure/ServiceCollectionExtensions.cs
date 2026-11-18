@@ -355,6 +355,10 @@ public static class ServiceCollectionExtensions
         // singleton that scoped and singleton callers alike take.
         services.AddSingleton<IWishReconcileService, WishReconcileService>();
         services.AddSingleton<IWishReconcileTrigger, WishReconcileTrigger>();
+        // The expiry run (#484) is scoped like every service on AppDbContext; the Worker resolves it per pass. The
+        // bot availability is a stand-in that is never available until K4 replaces this one line.
+        services.AddScoped<IWishExpiryService, WishExpiryService>();
+        services.AddSingleton<IWishBotAvailability, WishBotNeverAvailable>();
 
         // The backfill's database side for both processes (spec section 3). Scoped like every service
         // on AppDbContext; the worker resolves it from a scope that lives as long as its loop, because

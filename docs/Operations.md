@@ -1854,8 +1854,119 @@ and the `/api/channels/{channelName}/wishes` routes; there is no UI yet.
   `dotnet ef database update`, then `list` again. The migration guard at startup fails fast if it is
   missing.
 - **Rollback:** switch it off. The tables stay and do not disturb an older image.
+- **Expiry run (child 2, #484):** `WishExpiryWorker` waits one minute after start and then, once per
+  `Wishes:ExpiryIntervalMinutes` (environment variable `WISHES_EXPIRY_INTERVAL_MINUTES`, default 15, valid
+  1 to 1440, worker only), decides every `active` wish whose expiry has passed: it presents the wish to the
+  channel's managers (state `presented`, with a reason such as `expired`, `protected` or `coverage_gap`) and
+  writes exactly one `wish.due` audit entry per expiry (actor "system"; details `wishId`, `outcome`,
+  `expiresAtUtc`). With `Wishes:Enabled=false` it logs one line and ends. It does not wait for the boot
+  recovery, and two worker containers at once are safe (the second skips what the first holds).
+- **The run never writes to 7TV.** Presenting only changes the wish row and announces `wish.changed`; no
+  emote is removed and no set is touched. Removal by the bot arrives with child 4; until then the bot
+  availability is registered as "never available", so every due wish is presented.
+- **Provisional starts are held back, then only presented.** A wish whose start is only the provisional
+  EventAPI date is not decided while the channel's last full sync is younger than 24 hours and the expiry
+  lies less than 24 hours back. After that it is presented with the reason `unconfirmed_start` and never
+  queued for removal ("presented, never queued"), because the date could be wrong.
+- **Known limit (RR1):** a worker outage inside the usage window goes unnoticed: the run has no gap table for
+  it, so a popular emote can be judged unprotected. This matters only once the bot removes emotes (child 4);
+  until then the outcome is a presented wish, a reminder.
+- **A threshold change drops queued removals.** Changing a channel's protection threshold counts as a
+  decision: it raises the `DecisionVersion` of the channel's `active` wishes and discards a queued removal
+  (none exists before child 4), so a removal queued under the old rule is never executed under the new one.
+  Changing only duration or lead does not.
+- **Late decisions keep the missed deadline.** `extend`, `keep`, `close` and `complete-removal` on an overdue
+  wish add `previousExpiresAtUtc` to their own audit entry (`wish.extend`, `wish.keep`, `wish.close`,
+  `wish.remove`), so a deadline the run never saw still counts in the pilot measurement.
 - **Retention:** the wish periods are listed under "Data retention" below; they apply only with
   `Retention:Enforce=true`.
+
+### Pilot measurement (a): overdue wishes decided in time
+
+The pilot asks whether managers decide an expired wish within 24 hours. The figure is read from the audit
+log only, after the fact; it needs no extra column. Definitions:
+
+- **Due** is a pair (`wishId`, expiry). Sources are `expiresAtUtc` of `wish.due` and `previousExpiresAtUtc` of
+  `wish.extend`, `wish.keep`, `wish.close` and `wish.remove`. The same pair from several entries counts once;
+  two expiries of one wish (extended, expired again) are two pairs.
+- **Cohort:** due pairs whose expiry lies in the observation window (the expiry, not the time of an entry).
+- **Mature:** expiry plus 24 hours is not after the evaluation time. Immature pairs are in neither count.
+- **Done:** the wish has a `wish.extend`, `wish.keep`, `wish.remove` or `wish.close` entry after the expiry
+  and at most 24 hours after it (exactly 24 hours counts). The clock starts at the expiry, never at `wish.due`.
+  (Child 4 adds `wish.botRemove`; extend the action list then.)
+- **Late:** mature, not done, and either the earliest `wish.due` is more than 24 hours after the expiry or
+  there is none (known only through a decision with `previousExpiresAtUtc`). Late pairs stay in the
+  denominator and are reported separately, so a worker outage can be told from slow managers.
+- **Known limit:** an overdue wish the run never saw that is removed **outside** Emote Purge (reconcile to
+  `removed_externally`) or ended by a channel merge (`merged`) leaves neither `wish.due` nor a decision and is
+  missing from the denominator. Count those by hand from the wish table.
+
+Run it with `psql`, filling the three timestamps (observation window start and end, evaluation time). The
+first query returns denominator, numerator, quote and the late count; the second returns the misses
+(`wishId`, expiry, late flag) for the manual count and shares the `WITH` chain of the first (everything up to
+`judged`).
+
+```sql
+WITH params AS (
+  SELECT :'obs_from'::timestamptz AS obs_from,
+         :'obs_to'::timestamptz   AS obs_to,
+         :'eval_at'::timestamptz  AS eval_at
+),
+sources AS (
+  SELECT (a."DetailsJson"->>'wishId')::bigint AS wish_id,
+         (a."DetailsJson"->>'expiresAtUtc')::timestamptz AS expiry,
+         a."OccurredAtUtc" AS due_at
+  FROM "AuditLogEntries" a
+  WHERE a."Action" = 'wish.due'
+  UNION ALL
+  SELECT (a."DetailsJson"->>'wishId')::bigint,
+         (a."DetailsJson"->>'previousExpiresAtUtc')::timestamptz,
+         NULL
+  FROM "AuditLogEntries" a
+  WHERE a."Action" IN ('wish.extend', 'wish.keep', 'wish.close', 'wish.remove')
+    AND a."DetailsJson" ? 'previousExpiresAtUtc'
+),
+dues AS (
+  SELECT wish_id, expiry, min(due_at) AS first_due
+  FROM sources
+  GROUP BY wish_id, expiry
+),
+cohort AS (
+  SELECT d.*
+  FROM dues d, params p
+  WHERE d.expiry >= p.obs_from AND d.expiry < p.obs_to
+    AND d.expiry + interval '24 hours' <= p.eval_at
+),
+judged AS (
+  SELECT c.wish_id, c.expiry,
+         EXISTS (
+           SELECT 1 FROM "AuditLogEntries" a
+           WHERE a."Action" IN ('wish.extend', 'wish.keep', 'wish.remove', 'wish.close')
+             AND (a."DetailsJson"->>'wishId')::bigint = c.wish_id
+             AND a."OccurredAtUtc" > c.expiry
+             AND a."OccurredAtUtc" <= c.expiry + interval '24 hours'
+         ) AS done,
+         (c.first_due IS NULL OR c.first_due > c.expiry + interval '24 hours') AS seen_late
+  FROM cohort c
+)
+SELECT count(*) AS denominator,
+       count(*) FILTER (WHERE done) AS numerator,
+       round(100.0 * count(*) FILTER (WHERE done) / nullif(count(*), 0), 1) AS quote_percent,
+       count(*) FILTER (WHERE NOT done AND seen_late) AS late
+FROM judged;
+```
+
+```sql
+-- same WITH chain as above up to and including "judged", then:
+SELECT wish_id, expiry, seen_late AS late
+FROM judged WHERE NOT done ORDER BY wish_id, expiry;
+```
+
+Invoke with `psql -v obs_from=2026-11-01T00:00Z -v obs_to=2026-11-10T00:00Z -v eval_at=2026-11-10T12:00Z`.
+Checked on 2026-11-18 against a scratch database with eleven hand-seeded cases (on time; late seen; exactly
+24 h and plus a minute; immature; duplicate entries; two expiries of one wish; a decision before the expiry;
+an expiry outside the window; late and early decisions known only through `previousExpiresAtUtc`; the same
+pair from both sources): 11 of 11 gave the expected counts (denominator 11, numerator 6, late 2).
 
 ## Database backup and restore
 

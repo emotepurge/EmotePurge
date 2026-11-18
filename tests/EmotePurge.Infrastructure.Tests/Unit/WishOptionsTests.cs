@@ -20,6 +20,38 @@ public class WishOptionsTests
     }
 
     [Fact]
+    public void ExpiryInterval_DefaultsToFifteenMinutes()
+    {
+        Assert.Equal(15, new WishOptions().ExpiryIntervalMinutes);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1441)]
+    [InlineData(-5)]
+    public void ExpiryInterval_OutsideOneToFourteenHundredFortyThrows_NamingTheKey(int minutes)
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => new WishOptions { ExpiryIntervalMinutes = minutes }.Validate());
+        Assert.Contains("Wishes:ExpiryIntervalMinutes", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(1440)]
+    public void ExpiryInterval_AtTheBoundsIsValid(int minutes)
+    {
+        new WishOptions { ExpiryIntervalMinutes = minutes }.Validate();
+    }
+
+    [Fact]
+    public void WishDue_IsTheAuditActionString_AndTheGraceIsOneDay()
+    {
+        Assert.Equal("wish.due", AuditActions.WishDue);
+        Assert.Equal(TimeSpan.FromHours(24), WishLimits.ProvisionalStartGrace);
+        Assert.Contains("unconfirmed_start", WishStatusReason.Presented);
+    }
+
+    [Fact]
     public void BindsFromTheWishesSection()
     {
         var configuration = new ConfigurationBuilder()

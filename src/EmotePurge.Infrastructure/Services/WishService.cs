@@ -19,7 +19,9 @@ namespace EmotePurge.Infrastructure.Services;
 /// (<see cref="RowLocks.LockWishesByIdsAsync"/>) and only afterwards reads it, so the state it decides on is
 /// the committed one and stays so. Because of that lock the state is stable within the transaction; the
 /// unique indexes remain as a belt and map to the conflict outcomes, never to a 500. The transition commands
-/// change an existing wish only and therefore take just its row lock (<see cref="RunTransitionAsync"/>).
+/// change an existing wish only and therefore take just its row lock (<see cref="RunTransitionAsync"/>). A
+/// settings change that changes the protection threshold locks, after the channel row, the channel's active
+/// wish rows as well (<see cref="SupersedeActiveDecisionsAsync"/>, plan #484 2.6).
 /// </para>
 /// </summary>
 public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPublisher, TimeProvider timeProvider) : IWishService
@@ -51,7 +53,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
         if (!IsDurationInRange(request.DefaultDurationDays)
             || request.ProbationLeadDays is < WishLimits.ProbationLeadDaysMin or > WishLimits.ProbationLeadDaysMax
-            || (request.ProtectionThresholdPerDay is { } raw && !IsThresholdInRange(raw)))
+            || (request.ProtectionThresholdPerDay is { } requested && !IsThresholdInRange(requested)))
         {
             return WishCommandResult.Of(WishOutcome.SettingsOutOfRange);
         }
@@ -76,9 +78,17 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             db.ChannelWishSettings.Add(row);
         }
 
+        // A missing row is "protection off", which is also what the fresh row above carries.
+        var previousThreshold = row.ProtectionThresholdPerDay;
+        var threshold = request.ProtectionThresholdPerDay is { } raw ? Math.Round(raw, 2) : (decimal?)null;
+        if (threshold != previousThreshold)
+        {
+            await SupersedeActiveDecisionsAsync(channelId, cancellationToken);
+        }
+
         row.DefaultDurationDays = request.DefaultDurationDays;
         row.ProbationLeadDays = request.ProbationLeadDays;
-        row.ProtectionThresholdPerDay = request.ProtectionThresholdPerDay is { } threshold ? Math.Round(threshold, 2) : null;
+        row.ProtectionThresholdPerDay = threshold;
 
         db.AddAuditEntry(
             actor,
@@ -423,7 +433,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             wish.ExpiresAtUtc = WishSchedule.ExtendedExpiresAt(expiresAt, now, extensionDays);
             wish.ExtensionCount++;
             return Task.FromResult(new CommandStep(null, AuditDurationDays: extensionDays));
-        }, cancellationToken);
+        }, cancellationToken, recordPreviousExpiry: true);
 
     public Task<WishCommandResult> KeepAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
         RunTransitionAsync(channelName, wishId, actor, AuditActions.WishKeep, (wish, _, _, _) =>
@@ -439,7 +449,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             wish.BotOwned = false;
             wish.BotOwnedAddedAtUtc = null;
             return CommandStep.DoneTask;
-        }, cancellationToken);
+        }, cancellationToken, recordPreviousExpiry: true);
 
     public Task<WishCommandResult> CloseAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
         RunTransitionAsync(channelName, wishId, actor, AuditActions.WishClose, (wish, _, _, _) =>
@@ -453,7 +463,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
             wish.Status = target;
             return CommandStep.DoneTask;
-        }, cancellationToken);
+        }, cancellationToken, recordPreviousExpiry: true);
 
     public Task<WishCommandResult> RetryAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default) =>
         RunTransitionAsync(channelName, wishId, actor, AuditActions.WishRetry, (wish, _, now, _) =>
@@ -540,7 +550,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
             wish.Status = target;
             return CommandStep.DoneTask;
-        }, cancellationToken);
+        }, cancellationToken, recordPreviousExpiry: true);
 
     public async Task<WishCommandResult> RecheckAsync(
         string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default)
@@ -614,10 +624,8 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
     private DateTime Now() => timeProvider.GetUtcNow().UtcDateTime;
 
-    // The usage of the wish's window (E4, E5, E16), evaluated at the given time. Rule 10: the slot ids are reduced
-    // to scalar lists first and the sums run over UsageStats alone, on UseCount only like every product read of
-    // usage (a bot-only or shared-chat-only row is no use). Slots of the emote count whether archived or not (a
-    // re-added emote keeps its earlier stay's usage), a migration seed that no sync has settled does not.
+    // The usage of the wish's window (E4, E5, E16), evaluated at the given time. Window, sum, mean and gap come from
+    // the shared read (WishUsageQueries); the rank stays here because only the detail response shows it.
     private async Task<WishUsageDto?> LoadUsageAsync(Wish wish, string channelId, DateTime evaluatedAtUtc, CancellationToken cancellationToken)
     {
         if (wish.StartsAtUtc is not { } startsAt)
@@ -625,15 +633,14 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             return null;
         }
 
-        var windowStart = WishUsageWindow.WindowStart(startsAt, evaluatedAtUtc);
-        var from = DateOnly.FromDateTime(windowStart);
-        var to = DateOnly.FromDateTime(evaluatedAtUtc);
+        var read = await db.ReadAsync(channelId, wish.SevenTvEmoteId, startsAt, evaluatedAtUtc, cancellationToken);
+        if (read is null)
+        {
+            return null;
+        }
 
-        var ownSlotIds = await db.EmoteSlots
-            .Where(s => !s.SeedUnsettled && s.Emote.ChannelId == channelId && s.Emote.SevenTvEmoteId == wish.SevenTvEmoteId)
-            .Select(s => s.Id)
-            .ToListAsync(cancellationToken);
-        var total = ownSlotIds.Count == 0 ? 0L : await SumUseAsync(ownSlotIds, from, to, cancellationToken);
+        var from = DateOnly.FromDateTime(read.WindowStartUtc);
+        var to = DateOnly.FromDateTime(evaluatedAtUtc);
 
         // E16: the rank among all active slots of the channel in the same window. The wish's own slots are among
         // them, so a single-slot emote ranks against itself consistently; the number placed is the emote's total.
@@ -643,7 +650,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             .ToListAsync(cancellationToken);
         int? rank = null;
         int? rankOf = null;
-        if (activeSlotIds.Count > 0 && ownSlotIds.Intersect(activeSlotIds, StringComparer.Ordinal).Any())
+        if (activeSlotIds.Count > 0 && read.OwnSlotIds.Intersect(activeSlotIds, StringComparer.Ordinal).Any())
         {
             var perSlot = await db.UsageStats
                 .Where(u => activeSlotIds.Contains(u.SlotId) && u.Date >= from && u.Date <= to)
@@ -653,26 +660,12 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             var totals = new List<long>(activeSlotIds.Count);
             totals.AddRange(perSlot.Select(p => p.Total));
             totals.AddRange(Enumerable.Repeat(0L, activeSlotIds.Count - perSlot.Count));
-            rank = WishUsageWindow.Rank(total, totals);
+            rank = WishUsageWindow.Rank(read.Total, totals);
             rankOf = activeSlotIds.Count;
         }
 
-        var channel = await db.Channels.AsNoTracking()
-            .Where(c => c.Id == channelId)
-            .Select(c => new { c.CreatedAt, c.TrackingResumedAt, c.DeactivatedAtUtc, c.IsBotActive })
-            .FirstAsync(cancellationToken);
-        var facts = new WishCoverageFacts(
-            TrackingCoverage.TrackedSince(channel.TrackingResumedAt, channel.CreatedAt), channel.DeactivatedAtUtc, channel.IsBotActive);
-
-        var mean = WishUsageWindow.MeanPerDay(total, WishUsageWindow.LengthInDays(windowStart, evaluatedAtUtc));
-        return new WishUsageDto(
-            windowStart, evaluatedAtUtc, total, mean, rank, rankOf, WishUsageWindow.HasCoverageGap(facts, windowStart, evaluatedAtUtc));
+        return new WishUsageDto(read.WindowStartUtc, evaluatedAtUtc, read.Total, read.MeanPerDay, rank, rankOf, read.HasCoverageGap);
     }
-
-    private async Task<long> SumUseAsync(List<string> slotIds, DateOnly from, DateOnly to, CancellationToken cancellationToken) =>
-        await db.UsageStats
-            .Where(u => slotIds.Contains(u.SlotId) && u.Date >= from && u.Date <= to)
-            .SumAsync(u => (long)u.UseCount, cancellationToken);
 
     private Task<string?> ResolveChannelIdAsync(string channelName, CancellationToken cancellationToken)
     {
@@ -697,6 +690,36 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             .Where(c => c.Id == channelId)
             .Select(c => new LockedChannel(c.ChannelName, c.ActiveEmoteSetCapacity))
             .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    // A protection change is a decision (E25; plan #484 2.6, Sol-P1-1): behind the channel lock, lock the channel's
+    // active wishes ascending by id, read them only afterwards, bump their DecisionVersion and drop a queued
+    // removal, so a removal queued under the old threshold can never be carried out under the new one. The
+    // caller commits this together with the settings row and its audit entry. Presented wishes stay untouched
+    // (before K4 none carries a queue; K4 decides for bot-remove).
+    private async Task SupersedeActiveDecisionsAsync(string channelId, CancellationToken cancellationToken)
+    {
+        // Under the channel lock no writer can turn a wish active (the reconcile and adopt take that lock first);
+        // a wish that left active meanwhile is filtered out by the re-read behind the wish locks.
+        var ids = await db.Wishes
+            .Where(w => w.ChannelId == channelId && w.Status == WishStatus.Active)
+            .Select(w => w.Id)
+            .ToListAsync(cancellationToken);
+        if (ids.Count == 0)
+        {
+            return;
+        }
+
+        await db.LockWishesByIdsAsync(ids, cancellationToken);
+        var wishes = await db.Wishes
+            .Where(w => ids.Contains(w.Id) && w.ChannelId == channelId && w.Status == WishStatus.Active)
+            .ToListAsync(cancellationToken);
+        foreach (var wish in wishes)
+        {
+            wish.DecisionVersion++;
+            wish.RemovalQueuedAtUtc = null;
+            wish.RemovalQueuedVersion = null;
+        }
     }
 
     private async Task<EffectiveSettings> LoadSettingsAsync(string channelId, CancellationToken cancellationToken)
@@ -761,7 +784,8 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         AuditActor actor,
         string auditAction,
         Func<Wish, EffectiveSettings, DateTime, CancellationToken, Task<CommandStep>> decide,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool recordPreviousExpiry = false)
     {
         ArgumentNullException.ThrowIfNull(channelName);
         ArgumentNullException.ThrowIfNull(actor);
@@ -783,6 +807,8 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         var settings = await LoadSettingsAsync(channelId, cancellationToken);
         var now = Now();
         var previousStatus = wish.Status;
+        // Contract 2.7: a decision on an overdue wish keeps the expiry it replaced; read before the command changes it.
+        var previousExpiry = recordPreviousExpiry && wish.ExpiresAtUtc is { } expiry && expiry <= now ? expiry : (DateTime?)null;
         var step = await decide(wish, settings, now, cancellationToken);
         if (step.Refusal is not null)
         {
@@ -809,7 +835,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         }
 
         var channel = ChannelName.Normalize(channelName);
-        await AuditAndCommitAsync(transaction, actor, auditAction, channel, wish, cancellationToken, step.AuditDurationDays);
+        await AuditAndCommitAsync(transaction, actor, auditAction, channel, wish, cancellationToken, step.AuditDurationDays, previousExpiry);
         await changedPublisher.PublishAsync(channel, cancellationToken);
         return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings));
     }
@@ -824,15 +850,21 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         string channelName,
         Wish wish,
         CancellationToken cancellationToken,
-        int? auditDurationDays = null)
+        int? auditDurationDays = null,
+        DateTime? previousExpiresAtUtc = null)
     {
+        var durationDays = auditDurationDays ?? wish.DurationDays;
+        // previousExpiresAtUtc only on a late decision (contract 2.7); the details stay free of alias, name and login.
+        object details = previousExpiresAtUtc is { } previous
+            ? new { wishId = wish.Id, sevenTvEmoteId = wish.SevenTvEmoteId, durationDays, previousExpiresAtUtc = previous }
+            : new { wishId = wish.Id, sevenTvEmoteId = wish.SevenTvEmoteId, durationDays };
         db.AddAuditEntry(
             actor,
             action,
             channelName: channelName,
             targetType: "wish",
             targetId: wish.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            details: new { wishId = wish.Id, sevenTvEmoteId = wish.SevenTvEmoteId, durationDays = auditDurationDays ?? wish.DurationDays });
+            details: details);
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }

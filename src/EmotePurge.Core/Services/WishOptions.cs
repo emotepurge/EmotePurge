@@ -16,11 +16,19 @@ public sealed class WishOptions
     /// </summary>
     public bool Enabled { get; set; }
 
+    /// <summary>Minutes between two runs of the expiry worker (1 to 1440).</summary>
+    public int ExpiryIntervalMinutes { get; set; } = 15;
+
     /// <summary>
     /// Throws unless every value is usable. Called during startup, so a typo in an environment variable
-    /// stops the container with a readable message. Nothing can be invalid yet: the only key is a bool.
+    /// stops the container with a readable message.
     /// </summary>
     public void Validate()
     {
+        if (ExpiryIntervalMinutes is < 1 or > 1440)
+        {
+            throw new InvalidOperationException(
+                $"Wishes:ExpiryIntervalMinutes must be between 1 and 1440, but is {ExpiryIntervalMinutes}.");
+        }
     }
 }
