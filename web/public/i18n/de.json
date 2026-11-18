@@ -2840,6 +2840,47 @@
         "wish_not_found": "Den Wunsch gibt es nicht mehr.",
         "reselect": "Die Einträge sind neu geladen, wähle erneut."
       }
+    },
+    "entry": {
+      "title": "Wunsch nachtragen",
+      "intro": "Für einen Wunsch, der nicht aus dem Chat kam. Füg den 7TV-Link des Emotes ein oder seine ID.",
+      "emote": {
+        "label": "7TV-Link oder Emote-ID",
+        "empty": "Gib einen 7TV-Link oder eine Emote-ID ein."
+      },
+      "read": {
+        "running": "Wird bei 7TV nachgeschlagen …",
+        "found": "Gefunden: {{ name }}",
+        "unknown": "Dieses Emote gibt es bei 7TV nicht (mehr).",
+        "unreachable": "7TV ist gerade nicht erreichbar. Trag den Alias selbst ein.",
+        "throttled": "7TV bremst gerade die Anfragen. Trag den Alias selbst ein."
+      },
+      "alias": {
+        "label": "Alias im Set",
+        "empty": "Gib einen Alias an.",
+        "too_long": "Der Alias hat höchstens {{ max }} Zeichen.",
+        "forbidden_char": "Der Alias darf keine Leer- oder Steuerzeichen enthalten."
+      },
+      "login": {
+        "label": "Gewünscht von (Twitch-Login, freiwillig)",
+        "invalid": "Das ist kein gültiger Twitch-Login."
+      },
+      "conflict": {
+        "adopt": "Das Emote ist schon im Set. Übernimm den Eintrag, statt einen neuen Wunsch anzulegen.",
+        "running": "Für dieses Emote läuft bereits ein Wunsch.",
+        "kept": "Dieses Emote ist bereits als behaltener Wunsch geführt.",
+        "other": "Für dieses Emote gibt es schon einen Wunsch.",
+        "takeOver": "Bestand übernehmen"
+      },
+      "blocked": {
+        "emoteEmpty": "Es fehlt der 7TV-Link oder die Emote-ID.",
+        "emoteInvalid": "Der 7TV-Link oder die Emote-ID passt nicht.",
+        "reading": "Das Emote wird noch bei 7TV nachgeschlagen.",
+        "unknown": "Dieses Emote gibt es bei 7TV nicht.",
+        "alias": "Der Alias fehlt oder passt nicht.",
+        "login": "Der Twitch-Login passt nicht."
+      },
+      "submit": "Nachtragen"
     }
   }
 }

@@ -2840,6 +2840,47 @@
         "wish_not_found": "The wish no longer exists.",
         "reselect": "The entries are reloaded, pick again."
       }
+    },
+    "entry": {
+      "title": "Add a wish by hand",
+      "intro": "For a wish that did not come from chat. Paste the emote's 7TV link or its id.",
+      "emote": {
+        "label": "7TV link or emote id",
+        "empty": "Enter a 7TV link or an emote id."
+      },
+      "read": {
+        "running": "Looking it up on 7TV…",
+        "found": "Found: {{ name }}",
+        "unknown": "This emote does not exist on 7TV (any more).",
+        "unreachable": "7TV cannot be reached right now. Type the alias yourself.",
+        "throttled": "7TV is slowing down requests right now. Type the alias yourself."
+      },
+      "alias": {
+        "label": "Alias in the set",
+        "empty": "Enter an alias.",
+        "too_long": "The alias has at most {{ max }} characters.",
+        "forbidden_char": "The alias must not contain spaces or control characters."
+      },
+      "login": {
+        "label": "Wished by (Twitch login, optional)",
+        "invalid": "This is not a valid Twitch login."
+      },
+      "conflict": {
+        "adopt": "The emote is already in the set. Take the entry over instead of filing a new wish.",
+        "running": "A wish for this emote is already running.",
+        "kept": "This emote is already listed as a kept wish.",
+        "other": "There already is a wish for this emote.",
+        "takeOver": "Take over from the set"
+      },
+      "blocked": {
+        "emoteEmpty": "The 7TV link or emote id is missing.",
+        "emoteInvalid": "The 7TV link or emote id does not fit.",
+        "reading": "The emote is still being looked up on 7TV.",
+        "unknown": "This emote does not exist on 7TV.",
+        "alias": "The alias is missing or does not fit.",
+        "login": "The Twitch login does not fit."
+      },
+      "submit": "Add wish"
     }
   }
 }
