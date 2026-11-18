@@ -13,6 +13,7 @@ import {
   input,
   signal,
   untracked,
+  viewChild,
   WritableSignal,
 } from '@angular/core';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
@@ -21,6 +22,7 @@ import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { EMPTY, filter, interval, map, Observable, pairwise, switchMap } from 'rxjs';
 
 import { normalizeChannelName } from '../../core/channels/channel-name';
+import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
 import {
   apiErrorCode,
   apiErrorTranslationKey,
@@ -28,20 +30,31 @@ import {
 } from '../../core/i18n/api-error';
 import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { CHANNEL_RELOAD_DEBOUNCE_MS, liveReload, liveReopened } from '../../core/live/live-reload';
+import { DockClearanceService } from '../../core/layout/dock-clearance.service';
 import { PagedResult } from '../../core/models/paged-result.model';
 import { pageVisible } from '../../core/page-visibility/page-visibility';
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvEmoteLookup } from '../../core/seven-tv/seven-tv-emote-lookup';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
+import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
 import {
   SEVEN_TV_RUN_KIND_LABEL_KEY,
   SevenTvRunArbiter,
 } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { WishAddService, WishAddState } from '../../core/wishes/wish-add.service';
+import { wishRemovalBlockKey } from '../../core/wishes/wish-removal';
+import { WishRemovalTracker } from '../../core/wishes/wish-removal-tracker';
 import { wishErrorKey } from '../../core/wishes/wish-error';
 import type { Wish, WishListView } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
 import { isConfirmedAction, isSevenTvAction, WishAction } from '../../core/wishes/wish-view';
 import { Pager } from '../../shared/pagination/pager';
+import { DeleteAbortNotice } from '../../shared/seven-tv/delete-flow';
+import { DeleteProgressSection } from '../../shared/seven-tv/delete-progress-section';
+import { DockOutcomeAnnouncer } from '../../shared/seven-tv/dock-outcome-announcer';
+import { RestoreProgressSection } from '../../shared/seven-tv/restore-progress-section';
 import { openSevenTvTokenPromptDialog } from '../../shared/seven-tv/seven-tv-token-prompt-dialog';
 import { Button } from '../../shared/ui/button';
 import { openConfirmDialog } from '../../shared/ui/confirm-dialog';
@@ -55,8 +68,14 @@ import {
 } from './wish-adopt-dialog';
 import { openWishEditDialog } from './wish-edit-dialog';
 import { openWishEntryDialog, WishEntryDialogResult } from './wish-entry-dialog';
-import { wishAddOperationView, WishOperationView } from './wish-operation';
+import {
+  wishAddOperationView,
+  wishRemovalOperationView,
+  WishOperationView,
+} from './wish-operation';
 import { openWishReAddDialog } from './wish-readd-dialog';
+import { openWishRemovalConfirmDialog } from './wish-removal-confirm-dialog';
+import { startWishRemovalFlow, WishRemovalFlowDeps } from './wish-removal-flow';
 import { WishRow } from './wish-row';
 import { WishUsageStore } from './wish-usage';
 
@@ -69,12 +88,13 @@ export const WISH_SAFETY_RELOAD_MS = 5 * 60_000;
 const CLOCK_TICK_MS = 60_000;
 
 /**
- * The actions this page carries out. The action table knows more; a row renders only what is in
- * here, so nothing offers an action that is not built yet: T9 adds `remove`. `adopt`, `edit` and
- * `reAdd` open a dialog instead of sending a command (T6, T7); `add7tv` starts the wish add (T8).
+ * The actions this page carries out — since T9 every one of the action table. `adopt`, `edit` and
+ * `reAdd` open a dialog instead of sending a command (T6, T7); `add7tv` starts the wish add (T8),
+ * `remove` the removal (T9).
  */
 const OFFERED_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
   'add7tv',
+  'remove',
   'extend',
   'retry',
   'keep',
@@ -127,16 +147,24 @@ type PinnedState =
   selector: 'app-channel-wishes-page',
   imports: [
     Button,
+    DeleteProgressSection,
+    DockOutcomeAnnouncer,
     EmptyState,
     NgTemplateOutlet,
     NoticeBanner,
     Pager,
+    RestoreProgressSection,
     SkeletonRows,
     TranslocoPipe,
     WishRow,
   ],
   template: `
-    <div class="flex flex-col gap-8">
+    <!-- The bottom padding follows the run dock's measured height, so the last row is never under
+         the fixed bar; nothing while there is no dock. -->
+    <div
+      class="flex flex-col gap-8"
+      [style.paddingBottom.px]="dockHeightPx() > 0 ? dockHeightPx() : null"
+    >
       <!-- The two side ways of filing a wish (plan T6). Both only book in EmotePurge, so they stand
            on a coarse pointer too. -->
       <div class="flex flex-col gap-3">
@@ -173,6 +201,10 @@ type PinnedState =
             [ngTemplateOutletContext]="{ $implicit: message }"
           />
         }
+        @if (dockNotice(); as notice) {
+          {{ notice.leadKey | transloco }}
+          {{ notice.reasonKey | transloco: notice.reasonParams ?? {} }}
+        }
       </p>
       @if (lockMessage(); as message) {
         <p [id]="lockId" aria-hidden="true" class="text-sm text-fg-secondary">
@@ -180,6 +212,13 @@ type PinnedState =
             [ngTemplateOutlet]="lockText"
             [ngTemplateOutletContext]="{ $implicit: message }"
           />
+        </p>
+      }
+      <!-- What stopped the dock's "Wiederherstellen" entry; stays until a new run starts. -->
+      @if (dockNotice(); as notice) {
+        <p aria-hidden="true" class="text-sm text-fg-secondary">
+          {{ notice.leadKey | transloco }}
+          {{ notice.reasonKey | transloco: notice.reasonParams ?? {} }}
         </p>
       }
 
@@ -281,6 +320,23 @@ type PinnedState =
       </section>
     </div>
 
+    <!-- Permanently mounted (§4.5): speaks the end states of what the dock shows. -->
+    <app-dock-outcome-announcer />
+
+    <!-- The run dock (plan 2.6, the tags page's pattern): a removal is a delete run, its
+         "Wiederherstellen" a restore run. Only on a fine pointer, like every 7TV write surface. -->
+    @if (dockVisible() && !isCoarse()) {
+      <div class="app-dock" #dock>
+        <div class="mx-auto flex max-h-[70vh] max-w-7xl flex-col gap-2 overflow-y-auto px-4 py-3">
+          <app-delete-progress-section
+            [hostSelectedSetId]="dockSetId()"
+            (notice)="dockNotice.set($event)"
+          />
+          <app-restore-progress-section />
+        </div>
+      </div>
+    }
+
     <ng-template #lockText let-message>
       @if (message.kindKey) {
         {{ message.key | transloco: { kind: message.kindKey | transloco } }}
@@ -343,8 +399,10 @@ type PinnedState =
           [usage]="usageStore.blockFor(wish)"
           [trackUsage]="section !== 'ended'"
           [operation]="operationOf(wish)"
+          [removeBlockKey]="removeBlockOf(wish)"
           (seen)="usageStore.setVisible(wish, $event)"
           (action)="onAction(section, wish, $event)"
+          (retryOperation)="retryRemovalReport(wish)"
         />
       </li>
     </ng-template>
@@ -365,6 +423,23 @@ export class ChannelWishesPage {
   private readonly route = inject(ActivatedRoute);
   private readonly lookup = inject(SevenTvEmoteLookup);
   private readonly wishAdd = inject(WishAddService);
+  private readonly removals = inject(WishRemovalTracker);
+  private readonly deleteService = inject(SevenTvDeleteService);
+  private readonly restoreService = inject(SevenTvRestoreService);
+  private readonly dockClearance = inject(DockClearanceService);
+  private readonly removalDeps: WishRemovalFlowDeps = {
+    emoteSetService: inject(SevenTvEmoteSetService),
+    emoteAdminService: inject(EmoteAdminService),
+    wishService: this.wishService,
+    tokenService: inject(SevenTvTokenService),
+    arbiter: this.arbiter,
+    deleteService: this.deleteService,
+    openConfirmation: (data) =>
+      openWishRemovalConfirmDialog(this.dialog, data).closed.pipe(map((done) => done === true)),
+  };
+
+  /** The rendered `.app-dock`, absent whenever the template's gate does not mount it. */
+  private readonly dockRef = viewChild<ElementRef<HTMLElement>>('dock');
 
   protected readonly isCoarse = inject(PointerModeService).isCoarse;
 
@@ -473,6 +548,26 @@ export class ChannelWishesPage {
     this.lockMessage() ? WISH_RUN_LOCK_ID : null,
   );
 
+  /** The dock shows a delete or restore run of this app, or a restore's refusal notice. */
+  protected readonly dockVisible = computed(
+    () =>
+      this.deleteService.isRunning() ||
+      this.deleteService.queue().length > 0 ||
+      this.restoreService.isRunning() ||
+      this.restoreService.queue().length > 0 ||
+      this.restoreService.duplicateNoticePending(),
+  );
+
+  /** The set this page stands for in the dock's restore check: the shown run's own set. A removal
+   *  started here runs against the channel's active set, which is what the page lists. */
+  protected readonly dockSetId = computed(() => this.deleteService.run()?.setId ?? null);
+
+  /** The dock's rendered height — the page's bottom padding and the shell's clearance. */
+  protected readonly dockHeightPx = signal(0);
+
+  /** What stopped the dock's restore entry (its `notice` output), until a new run starts. */
+  protected readonly dockNotice = signal<DeleteAbortNotice | null>(null);
+
   constructor() {
     // A channel switch reuses this component (same route): every list starts over, and every
     // request still on the way for the old channel is outdated by the bumped numbers.
@@ -499,13 +594,56 @@ export class ChannelWishesPage {
     });
 
     // An add result says what it had to once its wish left `approved`; drop it then (plan 2.5a).
+    // A removal line likewise once its wish is neither running nor removed any more (plan 2.6).
     effect(() => {
       const channel = this.channel();
       const shown = this.shownWishes();
-      untracked(() => this.wishAdd.prune(channel, shown));
+      untracked(() => {
+        this.wishAdd.prune(channel, shown);
+        this.removals.prune(channel, shown);
+      });
     });
 
-    inject(DestroyRef).onDestroy(() => (this.destroyed = true));
+    // The dock's real height, mirrored into the page padding and the shell's clearance (the tags
+    // page's measurement: a run with many rows grows the dock up to 70vh).
+    effect((onCleanup) => {
+      const element = this.dockRef()?.nativeElement;
+      if (!element) {
+        this.dockHeightPx.set(0);
+        this.dockClearance.release();
+        return;
+      }
+      const measure = () => {
+        const height = element.offsetHeight;
+        this.dockHeightPx.set(height);
+        this.dockClearance.reserve(height);
+      };
+      measure();
+      const observer = new ResizeObserver(measure);
+      observer.observe(element);
+      onCleanup(() => observer.disconnect());
+    });
+
+    // A run starting makes an old restore refusal stale.
+    effect(() => {
+      if (this.arbiter.activeRun() !== null) {
+        untracked(() => this.dockNotice.set(null));
+      }
+    });
+
+    inject(DestroyRef).onDestroy(() => {
+      this.destroyed = true;
+      // Give the clearance back at once — the next page may have no dock to release it.
+      this.dockClearance.release();
+    });
+
+    // A removal of this channel that ended: show the server's state (plan 2.5, 2.6) — after a
+    // stop "nothing was changed", after a booking or a refused booking the wish moved.
+    this.removals.ended.pipe(takeUntilDestroyed()).subscribe((end) => {
+      if (end.channelName === this.channel()) {
+        this.reloadAll();
+      }
+    });
 
     interval(CLOCK_TICK_MS)
       .pipe(takeUntilDestroyed())
@@ -570,6 +708,10 @@ export class ChannelWishesPage {
       this.startAdd(sectionId, wish);
       return;
     }
+    if (action === 'remove') {
+      this.startRemove(sectionId, wish);
+      return;
+    }
     if (action === 'edit') {
       this.openEdit(wish, sectionId);
       return;
@@ -593,9 +735,26 @@ export class ChannelWishesPage {
     });
   }
 
-  /** The row's own 7TV operation (T8: the add), from the root service that outlives this page. */
+  /** The row's own 7TV operation — the removal (T9) or the add (T8), from the root services that
+   *  outlive this page. A wish has at most one of them: the add only while `approved`. */
   protected operationOf(wish: Wish): WishOperationView | null {
-    return wishAddOperationView(this.wishAdd.stateFor(this.channel(), wish));
+    return (
+      wishRemovalOperationView(this.removals.stateFor(this.channel(), wish)) ??
+      wishAddOperationView(this.wishAdd.stateFor(this.channel(), wish))
+    );
+  }
+
+  /** Why "Entfernen" is locked on this row: a removal of it whose booking is out or owed, or a
+   *  generation the removal cannot be bound to (plan 2.6). A removal under way holds the arbiter. */
+  protected removeBlockOf(wish: Wish): string | null {
+    return this.removals.owesReport(this.channel(), wish.id)
+      ? 'wishes.remove.blocked.pending'
+      : wishRemovalBlockKey(wish);
+  }
+
+  /** "Erneut melden" of an owed removal report: the identical body again. */
+  protected retryRemovalReport(wish: Wish): void {
+    this.removals.retry(this.channel(), wish.id);
   }
 
   protected isKnownStill(sevenTvEmoteId: string): boolean {
@@ -676,6 +835,28 @@ export class ChannelWishesPage {
           this.reloadAll();
         }
       },
+    });
+  }
+
+  /**
+   * "Entfernen" (plan 2.6): the flow runs the start contract with its confirmation and starts the
+   * delete run with the frozen wish's entry; the tracker keeps the outcome and books it, also after
+   * leaving the page. The page hands over the token prompt and tells whether it still lives and which
+   * channel it shows (3b i).
+   */
+  private startRemove(sectionId: SectionId, wish: Wish): void {
+    const channel = this.channel();
+    if (this.removeBlockOf(wish) !== null) {
+      return;
+    }
+    this.actionErrorOf(sectionId).set(null);
+    startWishRemovalFlow(this.removalDeps, {
+      channelName: channel,
+      wish,
+      caller: { alive: () => !this.destroyed, channelName: () => this.channel() },
+      promptToken: () =>
+        openSevenTvTokenPromptDialog(this.dialog).closed.pipe(map((done) => done === true)),
+      progress: this.removals.progressFor(channel, wish.id),
     });
   }
 

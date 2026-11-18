@@ -61,6 +61,7 @@ function wish(overrides: Partial<Wish> = {}): Wish {
 describe('WishRow', () => {
   let fixture: ComponentFixture<WishRow>;
   let emitted: WishAction[];
+  let retries: number;
 
   beforeEach(() => {
     TestBed.configureTestingModule({
@@ -85,6 +86,7 @@ describe('WishRow', () => {
       now?: Date;
       usage?: WishUsageBlock | null;
       operation?: WishOperationView | null;
+      removeBlockKey?: string | null;
     } = {},
   ): void {
     fixture = TestBed.createComponent(WishRow);
@@ -97,8 +99,11 @@ describe('WishRow', () => {
     fixture.componentRef.setInput('busy', inputs.busy ?? false);
     fixture.componentRef.setInput('usage', inputs.usage ?? null);
     fixture.componentRef.setInput('operation', inputs.operation ?? null);
+    fixture.componentRef.setInput('removeBlockKey', inputs.removeBlockKey ?? null);
     emitted = [];
+    retries = 0;
     fixture.componentInstance.action.subscribe((action) => emitted.push(action));
+    fixture.componentInstance.retryOperation.subscribe(() => retries++);
     fixture.detectChanges();
   }
 
@@ -331,6 +336,61 @@ describe('WishRow', () => {
       render(wish(), { usage: { state: 'limited', usage: null } });
       expect(fixture.nativeElement.textContent).toContain(de.wishes.usage.limited);
       expect(line()).toBeNull();
+    });
+  });
+
+  // T9 (plan 2.6): "Entfernen" locked with its reason, and the follow-up of an owed report.
+  describe('the removal', () => {
+    const BLOCK = 'wishes.remove.blocked.provisional';
+
+    it('keeps a locked removal focusable, points it at its reason and emits nothing', () => {
+      render(wish(), { removeBlockKey: BLOCK });
+
+      const remove = button(LABEL.remove);
+      expect(remove.getAttribute('aria-disabled')).toBe('true');
+      const reason = fixture.nativeElement.querySelector(
+        `#${remove.getAttribute('aria-describedby')}`,
+      );
+      expect(reason?.textContent?.trim()).toBe(de.wishes.remove.blocked.provisional);
+      remove.click();
+      expect(emitted).toEqual([]);
+      // Only the removal is locked.
+      button(LABEL.extend).click();
+      expect(emitted).toEqual(['extend']);
+    });
+
+    it('names both the page line and its own reason while a run also holds the start', () => {
+      render(wish(), {
+        removeBlockKey: BLOCK,
+        sevenTvLocked: true,
+        lockDescriptionId: 'wishes-run-lock',
+      });
+
+      expect(button(LABEL.remove).getAttribute('aria-describedby')).toBe(
+        'wishes-run-lock wish-remove-block-7',
+      );
+    });
+
+    it('says nothing about the lock where the removal is not on screen', () => {
+      render(wish(), { removeBlockKey: BLOCK, coarse: true });
+
+      expect(names()).not.toContain(LABEL.remove);
+      expect(fixture.nativeElement.textContent).not.toContain(de.wishes.remove.blocked.provisional);
+    });
+
+    it('offers the operation’s follow-up as a button and gives it out', () => {
+      render(wish(), {
+        operation: {
+          tone: 'problem',
+          leadKey: null,
+          key: 'wishes.remove.reportPending',
+          retryKey: 'wishes.remove.retryReport',
+        },
+      });
+
+      button(de.wishes.remove.retryReport).click();
+      expect(retries).toBe(1);
+      expect(emitted).toEqual([]);
     });
   });
 });

@@ -2943,8 +2943,21 @@
       "blocked": {
         "noEntry": "This wish’s entry is not known yet. Removing is possible after the next sync.",
         "provisional": "7TV has not confirmed the add date yet. Removing is possible after the next sync.",
-        "invalid": "This entry’s add date cannot be used. Try again after the next sync."
-      }
+        "invalid": "This entry’s add date cannot be used. Try again after the next sync.",
+        "pending": "This entry is already removed from 7TV; its report to Emote Purge is still owed."
+      },
+      "starting": "Preparing the removal …",
+      "running": "Removing from 7TV …",
+      "paused": "7TV is slowing down. Next attempt in {{ seconds }} s.",
+      "nothingRemoved": "Nothing was removed.",
+      "failed": "7TV refused: {{ message }}",
+      "cancelled": "Cancelled. Nothing was removed.",
+      "unknown": "7TV’s answer got lost. The next sync shows whether the entry is still in the set.",
+      "reporting": "Removed from 7TV. Booking …",
+      "booked": "Removed from 7TV.",
+      "notBooked": "Removed in 7TV. The wish has been booked differently in the meantime.",
+      "reportPending": "Removed from 7TV, but the report to Emote Purge did not get through.",
+      "retryReport": "Report again"
     }
   }
 }

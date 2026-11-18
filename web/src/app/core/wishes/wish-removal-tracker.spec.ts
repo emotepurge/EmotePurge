@@ -94,7 +94,8 @@ describe('WishRemovalTracker', () => {
   it('books a done row with exactly one complete-removal carrying the frozen target', () => {
     const progress = startRun();
     expect(stateOf()).toEqual({ kind: 'running', pauseSeconds: null });
-    expect(tracker.isBusy('olaf', 7)).toBe(true);
+    // A running removal holds the arbiter; only a booking out or owed locks the row itself.
+    expect(tracker.owesReport('olaf', 7)).toBe(false);
 
     const done = settlement(row('done'));
     progress.settled(TARGET, done);
@@ -110,10 +111,11 @@ describe('WishRemovalTracker', () => {
       evidence: 'acknowledged',
     });
     expect(stateOf()).toEqual({ kind: 'reporting' });
+    expect(tracker.owesReport('olaf', 7)).toBe(true);
     request.flush({});
 
     expect(stateOf()).toEqual({ kind: 'booked' });
-    expect(tracker.isBusy('olaf', 7)).toBe(false);
+    expect(tracker.owesReport('olaf', 7)).toBe(false);
     expect(ends).toEqual([{ channelName: 'olaf', wishId: 7, state: { kind: 'booked' } }]);
   });
 
@@ -162,7 +164,7 @@ describe('WishRemovalTracker', () => {
     tracker.retry('olaf', 7);
     vi.advanceTimersByTime(60_000);
     httpMock.expectNone(URL_7);
-    expect(tracker.isBusy('olaf', 7)).toBe(false);
+    expect(tracker.owesReport('olaf', 7)).toBe(false);
   });
 
   it.each([
@@ -179,7 +181,7 @@ describe('WishRemovalTracker', () => {
     }
 
     expect(stateOf()).toEqual({ kind: 'reportPending' });
-    expect(tracker.isBusy('olaf', 7)).toBe(true);
+    expect(tracker.owesReport('olaf', 7)).toBe(true);
     vi.advanceTimersByTime(60_000);
     httpMock.expectNone(URL_7);
 

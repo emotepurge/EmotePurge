@@ -156,6 +156,20 @@ interface TextPart {
               }
               {{ op.key | transloco: op.params }}
             </p>
+            @if (op.retryKey) {
+              <button
+                type="button"
+                appButton="outline"
+                class="self-start"
+                (click)="retryOperation.emit()"
+              >
+                {{ op.retryKey | transloco }}
+              </button>
+            }
+          }
+          @if (removeBlockShown(); as key) {
+            <!-- Why "Entfernen" is locked (plan 2.6); the button points here. -->
+            <p [id]="removeBlockId()" class="text-xs text-fg-muted">{{ key | transloco }}</p>
           }
           <a
             [href]="pageUrl()"
@@ -195,7 +209,7 @@ interface TextPart {
                   appButton="danger-quiet"
                   [disabled]="busy()"
                   [attr.aria-disabled]="locked(action) ? 'true' : null"
-                  [attr.aria-describedby]="locked(action) ? lockDescriptionId() : null"
+                  [attr.aria-describedby]="describedBy(action)"
                   (click)="choose(action)"
                 >
                   {{ actionKey(action) | transloco }}
@@ -234,8 +248,13 @@ export class WishRow {
   readonly trackUsage = input(false);
   /** Where this wish's own 7TV operation stands (T8 add, T9 removal); `null` shows nothing. */
   readonly operation = input<WishOperationView | null>(null);
+  /** Why "Entfernen" is locked for this wish (`wishRemovalBlockKey`, or a removal still under way);
+   *  `null` when it may start. The button stays, `aria-disabled`, and points at the reason. */
+  readonly removeBlockKey = input<string | null>(null);
 
   readonly action = output<WishAction>();
+  /** The operation line's follow-up was chosen (`WishOperationView.retryKey`). */
+  readonly retryOperation = output<void>();
   /** Whether the row is in the viewport; only while `trackUsage` is set, and only on change. */
   readonly seen = output<boolean>();
 
@@ -398,6 +417,13 @@ export class WishRow {
     this.visibleActions().filter((action) => DESTRUCTIVE_ACTIONS.has(action)),
   );
 
+  protected readonly removeBlockId = computed(() => `wish-remove-block-${this.wish().id}`);
+
+  /** The lock reason of "Entfernen", only while the button is on screen. */
+  protected readonly removeBlockShown = computed(() =>
+    this.visibleActions().includes('remove') ? this.removeBlockKey() : null,
+  );
+
   constructor() {
     // Without IntersectionObserver the row never reports; the usage block then stays out.
     afterRenderEffect((onCleanup) => {
@@ -422,7 +448,19 @@ export class WishRow {
   }
 
   protected locked(action: WishAction): boolean {
-    return this.sevenTvLocked() && isSevenTvAction(action);
+    return (
+      (this.sevenTvLocked() && isSevenTvAction(action)) ||
+      (action === 'remove' && this.removeBlockKey() !== null)
+    );
+  }
+
+  /** The page's lock line while a 7TV run holds the start, and the removal's own reason. */
+  protected describedBy(action: WishAction): string | null {
+    const ids = [
+      this.sevenTvLocked() && isSevenTvAction(action) ? this.lockDescriptionId() : null,
+      action === 'remove' && this.removeBlockKey() !== null ? this.removeBlockId() : null,
+    ].filter((id): id is string => !!id);
+    return ids.length > 0 ? ids.join(' ') : null;
   }
 
   protected choose(action: WishAction): void {

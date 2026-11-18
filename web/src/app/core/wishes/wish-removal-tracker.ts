@@ -46,7 +46,7 @@ export interface WishRemovalEnd {
   readonly state: WishRemovalState;
 }
 
-/** States a removal of the same wish must not be started over (plan 2.6: one record per wish). */
+/** States `prune` never drops: a removal under way or a report out or owed. */
 const BUSY_KINDS: ReadonlySet<WishRemovalState['kind']> = new Set([
   'starting',
   'running',
@@ -120,10 +120,14 @@ export class WishRemovalTracker {
     return state;
   }
 
-  /** Whether a removal of this wish is under way or still owes its report; no second may start. */
-  isBusy(channelName: string, wishId: number): boolean {
-    const state = this.states().get(stateKey(channelName, wishId));
-    return state !== undefined && BUSY_KINDS.has(state.kind);
+  /**
+   * Whether this wish's removal is done in 7TV but its booking is out or owed — no second removal may
+   * start over it. A removal still starting or running needs no such lock: it holds the arbiter,
+   * which locks every 7TV action already (plan 2.7).
+   */
+  owesReport(channelName: string, wishId: number): boolean {
+    const kind = this.states().get(stateKey(channelName, wishId))?.kind;
+    return kind === 'reporting' || kind === 'reportPending';
   }
 
   /** Sends an owed report again, with the identical body; nothing for any other state. */

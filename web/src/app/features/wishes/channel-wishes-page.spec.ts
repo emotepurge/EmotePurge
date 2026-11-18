@@ -1,5 +1,6 @@
 import { Dialog } from '@angular/cdk/dialog';
-import { HttpErrorResponse } from '@angular/common/http';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideRouter, Router } from '@angular/router';
@@ -16,6 +17,12 @@ import { PagedResult } from '../../core/models/paged-result.model';
 import { SevenTvEmoteLookup } from '../../core/seven-tv/seven-tv-emote-lookup';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { WishAddRequest, WishAddService, WishAddState } from '../../core/wishes/wish-add.service';
+import {
+  WishRemovalEnd,
+  WishRemovalState,
+  WishRemovalTracker,
+} from '../../core/wishes/wish-removal-tracker';
+import { WishRemovalProgress } from '../../core/wishes/wish-removal';
 import type { Wish, WishDetail, WishListView, WishUsage } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
 import { ChannelWishesPage, WISH_RUN_LOCK_ID, WISH_SAFETY_RELOAD_MS } from './channel-wishes-page';
@@ -170,6 +177,12 @@ describe('ChannelWishesPage', () => {
   let addRequests: WishAddRequest[];
   let addStates: ReturnType<typeof signal<ReadonlyMap<number, WishAddState>>>;
   let pruned: { channel: string; ids: number[] }[];
+  let removalStates: ReturnType<typeof signal<ReadonlyMap<number, WishRemovalState>>>;
+  let busyRemovals: Set<number>;
+  let removalEnds: Subject<WishRemovalEnd>;
+  let removalCalls: { channel: string; id: number; progress: WishRemovalProgress }[];
+  let reportRetries: { channel: string; id: number }[];
+  let prunedRemovals: { channel: string; ids: number[] }[];
   const fixtures: ComponentFixture<ChannelWishesPage>[] = [];
 
   beforeEach(() => {
@@ -183,6 +196,12 @@ describe('ChannelWishesPage', () => {
     addRequests = [];
     addStates = signal<ReadonlyMap<number, WishAddState>>(new Map());
     pruned = [];
+    removalStates = signal<ReadonlyMap<number, WishRemovalState>>(new Map());
+    busyRemovals = new Set();
+    removalEnds = new Subject<WishRemovalEnd>();
+    removalCalls = [];
+    reportRetries = [];
+    prunedRemovals = [];
     openDialog = vi.fn(() => {
       const closed = new Subject<boolean>();
       dialogs.push(closed);
@@ -236,6 +255,31 @@ describe('ChannelWishesPage', () => {
               pruned.push({ channel, ids: wishes.map((shown) => shown.id) }),
           },
         },
+        {
+          provide: WishRemovalTracker,
+          useValue: {
+            progressFor: (channel: string, id: number) => {
+              const progress = {
+                starting: vi.fn(),
+                notStarted: vi.fn(),
+                dismissed: vi.fn(),
+                started: vi.fn(),
+                settled: vi.fn(),
+              };
+              removalCalls.push({ channel, id, progress });
+              return progress;
+            },
+            stateFor: (_channel: string, target: Wish) => removalStates().get(target.id) ?? null,
+            owesReport: (_channel: string, id: number) => busyRemovals.has(id),
+            retry: (channel: string, id: number) => reportRetries.push({ channel, id }),
+            prune: (channel: string, wishes: Wish[]) =>
+              prunedRemovals.push({ channel, ids: wishes.map((shown) => shown.id) }),
+            ended: removalEnds,
+          },
+        },
+        // The removal flow's own services (set reads, pre-check) are real and hit this backend.
+        provideHttpClient(),
+        provideHttpClientTesting(),
         provideRouter([]),
         {
           provide: SevenTvEmoteLookup,
@@ -1114,6 +1158,110 @@ describe('ChannelWishesPage', () => {
       );
       add.click();
       expect(addRequests).toEqual([]);
+    });
+  });
+
+  describe('remove from 7TV (T9)', () => {
+    function rowOf(fixture: ComponentFixture<ChannelWishesPage>, id: number): HTMLElement {
+      return fixture.nativeElement.querySelector(`[data-wish-id="${id}"]`);
+    }
+
+    function spoken(fixture: ComponentFixture<ChannelWishesPage>, id: number): string {
+      return (
+        rowOf(fixture, id)
+          .querySelector('[role="status"]')
+          ?.textContent?.replace(/\s+/g, ' ')
+          .trim() ?? ''
+      );
+    }
+
+    it('hands the wish and the normalised channel to the removal, which reads the active set past the cache', () => {
+      const fixture = create('Chan');
+      settle(fixture, [], [wish(9)]);
+
+      buttonIn(rowOf(fixture, 9), de.wishes.actions.remove).click();
+
+      expect(removalCalls.map(({ channel, id }) => ({ channel, id }))).toEqual([
+        { channel: 'chan', id: 9 },
+      ]);
+      expect(removalCalls[0].progress.starting).toHaveBeenCalledOnce();
+      const http = TestBed.inject(HttpTestingController);
+      expect(
+        http.match(
+          (request) =>
+            request.url === '/api/seventv/channels/chan/emote-sets' &&
+            request.params.get('refresh') === 'true',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it.each([
+      [
+        'a date 7TV has not confirmed',
+        { startsAtAuthoritative: false },
+        de.wishes.remove.blocked.provisional,
+      ],
+      ['no generation', { slotAddedAtUtc: null }, de.wishes.remove.blocked.noEntry],
+    ])('locks "Entfernen" with its reason for %s and starts nothing', (_label, change, text) => {
+      const fixture = create();
+      settle(fixture, [], [wish(9, change)]);
+
+      const remove = buttonIn(rowOf(fixture, 9), de.wishes.actions.remove);
+      expect(remove.getAttribute('aria-disabled')).toBe('true');
+      const reason = fixture.nativeElement.querySelector(
+        `#${remove.getAttribute('aria-describedby')}`,
+      );
+      expect(reason?.textContent?.trim()).toBe(text);
+      remove.click();
+      expect(removalCalls).toEqual([]);
+    });
+
+    it('locks "Entfernen" while the removal of the wish owes its booking', () => {
+      busyRemovals.add(9);
+      const fixture = create();
+      settle(fixture, [], [wish(9)]);
+
+      const remove = buttonIn(rowOf(fixture, 9), de.wishes.actions.remove);
+      expect(remove.getAttribute('aria-disabled')).toBe('true');
+      remove.click();
+      expect(removalCalls).toEqual([]);
+    });
+
+    it('shows the removal state at its row, and the owed report’s "Erneut melden"', () => {
+      const fixture = create();
+      settle(fixture, [], [wish(9), wish(10)]);
+
+      removalStates.set(
+        new Map<number, WishRemovalState>([
+          [9, { kind: 'notBooked' }],
+          [10, { kind: 'reportPending' }],
+        ]),
+      );
+      fixture.detectChanges();
+
+      expect(spoken(fixture, 9)).toBe(de.wishes.remove.notBooked);
+      expect(spoken(fixture, 10)).toBe(de.wishes.remove.reportPending);
+      buttonIn(rowOf(fixture, 10), de.wishes.remove.retryReport).click();
+      expect(reportRetries).toEqual([{ channel: 'chan', id: 10 }]);
+    });
+
+    it('reloads the lists when a removal of this channel ended, not for another channel', () => {
+      const fixture = create();
+      settle(fixture, [], [wish(9)]);
+
+      removalEnds.next({ channelName: 'other', wishId: 9, state: { kind: 'booked' } });
+      expect(calls('open')).toHaveLength(1);
+
+      removalEnds.next({ channelName: 'chan', wishId: 9, state: { kind: 'booked' } });
+      expect(calls('open')).toHaveLength(2);
+      expect(calls('running')).toHaveLength(2);
+    });
+
+    it('hands every shown wish to the removal, so lines of wishes that moved on are dropped', () => {
+      const fixture = create();
+      settle(fixture, [wish(7, { status: 'approved' })], [wish(9)]);
+
+      expect(prunedRemovals.at(-1)).toEqual({ channel: 'chan', ids: [7, 9] });
     });
   });
 });

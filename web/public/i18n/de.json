@@ -2943,8 +2943,21 @@
       "blocked": {
         "noEntry": "Der Eintrag dieses Wunsches ist noch nicht bekannt. Entfernen ist nach dem nächsten Sync möglich.",
         "provisional": "Das Hinzufügedatum ist noch nicht von 7TV bestätigt. Entfernen ist nach dem nächsten Sync möglich.",
-        "invalid": "Das Hinzufügedatum dieses Eintrags lässt sich nicht verwenden. Nach dem nächsten Sync erneut versuchen."
-      }
+        "invalid": "Das Hinzufügedatum dieses Eintrags lässt sich nicht verwenden. Nach dem nächsten Sync erneut versuchen.",
+        "pending": "Dieser Eintrag ist schon aus 7TV entfernt; seine Meldung an Emote Purge steht noch aus."
+      },
+      "starting": "Entfernen wird vorbereitet …",
+      "running": "Wird aus 7TV entfernt …",
+      "paused": "7TV bremst gerade. Nächster Versuch in {{ seconds }} s.",
+      "nothingRemoved": "Es wurde nichts entfernt.",
+      "failed": "7TV hat abgelehnt: {{ message }}",
+      "cancelled": "Abgebrochen. Es wurde nichts entfernt.",
+      "unknown": "Die Antwort von 7TV ging verloren. Der nächste Sync zeigt, ob der Eintrag noch im Set ist.",
+      "reporting": "Aus 7TV entfernt. Wird gebucht …",
+      "booked": "Aus 7TV entfernt.",
+      "notBooked": "Entfernt in 7TV. Der Wunsch wurde inzwischen anders gebucht.",
+      "reportPending": "Aus 7TV entfernt, aber die Meldung an Emote Purge ist nicht angekommen.",
+      "retryReport": "Erneut melden"
     }
   }
 }
