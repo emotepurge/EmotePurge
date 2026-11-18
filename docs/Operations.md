@@ -709,6 +709,8 @@ stand:
 | Audit log entry | deleted 365 days after it occurred | `OccurredAtUtc` |
 | Channel after "leave" | deleted with its whole history 180 days after it was deactivated | `DeactivatedAtUtc` |
 | Chat-log backfill run (the run row; its snapshot goes with it) | deleted 365 days after it finished | `FinishedAtUtc` |
+| Wish requester data (the requester's login and id on a wish) | cleared 30 days after the wish ended; a wish that was never active at the latest 120 days after creation (E14 rules); like every row here only with `Retention:Enforce=true` | `EndedAtUtc` (`RetentionPolicy.WishRequester`, `WishNeverActiveRequesterCap`) |
+| Ended wish (the row itself) | deleted 365 days after it ended; only with `Retention:Enforce=true` | `EndedAtUtc` (`RetentionPolicy.EndedWish`) |
 | Raw system-load sample | deleted after 7 days, only after its own and its immediate successor's hourly rollups exist | sample hour and source match `SystemLoadHourly`; when a later sample exists for the same process identity and source, its hour must also match |
 | Hourly system-load row | deleted after 13 calendar months | `HourUtc` |
 | Log entry (admin log viewer) | deleted after 7 days | `LogEntries.TimestampUtc` |
@@ -1835,6 +1837,25 @@ WHERE t.ctid = r.row_id AND r.rn > 1;
 ```
 
 The statement is `EmoteSlotRollbackSql.CollapseBackfillSnapshotSql`; keep both texts identical.
+
+## Wish emotes
+
+Wishes (a channel asks for a 7TV emote to stay in its set for a limited time) are the backend core of
+epic #481. Child 1 ships the data model, the reconcile against the channel's slots, the retention periods
+and the `/api/channels/{channelName}/wishes` routes; there is no UI yet.
+
+- **Switch:** `Wishes:Enabled` (environment variable `WISHES_ENABLED`, default `false`). Set it on **both**
+  the api and the worker: the api answers the wish routes with 404 `wishes_disabled` while it is off, and
+  the worker's sync runs the wish reconcile only when it is on. Keep it off on production until the whole
+  epic is released.
+- **Migration:** `AddWishes` is additive (two new tables, no change to an existing one). Apply it by hand
+  **before** the images, like every migration (see the tunnel recipe in the repository `CLAUDE.md`): run
+  `dotnet ef migrations list` first, which must show exactly `AddWishes` as pending, then
+  `dotnet ef database update`, then `list` again. The migration guard at startup fails fast if it is
+  missing.
+- **Rollback:** switch it off. The tables stay and do not disturb an older image.
+- **Retention:** the wish periods are listed under "Data retention" below; they apply only with
+  `Retention:Enforce=true`.
 
 ## Database backup and restore
 

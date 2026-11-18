@@ -37,6 +37,7 @@ Legende: ✅ umgesetzt · 🟡 teilweise · ⬜ offen
 | **A13**–**A15** | ⬜ | — |
 | **A16** Emote-Liste importieren (Nachtrag 2026-08-04) | ✅ 2026-09-06 | DECISIONS „Import-Lauf: dritter Arbiter-Zweig ohne DI-Zirkel, kein Kanal-Reset, Nachlauf ans Laufobjekt gebunden …" (#72, K3) |
 | **A17** Chat-Log-Backfill (Nachtrag 2026-10-08) | ✅ 2026-10-09 | DECISIONS „Chat-log backfill: imported rows are marked, one set owns an imported day, coverage is disclosed unconditionally, the flag ships off (#354)“ (Epic #346); Flag auf Prod bis zum Datenschutztext aus; Entfernen im UI (#384) |
+| **A18** Wunsch-Emotes (Nachtrag 2026-11-17) | 🟡 begonnen, K1 | K1 (Backend-Kern, #483) auf Branch, nicht gemergt, nicht deployt, hinter `Wishes:Enabled`; DECISIONS „Wish emotes, child 1: backend core"; Epic #481, Querverweis A15 |
 | **B1** Support-Drilldown | 🟡 2026-08-01 | Audit-Zeilen und Per-Channel-Flush fehlen |
 | **B2** Soll/Ist-Roster | ✅ 2026-08-02 | DECISIONS „Auslastungsbalken bekommen eine Schwellen-Leiter, das Roster-Badge nicht" |
 | **B3**–**B9** | ⬜ | — |
@@ -518,6 +519,20 @@ wie ruhige Tage. Der Betreiber nimmt das bewusst in Kauf; deshalb läuft der Bac
 nur Tage **vor** dem Zählbeginn, fasst nie einen live gezählten Tag an und benennt seine Quelle überall dort,
 wo importierte Zahlen stehen.
 
+### A18 — Wunsch-Emotes: ein Emote auf Zeit im Set haben, ohne es zu vergessen (Nachtrag 2026-11-17)
+
+**Status: 🟡 begonnen, K1** (Epic #481, Kind #483) — der Backend-Kern (Wunsch- und Einstellungsmodell,
+Zustandstabelle, Abgleich gegen die Slots, Aufbewahrungsfristen, Endpoints) liegt auf dem Branch
+`nacht/483-wish-core`, ist **nicht gemergt und nicht deployt** und hängt hinter `Wishes:Enabled` (auf Prod
+aus). Frontend, Bot-Modus und Freigabe folgen in den Kindern K2 bis K6. Details: DECISIONS „Wish emotes,
+child 1: backend core"; Spec: `docs/superpowers/specs/2026-11-17-wunsch-emotes-spec.md`; Plan:
+`docs/plans/Plan-483-Wunsch-Emotes-Backend-Kern.md`.
+
+Ein Wunsch ist die Bitte eines Kanals, ein bestimmtes 7TV-Emote für begrenzte Zeit im Set zu halten; der
+Server vergleicht Wünsche mit den tatsächlichen Slots und führt die Frist nach. Verwandt mit **A15**
+(„Nachrücker-Liste"): dort wird über *neue* Emotes abgestimmt, hier wird ein konkreter Wunsch über seine Lebenszeit begleitet.
+A18 setzt A15 nicht voraus und ersetzt es nicht.
+
 ---
 
 ## B) Admin-Panel
@@ -772,7 +787,7 @@ nach Personen nicht.)
 Bricht **Grundsatz 4** direkt — serverseitiges Löschen bräuchte das 7TV-Schreib-Token im Backend, und
 die Zero-Knowledge-Architektur ist eine bewusste, gut begründete Entscheidung. Unabhängig davon: eine
 irreversible Massenaktion ohne Menschen davor ist genau der Fehlermodus aus Extension#650, nur
-automatisiert.
+automatisiert. (Zu den Wunsch-Emotes von **A18**, die Emotes auf Zeit im Set führen: siehe dort.)
 
 ### 4. Multi-Provider-Support (BTTV, FFZ, Twitch-Sub-Emotes gleichrangig)
 
