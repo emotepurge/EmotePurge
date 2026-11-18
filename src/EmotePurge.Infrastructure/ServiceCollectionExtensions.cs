@@ -354,6 +354,7 @@ public static class ServiceCollectionExtensions
         // The reconcile opens a scope and a context of its own per call (never the caller's), so it can be a
         // singleton that scoped and singleton callers alike take.
         services.AddSingleton<IWishReconcileService, WishReconcileService>();
+        services.AddSingleton<IWishReconcileTrigger, WishReconcileTrigger>();
 
         // The backfill's database side for both processes (spec section 3). Scoped like every service
         // on AppDbContext; the worker resolves it from a scope that lives as long as its loop, because

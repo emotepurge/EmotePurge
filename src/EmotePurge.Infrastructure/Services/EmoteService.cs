@@ -11,7 +11,8 @@ public class EmoteService(
     AppDbContext db,
     ILogger<EmoteService> logger,
     IExcludedChannelFilter excludedChannelFilter,
-    IBroadcasterChannelLockService broadcasterChannelLocks) : IEmoteService
+    IBroadcasterChannelLockService broadcasterChannelLocks,
+    IWishReconcileTrigger? wishReconcile = null) : IEmoteService
 {
     // The audit target type the other emote-set targets use.
     private const string EmoteSetTargetType = "emoteSet";
@@ -226,6 +227,24 @@ public class EmoteService(
     // after the commit runs twice.
     private async Task<InSetOutcome> MarkInSetAsync(InSetReport report, CancellationToken cancellationToken)
     {
+        var outcome = await MarkInSetWithRetryAsync(report, cancellationToken);
+
+        // Wish reconcile (plan 483 T8): after the committed attempt returned, outside the retry, so a retried
+        // report reconciles once; one call per hit channel whose rows changed. The trigger never throws
+        // (bar cancellation), so the report's result is the same with or without it.
+        if (wishReconcile is not null)
+        {
+            foreach (var channelId in outcome.ChangedChannelIds)
+            {
+                await wishReconcile.TriggerAsync(channelId, cancellationToken);
+            }
+        }
+
+        return outcome;
+    }
+
+    private async Task<InSetOutcome> MarkInSetWithRetryAsync(InSetReport report, CancellationToken cancellationToken)
+    {
         var retried = false;
         while (true)
         {
@@ -301,7 +320,7 @@ public class EmoteService(
             logger.LogWarning(
                 "In-set report for emote set {EmoteSetId} refused: slot {SlotId} belongs to another 7TV emote than its entry {SevenTvEmoteId}.",
                 report.EmoteSetId, foreign.SlotId, foreign.SevenTvEmoteId);
-            return new InSetOutcome(dedupedIds.Count, [], null, SyncInSetRejection.SlotOfAnotherEmote);
+            return new InSetOutcome(dedupedIds.Count, [], null, SyncInSetRejection.SlotOfAnotherEmote, []);
         }
 
         // Step 4: the emote rows of the hits for the reported ids, locked in one sorted statement, then
@@ -313,6 +332,7 @@ public class EmoteService(
         var channels = new List<SyncInSetChannelResultDto>(hits.Count);
         var channelEntryWritten = false;
         var leaves = new List<(string ChannelId, List<string> SevenTvEmoteIds)>();
+        var changedChannelIds = new List<string>();
         foreach (var hit in hits)
         {
             var found = rows.Where(e => e.ChannelId == hit.Id).ToList();
@@ -361,6 +381,11 @@ public class EmoteService(
                 channelEntryWritten = true;
             }
 
+            if (changedCount > 0)
+            {
+                changedChannelIds.Add(hit.Id);
+            }
+
             channels.Add(new SyncInSetChannelResultDto(hit.ChannelName, found.Count, changedCount, NotFoundIn(found, dedupedIds)));
         }
 
@@ -374,7 +399,7 @@ public class EmoteService(
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
-        return new InSetOutcome(dedupedIds.Count, channels, unresolved, Rejection: null);
+        return new InSetOutcome(dedupedIds.Count, channels, unresolved, Rejection: null, changedChannelIds);
     }
 
     // Step 2 (E8): the hit channels. The block list is applied in memory through the same IsExcluded
@@ -918,7 +943,7 @@ public class EmoteService(
 
     private sealed record InSetOutcome(
         int ReportedCount, IReadOnlyList<SyncInSetChannelResultDto> Channels, UnresolvedChannelDto? UnresolvedChannel,
-        SyncInSetRejection? Rejection);
+        SyncInSetRejection? Rejection, IReadOnlyList<string> ChangedChannelIds);
 
     private sealed record HitChannel(string Id, string ChannelName, string? TwitchChannelId);
 

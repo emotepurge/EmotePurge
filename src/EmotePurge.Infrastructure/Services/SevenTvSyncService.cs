@@ -24,7 +24,8 @@ public class SevenTvSyncService(
     TwitchIdResolutionBackoff resolutionBackoff,
     IEmptySetConfirmationTracker emptySetConfirmations,
     ILogger<SevenTvSyncService> logger,
-    MatchMapExclusionTracker? matchMapExclusions = null)
+    MatchMapExclusionTracker? matchMapExclusions = null,
+    IWishReconcileTrigger? wishReconcile = null)
     : ISevenTvSyncService
 {
     private const string EmoteKeyIndexName = "IX_Emotes_ChannelId_SevenTvEmoteId";
@@ -218,6 +219,10 @@ public class SevenTvSyncService(
             resolutionBackoff.RecordSuccess(channel.Id);
         }
 
+        // Wish reconcile (plan 483 T8, E): right after the commit, before the re-read below, whatever the
+        // row looks like by now. The trigger swallows its own failures, so the sync result never depends on it.
+        await TriggerWishReconcileAsync(channel.Id, cancellationToken);
+
         // The 7TV call above held no lock on the row, so a rename, deactivation or delete may have
         // committed meanwhile. Re-read before anything is published to process memory.
         var current = await db.Channels
@@ -299,6 +304,29 @@ public class SevenTvSyncService(
         // The same single retry also covers (plan #374 E9) a lock coverage miss (E2: an emote row of a
         // dispatch id appeared between the id read and the lock) and a concurrent insert of the same emote
         // row at save time (IX_Emotes_ChannelId_SevenTvEmoteId). One retry for all three causes together.
+        var channelId = channel.Id;
+        var result = await ApplyDeltaWithRetryAsync(channel, normalized, emoteSetId, delta, cancellationToken);
+
+        // Wish reconcile (plan 483 T8): only on a written delta, after the attempt (and its retry) has
+        // returned, so a retried dispatch reconciles once. NoChange and AmbiguousDelta wrote no slot.
+        if (result.Outcome == SevenTvDeltaOutcome.Applied)
+        {
+            await TriggerWishReconcileAsync(channelId, cancellationToken);
+        }
+
+        return result;
+    }
+
+    private Task TriggerWishReconcileAsync(string channelId, CancellationToken cancellationToken) =>
+        wishReconcile is null ? Task.CompletedTask : wishReconcile.TriggerAsync(channelId, cancellationToken);
+
+    private async Task<SevenTvDeltaResult> ApplyDeltaWithRetryAsync(
+        Channel channel,
+        string normalized,
+        string emoteSetId,
+        SevenTvEmoteSetDelta delta,
+        CancellationToken cancellationToken)
+    {
         var retried = false;
         while (true)
         {
