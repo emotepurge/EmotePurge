@@ -245,7 +245,10 @@ Indizes und Constraints:
 - `IX_Wishes_Status_ExpiresAtUtc` (Ablauf-Lauf).
 - Eindeutig, partiell: `(ChannelId, SevenTvEmoteId)` WHERE `Status` IN (`approved`, `unconfirmed`,
   `active`, `presented`) (E13).
-- Eindeutig, partiell: `(SlotId)` WHERE `SlotId` IS NOT NULL AND `Status` IN (`active`, `presented`).
+- Eindeutig, partiell: `(SlotId)` WHERE `SlotId` IS NOT NULL AND `Status` IN (`active`, `presented`,
+  `kept`). Ein `kept`-Wunsch hält seinen Eintrag, solange er im Set ist (Betreiberentscheidungen vom
+  18.11.). Verlässt der Slot das Set, leert der Abgleich die `SlotId` des `kept`-Wunsches (6.3), weil der
+  Index den Zustand des Slots nicht sehen kann.
 - `IX_Wishes_EndedAtUtc` partiell WHERE `RequesterLogin` IS NOT NULL OR `RequesterTwitchUserId`
   IS NOT NULL (Retention).
 - CHECK `DurationDays BETWEEN 1 AND 365`.
@@ -276,7 +279,10 @@ zuordnet. Der Abgleich ruft ihn für jeden Wunsch in `pending`, `approved` und `
 (dort nur innerhalb von 6 Stunden nach `EndedAtUtc`).
 
 - **Kandidaten:** nicht archivierte Slots des Kanals, die mit keinem laufenden Wunsch verknüpft
-  sind, für diesen Wunsch nicht gesperrt sind (`WishSlotExclusions`, K6) und deren `AddedAt` nicht
+  sind und die kein `kept`-Wunsch hält (Betreiberentscheidung vom 18.11.: `kept` hält seinen Slot,
+  solange der Eintrag im Set ist; ist der Slot archiviert oder trägt er ein `AddedAt` nach dem
+  `SlotConfirmedAtUtc` des `kept`-Wunsches, gibt der Abgleich ihn vor der Zuordnung frei), die für
+  diesen Wunsch nicht gesperrt sind (`WishSlotExclusions`, K6) und deren `AddedAt` nicht
   vor dem Fensterbeginn liegt. Fensterbeginn ist `CreatedAtUtc` (`pending`), `ApprovedAtUtc`
   (`approved`) bzw. `EndedAtUtc` (`removed_externally`), **ohne Toleranz**: Ein Slot mit `AddedAt`
   vor dem Fensterbeginn ist nie Kandidat, auch nicht um Sekunden; dafür gibt es „Bestand
