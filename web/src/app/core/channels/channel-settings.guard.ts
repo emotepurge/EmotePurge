@@ -6,9 +6,10 @@ import { ChannelService } from './channel.service';
 import { AuthService } from '../auth/auth.service';
 
 /**
- * Guards the channel's settings tab: management rights **and** the operator's backfill switch
- * (`ChatLogBackfill:Enabled`, surfaced as `chatLogBackfillEnabled`). With the switch off the tab does
- * not exist, so a direct visit is redirected exactly like a missing right (spec 2026-10-09, D17).
+ * Guards the channel's settings tab: management rights **and** at least one operator switch that
+ * gives the tab content: the chat-log backfill (`chatLogBackfillEnabled`, spec 2026-10-09, D17) or the
+ * wish settings (`wishesEnabled`, #485, E19). With both off the tab does not exist, so a direct visit
+ * is redirected exactly like a missing right.
  * Same fallback as `channelManageGuard`.
  */
 export const channelSettingsGuard: CanActivateFn = (route, state) => {
@@ -32,7 +33,9 @@ export const channelSettingsGuard: CanActivateFn = (route, state) => {
 
       return channelService.getPermissions(channelName).pipe(
         map((permissions) =>
-          permissions.canManage && permissions.chatLogBackfillEnabled ? true : fallback(),
+          permissions.canManage && (permissions.chatLogBackfillEnabled || permissions.wishesEnabled)
+            ? true
+            : fallback(),
         ),
         catchError(() => of(fallback())),
       );

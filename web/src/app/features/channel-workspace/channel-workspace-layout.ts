@@ -102,10 +102,9 @@ const LOCKED_BY_BROADCASTER_KEY = 'errors.api.channel_locked_by_broadcaster';
         @if (canManage()) {
           <app-tab-link link="activity" [label]="'channelWorkspace.tabs.activity' | transloco" />
         }
-        <!-- Temporary condition (backfill spec D17): the tab holds only the backfill section, so it
-             follows the operator's switch too. Once a second settings section exists the tab
-             becomes canManage alone and the switch hides just the backfill section. -->
-        @if (canManage() && chatLogBackfillEnabled()) {
+        <!-- The tab holds the backfill section and the wish settings (#485, E19), each behind its
+             own operator switch; with both off there is nothing to show, so the tab goes too. -->
+        @if (canManage() && (chatLogBackfillEnabled() || wishesEnabled())) {
           <app-tab-link link="settings" [label]="'channelWorkspace.tabs.settings' | transloco" />
         }
       </nav>
@@ -136,6 +135,7 @@ export class ChannelWorkspaceLayout {
   protected readonly canViewUsageStats = signal(false);
   protected readonly canPurgeAsBroadcaster = signal(false);
   protected readonly chatLogBackfillEnabled = signal(false);
+  protected readonly wishesEnabled = signal(false);
   protected readonly purgeInProgress = signal(false);
 
   // Without this a deactivated channel offered no way back in: leaving keeps the row (see
@@ -320,6 +320,7 @@ export class ChannelWorkspaceLayout {
         this.isBotActive.set(permissions.isBotActive);
         this.canPurgeAsBroadcaster.set(permissions.canPurgeAsBroadcaster);
         this.chatLogBackfillEnabled.set(permissions.chatLogBackfillEnabled);
+        this.wishesEnabled.set(permissions.wishesEnabled);
       },
       // Only reachable for a logged-out user (the interceptor already redirects) or a server error —
       // hide everything privileged rather than guess.
@@ -328,6 +329,7 @@ export class ChannelWorkspaceLayout {
         this.canViewUsageStats.set(false);
         this.canPurgeAsBroadcaster.set(false);
         this.chatLogBackfillEnabled.set(false);
+        this.wishesEnabled.set(false);
       },
     });
   }

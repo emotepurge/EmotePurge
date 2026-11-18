@@ -116,6 +116,39 @@ describe('channelSettingsGuard', () => {
     expect(router.serializeUrl(result as UrlTree)).toBe('/channels/sensitron/vote-sessions');
   });
 
+  it('allows a manager while only the wishes switch is on', async () => {
+    const resultPromise = firstValueFrom(runGuard('sensitron'));
+
+    httpMock.expectOne('/api/auth/me').flush(USER);
+    httpMock
+      .expectOne('/api/channels/sensitron/permissions')
+      .flush({ ...PERMISSIONS, chatLogBackfillEnabled: false, wishesEnabled: true });
+
+    expect(await resultPromise).toBe(true);
+  });
+
+  it('redirects a non-manager even while only the wishes switch is on', async () => {
+    const resultPromise = firstValueFrom(runGuard('sensitron'));
+
+    httpMock.expectOne('/api/auth/me').flush(USER);
+    httpMock
+      .expectOne('/api/channels/sensitron/permissions')
+      .flush({ ...PERMISSIONS, canManage: false, wishesEnabled: true });
+
+    const result = await resultPromise;
+    expect(router.serializeUrl(result as UrlTree)).toBe('/channels/sensitron/vote-sessions');
+  });
+
+  it('redirects a manager while both switches are off', async () => {
+    const resultPromise = firstValueFrom(runGuard('sensitron'));
+
+    httpMock.expectOne('/api/auth/me').flush(USER);
+    httpMock.expectOne('/api/channels/sensitron/permissions').flush(PERMISSIONS);
+
+    const result = await resultPromise;
+    expect(router.serializeUrl(result as UrlTree)).toBe('/channels/sensitron/vote-sessions');
+  });
+
   it('redirects to the channel vote-sessions list when the permissions call fails', async () => {
     const resultPromise = firstValueFrom(runGuard('sensitron'));
 

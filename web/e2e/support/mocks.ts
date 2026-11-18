@@ -1136,6 +1136,8 @@ export async function mockChannelPermissions(
     /** #346: the operator switch for the chat-log backfill. On by default; the routes it unlocks
      *  are mocked per spec, so nothing else depends on it yet. */
     chatLogBackfillEnabled: boolean;
+    /** #485: the operator switch for wish emotes. Off by default; the wish specs switch it on. */
+    wishesEnabled: boolean;
   }> = {},
 ): Promise<void> {
   await page.route(`**/api/channels/${channelName}/permissions`, (route) =>
@@ -1148,6 +1150,7 @@ export async function mockChannelPermissions(
       tagRunsEnabled: true,
       canPurgeAsBroadcaster: false,
       chatLogBackfillEnabled: true,
+      wishesEnabled: false,
       ...overrides,
     }),
   );

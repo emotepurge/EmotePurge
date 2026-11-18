@@ -273,7 +273,7 @@ describe('ChannelWorkspaceLayout — a carried-over run must not be dropped the 
  * the tags tab follows the usage tab's visibility, `canViewUsageStats`).
  */
 describe('ChannelWorkspaceLayout — tabs', () => {
-  function tabLabels(permissions: ChannelPermissions): string[] {
+  function tabLabels(permissions: ChannelPermissions | 'error'): string[] {
     TestBed.configureTestingModule({
       imports: [
         ChannelWorkspaceLayout,
@@ -299,7 +299,15 @@ describe('ChannelWorkspaceLayout — tabs', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         { provide: Dialog, useValue: { open: vi.fn() } },
-        { provide: ChannelService, useValue: { getPermissions: () => of(permissions) } },
+        {
+          provide: ChannelService,
+          useValue: {
+            getPermissions: () =>
+              permissions === 'error'
+                ? throwError(() => new HttpErrorResponse({ status: 500 }))
+                : of(permissions),
+          },
+        },
         {
           provide: EVENT_SOURCE_FACTORY,
           useValue: () => new FakeEventSource() as unknown as EventSource,
@@ -338,6 +346,30 @@ describe('ChannelWorkspaceLayout — tabs', () => {
     expect(tabLabels({ ...PERMISSIONS, chatLogBackfillEnabled: false })).not.toContain(
       'Einstellungen',
     );
+  });
+
+  // #485, E19: the tab also carries the wish settings, so the wish switch alone opens it.
+  it('shows the settings tab for a manager while only the wishes switch is on', () => {
+    expect(tabLabels({ ...PERMISSIONS, wishesEnabled: true })).toContain('Einstellungen');
+  });
+
+  it('hides every privileged tab when the permissions call fails', () => {
+    expect(tabLabels('error')).toEqual(['Votings']);
+  });
+
+  it('hides the settings tab while both switches are off', () => {
+    expect(tabLabels(PERMISSIONS)).not.toContain('Einstellungen');
+  });
+
+  it('hides the settings tab from a non-manager while only the wishes switch is on', () => {
+    expect(tabLabels({ ...PERMISSIONS, canManage: false, wishesEnabled: true })).not.toContain(
+      'Einstellungen',
+    );
+  });
+
+  // Until T4 mounts the route there is no wishes link, whatever the switch says.
+  it('shows no wishes link yet', () => {
+    expect(tabLabels({ ...PERMISSIONS, wishesEnabled: true })).not.toContain('Wünsche');
   });
 
   it('hides the settings tab from a non-manager even with the switch on', () => {
