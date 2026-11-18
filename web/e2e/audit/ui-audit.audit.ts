@@ -24,7 +24,9 @@ import {
   mockAdminUsers,
   mockAuditLog,
   mockAuthMe,
+  mockBackfillStatus,
   mockChannelAuditLog,
+  mockChannelEmoteSetList,
   mockChannelPermissions,
   mockChannelStatus,
   mockContactConfig,
@@ -33,6 +35,7 @@ import {
   mockLegalAvailability,
   mockLegalDocument,
   mockSetWarning,
+  mockSevenTvEmoteReads,
   mockSevenTvGql,
   mockSyncDeletedInSet,
   mockTagEntries,
@@ -44,9 +47,16 @@ import {
   mockUsageChannelSeries,
   mockUsageDaily,
   mockUsageTotals,
+  mockWishBackend,
+  mockWishMine,
   mockWishSummary,
   mockWorkerHealth,
+  buildWish,
+  buildWishSlot,
+  buildWishUsage,
   trendBursts,
+  wishInstant,
+  wishUlid,
 } from '../support/mocks';
 
 // ---------------------------------------------------------------------------
@@ -441,6 +451,8 @@ interface Scenario {
   requiresFinePointer?: boolean;
   /** Also runs at the `mobile-mouse` viewport (360 px, fine pointer). */
   includeMouseAt360?: boolean;
+  /** Emulates `prefers-reduced-motion: reduce` (in the same CDP call as pointer and colour scheme). */
+  reducedMotion?: boolean;
   /**
    * Fails the case on any axe finding tagged WCAG 2.0/2.1 A or AA or WCAG 2.2 AA (`target-size`, 24 px) — the full rule set, not only
    * `color-contrast`. For pages whose spec demands an AA-clean audit (the admin log viewer, §9.8).
@@ -455,6 +467,116 @@ interface Scenario {
    * overhang never widens the document — `beyondRightEdge` sees them.
    */
   strictRightEdge?: boolean;
+}
+
+/** An alias at the server's limit's order of magnitude, one unbroken word like a real 7TV name. */
+const LONG_WISH_ALIAS = 'PrachtvollerLangerWunschnameOhneLeerzeichenDerDieZeileAufDieProbeStellt1';
+const LONG_REQUESTER = 'ein_sehr_langer_login_ab';
+
+/**
+ * The wish lists of the channel page with long names in all three sections (#485, plan T14): a due
+ * wish, an approved and a failed one under "Handlungsbedarf"; running ones in and out of probation, one
+ * permanent, one with a usage series; ended ones of every kind, one without a stored picture. With
+ * `withoutImages` no wish carries an `imageUrl` (the picture rule falls back to the still).
+ */
+function wishAuditLists(options: { withoutImages?: boolean } = {}) {
+  const image = options.withoutImages ? { imageUrl: null } : {};
+  const open = [
+    buildWish(1, {
+      status: 'presented',
+      statusReason: 'expired',
+      alias: LONG_WISH_ALIAS,
+      requesterLogin: LONG_REQUESTER,
+      expiresAtUtc: wishInstant(-2),
+      probationStartsAtUtc: wishInstant(-9),
+      extensionCount: 3,
+      ...image,
+    }),
+    buildWish(2, {
+      status: 'approved',
+      alias: 'GenehmigtUndBereit',
+      requesterLogin: 'chatter',
+      slotId: null,
+      slotAddedAtUtc: null,
+      startsAtUtc: null,
+      probationStartsAtUtc: null,
+      expiresAtUtc: null,
+      ...image,
+    }),
+    buildWish(3, {
+      status: 'failed',
+      statusReason: 'alias_conflict',
+      alias: `${LONG_WISH_ALIAS}Zwei`,
+      slotId: null,
+      slotAddedAtUtc: null,
+      startsAtUtc: null,
+      probationStartsAtUtc: null,
+      expiresAtUtc: null,
+      ...image,
+    }),
+  ];
+  const running = [
+    buildWish(4, {
+      alias: LONG_WISH_ALIAS,
+      requesterLogin: LONG_REQUESTER,
+      probationStartsAtUtc: wishInstant(-1),
+      expiresAtUtc: wishInstant(2),
+      ...image,
+    }),
+    buildWish(5, { alias: 'Dauerhaft', permanent: true, expiresAtUtc: null, ...image }),
+    buildWish(6, { alias: 'NochLangeDabei', ...image }),
+  ];
+  const ended = [
+    buildWish(7, {
+      status: 'removed',
+      alias: LONG_WISH_ALIAS,
+      slotId: null,
+      endedAtUtc: wishInstant(-3),
+      ...image,
+    }),
+    buildWish(8, { status: 'kept', alias: 'Behalten', endedAtUtc: wishInstant(-8), ...image }),
+    buildWish(9, { status: 'closed', alias: 'Geschlossen', slotId: null, ...image }),
+    buildWish(10, { status: 'surprise_status', alias: 'Unbekannt', ...image }),
+  ];
+  return { open, running, ended };
+}
+
+/**
+ * Everything interactive inside the open dialog lies inside the viewport. The channel scenarios leave
+ * `strictRightEdge` off (the scrolling tab bar trips it), so the dialogs check their own contents:
+ * one unbroken long alias once pushed the whole entry list past the edge.
+ */
+async function assertDialogInsideViewport(page: Page): Promise<void> {
+  const outside = await page.evaluate(() => {
+    const width = window.innerWidth;
+    return Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[role="dialog"] button, [role="dialog"] input, [role="dialog"] a',
+      ),
+    )
+      .map((el) => ({
+        text: (el.getAttribute('aria-label') || el.textContent || el.id).trim().slice(0, 40),
+        right: Math.round(el.getBoundingClientRect().right),
+      }))
+      .filter((hit) => hit.right > width + 1)
+      .map((hit) => `"${hit.text}" ends at ${hit.right} of ${width}`);
+  });
+  expect(outside, 'dialog contents past the right edge').toEqual([]);
+}
+
+/** A usage with a daily series, so the sparkline's row is the tallest the row gets. */
+function wishAuditUsage(): Record<string, unknown> {
+  const days = Array.from({ length: 7 }, (_, i) => ({
+    date: new Date(Date.now() - (6 - i) * 86_400_000).toISOString().slice(0, 10),
+    useCount: [2, 5, 0, 9, 14, 3, 11][i],
+  }));
+  return {
+    ...buildWishUsage(44),
+    rank: 12,
+    rankOf: 340,
+    coverageGap: true,
+    daily: days,
+  };
 }
 
 const LONG_TAG = 'Fuer-die-Halloween-Wochen-Auswahl-2026-xx';
@@ -790,6 +912,166 @@ const SCENARIOS: Scenario[] = [
     afterLoad: async (page) => {
       await page.locator('header a[href="/my-wishes"]').waitFor();
       await assertHeaderFits(page, 'shell-wishes-count', { badge: false });
+    },
+  },
+  {
+    // The channel's wish page with long names in all three sections (#485, plan T14): the ended list
+    // opened, a usage series on two rows, a wish of a status the client does not know. The 360 px
+    // mouse viewport because the fine-pointer row carries the 7TV buttons a phone never shows.
+    // No `strictRightEdge` on the channel scenarios: the tab bar scrolls sideways on purpose
+    // (`overflow-x-auto`), and with six tabs its last links lie past the edge of a 360 px screen.
+    slug: 'wishes-page',
+    path: '/channels/sensitron/wishes',
+    includeMouseAt360: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { wishesEnabled: true });
+      const backend = await mockWishBackend(page, 'sensitron', wishAuditLists());
+      backend.usage.set(1, wishAuditUsage());
+      backend.usage.set(4, wishAuditUsage());
+    },
+    afterLoad: async (page) => {
+      await page.locator('#wishes-ended-title button').click();
+      await page
+        .locator('section[aria-labelledby="wishes-ended-title"] [data-wish-id="7"]')
+        .waitFor();
+    },
+  },
+  {
+    // No wish carries a stored picture and the reader asked for reduced motion: the rows ask for the
+    // still alone (and the plate stays empty where it is not there). Fails on any request for a
+    // rendition that can move.
+    slug: 'wishes-page-no-images',
+    path: '/channels/sensitron/wishes',
+    reducedMotion: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { wishesEnabled: true });
+      await mockWishBackend(page, 'sensitron', wishAuditLists({ withoutImages: true }));
+      const asked: string[] = [];
+      (page as Page & { wishImageRequests?: string[] }).wishImageRequests = asked;
+      await page.route('**cdn.7tv.app/**', (route) => {
+        asked.push(route.request().url());
+        return route.fallback();
+      });
+    },
+    afterLoad: async (page) => {
+      await page.locator('[data-wish-id="1"]').waitFor();
+      const asked = (page as Page & { wishImageRequests?: string[] }).wishImageRequests ?? [];
+      expect(asked.length).toBeGreaterThan(0);
+      expect(asked.filter((url) => !url.endsWith('_static.webp'))).toEqual([]);
+    },
+  },
+  {
+    // "Meine Wünsche": both groups, a long alias, a long channel name, the requester-less and the
+    // requester rows.
+    slug: 'my-wishes',
+    path: '/my-wishes',
+    strictRightEdge: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await mockWishSummary(page, 3);
+      const lists = wishAuditLists();
+      await mockWishMine(page, [
+        ...lists.open.map((wish) => ({ channelName: 'superlangertwitchchannelx', wish })),
+        ...lists.running.slice(0, 2).map((wish) => ({ channelName: 'handofblood', wish })),
+      ]);
+    },
+  },
+  {
+    // The settings tab with both sections: the wish block above the backfill, the bot hint shown.
+    slug: 'channel-settings-wishes',
+    path: '/channels/sensitron/settings',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { wishesEnabled: true, chatLogBackfillEnabled: true });
+      await mockBackfillStatus(page, 'sensitron');
+      await mockChannelEmoteSetList(page, 'sensitron', {
+        activeEmoteSetId: 'set-active',
+        sets: [{ id: 'set-active', name: 'Normal' }],
+      });
+      await mockWishBackend(page, 'sensitron', { settings: { botModeEnabled: true } });
+    },
+  },
+  {
+    // The same block with its field error showing (a lead of 31).
+    slug: 'channel-settings-wishes-invalid',
+    path: '/channels/sensitron/settings',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { wishesEnabled: true, chatLogBackfillEnabled: false });
+      await mockWishBackend(page, 'sensitron');
+    },
+    afterLoad: async (page) => {
+      const lead = page.locator('#wish-settings-lead');
+      await lead.fill('31');
+      await lead.blur();
+      await page.locator('#wish-settings-lead-error').waitFor();
+    },
+  },
+  {
+    // "Nachtragen" with a long found name and the "already in the set" notice and its way on.
+    slug: 'wishes-entry-dialog',
+    path: '/channels/sensitron/wishes',
+    includeMouseAt360: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { wishesEnabled: true });
+      const backend = await mockWishBackend(page, 'sensitron');
+      backend.onCommand = (call) =>
+        call.kind === 'create'
+          ? {
+              status: 409,
+              body: {
+                errorCode: 'wish_emote_already_in_set',
+                slotIds: ['slot-1'],
+                wishId: null,
+              },
+            }
+          : undefined;
+      await mockSevenTvEmoteReads(page, { [wishUlid('D1')]: { name: LONG_WISH_ALIAS } });
+    },
+    afterLoad: async (page) => {
+      await page.locator('app-channel-wishes-page button').first().click();
+      await page.locator('#wish-entry-emote').fill(`https://7tv.app/emotes/${wishUlid('D1')}`);
+      await expect(page.locator('#wish-entry-alias')).toHaveValue(LONG_WISH_ALIAS);
+      await page.locator('button[dialog-actions]').last().click();
+      await page.locator('app-notice-banner').first().waitFor();
+      await assertDialogInsideViewport(page);
+    },
+  },
+  {
+    // "Bestand übernehmen": a free entry, a link entry and the three locked kinds, long aliases.
+    slug: 'wishes-adopt-dialog',
+    path: '/channels/sensitron/wishes',
+    includeMouseAt360: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { wishesEnabled: true });
+      await mockWishBackend(page, 'sensitron', {
+        slots: [
+          buildWishSlot('slot-free', { alias: LONG_WISH_ALIAS }),
+          buildWishSlot('slot-link', {
+            alias: 'WirdVerknuepft',
+            runningWishId: 2,
+            runningWishAdoptable: true,
+          }),
+          buildWishSlot('slot-held', { alias: 'Vergeben', heldByWishId: 4 }),
+          buildWishSlot('slot-elsewhere', {
+            alias: `${LONG_WISH_ALIAS}Zwei`,
+            runningWishId: 6,
+            runningWishAdoptable: false,
+          }),
+          buildWishSlot('slot-undated', { alias: 'OhneDatum', addedAtUtc: null }),
+        ],
+        ...wishAuditLists(),
+      });
+    },
+    afterLoad: async (page) => {
+      await page.locator('app-channel-wishes-page button').nth(1).click();
+      await page.locator('#wish-adopt-entry-slot-free').check();
+      await page.locator('#wish-adopt-duration').waitFor();
+      await assertDialogInsideViewport(page);
     },
   },
   {
@@ -2332,6 +2614,7 @@ async function emulateViewportMedia(
   page: Page,
   vp: (typeof VIEWPORTS)[number],
   theme: (typeof THEMES)[number],
+  reducedMotion = false,
 ): Promise<void> {
   const client = await page.context().newCDPSession(page);
   if (vp.pointerCoarse) {
@@ -2341,6 +2624,8 @@ async function emulateViewportMedia(
     media: 'screen',
     features: [
       { name: 'prefers-color-scheme', value: theme },
+      // In the same call as everything else: a separate emulation call would replace the set.
+      ...(reducedMotion ? [{ name: 'prefers-reduced-motion', value: 'reduce' }] : []),
       { name: 'pointer', value: vp.pointerCoarse ? 'coarse' : 'fine' },
       { name: 'any-pointer', value: vp.pointerCoarse ? 'coarse' : 'fine' },
       { name: 'hover', value: vp.pointerCoarse ? 'none' : 'hover' },
@@ -2401,7 +2686,7 @@ for (const theme of THEMES) {
         // seed covers the explicit-choice path, and together they make the state independent of
         // which one the app happens to read first. Pointer/hover ride along with colour-scheme here
         // (see emulateViewportMedia) because they have to be set in the same CDP call.
-        await emulateViewportMedia(page, vp, theme);
+        await emulateViewportMedia(page, vp, theme, Boolean(sc.reducedMotion));
         await page.addInitScript(
           (value) => localStorage.setItem('emotepurge.theme', value),
           theme as string,
