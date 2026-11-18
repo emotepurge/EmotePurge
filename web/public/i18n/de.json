@@ -2907,6 +2907,18 @@
       },
       "permanentHint": "Das Emote wird nach dem Hinzufügen als behalten geführt, es läuft keine Frist.",
       "running": "Für dieses Emote läuft bereits ein Wunsch."
+    },
+    "start": {
+      "nothingChanged": "Es wurde nichts geändert.",
+      "pageLeft": "Die Seite wurde verlassen, bevor der Vorgang starten konnte.",
+      "busy": "Ein anderer 7TV-Vorgang läuft.",
+      "tokenChanged": "Das 7TV-Token wurde entfernt oder gewechselt.",
+      "setChanged": "Das aktive Set hat gewechselt.",
+      "setSwitched": "Das Set hat in 7TV gewechselt. Nach dem nächsten Sync erneut versuchen.",
+      "setUnverified": "Das aktive Set ließ sich gerade nicht bei 7TV prüfen. Bitte später erneut versuchen.",
+      "noActiveSet": "Der Kanal hat in 7TV kein aktives Set.",
+      "wishChanged": "Der Wunsch hat sich inzwischen geändert.",
+      "wishUnverified": "Der Wunsch ließ sich gerade nicht neu laden."
     }
   }
 }

@@ -2907,6 +2907,18 @@
       },
       "permanentHint": "After it is added the emote is carried as kept; no deadline runs.",
       "running": "A wish for this emote is already running."
+    },
+    "start": {
+      "nothingChanged": "Nothing was changed.",
+      "pageLeft": "The page was left before the run could start.",
+      "busy": "Another 7TV run is in progress.",
+      "tokenChanged": "The 7TV token was removed or replaced.",
+      "setChanged": "The active set has changed.",
+      "setSwitched": "The set was switched in 7TV. Try again after the next sync.",
+      "setUnverified": "The active set could not be checked with 7TV just now. Please try again later.",
+      "noActiveSet": "The channel has no active set in 7TV.",
+      "wishChanged": "The wish has changed in the meantime.",
+      "wishUnverified": "The wish could not be reloaded just now."
     }
   }
 }
