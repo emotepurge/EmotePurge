@@ -58,6 +58,26 @@ export function liveEvents(
 }
 
 /**
+ * Emits each time the stream of `url` opens again after a gap (`LiveUpdateService.reopened`), scoped
+ * to the injecting component's lifetime. A page uses it to refetch what the gap may have swallowed;
+ * it only fires while the same url is also subscribed through {@link liveEvents} or
+ * {@link liveReload}. Pass a `Signal<string>` for a url that follows a route parameter.
+ *
+ * Must be called from an injection context.
+ */
+export function liveReopened(url: string | Signal<string>): Observable<void> {
+  const liveUpdateService = inject(LiveUpdateService);
+  const destroyRef = inject(DestroyRef);
+
+  const reopened =
+    typeof url === 'string'
+      ? liveUpdateService.reopened(url)
+      : toObservable(url).pipe(switchMap((current) => liveUpdateService.reopened(current)));
+
+  return reopened.pipe(takeUntilDestroyed(destroyRef));
+}
+
+/**
  * The "listen, then refetch" pipeline the live-updating pages were each building by hand.
  *
  * Emits **once per debounced burst**, carrying the set of event types merged into that burst. That
