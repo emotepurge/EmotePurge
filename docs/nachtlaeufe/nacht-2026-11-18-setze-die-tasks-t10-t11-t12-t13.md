@@ -25,7 +25,14 @@ _(wird am Ende ausgefüllt)_
      Quota-Badge dem Worker-Badge weicht. Das wäre eine neue Regel.
    - **(C) Engere Abstände:** Geschätzt spart das höchstens rund 28 px, gebraucht werden 33 px. Nicht gemessen.
 
-   Gebaut ist Stufe 2, der Audit-Fall `shell-wishes-count-badge @ mobile [de]` ist bis zur Entscheidung rot.
+   Gebaut ist Stufe 2. Der Audit-Fall `shell-wishes-count-badge @ mobile [de]` bleibt bis zur Entscheidung rot, der
+   passende E2E-Fall ist `test.fixme`.
+2. **Radios im Übernehmen-Dialog (T14):** Sie sind 16×16 und erscheinen als neue `smallTargetsUnder24`-Einträge. Zwei
+   Wege: als „equivalent target“-Ausnahme dokumentieren, so wie die Radios der Backfill-Sektion, oder die ganze Zeile zum
+   Label machen, damit das Ziel mindestens 24 px groß ist. Empfehlung: die ganze Zeile zum Label machen, das ist eine
+   kleine Änderung in `wish-adopt-dialog.ts`.
+3. **Tab-Leiste bei 360 px (T4/T14):** Mit dem sechsten Tab „Wünsche“ scrollt die Leiste seitlich, „Einstellungen“ ist
+   erst nach Wischen sichtbar. Das ist Bestandsverhalten mit `overflow-x-auto`. Zu entscheiden ist, ob das so bleiben darf.
 
 ## Je Task
 
@@ -99,9 +106,69 @@ _(wird am Ende ausgefüllt)_
 - Annahme: Die englischen Audit-Labels hat der Agent selbst formuliert, z. B. „Set entry taken over as wish“ und „Wish
   came due“.
 
+### T14 E2E und Audit-Harness: `11f3c92a`, `57660434`, `a5551a6e`, `c95dfa39`, `9a917266` (Sonnet 5.5)
+
+- Commits:
+  - Tests: `a5551a6e` mit Mocks und E2E-Fällen, `c95dfa39` mit E2E- und Audit-Szenarien. Die Fälle stehen in zwei
+    Dateien, `web/e2e/wishes.e2e.spec.ts` und `web/e2e/wishes-seven-tv.e2e.spec.ts`.
+  - Drei kleine Produktiv-Fixes, alle in K3 und beim Schreiben der Tests gefunden: `11f3c92a` (langer Alias verbreiterte
+    den Übernehmen-Dialog, `fieldset` ohne `min-w-0`), `57660434` (Link „Auf 7TV ansehen“ in der Zeile von 20 auf 24 px
+    Höhe), `9a917266` (langer Emote-Name in der Lese-Zeile des Nachtragen-Dialogs lief bei 360 px über den Rand).
+- Gates laut Agent:
+  - E2E komplett: **408 passed, 1 skipped**. Der übersprungene Fall ist `test.fixme`, die Kopfzeile bei 360 px de mit
+    Badge, wartet auf Betreiberfrage 1. Die Überdeckung liegt in diesem Fall bei 26 px.
+  - Ein Flake beim alten Test `touch-mobile.e2e.spec.ts:88` (Drilldown-Sheet): einmal einzeln wiederholt, dann grün (9/9).
+  - Vitest 230/5653 grün, lint und format grün.
+- Audit-Harness im Volllauf, `.audit-out/` vorher geleert: **785 passed, 67 rot**.
+  - `horizontalOverflowPx` ist überall 0, `contrastViolations` überall leer.
+  - Rot ist der bekannte T12-Fall. Dazu kommen `admin-logs*` (axe `label-content-name-mismatch`) und `tags-page*`/`tag-*`
+    (`beyondRightEdge` an der Tab-Leiste). Laut Agent nennen deren Fehlermeldungen keine Wünsche, gegen die Basis
+    verglichen hat er sie aber nicht. Den Vergleich lasse ich gerade nachprüfen, Ergebnis unten bei „Gates am Ende“.
+- **Neue `smallTargetsUnder24`-Einträge** (Gate: „keine neuen“): 16×16-Radios im Übernehmen-Dialog (Eintragsliste und
+  Start-Auswahl). Das Label ist nur über den Alias klickbar, nicht über die ganze Zeile. Im selben Muster stehen schon die
+  Bestands-Radios der Backfill-Sektion als dokumentierte Ausnahme „equivalent target“ im Harness. Heute Nacht nicht
+  geändert, siehe Betreiberfrage 2.
+- Weitere Beobachtungen des Agenten (nicht geändert):
+  - Bei 360 px scrollt die Kanal-Tab-Leiste mit sechs Tabs seitlich (`overflow-x-auto`, gewollt). Dabei ist „Wünsche“
+    angeschnitten und „Einstellungen“ liegt außerhalb. Die Kanal-Szenarien laufen deshalb ohne `strictRightEdge`, die
+    Dialog-Szenarien prüfen mit `assertDialogInsideViewport`.
+  - Im Konflikt-Banner des Nachtragen-Dialogs wird die Textspalte bei 360 px sehr schmal.
+- Annahmen: `reducedMotion` ist ein Szenariofeld im selben CDP-Aufruf wie Zeiger und Farbschema. Der Fall „Einträge
+  fehlen in den Nutzungs-Summen“ ist so belegt, dass die Seite gar keine Nutzung mockt und trotzdem wählbar ist.
+
+### T15 Doku: `bf5b2279`, `3bad0dcc` (Sonnet 5.5)
+
+- Gates laut Agent: Vitest 230 Dateien mit 5653 Tests grün, lint und format grün.
+- DECISIONS: (z) um die offene Kopfzeilen-Entscheidung ergänzt, neu sind (aa) bis (ad). (ad) hält den K3-Stand fest:
+  Branch, nicht gemergt, keine Migration, T16 offen. Schon vorhandene Punkte aus (a) bis (y) wurden nicht doppelt
+  aufgenommen.
+- UI-Designsprache: §2.5, §4.2 und §8.7 sind ergänzt. `DESIGN.md` bleibt unberührt.
+- Spec: neuer Block „Stand der Umsetzung“ mit den Fußnoten F1–F25 aus Plan §9. AK38 hat neuen Wortlaut. AK44 steht als
+  offen und nicht erfüllt, mit Messwerten und den Optionen. Neu ist RR14 (Lücke zwischen Read und REMOVE).
+- Feature-Ideen A18 und die `CLAUDE.md`-Zeile „Wunsch-Emotes“ nennen jetzt K3 auf dem Branch. `Operations.md` bleibt
+  unberührt.
+- Nach T16 und nach der Kopfzeilen-Entscheidung nachzuziehen: DECISIONS (z)/(ad), Spec AK44/AK45, die Statuszeilen.
+
 ## Gates am Ende
 
-_(folgt)_
+### Basis-Vergleich der übrigen roten Audit-Fälle (nicht bewiesen)
+
+Ein Subagent sollte `admin-logs*` und `tags-page*`/`tag-*` auf dem Stand vor K3 fahren (Basis `3eb8024c` = `ad830002^`).
+`git worktree add` wurde von der Berechtigungsregel abgelehnt. Ich habe das nicht umgangen, auch nicht über `git archive`.
+Lesend spricht alles dafür, dass die Fälle Bestand sind, bewiesen ist es nicht:
+- K3 berührt `features/admin` nicht. `tags-page.ts` ändert sich nur in 5 Zeilen (`UNSHOWN_RUN_KINDS` um `wish`, ohne
+  Layout).
+- Der neue Tab „Wünsche“ erscheint nur bei `wishesEnabled`. Die Kanal-Mocks im Harness setzen das nur in den
+  Wunsch-Szenarien (`channelWorkspace(page, { wishesEnabled: true })`), Vorgabe ist `false`.
+- Der Kopfzeilen-Link erscheint nur, wenn `summary` verfügbar ist. Die Harness-Vorgabe ist `disabled`.
+
+Morgen zum Nachholen, auf der Devbox:
+```
+git worktree add --detach ../ep-base-3eb8024c 3eb8024c
+ln -s "$PWD/web/node_modules" ../ep-base-3eb8024c/web/node_modules
+npm --prefix ../ep-base-3eb8024c/web exec -- playwright test --config=../ep-base-3eb8024c/web/playwright.audit.config.ts -g "admin-logs|tags-page|tag-"
+git worktree remove --force ../ep-base-3eb8024c
+```
 
 ## Übergaben (Fortsetzung von handoff-485.md)
 
@@ -151,3 +218,20 @@ _(folgt)_
   ihre Filter daraus ab und brauchen keine weitere Änderung.
 - i18n: `audit.actions.wish{Create,Adopt,Extend,Keep,Remove,Close,Retry,ReAdd,Settings,Due,Update}`.
 - AK43 belegt (92/92/92). DECISIONS nicht berührt.
+
+## T14 (a5551a6e, c95dfa39; Fixes 11f3c92a, 57660434, 9a917266)
+- **Mocks (`web/e2e/support/mocks.ts`):**
+  - `mockWishBackend(page, channel, {open, running, ended, slots, settings})` gibt `MockWishBackend` zurück. Es hat die
+    Listen `open`, `running`, `ended`, dazu `details` (Map Wunsch|Status), `usage`, `slots`, `settings` und `calls`.
+    `of(kind, id?)` filtert die Aufrufe, `find(id)` sucht einen Wunsch. `gate(call)` hält Antworten zurück, Listen
+    liefern dann den Stand beim Eintreffen. `onCommand(call, backend)` überschreibt eine Antwort, `status: 0` bricht ab.
+  - Standardverhalten: `create` legt einen `approved`-Wunsch in open an, `adopt` einen `active`-Wunsch in running,
+    `keep`/`close`/`complete-removal` verschieben nach ended.
+  - `mockWishSummaryLive(page, n|'disabled')` zählt die Aufrufe, Wert per `set()`. `mockWishMine(page, items|status)`.
+  - `mockAuthoritativeEmoteSets(page, channel, activeId)` prüft `refresh`.
+  - `mockSevenTvEmoteReads(page, {ulid:{name, animated?}}, {gate})`, nicht zusammen mit `mockSevenTvGql` verwenden.
+  - `mockSevenTvSetBackend` hat jetzt zusätzlich `rejectRemove` (429).
+  - Helfer: `wishInstant(days)`, `wishUlid(suffix)`, `buildWish`, `buildWishSlot`, `buildWishUsage`.
+- **Audit:** Szenarien `wishes-page`, `wishes-page-no-images` (mit `reducedMotion`, nur `_static`), `my-wishes`,
+  `channel-settings-wishes`, `channel-settings-wishes-invalid`, `wishes-entry-dialog`, `wishes-adopt-dialog`. Feld
+  `reducedMotion`; Hilfen `wishAuditLists()`, `wishAuditUsage()`, `assertDialogInsideViewport(page)`.
