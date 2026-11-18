@@ -136,6 +136,33 @@ public class AccountDeletionService(
                         .SetProperty(r => r.RequestedByLogin, AuditActor.DeletedUser.Login),
                     cancellationToken);
 
+            // Wish emotes (spec 6.5): the account's requester data goes at once, the wishes themselves stay
+            // (they are the channel's record). Matched by id only: a manual entry carries a login without an
+            // id and is left to the 30-day rule of the retention (plan finding 16). The bot-mode activator
+            // and a pending activation request are snapshots like the backfill requester above and get the
+            // same marker, which never equals a real Twitch id, so no settings check can match it.
+            await db.Wishes
+                .Where(w => w.RequesterTwitchUserId == twitchUserId)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(w => w.RequesterTwitchUserId, (string?)null)
+                        .SetProperty(w => w.RequesterLogin, (string?)null),
+                    cancellationToken);
+            await db.ChannelWishSettings
+                .Where(s => s.BotModeActivatedByTwitchUserId == twitchUserId)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(s => s.BotModeActivatedByTwitchUserId, AuditActor.DeletedUser.TwitchUserId)
+                        .SetProperty(s => s.BotModeActivatedByLogin, AuditActor.DeletedUser.Login),
+                    cancellationToken);
+            await db.ChannelWishSettings
+                .Where(s => s.BotActivationRequestedByTwitchUserId == twitchUserId)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(s => s.BotActivationRequestedByTwitchUserId, AuditActor.DeletedUser.TwitchUserId)
+                        .SetProperty(s => s.BotActivationRequestedByLogin, AuditActor.DeletedUser.Login),
+                    cancellationToken);
+
             // The encrypted Twitch tokens live on the row and go with it.
             db.Users.Remove(user);
 

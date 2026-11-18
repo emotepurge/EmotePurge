@@ -3,7 +3,7 @@ namespace EmotePurge.Core.Services;
 /// <summary>
 /// One retention pass over the categories of <see cref="RetentionPolicy"/>, in a fixed order:
 /// Twitch tokens, inactive accounts, ended vote sessions, audit log entries, finished chat-log backfill
-/// runs, deactivated channels, then system-load rows. Each system-load category is isolated so a
+/// runs, ended wishes, wish requester data, deactivated channels, then system-load rows. Each system-load category is isolated so a
 /// telemetry failure cannot skip personal-data retention or the pass summary.
 /// Called by the worker's retention job once per tick.
 /// </summary>
@@ -76,6 +76,15 @@ public sealed record LogRetentionSummary(
 /// <param name="SystemLoadHourlyRowsDeleted">Hourly summaries older than thirteen calendar months deleted, or due rows in a dry run.</param>
 /// <param name="SystemLoadRawSamplesFailed">Whether raw-sample retention failed; its counts are unknown for this pass.</param>
 /// <param name="SystemLoadHourlyRowsFailed">Whether hourly-row retention failed; its count is unknown for this pass.</param>
+/// <param name="EndedWishesDeleted">
+/// Wishes deleted 365 days after they ended (<see cref="RetentionPolicy.EndedWish"/>). Runs after the
+/// backfill runs, before the requester clearing.
+/// </param>
+/// <param name="WishRequestersCleared">
+/// Wishes whose requester fields (<c>RequesterTwitchUserId</c>, <c>RequesterLogin</c>) were cleared under
+/// <see cref="RetentionPolicy.WishRequester"/> and E14 (a) to (c), not counting the wishes the deletion
+/// above removes in the same pass.
+/// </param>
 public sealed record RetentionRunSummary(
     bool Enforced,
     DateTime ReferenceTimeUtc,
@@ -89,7 +98,9 @@ public sealed record RetentionRunSummary(
     int SystemLoadRawSamplesWithoutHourlyRow = 0,
     int SystemLoadHourlyRowsDeleted = 0,
     bool SystemLoadRawSamplesFailed = false,
-    bool SystemLoadHourlyRowsFailed = false);
+    bool SystemLoadHourlyRowsFailed = false,
+    int EndedWishesDeleted = 0,
+    int WishRequestersCleared = 0);
 
 /// <summary>The inactive-account category of a <see cref="RetentionRunSummary"/>.</summary>
 /// <param name="Deleted">Accounts deleted through <see cref="IAccountDeletionService"/>.</param>

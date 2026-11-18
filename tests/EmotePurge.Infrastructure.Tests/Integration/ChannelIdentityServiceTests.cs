@@ -32,7 +32,7 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 /// </para>
 /// </summary>
 [Collection("Postgres")]
-public class ChannelIdentityServiceTests(PostgresFixture fixture)
+public partial class ChannelIdentityServiceTests(PostgresFixture fixture)
 {
     [Fact]
     public async Task ReconcileActiveChannelsAsync_WhenTheLoginIsUnchanged_TouchesNothing()
