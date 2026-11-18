@@ -614,10 +614,8 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
     private DateTime Now() => timeProvider.GetUtcNow().UtcDateTime;
 
-    // The usage of the wish's window (E4, E5, E16), evaluated at the given time. Rule 10: the slot ids are reduced
-    // to scalar lists first and the sums run over UsageStats alone, on UseCount only like every product read of
-    // usage (a bot-only or shared-chat-only row is no use). Slots of the emote count whether archived or not (a
-    // re-added emote keeps its earlier stay's usage), a migration seed that no sync has settled does not.
+    // The usage of the wish's window (E4, E5, E16), evaluated at the given time. Window, sum, mean and gap come from
+    // the shared read (WishUsageQueries); the rank stays here because only the detail response shows it.
     private async Task<WishUsageDto?> LoadUsageAsync(Wish wish, string channelId, DateTime evaluatedAtUtc, CancellationToken cancellationToken)
     {
         if (wish.StartsAtUtc is not { } startsAt)
@@ -625,15 +623,14 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             return null;
         }
 
-        var windowStart = WishUsageWindow.WindowStart(startsAt, evaluatedAtUtc);
-        var from = DateOnly.FromDateTime(windowStart);
-        var to = DateOnly.FromDateTime(evaluatedAtUtc);
+        var read = await db.ReadAsync(channelId, wish.SevenTvEmoteId, startsAt, evaluatedAtUtc, cancellationToken);
+        if (read is null)
+        {
+            return null;
+        }
 
-        var ownSlotIds = await db.EmoteSlots
-            .Where(s => !s.SeedUnsettled && s.Emote.ChannelId == channelId && s.Emote.SevenTvEmoteId == wish.SevenTvEmoteId)
-            .Select(s => s.Id)
-            .ToListAsync(cancellationToken);
-        var total = ownSlotIds.Count == 0 ? 0L : await SumUseAsync(ownSlotIds, from, to, cancellationToken);
+        var from = DateOnly.FromDateTime(read.WindowStartUtc);
+        var to = DateOnly.FromDateTime(evaluatedAtUtc);
 
         // E16: the rank among all active slots of the channel in the same window. The wish's own slots are among
         // them, so a single-slot emote ranks against itself consistently; the number placed is the emote's total.
@@ -643,7 +640,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             .ToListAsync(cancellationToken);
         int? rank = null;
         int? rankOf = null;
-        if (activeSlotIds.Count > 0 && ownSlotIds.Intersect(activeSlotIds, StringComparer.Ordinal).Any())
+        if (activeSlotIds.Count > 0 && read.OwnSlotIds.Intersect(activeSlotIds, StringComparer.Ordinal).Any())
         {
             var perSlot = await db.UsageStats
                 .Where(u => activeSlotIds.Contains(u.SlotId) && u.Date >= from && u.Date <= to)
@@ -653,26 +650,12 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             var totals = new List<long>(activeSlotIds.Count);
             totals.AddRange(perSlot.Select(p => p.Total));
             totals.AddRange(Enumerable.Repeat(0L, activeSlotIds.Count - perSlot.Count));
-            rank = WishUsageWindow.Rank(total, totals);
+            rank = WishUsageWindow.Rank(read.Total, totals);
             rankOf = activeSlotIds.Count;
         }
 
-        var channel = await db.Channels.AsNoTracking()
-            .Where(c => c.Id == channelId)
-            .Select(c => new { c.CreatedAt, c.TrackingResumedAt, c.DeactivatedAtUtc, c.IsBotActive })
-            .FirstAsync(cancellationToken);
-        var facts = new WishCoverageFacts(
-            TrackingCoverage.TrackedSince(channel.TrackingResumedAt, channel.CreatedAt), channel.DeactivatedAtUtc, channel.IsBotActive);
-
-        var mean = WishUsageWindow.MeanPerDay(total, WishUsageWindow.LengthInDays(windowStart, evaluatedAtUtc));
-        return new WishUsageDto(
-            windowStart, evaluatedAtUtc, total, mean, rank, rankOf, WishUsageWindow.HasCoverageGap(facts, windowStart, evaluatedAtUtc));
+        return new WishUsageDto(read.WindowStartUtc, evaluatedAtUtc, read.Total, read.MeanPerDay, rank, rankOf, read.HasCoverageGap);
     }
-
-    private async Task<long> SumUseAsync(List<string> slotIds, DateOnly from, DateOnly to, CancellationToken cancellationToken) =>
-        await db.UsageStats
-            .Where(u => slotIds.Contains(u.SlotId) && u.Date >= from && u.Date <= to)
-            .SumAsync(u => (long)u.UseCount, cancellationToken);
 
     private Task<string?> ResolveChannelIdAsync(string channelName, CancellationToken cancellationToken)
     {

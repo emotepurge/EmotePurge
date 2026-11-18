@@ -57,6 +57,26 @@ public partial class WishServiceTests
     }
 
     [Fact]
+    public async Task Detail_SumsTwoSimultaneouslyActiveAliasesOfTheSameEmote()
+    {
+        var channel = await SeedHealthyChannelAsync();
+        var emote = await SeedEmoteAsync(channel);
+        var first = await SeedSlotAsync(emote, "Kappa", Now.AddDays(-3));
+        var second = await SeedSlotAsync(emote, "KappaToo", Now.AddDays(-3));
+        var wishId = await SeedLinkedWishAsync(channel, emote, first, startsAt: Now.AddDays(-2), expiresAt: Now.AddDays(28));
+        foreach (var daysAgo in new[] { 2, 1, 0 })
+        {
+            await SeedUsageAsync(emote, first, Day(daysAgo), 10);
+            await SeedUsageAsync(emote, second, Day(daysAgo), 20);
+        }
+
+        var usage = (await Sut().GetAsync(channel.Name, wishId))!.Usage!;
+
+        Assert.Equal(90, usage.Total);
+        Assert.Equal(45m, usage.PerDayMean);
+    }
+
+    [Fact]
     public async Task Detail_IgnoresUsageOfOtherChannels_EvenForTheSameSevenTvEmote()
     {
         var channel = await SeedHealthyChannelAsync();
