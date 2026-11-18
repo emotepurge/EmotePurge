@@ -2783,6 +2783,31 @@
       "limited": "Die Nutzung ist gerade nicht abrufbar, später erneut versuchen.",
       "sparkline": "Nutzung pro Tag,"
     },
+    "settings": {
+      "title": "Wünsche",
+      "intro": "Diese Vorgaben gelten für neue Wünsche dieses Kanals.",
+      "botActive": "Der Bot-Modus ist aktiv.",
+      "readOnly": "Du kannst diese Einstellungen ansehen, aber nicht ändern. Das dürfen nur der Broadcaster, wer den Bot aktiviert hat, und Admins.",
+      "duration": {
+        "label": "Standardlaufzeit in Tagen",
+        "hint": "So lange läuft ein neuer Wunsch, wenn nichts anderes angegeben ist."
+      },
+      "lead": {
+        "label": "Vorlauf der Probezeit in Tagen",
+        "hint": "So viele Tage vor dem Ablauf beginnt die Probezeit, in der ein Wunsch noch läuft, aber schon zur Entscheidung ansteht."
+      },
+      "leadInvalid": {
+        "empty": "Gib einen Vorlauf an.",
+        "not_integer": "Der Vorlauf ist eine ganze Zahl von Tagen.",
+        "out_of_range": "Der Vorlauf liegt zwischen 1 und {{ max }} Tagen."
+      },
+      "save": "Speichern",
+      "saved": "Einstellungen gespeichert.",
+      "changed": "Die Einstellungen wurden inzwischen geändert. Deine Eingaben sind noch nicht gespeichert.",
+      "reload": "Neu laden",
+      "loadFailed": "Die Einstellungen konnten nicht geladen werden.",
+      "retry": "Erneut versuchen"
+    },
     "dialog": {
       "toWish": "Zum Wunsch",
       "duration": "Laufzeit in Tagen",

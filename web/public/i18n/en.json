@@ -2783,6 +2783,31 @@
       "limited": "Usage is not available right now, try again later.",
       "sparkline": "Usage per day,"
     },
+    "settings": {
+      "title": "Wishes",
+      "intro": "These defaults apply to new wishes of this channel.",
+      "botActive": "Bot mode is active.",
+      "readOnly": "You can view these settings but not change them. Only the broadcaster, whoever activated the bot, and admins can.",
+      "duration": {
+        "label": "Default duration in days",
+        "hint": "How long a new wish runs when nothing else is given."
+      },
+      "lead": {
+        "label": "Probation lead in days",
+        "hint": "How many days before it expires a wish enters probation: it still runs, but is up for a decision."
+      },
+      "leadInvalid": {
+        "empty": "Enter a lead.",
+        "not_integer": "The lead is a whole number of days.",
+        "out_of_range": "The lead is between 1 and {{ max }} days."
+      },
+      "save": "Save",
+      "saved": "Settings saved.",
+      "changed": "The settings have changed in the meantime. Your entries are not saved yet.",
+      "reload": "Reload",
+      "loadFailed": "The settings could not be loaded.",
+      "retry": "Try again"
+    },
     "dialog": {
       "toWish": "Go to wish",
       "duration": "Duration in days",
