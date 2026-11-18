@@ -85,6 +85,20 @@ _(wird am Ende ausgefüllt)_
 - Für T14 offen: `account-deletion.e2e` mockt `/me` ohne `mockAuthMe`, die summary-Anfrage fällt dort durch den Proxy.
   Dabei bricht nichts.
 
+### T13 Audit-Aktionen, i18n, Fehlercodes — `10188e5a` (Sonnet 5.5)
+
+- Gates laut Agent: Vitest 230 Dateien, 5653 Tests grün; lint 0; format:check 0.
+- Die elf `wish.*`-Aktionen sind ergänzt. `ACTION_KEYS` hat damit 34 Einträge, 31 davon kanalbezogen, wie im Plan.
+  Die Servernamen hat der Agent lesend geprüft; `wish.readd` ist klein geschrieben, der Schlüssel heißt `wishReAdd`.
+- Der Akteur „system“ bekommt keinen eigenen Text, weil die anderen Systemeinträge genauso lesen.
+- **Gegenprobe AK43** (für den PR-Text): 92 Konstanten in `ApiErrorCodes.cs` stehen gegen 92 in
+  `KNOWN_API_ERROR_CODES` und 92 `errors.api.*` je Locale, ohne Differenz. Die zwölf `errors.api.wish_*` passen im
+  Wortlaut, geändert wurde keiner.
+- i18n-Abschluss ohne Befund: de und en haben dieselben Schlüssel, nichts ist verwaist oder fehlt. „…“ stehen nur an
+  Status- und Ladetexten.
+- Annahme: Die englischen Audit-Labels hat der Agent selbst formuliert, z. B. „Set entry taken over as wish“ und „Wish
+  came due“.
+
 ## Gates am Ende
 
 _(folgt)_
@@ -130,3 +144,10 @@ _(folgt)_
   `assertHeaderFits(page, slug, {badge})` schreibt `.audit-out/fit/*.json` und scheitert weich. Bekannt rot:
   `shell-wishes-count-badge @ mobile [de]`.
 - **DECISIONS:** (z) mit Stufe und Messwerten.
+
+## T13 (10188e5a)
+- `AuditAction` und `ACTION_KEYS` kennen 34 Aktionen. Neu sind `wish.{create,adopt,extend,keep,remove,close,retry,readd,settings,due,update}`,
+  alle kanalbezogen; `CHANNEL_SCOPED_ACTIONS` hat 31 Einträge, `CHANNELLESS_ACTIONS` 3. Admin-Log und Kanal-Aktivität leiten
+  ihre Filter daraus ab und brauchen keine weitere Änderung.
+- i18n: `audit.actions.wish{Create,Adopt,Extend,Keep,Remove,Close,Retry,ReAdd,Settings,Due,Update}`.
+- AK43 belegt (92/92/92). DECISIONS nicht berührt.
