@@ -19,7 +19,6 @@ import {
   isDue,
   isProbation,
   isSevenTvAction,
-  remainingTime,
   timeInSet,
   WishAction,
   wishActions,
@@ -29,38 +28,20 @@ import { UsageSparkline } from '../../shared/emotes/usage-sparkline';
 import { Button } from '../../shared/ui/button';
 import { StatusBadge, StatusBadgeTone } from '../../shared/ui/status-badge';
 import { WishImage } from './wish-image';
+import {
+  TextPart,
+  wishReasonKey,
+  wishRemainingPart,
+  wishStatusKey,
+  wishStatusTone,
+} from './wish-labels';
 import type { WishOperationView } from './wish-operation';
 import { usageSeries, usageWindowLabel, WishUsageBlock } from './wish-usage';
-
-/** The thirteen statuses of spec 5 that have a name; anything else reads as "unknown". */
-const KNOWN_STATUSES: ReadonlySet<string> = new Set([
-  'pending',
-  'approved',
-  'unconfirmed',
-  'failed',
-  'active',
-  'presented',
-  'rejected',
-  'expired',
-  'removed',
-  'removed_externally',
-  'kept',
-  'closed',
-  'merged',
-]);
-
-/** The reasons K3 explains in words; every other one renders the neutral line (plan 2.3, 2.10). */
-const EXPLAINED_REASONS: ReadonlySet<string> = new Set(['expired', 'unconfirmed_start']);
 
 const KNOWN_SOURCES: ReadonlySet<string> = new Set(['irc', 'manual', 'adopted']);
 
 /** Actions that destroy or end without keeping; they stand last, after a gap (§8.7). */
 const DESTRUCTIVE_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>(['remove', 'close']);
-
-interface TextPart {
-  key: string;
-  params?: Record<string, string | number>;
-}
 
 /**
  * One wish as a ruled row (#485, plan T4): picture, alias, status, deadlines and the actions of the
@@ -269,55 +250,17 @@ export class WishRow {
 
   protected readonly pageUrl = computed(() => emotePageUrl(this.wish().sevenTvEmoteId));
 
-  protected readonly statusKey = computed(() =>
-    KNOWN_STATUSES.has(this.wish().status)
-      ? `wishes.status.${this.wish().status}`
-      : 'wishes.status.unknown',
-  );
+  protected readonly statusKey = computed(() => wishStatusKey(this.wish()));
 
-  /** "Notable how often?" (§4.3): only the two states that ask for a decision get a colour. */
-  protected readonly statusTone = computed<StatusBadgeTone>(() => {
-    switch (this.wish().status) {
-      case 'presented':
-        return 'warning';
-      case 'failed':
-        return 'danger';
-      default:
-        return 'neutral';
-    }
-  });
+  protected readonly statusTone = computed<StatusBadgeTone>(() => wishStatusTone(this.wish()));
 
   protected readonly probation = computed(() => isProbation(this.wish(), this.now()));
 
-  protected readonly reasonKey = computed(() => {
-    const { status, statusReason } = this.wish();
-    if ((status !== 'presented' && status !== 'failed') || statusReason === null) {
-      return null;
-    }
-    return EXPLAINED_REASONS.has(statusReason)
-      ? `wishes.reason.${statusReason}`
-      : 'wishes.reason.other';
-  });
+  protected readonly reasonKey = computed(() => wishReasonKey(this.wish()));
 
-  protected readonly remaining = computed<TextPart | null>(() => {
-    const wish = this.wish();
-    if ((wish.status !== 'active' && wish.status !== 'presented') || wish.permanent) {
-      return null;
-    }
-    const left = remainingTime(wish.expiresAtUtc, this.now());
-    switch (left?.kind) {
-      case 'days':
-        return { key: pluralKey(left.count, 'wishes.row.remaining.days'), params: left };
-      case 'hours':
-        return { key: pluralKey(left.count, 'wishes.row.remaining.hours'), params: left };
-      case 'expired_days':
-        return { key: pluralKey(left.count, 'wishes.row.remaining.expiredDays'), params: left };
-      case 'expired_today':
-        return { key: 'wishes.row.remaining.expiredToday' };
-      default:
-        return null;
-    }
-  });
+  protected readonly remaining = computed<TextPart | null>(() =>
+    wishRemainingPart(this.wish(), this.now()),
+  );
 
   protected readonly usageView = computed(() => {
     const block = this.usage();

@@ -7,11 +7,10 @@ import { TranslocoPipe } from '@jsverse/transloco';
 import { EMPTY, interval, pairwise, filter, switchMap } from 'rxjs';
 
 import { apiErrorCode, apiErrorTranslationKey } from '../../core/i18n/api-error';
-import { pluralKey } from '../../core/i18n/plural';
 import { pageVisible } from '../../core/page-visibility/page-visibility';
 import type { WishOverviewItem } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
-import { groupWishes, isProbation, remainingTime } from '../../core/wishes/wish-view';
+import { groupWishes, isProbation } from '../../core/wishes/wish-view';
 import { BackLink } from '../../shared/ui/back-link';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
@@ -19,32 +18,17 @@ import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { SkeletonRows } from '../../shared/ui/skeleton-rows';
 import { StatusBadge, StatusBadgeTone } from '../../shared/ui/status-badge';
 import { WishImage } from '../wishes/wish-image';
+import {
+  TextPart,
+  wishReasonKey,
+  wishRemainingPart,
+  wishStatusKey,
+  wishStatusTone,
+} from '../wishes/wish-labels';
 
 /** Same five-minute rhythm as the channel page's safety reload (plan 2.4); `my-wishes` has no stream. */
 export const MY_WISHES_RELOAD_MS = 5 * 60_000;
 const CLOCK_TICK_MS = 60_000;
-
-const KNOWN_STATUSES: ReadonlySet<string> = new Set([
-  'pending',
-  'approved',
-  'unconfirmed',
-  'failed',
-  'active',
-  'presented',
-  'rejected',
-  'expired',
-  'removed',
-  'removed_externally',
-  'kept',
-  'closed',
-  'merged',
-]);
-const EXPLAINED_REASONS: ReadonlySet<string> = new Set(['expired', 'unconfirmed_start']);
-
-interface TextPart {
-  key: string;
-  params?: Record<string, string | number>;
-}
 
 /**
  * All wishes that need a decision or are in their probation, across every channel the user manages
@@ -236,20 +220,11 @@ export class MyWishesPage {
   }
 
   protected statusKey(item: WishOverviewItem): string {
-    return KNOWN_STATUSES.has(item.wish.status)
-      ? `wishes.status.${item.wish.status}`
-      : 'wishes.status.unknown';
+    return wishStatusKey(item.wish);
   }
 
   protected tone(item: WishOverviewItem): StatusBadgeTone {
-    switch (item.wish.status) {
-      case 'presented':
-        return 'warning';
-      case 'failed':
-        return 'danger';
-      default:
-        return 'neutral';
-    }
+    return wishStatusTone(item.wish);
   }
 
   protected probation(item: WishOverviewItem): boolean {
@@ -257,32 +232,10 @@ export class MyWishesPage {
   }
 
   protected reasonKey(item: WishOverviewItem): string | null {
-    const { status, statusReason } = item.wish;
-    if ((status !== 'presented' && status !== 'failed') || statusReason === null) {
-      return null;
-    }
-    return EXPLAINED_REASONS.has(statusReason)
-      ? `wishes.reason.${statusReason}`
-      : 'wishes.reason.other';
+    return wishReasonKey(item.wish);
   }
 
   protected remaining(item: WishOverviewItem): TextPart | null {
-    const wish = item.wish;
-    if ((wish.status !== 'active' && wish.status !== 'presented') || wish.permanent) {
-      return null;
-    }
-    const left = remainingTime(wish.expiresAtUtc, this.now());
-    switch (left?.kind) {
-      case 'days':
-        return { key: pluralKey(left.count, 'wishes.row.remaining.days'), params: left };
-      case 'hours':
-        return { key: pluralKey(left.count, 'wishes.row.remaining.hours'), params: left };
-      case 'expired_days':
-        return { key: pluralKey(left.count, 'wishes.row.remaining.expiredDays'), params: left };
-      case 'expired_today':
-        return { key: 'wishes.row.remaining.expiredToday' };
-      default:
-        return null;
-    }
+    return wishRemainingPart(item.wish, this.now());
   }
 }
