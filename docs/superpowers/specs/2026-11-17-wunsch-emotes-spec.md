@@ -475,7 +475,8 @@ Zeile 81, Zweck, Nutzer, Positionierung „Purge plus Wünsche“), `docs/Operat
 - **Vor dem Schreiben erneut prüfen (E25):** Unmittelbar vor `removeEmote` sperrt der Bot die Zeile
   des Wunsches und prüft: `RemovalQueuedAtUtc` gesetzt, `RemovalQueuedVersion` = `DecisionVersion`,
   Zustand `active` mit `ExpiresAtUtc` ≤ jetzt oder `presented` mit ausdrücklichem Auftrag,
-  `BotOwned` wahr. Die Sperre hält bis zum Schreiben des Ergebnisses; eine gleichzeitige
+  `BotOwned` wahr, `StartsAtAuthoritative` wahr (ein vorläufiger Start führt nie zu einer
+  Bot-Entfernung; Plan-484 Revision 2). Die Sperre hält bis zum Schreiben des Ergebnisses; eine gleichzeitige
   Entscheidung wartet höchstens das Timeout des Schreibzugriffs und trifft dann auf den neuen
   Zustand (409).
 - **Eigentum endet** durch Umbenennen, durch Entfernen und Hinzufügen außerhalb des Bots, durch
@@ -580,11 +581,14 @@ die Pilot-Liste (E8). Der eigene Kanal des Betreibers ist kein Affiliate und hat
 - **Auswertung über das Audit-Log**, nicht über Felder der Wunsch-Zeile: `ExpiresAtUtc` wird beim
   Verlängern überschrieben, `StatusChangedAtUtc` bei jedem Übergang. Maßgeblich ist der im
   Eintrag `wish.due` festgehaltene Ablauf (`expiresAtUtc` in den Details), nicht der Zeitpunkt des
-  Eintrags (Plan-484, Revision 1). Kohorte von (a) sind die Fälligkeiten, also die verschiedenen
-  Paare (`wishId`, `expiresAtUtc`) aus `wish.due`, deren `expiresAtUtc` im Beobachtungszeitraum
-  liegt und zum Auswertungszeitpunkt mindestens 24 Stunden zurückliegt (Reife). Zähler sind die
-  davon, zu deren `wishId` ein Eintrag `wish.extend`, `wish.keep`, `wish.remove`, `wish.botRemove`
-  oder `wish.close` mit Zeitpunkt nach `expiresAtUtc` und höchstens 24 Stunden danach vorliegt.
+  Eintrags (Plan-484, Revision 1 und 2). Eine Fälligkeit ist ein Paar (`wishId`, Ablauf); der Ablauf
+  kommt aus `expiresAtUtc` in `wish.due` oder aus `previousExpiresAtUtc`, das `wish.extend`,
+  `wish.keep`, `wish.close` und `wish.remove` tragen, wenn der Wunsch beim Befehl überfällig war
+  (so bleibt eine Fälligkeit im Nenner, die ein Verwalter entscheidet, bevor der Lauf sie gesehen
+  hat). Kohorte von (a) sind die Fälligkeiten, deren Ablauf im Beobachtungszeitraum liegt und zum
+  Auswertungszeitpunkt mindestens 24 Stunden zurückliegt (Reife). Zähler sind die davon, zu deren
+  `wishId` ein Eintrag `wish.extend`, `wish.keep`, `wish.remove`, `wish.botRemove` oder
+  `wish.close` mit Zeitpunkt nach dem Ablauf und höchstens 24 Stunden danach vorliegt.
   Stellt der Lauf eine Fälligkeit erst später als 24 Stunden nach dem Ablauf fest (Worker-Ausfall,
   vorläufiger Start), zählt sie als nicht rechtzeitig erledigt und wird in der Auswertung eigens
   ausgewiesen. Ein außerhalb von Emote
@@ -856,6 +860,8 @@ setzt noch nichts eine Einreihung; die Regel steht hier, damit keine spätere Ro
 `durationDays`, nie Alias, nie Einlöser): `wish.create`, `wish.adopt`,
 `wish.extend`, `wish.keep`, `wish.remove`, `wish.close`, `wish.retry`,
 `wish.readd`, `wish.settings`. Die Frontend-Übersetzungen `audit.actions.*` liefert K3.
+`wish.extend`, `wish.keep`, `wish.close` und `wish.remove` tragen zusätzlich `previousExpiresAtUtc`,
+wenn der Wunsch beim Befehl überfällig war (K2, Plan-484 Revision 2; Grundlage der Pilot-Messung).
 
 ## Akzeptanzkriterien
 1. **AK1** Migration `AddWishes` läuft auf einer Kopie der Dev-Datenbank durch;
@@ -993,7 +999,7 @@ fällige Wünsche feststellen, Schutz und Lücke bewerten, vorlegen oder zur Bot
   der letzte erfolgreiche Sync des Kanals jünger als 24 Stunden ist **und** der Ablauf weniger als
   24 Stunden zurückliegt. Danach wird er fällig, damit kein Wunsch dauerhaft hängt (ein Eintrag ohne
   Datum bei 7TV bliebe sonst für immer vorläufig). Ein vorläufiger Start führt aber **nie** zur
-  Einreihung einer Bot-Entfernung: Zeile 4 der Tabelle legt ihn vor (Betreiberentscheidung
+  Einreihung einer Bot-Entfernung: Zeile 3 der Tabelle legt ihn vor, noch vor dem Bot-Ausfall (Betreiberentscheidung
   2026-11-18, Plan-484 Revision 1).
 - Eine Änderung der Schutzschwelle (`PUT …/wishes/settings`) ist eine Entscheidung im Sinn von E25: Sie
   sperrt nach der Kanalzeile die aktiven Wünsche des Kanals, erhöht deren `DecisionVersion` und leert
@@ -1017,8 +1023,8 @@ Entscheidung bei Fälligkeit (`WishExpiryPolicy.Decide`, erste zutreffende Zeile
 |---|---|---|
 | 1 | Kanal im manuellen Modus | `presented` (`expired`) |
 | 2 | Bot-Modus, `BotOwned` falsch | `presented` (`not_bot_owned`) |
-| 3 | Bot ausgefallen (global oder `BotSuspendedReason`) | `presented` (`bot_unavailable`) |
-| 4 | Start nur vorläufig (`StartsAtAuthoritative = false`) | `presented` (`unconfirmed_start`) |
+| 3 | Start nur vorläufig (`StartsAtAuthoritative = false`) | `presented` (`unconfirmed_start`) |
+| 4 | Bot ausgefallen (global oder `BotSuspendedReason`) | `presented` (`bot_unavailable`) |
 | 5 | Schutz an und Zähllücke nach E5 | `presented` (`coverage_gap`) |
 | 6 | Schutz an und Mittel je Tag (E4) ≥ Schwelle | `presented` (`protected`) |
 | 7 | sonst | `RemovalQueuedAtUtc = jetzt`, `RemovalQueuedVersion = DecisionVersion`, Zustand bleibt `active` |
@@ -1044,7 +1050,7 @@ fest, ist das Fenster entsprechend länger, nie kürzer.
 26. **AK26** Ein Wunsch mit vorläufigem Start wird bei frischem Sync nicht fällig gestellt, solange
     sein Ablauf weniger als 24 Stunden zurückliegt; bei einem letzten Sync vor 25 h oder einem
     Ablauf vor 25 h wird er fällig. Im manuellen Modus ergibt das `presented` (`expired`); im
-    Bot-Modus mit Eigentum und verfügbarem Bot `presented` (`unconfirmed_start`), nie eine
+    Bot-Modus mit Eigentum `presented` (`unconfirmed_start`), auch bei ausgefallenem Bot, nie eine
     Einreihung, auch bei ausgeschaltetem Schutz.
 27. **AK27** Zwei Durchläufe hintereinander über denselben Stand: der zweite ändert keine Zeile,
     veröffentlicht kein Event und schreibt keinen Audit-Eintrag. Ein eingereihter Wunsch behält
@@ -1658,7 +1664,8 @@ Abläufe:
   selben Update. Das gilt ab K1 für alle Routen; K4 ergänzt die Prüfung im Bot.
 - **„Bot entfernen lassen“** für vorgelegte Wünsche: neue Route `POST …/{id}/bot-remove`, jeder
   Verwalter (Kanal-Filter aus K1), nur im Zustand `presented` mit Grund `protected`,
-  `coverage_gap` oder `bot_unavailable`, nur bei bestehendem Eigentum (sonst 409
+  `coverage_gap` oder `bot_unavailable`, nur bei maßgeblichem Start (`StartsAtAuthoritative` wahr,
+  sonst 409; den Code legt K4 fest), nur bei bestehendem Eigentum (sonst 409
   `wish_not_bot_owned`) und nur bei verfügbarem Bot (sonst 409 `wish_bot_unavailable`). Sie setzt
   `RemovalQueuedAtUtc` und `RemovalQueuedVersion`, lässt den Zustand `presented`, schreibt
   `wish.botRemoveRequest` mit dem Verwalter als Akteur und stößt den Worker an. Der Bot nimmt den
