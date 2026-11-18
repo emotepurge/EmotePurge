@@ -525,6 +525,36 @@ public partial class WishReconcileServiceTests(PostgresFixture fixture)
         Assert.Equal((WishStatus.Active, slot, resumedAt), (linked.Status, linked.SlotId, linked.StartsAtUtc));
     }
 
+    // A confirmation stamped before the generation it confirms (a run whose clock read lay before the slot
+    // writer's provisional date) is no departure: the generation is unchanged, so the kept wish holds its slot,
+    // and the pre-check does not even start a run for it.
+    [Fact]
+    public async Task AKeptWish_ConfirmedBeforeItsKnownGeneration_KeepsItsSlot_WhileTheGenerationIsUnchanged()
+    {
+        var channel = await SeedChannelAsync();
+        var emote = await SeedEmoteAsync(channel);
+        var addedAt = Now.AddDays(-3);
+        var slot = await SeedSlotAsync(emote, "Kappa", addedAt, fromRest: false);
+        var kept = await SeedWishAsync(channel, emote, WishStatus.Kept, w =>
+        {
+            w.Alias = "Kappa";
+            w.SlotId = slot;
+            w.LinkOrigin = WishLinkOrigin.Auto;
+            w.StartsAtUtc = addedAt;
+            w.SlotAddedAtUtc = addedAt;
+            w.SlotConfirmedAtUtc = addedAt.AddSeconds(-1);
+            w.EndedAtUtc = addedAt.AddSeconds(-1);
+        });
+        var before = await SnapshotAsync(kept);
+        var hook = new CommandHook(_ => false, _ => Task.CompletedTask);
+
+        await ReconcileAsync(channel, hook);
+
+        Assert.Equal(before, await SnapshotAsync(kept));
+        Assert.Equal(1, hook.Count(_ => true));
+        AssertNothingPublished();
+    }
+
     // While the entry stays in the set the kept wish keeps it: a new approved wish of the emote does not link.
     [Fact]
     public async Task AKeptWishsSlot_InTheSet_IsNoCandidate_ForANewApprovedWishOfTheEmote()

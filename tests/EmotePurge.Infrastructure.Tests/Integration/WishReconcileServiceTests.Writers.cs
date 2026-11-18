@@ -266,6 +266,50 @@ public partial class WishReconcileServiceTests
         Assert.Equal((1, 1), (wish.ExtensionCount, wish.DecisionVersion));
     }
 
+    // A slot writer holds the channel lock and writes a provisional date stamped after the reconcile was
+    // called. The reconcile waits for the lock; its confirmation must not lie before the generation it links,
+    // so the next run neither mistakes the unchanged entry for a new stay nor releases the kept wish's slot.
+    [Fact]
+    public async Task AWriterAheadOfTheChannelLock_ConfirmsNotBeforeItsDate_AndTheKeptWishKeepsItsSlot()
+    {
+        const string tag = "wish-reconcile-behind-writer";
+        var channel = await SeedChannelAsync();
+        var emote = await SeedEmoteAsync(channel);
+        var wishId = await SeedWishAsync(channel, emote, WishStatus.Approved, w =>
+        {
+            w.Alias = "Kappa";
+            w.ApprovedAtUtc = Now.AddHours(-1);
+            w.Permanent = true;
+        });
+
+        DateTime provisional;
+        await using (var writer = fixture.CreateDbContext())
+        {
+            await using var transaction = await writer.Database.BeginTransactionAsync();
+            Assert.Single(await writer.LockChannelsByIdsAsync([channel.Id], CancellationToken.None));
+            var reconcile = Sut(() => fixture.CreateTaggedDbContext(tag)).ReconcileChannelAsync(channel.Id);
+            await fixture.WaitUntilBlockedOnLockAsync(tag, reconcile);
+
+            _clock.Advance(TimeSpan.FromSeconds(2));
+            provisional = Now;
+            writer.EmoteSlots.Add(new EmoteSlot { EmoteId = emote.Id, Name = "Kappa", AddedAt = provisional });
+            await writer.SaveChangesAsync();
+            _clock.Advance(TimeSpan.FromSeconds(1));
+            await transaction.CommitAsync();
+            await reconcile;
+        }
+
+        var linked = await WishAsync(wishId);
+        Assert.Equal((WishStatus.Kept, provisional), (linked.Status, linked.SlotAddedAtUtc));
+        Assert.Equal(Now, linked.SlotConfirmedAtUtc);
+
+        _clock.Advance(TimeSpan.FromHours(1));
+        await ReconcileAsync(channel);
+
+        var kept = await WishAsync(wishId);
+        Assert.Equal((WishStatus.Kept, linked.SlotId), (kept.Status, kept.SlotId));
+    }
+
     // The channel is purged between the pre-check and the lock: the run ends without effect and without error.
     [Fact]
     public async Task ChannelDeletedDuringTheRun_IsNoError_AndAnnouncesNothing()

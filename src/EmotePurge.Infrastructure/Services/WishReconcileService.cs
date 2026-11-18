@@ -73,7 +73,7 @@ public sealed class WishReconcileService(
             return;
         }
 
-        var announce = await RunAsync(db, channelId, timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
+        var announce = await RunAsync(db, channelId, cancellationToken);
         if (announce is not null)
         {
             await changedPublisher.PublishAsync(announce, cancellationToken);
@@ -112,11 +112,15 @@ public sealed class WishReconcileService(
                 || (w.Status == WishStatus.Kept
                     && w.SlotId != null
                     && db.EmoteSlots.Any(s => s.Id == w.SlotId
-                        && (s.IsArchived || (s.AddedAt != null && w.SlotConfirmedAtUtc != null && s.AddedAt > w.SlotConfirmedAtUtc))))));
+                        && (s.IsArchived
+                            || (s.AddedAt != null
+                                && w.SlotConfirmedAtUtc != null
+                                && s.AddedAt > w.SlotConfirmedAtUtc
+                                && (w.SlotAddedAtUtc == null || s.AddedAt > w.SlotAddedAtUtc)))))));
     }
 
     // Steps 2 to 6. Returns the channel name to announce, or null when nothing a client sees has changed.
-    private async Task<string?> RunAsync(AppDbContext db, string channelId, DateTime now, CancellationToken cancellationToken)
+    private async Task<string?> RunAsync(AppDbContext db, string channelId, CancellationToken cancellationToken)
     {
         // Savepoints are explicit, one per wish; EF's own per-save savepoint would only duplicate them.
         db.Database.AutoSavepointsEnabled = false;
@@ -128,6 +132,10 @@ public sealed class WishReconcileService(
         {
             return null;
         }
+
+        // The run's clock is read only now: a slot writer this run waited for has committed, so its
+        // provisional AddedAt lies before every confirmation this run stamps.
+        var now = timeProvider.GetUtcNow().UtcDateTime;
 
         var channelName = await db.Channels.AsNoTracking()
             .Where(c => c.Id == channelId)
@@ -240,13 +248,18 @@ public sealed class WishReconcileService(
     private static bool IsLive(string status) => status is WishStatus.Active or WishStatus.Presented;
 
     // A kept wish holds its entry only while it is in the set (operator ruling 2026-11-18): once the slot
-    // is archived, or carries a date after the wish's last confirmation (it left and came back unseen, the
-    // rule of a live wish with unknown generation), the stay is over and the slot is free again. Only the
-    // link goes; state, dates and the generation stay as the record of the stay.
+    // is archived, or carries a date after the wish's last confirmation and after its known generation (it
+    // left and came back unseen), the stay is over and the slot is free again. A date equal to (or, as an
+    // authoritative correction, before) the known generation is the same stay, even when the confirmation
+    // was stamped before it. Only the link goes; state, dates and the generation stay as the record of the
+    // stay. Affected carries the same predicate for the pre-check.
     private static void ReleaseKept(Wish wish, SlotRow slot)
     {
         if (slot.IsArchived
-            || (slot.AddedAt is { } addedAt && wish.SlotConfirmedAtUtc is { } lastSeen && addedAt > lastSeen))
+            || (slot.AddedAt is { } addedAt
+                && wish.SlotConfirmedAtUtc is { } lastSeen
+                && addedAt > lastSeen
+                && (wish.SlotAddedAtUtc is not { } generation || addedAt > generation)))
         {
             wish.SlotId = null;
         }

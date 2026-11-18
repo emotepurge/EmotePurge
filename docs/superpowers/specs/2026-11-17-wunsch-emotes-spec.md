@@ -281,7 +281,8 @@ zuordnet. Der Abgleich ruft ihn für jeden Wunsch in `pending`, `approved` und `
 - **Kandidaten:** nicht archivierte Slots des Kanals, die mit keinem laufenden Wunsch verknüpft
   sind und die kein `kept`-Wunsch hält (Betreiberentscheidung vom 18.11.: `kept` hält seinen Slot,
   solange der Eintrag im Set ist; ist der Slot archiviert oder trägt er ein `AddedAt` nach dem
-  `SlotConfirmedAtUtc` des `kept`-Wunsches, gibt der Abgleich ihn vor der Zuordnung frei), die für
+  `SlotConfirmedAtUtc` des `kept`-Wunsches und, sofern bekannt, nach seiner Generation
+  `SlotAddedAtUtc`, gibt der Abgleich ihn vor der Zuordnung frei), die für
   diesen Wunsch nicht gesperrt sind (`WishSlotExclusions`, K6) und deren `AddedAt` nicht
   vor dem Fensterbeginn liegt. Fensterbeginn ist `CreatedAtUtc` (`pending`), `ApprovedAtUtc`
   (`approved`) bzw. `EndedAtUtc` (`removed_externally`), **ohne Toleranz**: Ein Slot mit `AddedAt`
