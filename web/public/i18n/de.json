@@ -2776,6 +2776,70 @@
       "gap": "Die Zählung deckt dieses Fenster nicht ganz ab.",
       "limited": "Die Nutzung ist gerade nicht abrufbar, später erneut versuchen.",
       "sparkline": "Nutzung pro Tag,"
+    },
+    "dialog": {
+      "toWish": "Zum Wunsch",
+      "duration": "Laufzeit in Tagen",
+      "durationInvalid": {
+        "empty": "Gib eine Laufzeit an.",
+        "not_integer": "Die Laufzeit ist eine ganze Zahl von Tagen.",
+        "out_of_range": "Die Laufzeit liegt zwischen 1 und {{ max }} Tagen."
+      },
+      "blocked": {
+        "disabled": "Wunsch-Emotes sind gerade nicht verfügbar.",
+        "duration": "Die Laufzeit fehlt oder passt nicht."
+      }
+    },
+    "adopt": {
+      "title": "Bestand übernehmen",
+      "titleLink": "Mit Eintrag verknüpfen",
+      "intro": "Wähle einen Eintrag, der schon im Set ist. Er bekommt eine Frist wie ein Wunsch.",
+      "introLink": "Wähle den Eintrag im Set, zu dem der Wunsch „{{ name }}“ gehört.",
+      "loadFailed": "Die Einträge des Sets konnten nicht geladen werden.",
+      "search": "Eintrag suchen",
+      "noMatch": "Kein Eintrag passt zur Suche.",
+      "empty": "Im Set ist gerade kein Eintrag, der sich übernehmen lässt.",
+      "entriesLegend": "Eintrag im Set",
+      "addedOn": "im Set seit {{ date }}",
+      "addedUnknown": "Datum unbekannt",
+      "linkNote": "Wird mit dem laufenden Wunsch für dieses Emote verknüpft.",
+      "missing": "Dieser Eintrag ist nicht mehr im Set.",
+      "moreHidden": {
+        "one": "{{ count }} weiterer Eintrag, die Suche grenzt ein.",
+        "other": "{{ count }} weitere Einträge, die Suche grenzt ein."
+      },
+      "locked": {
+        "held": "Gehört schon zu einem Wunsch.",
+        "heldRunning": "Gehört zu einem laufenden Wunsch.",
+        "kept": "Ist als behaltener Wunsch geführt.",
+        "runningElsewhere": "Für dieses Emote läuft schon ein Wunsch an einem anderen Eintrag.",
+        "otherWish": "Für dieses Emote läuft ein anderer Wunsch."
+      },
+      "start": {
+        "legend": "Beginn der Frist",
+        "added": "Ab dem Hinzufügedatum",
+        "now": "Ab jetzt",
+        "undatedHint": "Wann der Eintrag ins Set kam, ist unbekannt. Die Frist beginnt deshalb jetzt.",
+        "expiredHint": "Ab dem Hinzufügedatum wäre die Frist schon um, deshalb ist „Ab jetzt“ vorgewählt.",
+        "expires": "Läuft ab am {{ date }}"
+      },
+      "submit": "Übernehmen",
+      "submitLink": "Verknüpfen",
+      "blocked": {
+        "loading": "Die Einträge werden noch geladen.",
+        "loadFailed": "Ohne die Einträge des Sets geht es nicht weiter.",
+        "noSelection": "Wähle einen Eintrag.",
+        "linkLoading": "Der laufende Wunsch wird noch geladen."
+      },
+      "stale": {
+        "wish_slot_not_found": "Der Eintrag hat sich inzwischen geändert.",
+        "wish_slot_already_linked": "Der Eintrag gehört inzwischen zu einem Wunsch.",
+        "wish_slot_already_linked_kept": "Der Eintrag ist inzwischen als behaltener Wunsch geführt.",
+        "wish_already_running": "Für dieses Emote läuft inzwischen ein Wunsch.",
+        "wish_state_conflict": "Der Wunsch hat sich inzwischen geändert.",
+        "wish_not_found": "Den Wunsch gibt es nicht mehr.",
+        "reselect": "Die Einträge sind neu geladen, wähle erneut."
+      }
     }
   }
 }
