@@ -41,7 +41,7 @@ public static class WorkerServiceRegistration
     }
 
     /// <summary>
-    /// The fourteen hosted services of the long-running worker (the log capture writer, or its heartbeat when
+    /// The fifteen hosted services of the long-running worker (the log capture writer, or its heartbeat when
     /// capture is off, goes first and so stops last). The host starts them in registration
     /// order, and Worker deliberately goes first: it runs the boot recovery (rejoin every tracked
     /// channel, initial 7TV sync) that the others assume has happened. The ordering is not
@@ -68,6 +68,8 @@ public static class WorkerServiceRegistration
         // Exits after one log line unless ChatLogBackfill:Enabled is true; waits for BootRecoveryGate
         // like DataRetentionWorker.
         services.AddHostedService<ChatLogBackfillWorker>();
+        // Exits after one log line unless Wishes:Enabled is true; does not wait for BootRecoveryGate.
+        services.AddHostedService<WishExpiryWorker>();
         return services;
     }
 }

@@ -22,16 +22,17 @@ public class WorkerServiceRegistrationTests
     [Theory]
     [InlineData("true")]
     [InlineData("false")]
-    public void AddWorkerHostedServices_RegistersExactlyTheFourteenOfTheWorker(string captureEnabled)
+    public void AddWorkerHostedServices_RegistersExactlyTheFifteenOfTheWorker(string captureEnabled)
     {
         var configuration = Configuration(captureEnabled);
         var services = new ServiceCollection();
         services.AddWorkerCore(configuration);
         services.AddWorkerHostedServices(configuration);
 
-        Assert.Equal(14, services.Count(d => d.ServiceType == typeof(IHostedService)));
+        Assert.Equal(15, services.Count(d => d.ServiceType == typeof(IHostedService)));
         Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(ChatLogBackfillWorker));
         Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(SystemLoadRollupWorker));
+        Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(WishExpiryWorker));
     }
 
     [Fact]
@@ -71,6 +72,16 @@ public class WorkerServiceRegistrationTests
         Assert.Contains(provider.GetServices<IHostedService>(), s => s is ChatLogBackfillWorker);
         Assert.Same(provider.GetRequiredService<ChatLogBackfillSignal>(), provider.GetRequiredService<ChatLogBackfillSignal>());
         Assert.False(provider.GetRequiredService<ChatLogBackfillOptions>().Enabled);
+    }
+
+    [Fact]
+    public void AddWorkerHostedServices_ResolvesTheWishExpiryWorker_WithTheWorkersGraph()
+    {
+        using var provider = BuildWorkerProvider("false");
+
+        Assert.Contains(provider.GetServices<IHostedService>(), s => s is WishExpiryWorker);
+        using var scope = provider.CreateScope();
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IWishExpiryService>());
     }
 
     [Fact]
