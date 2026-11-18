@@ -53,6 +53,40 @@ public static class WishEndpoints
         // being read as an id and a non-numeric id from reaching a handler.
         group.MapGet("/settings", async (
             string channelName,
+            HttpContext httpContext,
+            WishOptions options,
+            IWishService wishService,
+            IChannelAccessService channelAccess,
+            CancellationToken ct) =>
+        {
+            if (!options.Enabled)
+            {
+                return WishesDisabled();
+            }
+
+            var principal = httpContext.User.TryBuildTwitchPrincipal();
+            if (principal is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var settings = await wishService.GetSettingsAsync(channelName, ct);
+            if (settings is null)
+            {
+                return Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound });
+            }
+
+            // canEdit is the decision WishSettingsAuthorizationFilter takes for the PUT, asked the same way.
+            var canEdit = await wishService.CanChangeSettingsAsync(
+                channelName, principal.TwitchUserId, channelAccess.IsGlobalAdmin(principal), ct);
+            return Results.Ok(new WishSettingsReadDto(settings, canEdit));
+        })
+        .RequireRateLimiting(RateLimitPolicyNames.InteractiveRead);
+
+        // The entries "take over from the set" may pick (plan #485 2.1a), with the conflict adopt would decide.
+        group.MapGet("/slots", async (
+            string channelName,
+            string? sevenTvEmoteId,
             WishOptions options,
             IWishService wishService,
             CancellationToken ct) =>
@@ -62,10 +96,10 @@ public static class WishEndpoints
                 return WishesDisabled();
             }
 
-            var settings = await wishService.GetSettingsAsync(channelName, ct);
-            return settings is null
+            var slots = await wishService.ListAdoptableSlotsAsync(channelName, sevenTvEmoteId, ct);
+            return slots is null
                 ? Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound })
-                : Results.Ok(settings);
+                : Results.Ok(slots);
         })
         .RequireRateLimiting(RateLimitPolicyNames.InteractiveRead);
 
@@ -374,6 +408,30 @@ public static class WishEndpoints
 
     private static IResult InvalidBody() =>
         Results.BadRequest(new { errorCode = ApiErrorCodes.InvalidRequestBody });
+}
+
+/// <summary>
+/// The settings read: the settings plus <see cref="CanEdit"/>, whether this caller may write them (plan #485,
+/// F1 = A). The write answers the plain settings: whoever got through its filter may edit.
+/// </summary>
+internal sealed record WishSettingsReadDto(
+    int DefaultDurationDays,
+    int ProbationLeadDays,
+    decimal? ProtectionThresholdPerDay,
+    bool BotModeEnabled,
+    string? BotSuspendedReason,
+    bool CanEdit)
+{
+    public WishSettingsReadDto(WishSettingsDto settings, bool canEdit)
+        : this(
+            settings.DefaultDurationDays,
+            settings.ProbationLeadDays,
+            settings.ProtectionThresholdPerDay,
+            settings.BotModeEnabled,
+            settings.BotSuspendedReason,
+            canEdit)
+    {
+    }
 }
 
 /// <summary>The manual entry's answer: the wish plus the hint that the set was at capacity (never a refusal).</summary>

@@ -119,6 +119,16 @@ public interface IWishService
     /// wish belongs to another channel. A wish without a start has no usage (<see cref="WishDetailDto.Usage"/> null).
     /// </summary>
     Task<WishDetailDto?> GetAsync(string channelName, long wishId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The entries "take over from the set" may pick (plan #485 2.1a): the channel's slots that
+    /// <see cref="AdoptAsync"/> accepts, under the one predicate it and the slot ids of
+    /// <see cref="WishOutcome.EmoteAlreadyInSet"/> use, each with the conflict <see cref="AdoptAsync"/> would decide
+    /// on. Optionally narrowed to one 7TV emote id; unpaginated, ordered by alias (ordinal). Null when the
+    /// channel is unknown; a channel without entries answers an empty list.
+    /// </summary>
+    Task<IReadOnlyList<WishAdoptableSlotDto>?> ListAdoptableSlotsAsync(
+        string channelName, string? sevenTvEmoteId, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -204,6 +214,13 @@ public sealed record WishCommandResult(
 /// <summary>
 /// The wish as the Api serves it. The requester's Twitch id is never part of it (spec 6.4); the bot and queue
 /// fields exist for K4 and stay empty until then.
+/// <para>
+/// <see cref="SlotAddedAtUtc"/> is the slot generation the wish is bound to (<c>Wishes.SlotAddedAtUtc</c>), null
+/// without a slot or while the generation is unknown; it is confirmed exactly when
+/// <see cref="StartsAtAuthoritative"/> is true (plan #485 2.1a, held by a test over every way a generation is
+/// bound). <see cref="ImageUrl"/> is the channel's stored image of the same 7TV emote, null when the channel never
+/// had the emote in its set or the row carries no image.
+/// </para>
 /// </summary>
 public record WishDto(
     long Id,
@@ -223,6 +240,8 @@ public record WishDto(
     DateTime? ExpiresAtUtc,
     DateTime? EndedAtUtc,
     string? SlotId,
+    DateTime? SlotAddedAtUtc,
+    string? ImageUrl,
     string? LinkOrigin,
     int ExtensionCount,
     bool Permanent,
@@ -253,7 +272,9 @@ public sealed record WishDetailDto : WishDto
 /// window, <see cref="PerDayMean"/> that sum over the window length in fractional days. <see cref="Rank"/> of
 /// <see cref="RankOf"/> places the total among the active slots of the channel (E16, ties share the better
 /// rank); both are null while the emote has no active slot to rank (an ended wish). <see cref="CoverageGap"/>
-/// is the E5 rule: counting did not cover the whole window.
+/// is the E5 rule: counting did not cover the whole window. <see cref="Daily"/> is the same sum per UTC day,
+/// from the window's first day to the evaluation day in order, days without use as 0; it sums to
+/// <see cref="Total"/> and has at most eight entries (plan #485 2.1a).
 /// </summary>
 public sealed record WishUsageDto(
     DateTime WindowFromUtc,
@@ -262,7 +283,30 @@ public sealed record WishUsageDto(
     decimal PerDayMean,
     int? Rank,
     int? RankOf,
-    bool CoverageGap);
+    bool CoverageGap,
+    IReadOnlyList<WishUsageDayDto> Daily);
+
+/// <summary>One UTC day of <see cref="WishUsageDto.Daily"/>.</summary>
+public sealed record WishUsageDayDto(DateOnly Date, long UseCount);
+
+/// <summary>
+/// One entry of <see cref="IWishService.ListAdoptableSlotsAsync"/>. <see cref="AddedAtUtc"/> is the slot's
+/// <c>AddedAt</c> (null = undated), <see cref="AddedAtAuthoritative"/> whether 7TV confirmed it. The conflict, as
+/// <see cref="IWishService.AdoptAsync"/> would decide it: <see cref="HeldByWishId"/> is the wish that holds this
+/// slot (<c>active</c>, <c>presented</c>, <c>kept</c>); <see cref="RunningWishId"/> a running wish of the same
+/// emote that does not hold it; <see cref="RunningWishAdoptable"/> whether that wish accepts "adopt with its id"
+/// (the same <c>WishTransitions</c> row adopt asks), false without one.
+/// </summary>
+public sealed record WishAdoptableSlotDto(
+    string SlotId,
+    string SevenTvEmoteId,
+    string Alias,
+    DateTime? AddedAtUtc,
+    bool AddedAtAuthoritative,
+    string? ImageUrl,
+    long? HeldByWishId,
+    long? RunningWishId,
+    bool RunningWishAdoptable);
 
 /// <summary>The channel's wish settings; the defaults of <see cref="Entities.WishLimits"/> while no row exists.</summary>
 public sealed record WishSettingsDto(

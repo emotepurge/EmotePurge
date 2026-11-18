@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using System.Text.RegularExpressions;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
@@ -35,6 +36,9 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
     private static readonly Regex EmoteIdPattern = new("^[0-9A-Za-z]{1,32}$", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
     private static readonly Regex LoginPattern = new("^[a-z0-9_]{4,25}$", RegexOptions.Compiled, TimeSpan.FromMilliseconds(100));
+
+    // The states of IX_Wishes_SlotId_Live: a kept wish holds its entry like a live one.
+    private static readonly string[] HoldingStatuses = [WishStatus.Active, WishStatus.Presented, WishStatus.Kept];
 
     public async Task<WishSettingsDto?> GetSettingsAsync(string channelName, CancellationToken cancellationToken = default)
     {
@@ -235,7 +239,8 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
         var setFull = channel.ActiveEmoteSetCapacity is { } capacity
             && await db.EmoteSlots.CountAsync(s => !s.IsArchived && !s.SeedUnsettled && s.Emote.ChannelId == channelId, cancellationToken) >= capacity;
-        return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings), SetFull: setFull);
+        var imageUrl = await ImageUrlOfAsync(channelId, emoteId, cancellationToken);
+        return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings, imageUrl), SetFull: setFull);
     }
 
     public async Task<WishCommandResult> AdoptAsync(
@@ -276,8 +281,9 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         }
 
         var slot = await db.EmoteSlots.Include(s => s.Emote)
-            .FirstOrDefaultAsync(s => s.Id == request.SlotId && s.Emote.ChannelId == channelId, cancellationToken);
-        if (slot is null || slot.IsArchived || slot.SeedUnsettled
+            .Where(AdoptableIn(channelId))
+            .FirstOrDefaultAsync(s => s.Id == request.SlotId, cancellationToken);
+        if (slot is null
             || (wish is not null && wish.SevenTvEmoteId.Length > 0
                 && !string.Equals(wish.SevenTvEmoteId, slot.Emote.SevenTvEmoteId, StringComparison.Ordinal)))
         {
@@ -301,9 +307,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         }
 
         var ownId = wish?.Id;
-        // The states of IX_Wishes_SlotId_Live: a kept wish holds its entry like a live one.
-        var holding = new[] { WishStatus.Active, WishStatus.Presented, WishStatus.Kept };
-        var linked = await db.Wishes.AnyAsync(w => w.SlotId == slot.Id && holding.Contains(w.Status) && w.Id != ownId, cancellationToken);
+        var linked = await db.Wishes.AnyAsync(w => w.SlotId == slot.Id && HoldingStatuses.Contains(w.Status) && w.Id != ownId, cancellationToken);
         if (linked)
         {
             return WishCommandResult.Of(WishOutcome.SlotAlreadyLinked);
@@ -382,7 +386,9 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
         await AuditAndCommitAsync(transaction, actor, AuditActions.WishAdopt, channel.ChannelName, wish, cancellationToken);
         await changedPublisher.PublishAsync(channel.ChannelName, cancellationToken);
-        return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings));
+        // The slot's emote is the channel's row of the wish's emote: its image needs no further query.
+        var imageUrl = WishImageQueries.WishImageUrlOf(slot.Emote.ImageUrl, slot.Emote.IsPlaceholder);
+        return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings, imageUrl));
     }
 
     public Task<WishCommandResult> UpdateAsync(
@@ -599,7 +605,9 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
 
         var total = await query.CountAsync(cancellationToken);
         var rows = await ordered.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(cancellationToken);
-        return new PagedResult<WishDto>(rows.Select(w => ToDto(w, settings)).ToList(), page, pageSize, total);
+        var images = await db.ReadWishImageUrlsAsync([channelId], rows.Select(w => w.SevenTvEmoteId).ToList(), cancellationToken);
+        var items = rows.Select(w => ToDto(w, settings, images.GetValueOrDefault((channelId, w.SevenTvEmoteId)))).ToList();
+        return new PagedResult<WishDto>(items, page, pageSize, total);
     }
 
     public async Task<WishDetailDto?> GetAsync(string channelName, long wishId, CancellationToken cancellationToken = default)
@@ -618,8 +626,86 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             return null;
         }
 
-        var dto = ToDto(wish, await LoadSettingsAsync(channelId, cancellationToken));
+        var settings = await LoadSettingsAsync(channelId, cancellationToken);
+        var dto = ToDto(wish, settings, await ImageUrlOfAsync(channelId, wish.SevenTvEmoteId, cancellationToken));
         return new WishDetailDto(dto, await LoadUsageAsync(wish, channelId, Now(), cancellationToken));
+    }
+
+    public async Task<IReadOnlyList<WishAdoptableSlotDto>?> ListAdoptableSlotsAsync(
+        string channelName, string? sevenTvEmoteId, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channelName);
+
+        var channelId = await ResolveChannelIdAsync(channelName, cancellationToken);
+        if (channelId is null)
+        {
+            return null;
+        }
+
+        var emoteFilter = string.IsNullOrWhiteSpace(sevenTvEmoteId) ? null : sevenTvEmoteId.Trim();
+        var query = db.EmoteSlots.AsNoTracking().Where(AdoptableIn(channelId));
+        if (emoteFilter is not null)
+        {
+            query = query.Where(s => s.Emote.SevenTvEmoteId == emoteFilter);
+        }
+
+        var slots = await query
+            .Select(s => new
+            {
+                s.Id,
+                s.Emote.SevenTvEmoteId,
+                s.Name,
+                s.AddedAt,
+                s.AddedAtFromRest,
+                s.Emote.ImageUrl,
+                s.Emote.IsPlaceholder
+            })
+            .ToListAsync(cancellationToken);
+        if (slots.Count == 0)
+        {
+            return [];
+        }
+
+        // One read of the wishes adopt would run into: a holder of one of these slots (by slot id, as adopt
+        // asks), or a running wish of one of these emotes in the channel.
+        var slotIds = slots.Select(s => s.Id).ToList();
+        var emoteIds = slots.Select(s => s.SevenTvEmoteId).Distinct(StringComparer.Ordinal).ToList();
+        var running = WishStatus.Running.ToArray();
+        var wishes = await db.Wishes.AsNoTracking()
+            .Where(w => (w.SlotId != null && slotIds.Contains(w.SlotId) && HoldingStatuses.Contains(w.Status))
+                || (w.ChannelId == channelId && emoteIds.Contains(w.SevenTvEmoteId) && running.Contains(w.Status)))
+            .Select(w => new { w.Id, w.ChannelId, w.SevenTvEmoteId, w.Status, w.StatusReason, w.SlotId, w.Permanent })
+            .OrderBy(w => w.Id)
+            .ToListAsync(cancellationToken);
+
+        return slots
+            .Select(slot =>
+            {
+                var holder = wishes.FirstOrDefault(w =>
+                    HoldingStatuses.Contains(w.Status) && string.Equals(w.SlotId, slot.Id, StringComparison.Ordinal));
+                var other = wishes.FirstOrDefault(w =>
+                    w.ChannelId == channelId
+                    && WishStatus.IsRunning(w.Status)
+                    && string.Equals(w.SevenTvEmoteId, slot.SevenTvEmoteId, StringComparison.Ordinal)
+                    && w.Id != holder?.Id);
+                // The row adopt with this wish's id asks (WishTransitions), nothing rebuilt here.
+                var adoptable = other is not null
+                    && WishTransitions.Target(
+                        other.Status, other.StatusReason, WishAction.Adopt, new WishTransitionContext(Permanent: other.Permanent)) is not null;
+                return new WishAdoptableSlotDto(
+                    slot.Id,
+                    slot.SevenTvEmoteId,
+                    slot.Name,
+                    slot.AddedAt,
+                    slot.AddedAtFromRest && slot.AddedAt is not null,
+                    WishImageQueries.WishImageUrlOf(slot.ImageUrl, slot.IsPlaceholder),
+                    holder?.Id,
+                    other?.Id,
+                    adoptable);
+            })
+            .OrderBy(s => s.Alias, StringComparer.Ordinal)
+            .ThenBy(s => s.SlotId, StringComparer.Ordinal)
+            .ToList();
     }
 
     private DateTime Now() => timeProvider.GetUtcNow().UtcDateTime;
@@ -664,7 +750,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             rankOf = activeSlotIds.Count;
         }
 
-        return new WishUsageDto(read.WindowStartUtc, evaluatedAtUtc, read.Total, read.MeanPerDay, rank, rankOf, read.HasCoverageGap);
+        return new WishUsageDto(read.WindowStartUtc, evaluatedAtUtc, read.Total, read.MeanPerDay, rank, rankOf, read.HasCoverageGap, read.Daily);
     }
 
     private Task<string?> ResolveChannelIdAsync(string channelName, CancellationToken cancellationToken)
@@ -728,11 +814,18 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         return row is null ? EffectiveSettings.Defaults : ToSettings(row);
     }
 
-    // Slots of this emote that are in the set right now: not archived and not an unsettled migration seed.
+    private async Task<string?> ImageUrlOfAsync(string channelId, string sevenTvEmoteId, CancellationToken cancellationToken)
+    {
+        var images = await db.ReadWishImageUrlsAsync([channelId], [sevenTvEmoteId], cancellationToken);
+        return images.GetValueOrDefault((channelId, sevenTvEmoteId));
+    }
+
+    // Slots of this emote that are in the set right now, under the one predicate adopt uses.
     private async Task<IReadOnlyList<string>> ActiveSlotIdsAsync(string channelId, string sevenTvEmoteId, CancellationToken cancellationToken)
     {
         var ids = await db.EmoteSlots
-            .Where(s => !s.IsArchived && !s.SeedUnsettled && s.Emote.ChannelId == channelId && s.Emote.SevenTvEmoteId == sevenTvEmoteId)
+            .Where(AdoptableIn(channelId))
+            .Where(s => s.Emote.SevenTvEmoteId == sevenTvEmoteId)
             .Select(s => s.Id)
             .ToListAsync(cancellationToken);
         ids.Sort(StringComparer.Ordinal);
@@ -837,7 +930,8 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         var channel = ChannelName.Normalize(channelName);
         await AuditAndCommitAsync(transaction, actor, auditAction, channel, wish, cancellationToken, step.AuditDurationDays, previousExpiry);
         await changedPublisher.PublishAsync(channel, cancellationToken);
-        return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings));
+        var imageUrl = await ImageUrlOfAsync(channelId, wish.SevenTvEmoteId, cancellationToken);
+        return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings, imageUrl));
     }
 
     // The audit entry needs the wish id, which an insert only has after its first save; both saves are in
@@ -901,6 +995,12 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         return now;
     }
 
+    // "Adoptable" (plan #485 2.1a): a slot of the channel that is in the set, not archived and not a migration
+    // seed no sync has settled. The one predicate behind adopt, the slot ids of wish_emote_already_in_set and
+    // GET …/wishes/slots; nothing else may rebuild it.
+    internal static Expression<Func<EmoteSlot, bool>> AdoptableIn(string channelId) =>
+        s => s.Emote.ChannelId == channelId && !s.IsArchived && !s.SeedUnsettled;
+
     internal static string[] StatusesOf(WishListView view, bool botMode)
     {
         // An approved wish needs a human while the channel runs manually; in bot mode it is the bot's turn.
@@ -935,7 +1035,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         row.BotSuspendedReason,
         row.BotModeActivatedByTwitchUserId);
 
-    internal static WishDto ToDto(Wish w, EffectiveSettings settings) => new(
+    internal static WishDto ToDto(Wish w, EffectiveSettings settings, string? imageUrl) => new(
         w.Id,
         w.SevenTvEmoteId,
         w.EmoteName,
@@ -955,6 +1055,8 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         w.ExpiresAtUtc,
         w.EndedAtUtc,
         w.SlotId,
+        w.SlotAddedAtUtc,
+        imageUrl,
         w.LinkOrigin,
         w.ExtensionCount,
         w.Permanent,

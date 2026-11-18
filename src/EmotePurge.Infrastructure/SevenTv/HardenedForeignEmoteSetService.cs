@@ -148,8 +148,8 @@ public sealed class HardenedForeignEmoteSetService(
     /// cross-contamination 6.1's per-operation breaker split exists to prevent.
     /// </summary>
     public Task<ForeignEmoteSetListLookupResult> GetForeignEmoteSetListAsync(
-        string channelName, CancellationToken cancellationToken = default) =>
-        inner.GetForeignEmoteSetListAsync(channelName, cancellationToken);
+        string channelName, bool refresh = false, CancellationToken cancellationToken = default) =>
+        inner.GetForeignEmoteSetListAsync(channelName, refresh, cancellationToken);
 
     /// <summary>
     /// Set-ID cache entries and coalesced executions are shared across every channel that happens to

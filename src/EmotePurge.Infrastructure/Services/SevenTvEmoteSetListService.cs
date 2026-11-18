@@ -77,27 +77,34 @@ public sealed class SevenTvEmoteSetListService(
     /// </summary>
     private static readonly TimeSpan BudgetWaitTimeout = TimeSpan.FromSeconds(5);
 
+    public Task<EmoteSetListResult> ListByTwitchIdAsync(
+        string twitchChannelId, CancellationToken cancellationToken = default) =>
+        ListByTwitchIdAsync(twitchChannelId, refresh: false, cancellationToken);
+
     public async Task<EmoteSetListResult> ListByTwitchIdAsync(
-        string twitchChannelId, CancellationToken cancellationToken = default)
+        string twitchChannelId, bool refresh, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(twitchChannelId);
 
         var cached = await cache.TryGetAsync(twitchChannelId, cancellationToken);
-        if (cached is not null)
+        if (cached is not null && (!refresh || !IsAnswer(cached)))
         {
             // A hit short-circuits everything below, including the coalescing key: a held negative
             // outcome is an answer too, and re-entering the chain for it is the retry storm the
-            // shelf-life exists to prevent.
+            // shelf-life exists to prevent. A refresh skips only a held answer.
             return cached;
         }
 
+        // A refresh coalesces only with other refreshes: a plain lookup's execution may still serve the
+        // held answer from its second cache look, which is exactly what a refresh must not get. Twitch ids
+        // are numeric, so the prefixed key can never collide with a plain one.
         return await coalescer.CoalesceAsync(
-            twitchChannelId,
-            () => ExecuteGuardedAsync(twitchChannelId, CancellationToken.None),
+            refresh ? $"refresh:{twitchChannelId}" : twitchChannelId,
+            () => ExecuteGuardedAsync(twitchChannelId, refresh, CancellationToken.None),
             cancellationToken);
     }
 
-    private async Task<EmoteSetListResult> ExecuteGuardedAsync(string twitchChannelId, CancellationToken cancellationToken)
+    private async Task<EmoteSetListResult> ExecuteGuardedAsync(string twitchChannelId, bool refresh, CancellationToken cancellationToken)
     {
         // The coalescer only shares work that is still in flight: caller A can finish, write the
         // cache and leave the in-flight table before caller B — a genuine cold miss when it first
@@ -107,7 +114,7 @@ public sealed class SevenTvEmoteSetListService(
         // is an answer too (see the identical comment on the first look above), and a cache outage
         // here is a miss like any other — TryGetAsync already fails open.
         var recheck = await cache.TryGetAsync(twitchChannelId, cancellationToken);
-        if (recheck is not null)
+        if (recheck is not null && (!refresh || !IsAnswer(recheck)))
         {
             return recheck;
         }
@@ -235,6 +242,10 @@ public sealed class SevenTvEmoteSetListService(
                     nameof(transition), transition, "Unknown ForeignSevenTvBreakerTransition.");
         }
     }
+
+    // What a refresh skips: the two outcomes held for AnswerTimeToLive. Everything else is a held failure.
+    private static bool IsAnswer(EmoteSetListResult result) =>
+        result.Status is EmoteSetListStatus.Ok or EmoteSetListStatus.NoSevenTvAccount;
 
     private static EmoteSetListResult Map(SevenTvEmoteSetListResult upstream) => upstream.Status switch
     {

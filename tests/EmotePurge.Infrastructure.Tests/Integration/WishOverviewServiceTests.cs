@@ -241,6 +241,38 @@ public class WishOverviewServiceTests(PostgresFixture fixture, RedisFixture redi
         Assert.Empty(editors.ReceivedCalls());
     }
 
+    // Plan #485 2.1a: each row carries its own channel's stored image of the emote, null without one.
+    [Fact]
+    public async Task Mine_CarriesEachChannelsOwnImage_OfTheEmote()
+    {
+        var first = await SeedChannelAsync("image_first");
+        var second = await SeedChannelAsync("image_second");
+        var firstWish = await SeedWishAsync(first, WishStatus.Approved);
+        var secondWish = await SeedWishAsync(second, WishStatus.Approved);
+        var bare = await SeedWishAsync(second, WishStatus.Approved);
+        string emoteId;
+        await using (var db = CreateDb())
+        {
+            var wishes = await db.Wishes.Where(w => w.Id == firstWish || w.Id == secondWish).ToListAsync();
+            emoteId = wishes[0].SevenTvEmoteId;
+            foreach (var wish in wishes)
+            {
+                wish.SevenTvEmoteId = emoteId;
+            }
+
+            db.Emotes.Add(new Emote { ChannelId = first, SevenTvEmoteId = emoteId, Name = "E", ImageUrl = "https://cdn.7tv.app/emote/first/2x.webp" });
+            db.Emotes.Add(new Emote { ChannelId = second, SevenTvEmoteId = emoteId, Name = "E", ImageUrl = "https://cdn.7tv.app/emote/second/2x.webp" });
+            await db.SaveChangesAsync();
+        }
+
+        var rows = (await Sut(AccessAllowing("image_first", "image_second")).ListMineAsync(Principal("u-images")))
+            .ToDictionary(r => r.Wish.Id, r => r.Wish.ImageUrl);
+
+        Assert.Equal("https://cdn.7tv.app/emote/first/2x.webp", rows[firstWish]);
+        Assert.Equal("https://cdn.7tv.app/emote/second/2x.webp", rows[secondWish]);
+        Assert.Null(rows[bare]);
+    }
+
     // ------------------------------------------------------------------------------------ helpers
 
     private AppDbContext CreateDb() => fixture.CreateDbContext(DatabaseName);

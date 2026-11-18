@@ -213,7 +213,7 @@ public class ForeignEmoteSetService(
     // of its own beyond the Helix call — and, since the K3 review (P3-1), not even that once
     // identityCache already knows this channel's Twitch id.
     public async Task<ForeignEmoteSetListLookupResult> GetForeignEmoteSetListAsync(
-        string channelName, CancellationToken cancellationToken = default)
+        string channelName, bool refresh = false, CancellationToken cancellationToken = default)
     {
         var normalized = ChannelName.Normalize(channelName);
 
@@ -246,7 +246,8 @@ public class ForeignEmoteSetService(
             await identityCache.SetTwitchUserIdAsync(normalized, twitchUserId, cancellationToken);
         }
 
-        var listResult = await emoteSetListService.ListByTwitchIdAsync(twitchUserId, cancellationToken);
+        // refresh passes through to the list service, which holds the cache; the Twitch id above is stable.
+        var listResult = await emoteSetListService.ListByTwitchIdAsync(twitchUserId, refresh, cancellationToken);
         return listResult.Status switch
         {
             EmoteSetListStatus.Ok => ForeignEmoteSetListLookupResult.Ok(listResult.List!),

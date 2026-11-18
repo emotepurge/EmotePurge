@@ -193,6 +193,55 @@ public class SevenTvEmoteSetListServiceTests
     /// with HTTP 200 and a GraphQL error carrying <c>extensions.status: 429</c>. Read as a success
     /// it would look like an account with no sets at all.
     /// </summary>
+    // Plan #485, T0a (Sol-R3-P1): refresh skips a held answer, so the active set is 7TV's current one.
+    [Fact]
+    public async Task Refresh_WithAWarmCache_AsksUpstream_AndAnswersAndHoldsTheNewState()
+    {
+        const string newActiveSetId = "01JNEWACTIVESET0000000000A";
+        var client = ClientReturning(SevenTvEmoteSetListResult.Ok(new SevenTvEmoteSetListing(newActiveSetId, [])));
+        var cache = new FakeListCache();
+        await cache.SetAsync(TwitchId, EmoteSetListResult.Ok(new EmoteSetList(ActiveSetId, [])), TimeSpan.FromSeconds(60));
+        var service = CreateService(client, cache);
+
+        // Without the parameter the held answer stands, exactly as before.
+        Assert.Equal(ActiveSetId, (await service.ListByTwitchIdAsync(TwitchId)).List!.SevenTvActiveEmoteSetId);
+        Assert.Equal(ActiveSetId, (await service.ListByTwitchIdAsync(TwitchId, refresh: false)).List!.SevenTvActiveEmoteSetId);
+        await client.DidNotReceive().GetEmoteSetListForTwitchUserAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+
+        var refreshed = await service.ListByTwitchIdAsync(TwitchId, refresh: true);
+
+        Assert.Equal(newActiveSetId, refreshed.List!.SevenTvActiveEmoteSetId);
+        await client.Received(1).GetEmoteSetListForTwitchUserAsync(TwitchId, Arg.Any<CancellationToken>());
+        // The fresh answer replaces the held one for every later plain caller.
+        Assert.Equal(newActiveSetId, (await service.ListByTwitchIdAsync(TwitchId)).List!.SevenTvActiveEmoteSetId);
+        await client.Received(1).GetEmoteSetListForTwitchUserAsync(TwitchId, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Refresh_StillHonoursAHeldFailure_AndAnOpenBreaker()
+    {
+        var client = ClientReturning(OkListing());
+        var cache = new FakeListCache();
+        await cache.SetAsync(TwitchId, EmoteSetListResult.Failed(EmoteSetListStatus.RateLimited), TimeSpan.FromSeconds(60));
+        var service = CreateService(client, cache);
+
+        Assert.Equal(EmoteSetListStatus.RateLimited, (await service.ListByTwitchIdAsync(TwitchId, refresh: true)).Status);
+        await client.DidNotReceive().GetEmoteSetListForTwitchUserAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+
+        var breaker = new ForeignSevenTvBreakerPolicy();
+        breaker.RecordFailure(
+            ForeignSevenTvBreakerOperations.EmoteSetList,
+            ForeignSevenTvBreakerOutcome.RateLimited,
+            TimeSpan.FromMinutes(10),
+            breaker.TryAcquire(ForeignSevenTvBreakerOperations.EmoteSetList).Generation);
+        var warm = new FakeListCache();
+        await warm.SetAsync(TwitchId, EmoteSetListResult.Ok(new EmoteSetList(ActiveSetId, [])), TimeSpan.FromSeconds(60));
+        var guarded = CreateService(client, warm, breaker);
+
+        Assert.Equal(EmoteSetListStatus.RateLimited, (await guarded.ListByTwitchIdAsync(TwitchId, refresh: true)).Status);
+        await client.DidNotReceive().GetEmoteSetListForTwitchUserAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task ADisguisedRateLimit_IsRateLimited_NotAnEmptyOk()
     {
