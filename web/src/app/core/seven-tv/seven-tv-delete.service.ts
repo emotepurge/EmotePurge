@@ -252,7 +252,33 @@ export interface DeleteStartOptions {
   /** The flow's pre-start read of the set, when it was a gap read. Seeds `idRowGap`: an id row of
    *  this run is skipped from its first attempt on. */
   preRunRead?: Pick<SevenTvSetEntries, 'readState' | 'omittedCount'>;
+  /**
+   * The run's one completion report (#485, plan 2.6, Sol-P2-7): called exactly once for a started
+   * run, with the final outcome of its rows — after the re-read has cleared up `unknown` rows, in
+   * the same step that publishes the settled `result` — whether or not the run is still shown and
+   * whether or not the page that started it still lives. Never called for a refused start, and
+   * never synchronously inside `startDelete`. A callback that throws is logged, not passed on.
+   */
+  onSettled?(settlement: DeleteRunSettlement): void;
 }
+
+/** How a `done` row came to be `done` (#485, plan R20): 7TV confirmed its `REMOVE`
+ *  (`acknowledged`), or only the re-read after the run found its entry gone (`absent`) — after a
+ *  lost answer or a cancel with the request in flight, when someone else may have removed it. */
+export type DeleteRowEvidence = 'acknowledged' | 'absent';
+
+/** The completion report of one run — see {@link DeleteStartOptions.onSettled}. */
+export interface DeleteRunSettlement {
+  readonly runId: string;
+  /** The settled outcome — the very object the run's record carries as `result`. */
+  readonly result: RunResult;
+  /** One entry per `done` row key. */
+  readonly evidence: ReadonlyMap<string, DeleteRowEvidence>;
+}
+
+/** What `startDeleteRun` answers: the run's id when it started, nothing when it was refused
+ *  (already running, empty list, no token). */
+export type DeleteStartResult = { started: true; runId: string } | { started: false };
 
 /** How an entry row's live entries at its add date decide its attempt (Plan-378 4.4 step 4). */
 type EntryBinding =
@@ -551,7 +577,8 @@ export class SevenTvDeleteService {
    *  the run shown before it goes on to close on its own record (#256). `tag` is only for a tag
    *  removal (#201 T-C, `tag-removal-flow.ts`): frozen onto the record, it makes the settled run
    *  send the removal report as a second report beside `sync-deleted`. `options.preRunRead` is the
-   *  delete flow's pre-start read when it was a gap read (#454) — see {@link DeleteStartOptions}. */
+   *  delete flow's pre-start read when it was a gap read (#454) — see {@link DeleteStartOptions}.
+   *  A caller that follows its run uses {@link startDeleteRun}, which is this same start. */
   startDelete(
     setId: string,
     channelName: string,
@@ -561,6 +588,30 @@ export class SevenTvDeleteService {
     tag?: DeleteTagContext,
     options: DeleteStartOptions = {},
   ): void {
+    this.startDeleteRun(
+      setId,
+      channelName,
+      emotes,
+      expectedChannelName,
+      targetOwnerTwitchId,
+      tag,
+      options,
+    );
+  }
+
+  /** {@link startDelete} for a caller that follows its run (#485, plan 2.6): answers whether the
+   *  run started and under which id; `options.onSettled` then reports that run's final outcome
+   *  exactly once. A sibling rather than a new return type of `startDelete`, so the existing
+   *  callers and the specs that stand in for it stay exactly as they are. */
+  startDeleteRun(
+    setId: string,
+    channelName: string,
+    emotes: DeleteQueueEmote[],
+    expectedChannelName: string | null,
+    targetOwnerTwitchId: string | null,
+    tag?: DeleteTagContext,
+    options: DeleteStartOptions = {},
+  ): DeleteStartResult {
     const previousShown = this.lifecycle.shown();
     const runId = this.lifecycle.createRunId();
     const started: DeleteRunInfo = {
@@ -595,13 +646,15 @@ export class SevenTvDeleteService {
       setId,
       queue,
       context === null ? REMOVE_OPERATION : this.createEntryOperation(context),
-      (result) => this.onRunComplete(runId, result, context),
+      (result) => this.onRunComplete(runId, result, context, options.onSettled),
     );
     if (!engineStarted) {
       // Refused (already running, empty list, no token) — take the just-opened record back and
       // restore whatever was shown before it, which may be another run still settling its report.
       this.lifecycle.discardUnstarted(runId, previousShown);
+      return { started: false };
     }
+    return { started: true, runId };
   }
 
   /** Stops the run. A `REMOVE` still in flight ends its row `unknown` (`REMOVE_OPERATION`), and
@@ -894,7 +947,12 @@ export class SevenTvDeleteService {
    * `finish()` builds this very result from it; nothing shows that queue any more, so it is
    * cleared here.
    */
-  private onRunComplete(runId: string, result: RunResult, context: EntryRunContext | null): void {
+  private onRunComplete(
+    runId: string,
+    result: RunResult,
+    context: EntryRunContext | null,
+    onSettled: DeleteStartOptions['onSettled'],
+  ): void {
     const afterCancel = this.cancelInProgress;
     const needsRead =
       unknownCount(result.items) > 0 ||
@@ -907,7 +965,7 @@ export class SevenTvDeleteService {
     }
 
     if (!needsRead) {
-      this.settleRun(runId, result, null, context);
+      this.settleRun(runId, result, null, context, onSettled);
       return;
     }
     if (settling === null) {
@@ -924,7 +982,7 @@ export class SevenTvDeleteService {
       catchError(() => of(null)),
     );
     (afterCancel ? timer(CANCEL_SETTLE_GRACE_MS).pipe(switchMap(() => read)) : read).subscribe(
-      (entries) => this.settleRun(runId, result, entries, context),
+      (entries) => this.settleRun(runId, result, entries, context, onSettled),
     );
   }
 
@@ -944,12 +1002,17 @@ export class SevenTvDeleteService {
    * that heals the row; should the report fail for good, the N1 fallback resync stands in for it.
    * Without a report, `fallbackResync` asks for that resync directly, for `expectedChannelName`
    * only.
+   *
+   * Last, the run's completion report (`onSettled`, #485): the settled result and, per `done` row,
+   * whether 7TV confirmed it or the re-read did. Every way out of `onRunComplete` ends here exactly
+   * once, so the report goes out exactly once per started run.
    */
   private settleRun(
     runId: string,
     snapshot: RunResult,
     entries: SevenTvSetEntries | null,
     context: EntryRunContext | null,
+    onSettled: DeleteStartOptions['onSettled'],
   ): void {
     const entrySettlement = context === null ? null : settleEntryRun(snapshot, entries, context);
     const result = entrySettlement?.result ?? settleDeleteResult(snapshot, entries);
@@ -986,6 +1049,18 @@ export class SevenTvDeleteService {
     // and which emotes this tag put there — and either can fail without the other.
     if (settled.tag !== undefined) {
       this.reportTagRemoval(runId);
+    }
+    if (onSettled !== undefined) {
+      const settlement: DeleteRunSettlement = {
+        runId,
+        result,
+        evidence: evidenceOf(snapshot, result),
+      };
+      try {
+        onSettled(settlement);
+      } catch (error) {
+        console.error('[EmotePurge] 7TV delete completion callback threw', error);
+      }
     }
   }
 
@@ -1280,6 +1355,19 @@ function deletedReportOf(result: RunResult): DeletedReport {
     }
   }
   return entries.length > 0 ? { sevenTvEmoteIds, entries } : { sevenTvEmoteIds };
+}
+
+/** Per `done` row of `settled`: `acknowledged` when the engine's own snapshot already had it
+ *  `done` (7TV answered the `REMOVE` with its result), `absent` when it was `unknown` there and only
+ *  the re-read turned it `done`. */
+function evidenceOf(snapshot: RunResult, settled: RunResult): Map<string, DeleteRowEvidence> {
+  const before = new Map(snapshot.items.map((item) => [item.key, item.status]));
+  return new Map(
+    settled.doneKeys.map((key): [string, DeleteRowEvidence] => [
+      key,
+      before.get(key) === 'done' ? 'acknowledged' : 'absent',
+    ]),
+  );
 }
 
 /** The `doneKeys` of id rows only — a 7TV id each. A tag removal runs id rows only, so for it this

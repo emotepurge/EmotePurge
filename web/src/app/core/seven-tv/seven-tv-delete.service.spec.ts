@@ -10,6 +10,7 @@ import {
   DELETE_DELAY_MS,
   DeleteQueueEmote,
   DeleteRunInfo,
+  DeleteRunSettlement,
   ENTRY_BINDING_READ_TIMEOUT_MS,
   MAX_CONSECUTIVE_ENTRY_READ_FAILURES,
   REPORT_TIMEOUT_MS,
@@ -3255,6 +3256,158 @@ describe('SevenTvDeleteService', () => {
       for (const body of bodies.slice(1)) {
         expect(body).toEqual(bodies[0]);
       }
+    });
+  });
+
+  // #485, plan 2.6 (Sol-P2-7): one completion report per run, independent of the dock.
+  describe('the completion report of a run', () => {
+    function settledSpy() {
+      return vi.fn<(settlement: DeleteRunSettlement) => void>();
+    }
+
+    it('answers a started run with its id and a refused one without', () => {
+      const first = service.startDeleteRun('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
+      const busy = service.startDeleteRun('set-1', 'sensitron', [EMOTES[1]], 'sensitron', null);
+
+      expect(first).toEqual({ started: true, runId: service.run()?.runId });
+      expect(busy).toEqual({ started: false });
+      flushApplied(httpMock.expectOne(isRemove));
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('never reports a refused start', () => {
+      const onSettled = settledSpy();
+      tokenService.clearToken();
+
+      expect(
+        service.startDeleteRun('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null, undefined, {
+          onSettled,
+        }),
+      ).toEqual({ started: false });
+      expect(service.startDeleteRun('set-1', 'sensitron', [], 'sensitron', null)).toEqual({
+        started: false,
+      });
+      vi.advanceTimersByTime(60_000);
+      expect(onSettled).not.toHaveBeenCalled();
+    });
+
+    it('reports once with the settled rows, the REMOVE 7TV confirmed as acknowledged', () => {
+      const onSettled = settledSpy();
+      const start = service.startDeleteRun(
+        'set-1',
+        'sensitron',
+        [EMOTES[0]],
+        'sensitron',
+        null,
+        undefined,
+        { onSettled },
+      );
+      flushApplied(httpMock.expectOne(isRemove));
+      // Not inside the engine's step: the report comes with the settled result, after the pacing.
+      expect(onSettled).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      expect(onSettled).toHaveBeenCalledOnce();
+      const settlement = onSettled.mock.calls[0][0];
+      expect(settlement.runId).toBe(start.started ? start.runId : null);
+      expect(settlement.result).toBe(service.run()?.result);
+      expect(settlement.result.doneKeys).toEqual(['7tv-1']);
+      expect([...settlement.evidence]).toEqual([['7tv-1', 'acknowledged']]);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(onSettled).toHaveBeenCalledOnce();
+    });
+
+    it('reports a run that settles while another run is shown, each run once with its own rows', () => {
+      const first = settledSpy();
+      const second = settledSpy();
+      service.startDeleteRun('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null, undefined, {
+        onSettled: first,
+      });
+      // A lost answer: the run settles through a re-read.
+      httpMock.expectOne(isRemove).flush(null, { status: 502, statusText: 'Bad Gateway' });
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      const firstRead = httpMock.expectOne(isSetRead);
+      service.reset();
+      service.startDeleteRun('set-1', 'sensitron', [EMOTES[1]], 'sensitron', null, undefined, {
+        onSettled: second,
+      });
+      const shownRunId = service.run()?.runId;
+
+      firstRead.flush(setEntriesPage([{ id: '7tv-2', alias: 'KEKW' }]));
+
+      expect(service.run()?.runId).toBe(shownRunId);
+      expect(first).toHaveBeenCalledOnce();
+      expect(first.mock.calls[0][0].result.doneKeys).toEqual(['7tv-1']);
+      expect([...first.mock.calls[0][0].evidence]).toEqual([['7tv-1', 'absent']]);
+      expect(second).not.toHaveBeenCalled();
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+
+      flushApplied(httpMock.expectOne(isRemove));
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      expect(second).toHaveBeenCalledOnce();
+      expect(second.mock.calls[0][0].result.doneKeys).toEqual(['7tv-2']);
+      expect(second.mock.calls[0][0].runId).toBe(shownRunId);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(first).toHaveBeenCalledOnce();
+    });
+
+    it('reports a cancel with the REMOVE in flight as done once the re-read confirms the removal', () => {
+      const onSettled = settledSpy();
+      service.startDeleteRun('set-1', 'sensitron', [A], 'sensitron', null, undefined, {
+        onSettled,
+      });
+      answerRead([{ id: '7tv-x', alias: 'aaa', addedAt: T1 }]);
+      const remove = httpMock.expectOne(isRemove);
+      service.cancel();
+      expect(remove.cancelled).toBe(true);
+      expect(onSettled).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS);
+      answerRead([]);
+
+      expect(onSettled).toHaveBeenCalledOnce();
+      const settlement = onSettled.mock.calls[0][0];
+      expect(settlement.result.items[0]).toMatchObject({ key: '7tv-x#slot-aaa', status: 'done' });
+      expect([...settlement.evidence]).toEqual([['7tv-x#slot-aaa', 'absent']]);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('reports a cancel with the REMOVE in flight as not done when the re-read still shows the entry', () => {
+      const onSettled = settledSpy();
+      service.startDeleteRun('set-1', 'sensitron', [A], 'sensitron', null, undefined, {
+        onSettled,
+      });
+      answerRead([{ id: '7tv-x', alias: 'aaa', addedAt: T1 }]);
+      httpMock.expectOne(isRemove);
+      service.cancel();
+
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS);
+      answerRead([{ id: '7tv-x', alias: 'aaa', addedAt: T1 }]);
+
+      expect(onSettled).toHaveBeenCalledOnce();
+      const settlement = onSettled.mock.calls[0][0];
+      expect(settlement.result.items[0].status).toBe('unknown');
+      expect(settlement.result.doneKeys).toEqual([]);
+      expect(settlement.evidence.size).toBe(0);
+      httpMock
+        .expectOne('/api/channels/sensitron/resync')
+        .flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('keeps the run going when the completion callback throws', () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      service.startDeleteRun('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null, undefined, {
+        onSettled: () => {
+          throw new Error('broken');
+        },
+      });
+      flushApplied(httpMock.expectOne(isRemove));
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      expect(error).toHaveBeenCalled();
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(service.run()?.phase).toBe('closed');
     });
   });
 });
