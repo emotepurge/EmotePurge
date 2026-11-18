@@ -1,10 +1,10 @@
 # Plan #484: Wunsch-Emotes, Kind K2: Ablauf-Lauf im Worker
 
-Erstellt am 2026-11-18 im Worktree `EmotePurge-wt-484` (Branch `feat/484-wish-expiry`, Basis `feat/483-wish-core` @ `ec8d9697`;
-nach dem Merge von PR #492 wird auf `main` rebased, die Codestellen dieses Plans liegen alle in K1-Dateien und ändern sich dabei
-nicht).
-**Status: Erstfassung, noch ohne adversariale Prüfung (Sol). Keine blockierende Betreiberfrage; zwei Lesarten zur Bestätigung
-(Abschnitt 9).**
+Erstellt am 2026-11-18 im Worktree `EmotePurge-wt-484` (Branch `feat/484-wish-expiry`, Basis `origin/main` @ `ab4882ea`, K1 ist
+mit PR #492 gemergt; die Codestellen dieses Plans liegen alle in K1-Dateien und sind am Stand `ec8d9697` gelesen, den der Merge
+unverändert enthält).
+**Status: Revision 1 (2026-11-18). Betreiber hat L1 und L2 entschieden, Sol adversarial einmal durch (1 × P1, 3 × P2, alle am
+Code geprüft und eingearbeitet). Keine offene Betreiberfrage.**
 Quellen: [Spec](../superpowers/specs/2026-11-17-wunsch-emotes-spec.md) Abschnitte 1 bis 17 und „K2: Ablauf-Lauf im Worker“ (AK22 bis
 AK31); aus K3, K4 und K6 nur, was sie von K2 erwarten; [Plan-483](Plan-483-Wunsch-Emotes-Backend-Kern.md) (Revision 2) als Vorbild
 und für die Verträge aus K1; die K1-Übergaben `docs/nachtlaeufe/nacht-2026-11-17-setze-den-plan-docs-plans-plan-483.md` und
@@ -17,7 +17,8 @@ als Form. Die Spec reist mit: Jeder Implementer liest seinen Task hier **und** d
 genannten K1-Dateien, bevor er schreibt. Der K1-Code ist Werkzeug, nicht Entwurf.
 
 **Lesehinweis:** **[E]** Planer-Entscheidung (der Betreiber kann widersprechen) · **[P]** Präzisierung ohne Entscheidungsgehalt ·
-**[B]** Betreiberentscheidung (Spec Abschnitt 17, Runden 1 bis 3, und 2026-11-18) · „Spec E4“ meint die Festlegung der Spec,
+**[B]** Betreiberentscheidung (Spec Abschnitt 17, Runden 1 bis 3, und 2026-11-18) · **Sol-P1/P2-*n*** Befund des adversarialen
+Reviews (gpt-6.1-sol), am Code geprüft und eingearbeitet · „Spec E4“ meint die Festlegung der Spec,
 „AK22“ das Akzeptanzkriterium aus K2, „K1 (j)“ den Absatz im DECISIONS-Eintrag von K1.
 
 **Betreiberfestlegungen, die K2 trägt [B]:** eigener Worker im 15-Minuten-Takt; Laufzeit 1 bis 365 Tage; Bewertungsfenster des
@@ -25,6 +26,16 @@ Schutzes = min(7 Tage, Zeit im Set), unter einem vollen Tag gilt wie eine Lücke
 Schwelle als Mittel je Tag über alle Slots des Emotes, ohne Wert ist der Schutz aus; ein schon fälliger oder eingereihter Wunsch wird
 nicht erneut fällig gestellt; vorläufige Starts werden bei gesundem Sync nicht fällig; je Fälligkeit ein Audit-Eintrag `wish.due`;
 im manuellen Modus erinnert K2 nur, der Bot-Teil ist K4.
+
+### Revision 1 (2026-11-18): was sich geändert hat
+
+| Änderung | Anlass |
+|---|---|
+| Eine Änderung der Schutzschwelle sperrt die aktiven Wünsche des Kanals (Kanal vor Wunsch), erhöht ihre `DecisionVersion` und leert ihre Einreihung im selben Commit; neuer Task T2b, Vertrag 2.6, zwei Sperr-Reihenfolgen als Tests (Befund 20, T2b, T3 Fälle 20, 21) | Sol-P1-1 |
+| Genau ein `wish.due` je Ablauf: Neubewertung nach verworfener Einreihung bleibt, der Lauf prüft unter der Wunsch-Sperre, ob für diesen Ablauf schon ein Eintrag steht (Befund 11, 2.3, T3 Fall 19) | Sol-P2-2 |
+| Vorläufiger Start: Aufschub höchstens 24 Stunden, danach fällig, aber **nie** eingereiht; neue Zeile 4 der Tabelle mit neuem Grund `unconfirmed_start`, die Tabelle hat sieben Zeilen; Spec (K2-Text, Tabelle, AK22, AK25, AK26, Gründe in Abschnitt 5) angeglichen (Befund 3, 21, 2.1, 2.2, T1, T3 Fall 12) | [B] L2, Sol-P2-3 |
+| Pilot-Messgröße (a) rechnet ab dem im Audit festgehaltenen `expiresAtUtc`: Kohorte, Reife, verspätete Feststellung, Doppelte; Spec 13 angeglichen; Prüffälle in T5 (Befund 10, T5) | Sol-P2-4 |
+| L1 (Fenster ab Start des Wunsches) ist entschieden und steht als [B] in Abschnitt 9 | [B] L1 |
 
 ---
 
@@ -47,13 +58,15 @@ Alle Stellen sind am Stand `ec8d9697` nachgelesen.
 3. **Ein vorläufiger Start kann für immer vorläufig bleiben.** `ResolveStart` (`WishService.cs:853-870`) setzt
    `StartsAtAuthoritative` nur wahr, wenn der Slot ein REST-bestätigtes Datum trägt, auch bei ausdrücklichem `startsAtUtc`. Ein
    `adopt` auf einen **undatierten** Slot (`EmoteSlot.AddedAt` null, „unbekannt“) bleibt vorläufig, bis 7TV ein Datum liefert
-   (`WishReconcileService.cs:304-308`, Kommentar „the next dated sync decides“); liefert 7TV nie eines, bleibt es dabei. Nach dem Wortlaut der
-   Spec („nicht fällig, solange der Kanal aktiv gesynct wird“) liefe ein solcher Wunsch in einem gesunden Kanal **nie** ab.
-   **[E]** Der Aufschub ist begrenzt: Ein vorläufiger Start hält die Fälligkeit nur zurück, solange der Sync frisch ist **und**
-   der Ablauf weniger als 24 Stunden zurückliegt. Danach gilt das vorläufige Datum. Dieselben 24 Stunden wie in der Spec, eine
-   benannte Konstante, keine Slot-Abfrage im Lauf. Der Normalfall (EventAPI-Datum, das der nächste Vollsync nach rund einer Minute
-   bestätigt) ist davon unberührt. Erwogen und verworfen: am Slot ablesen, ob eine Korrektur noch kommen kann; das bräuchte drei
-   Sonderfälle (undatiert, ohne Slot, gelöschter Slot) für denselben Effekt.
+   (`WishReconcileService.cs:304-308`, Kommentar „the next dated sync decides“); liefert 7TV nie eines, bleibt es dabei. Nach dem
+   ursprünglichen Wortlaut der Spec liefe ein solcher Wunsch in einem gesunden Kanal **nie** ab.
+   **[B] L2, präzisiert nach Sol-P2-3:** Zwei Regeln, die zusammen gelten. (a) *Kein Wunsch hängt dauerhaft:* Ein vorläufiger
+   Start hält die Fälligkeit nur zurück, solange der Sync frisch ist **und** der Ablauf weniger als 24 Stunden zurückliegt;
+   danach wird der Wunsch fällig. (b) *Ein unbestätigter Start führt nie zu einer Bot-Entfernung:* Ein fälliger Wunsch mit
+   vorläufigem Start wird immer vorgelegt, nie eingereiht, auch bei altem Sync und bei ausgeschaltetem Schutz. Im manuellen
+   Modus ist das die normale Erinnerung (`expired`); im Bot-Modus mit Eigentum und verfügbarem Bot der neue Grund
+   `unconfirmed_start` (Befund 21). Der Normalfall (EventAPI-Datum, das der nächste Vollsync nach rund einer Minute bestätigt)
+   ist davon unberührt. Die Spec ist in diesem Commit angeglichen (K2-Text, Tabelle, AK26).
 4. **„Letzter erfolgreicher Sync“** ist `Channel.LastSyncedAtUtc` (gestempelt in `SevenTvSyncService.cs:906`, auch ohne Änderung
    am Set). **[E]** Null (nie gesynct, seit es die Spalte gibt) zählt als nicht frisch: Es gibt keinen Beleg für einen laufenden
    Sync, also gilt das vorläufige Datum. Ein deaktivierter Kanal wird nicht mehr gesynct und fällt nach 24 Stunden von selbst
@@ -77,17 +90,26 @@ Alle Stellen sind am Stand `ec8d9697` nachgelesen.
 9. **`DecisionVersion` beim Vorlegen.** E25 zählt „jede Verwalter-Aktion und jede Eigentumsänderung“. Der Lauf ist keines von
    beiden. **[E]** Vorlegen und Einreihen erhöhen `DecisionVersion` nicht; das Einreihen schreibt den aktuellen Wert nach
    `RemovalQueuedVersion`.
-10. **Audit-Details von `wish.due`.** Die Spec nennt `wishId` und `outcome`. Die Messgröße (a) aus Spec 13 rechnet „binnen
-    24 Stunden nach `ExpiresAtUtc`“, die Spalte wird beim Verlängern aber überschrieben, und der Zeitpunkt des Eintrags ist der
-    Zeitpunkt der Feststellung (bis 15 Minuten später, nach einem Worker-Ausfall oder dem Aufschub aus Befund 3 auch deutlich
-    mehr). **[E]** Details sind `wishId`, `outcome` und `expiresAtUtc` (der Ablauf, auf den sich der Eintrag bezieht). Kein
-    Personenbezug, keine Namen (AK19 bleibt gewahrt). Der Eintrag trägt den Kanalnamen wie die K1-Einträge und erscheint damit
-    im Aktivitäts-Feed des Kanals unter „system“; die Übersetzung `audit.actions.wish.due` liefert K3 (Risiko R5).
-11. **Zweiter `wish.due` ohne Verlängerung ist möglich (ab K4).** Verwirft etwas anderes als eine Verwalter-Entscheidung die
-    Einreihung (Eigentum endet im Abgleich durch Umbenennen, oder der Bot findet sich unter der Sperre nicht mehr berechtigt und
-    leert `RemovalQueuedAtUtc`), ist der Wunsch wieder `active`, abgelaufen und nicht eingereiht. Der nächste Lauf bewertet ihn
-    neu, typisch mit `not_bot_owned`. **[E]** Gewollt: Sonst bliebe er unbemerkt hängen. Es entsteht ein zweiter Eintrag zur selben
-    Fälligkeit; über `expiresAtUtc` (Befund 10) fasst die Auswertung beide zusammen. Vor K4 nicht erreichbar.
+10. **Audit-Details von `wish.due` und die Pilot-Messung (Sol-P2-4).** Die Spec nannte `wishId` und `outcome` und rechnete die
+    24 Stunden der Messgröße (a) ab dem Zeitpunkt des Eintrags, obwohl das Ziel „binnen 24 Stunden nach `ExpiresAtUtc`“ heißt.
+    Der Zeitpunkt des Eintrags ist der Zeitpunkt der Feststellung (bis 15 Minuten später, nach einem Worker-Ausfall oder dem
+    Aufschub aus Befund 3 auch deutlich mehr): Eine Entscheidung eine Stunde nach einem 48-Stunden-Ausfall zählte als Erfolg,
+    obwohl sie 49 Stunden nach dem Ablauf fiel. **[E]** Details sind `wishId`, `outcome` und `expiresAtUtc` (der Ablauf, auf den
+    sich der Eintrag bezieht, als UTC-Zeitpunkt in voller Genauigkeit). Die Messung ankert am festgehaltenen `expiresAtUtc`:
+    Kohorte, Reife und Frist stehen in T5 und in Spec 13 (in diesem Commit angeglichen). Kein Personenbezug, keine Namen (AK19
+    bleibt gewahrt). Der Eintrag trägt den Kanalnamen wie die K1-Einträge und erscheint damit im Aktivitäts-Feed des Kanals
+    unter „system“; die Übersetzung `audit.actions.wish.due` liefert K3 (Risiko R5).
+11. **Neubewertung desselben Ablaufs, aber genau ein `wish.due` (Sol-P2-2).** Verwirft etwas anderes als eine Verlängerung die
+    Einreihung, ist der Wunsch wieder `active`, abgelaufen und nicht eingereiht. Das ist schon mit K1-Code erreichbar, sobald
+    etwas einreiht: `WishReconcileService.EndOwnership` (`:510-522`) beendet beim Umbenennen das Eigentum, erhöht
+    `DecisionVersion` und leert die Einreihung, Zustand und Ablauf bleiben; ebenso die Schwellenänderung aus Befund 20 und ab K4
+    der Bot, der sich unter der Sperre nicht mehr berechtigt findet. Der nächste Lauf **muss** neu bewerten (sonst bliebe der
+    Wunsch unbemerkt hängen), typisch mit `not_bot_owned`. AK27 verlangt aber genau einen Eintrag je Fälligkeit, und andere
+    Auswertungen als die eine Abfrage in Operations verlassen sich darauf. **[E]** Der Lauf prüft unter der Wunsch-Sperre, ob
+    für diesen Wunsch schon ein `wish.due` mit demselben `expiresAtUtc` steht; wenn ja, schreibt er Zustand bzw. Einreihung und
+    das Event, aber **keinen** zweiten Audit-Eintrag. Gesucht wird im Audit-Log nach Aktion, Ziel und Zeitpunkt nicht vor dem
+    Ablauf (der Index auf `OccurredAtUtc` begrenzt die Suche; ein Eintrag zu diesem Ablauf kann nicht älter sein als der Ablauf).
+    Kein neues Feld am Wunsch, keine Migration. Erst die Verlängerung ändert `ExpiresAtUtc` und macht den nächsten Eintrag möglich.
 12. **Keine Advisory-Sperre.** E6 braucht die Retention-Sperre nicht, und Idempotenz hängt hier nicht an „nur ein Lauf“,
     sondern an der Zeilensperre: **[E]** Der Lauf bearbeitet jeden fälligen Wunsch in einer eigenen kurzen Transaktion, sperrt die
     Zeile (`RowLocks.LockWishesByIdsAsync`), liest sie erst danach und prüft die Auswahlbedingung erneut. Zwei gleichzeitige Läufe
@@ -109,7 +131,7 @@ Alle Stellen sind am Stand `ec8d9697` nachgelesen.
 16. **Im manuellen Modus braucht der Lauf keine Nutzung.** Zeile 1 gewinnt vor Schutz und Lücke. Vor K4 endet jede Fälligkeit
     in Produktion als `presented` (`expired`); der Schutz wirkt erst im Bot-Modus. Das deckt sich mit AK30 („Ergebnis … im
     manuellen Modus bleibt“). **[E]** Der Lauf lädt die Nutzung nur, wenn die Policy sie braucht (Bot-Modus, Eigentum, Bot
-    verfügbar, Schwelle gesetzt). Die Zeilen 2 bis 6 sind vor K4 nur über Tests erreichbar, die Einstellungen und Eigentum direkt
+    verfügbar, Start maßgeblich, Schwelle gesetzt). Die Zeilen 2 bis 7 sind vor K4 nur über Tests erreichbar, die Einstellungen und Eigentum direkt
     in die Datenbank schreiben und die Verfügbarkeit ersetzen.
 17. **Welche Kanäle der Lauf abgleicht.** Die Spec sagt „jeden Kanal mit laufenden Wünschen“. Der Abgleich aus K1 schaut auch auf
     Rückkehrer (`removed_externally`) und auf `kept`-Wünsche, die ihren Slot freigeben müssen (`WishReconcileService.cs:83-120`).
@@ -124,6 +146,25 @@ Alle Stellen sind am Stand `ec8d9697` nachgelesen.
 19. **Was K1 aus der Live-Probe mitgibt** (`live-T12`, Auffälligkeit 5): `adopt` eines alten Slots mit Kanal-Default ergibt
     sofort einen `active`-Wunsch mit Ablauf in der Vergangenheit. Mit K2 wird ein solcher Wunsch im nächsten Takt vorgelegt. Das
     ist das gewollte Verhalten und zugleich der Hebel für AK30.
+20. **Schutz-Einstellungen sind nicht gegen den Lauf serialisiert (Sol-P1-1).** `WishService.UpdateSettingsAsync`
+    (`WishService.cs:45-98`) sperrt nur die Kanalzeile, fasst keinen Wunsch an, erhöht keine `DecisionVersion` und leert keine
+    Einreihung. Der Lauf liest die Einstellungen hinter der Wunsch-Sperre, hält aber keine Kanalsperre. Schaltet ein Verwalter
+    den Schutz ein, nachdem der Lauf die Einstellung gelesen hat, reiht der Lauf nach dem alten Stand ein; die Prüfung des Bots
+    vor dem Entfernen (Version, Zustand, Ablauf, Eigentum; Spec 8) bewertet den Schutz nicht neu und ließe die Entfernung durch.
+    Dasselbe gilt für eine Einreihung, die schon steht, wenn der Schutz danach eingeschaltet oder die Schwelle gesenkt wird.
+    **[E]** Eine Änderung der Schwelle ist eine Entscheidung im Sinn von E25: `UpdateSettingsAsync` sperrt nach der Kanalzeile
+    die aktiven Wünsche des Kanals, erhöht ihre `DecisionVersion` und leert ihre Einreihung im selben Commit wie die neue
+    Einstellung (Vertrag 2.6, Task T2b). Der Lauf selbst lässt `DecisionVersion` weiterhin unverändert (Befund 9). Die
+    Sperrreihenfolge „Kanal vor Wunsch“ ist die aus K1 (Plan-483, 2.3); der Lauf hält nur eine Wunsch-Zeile und nie die
+    Kanalzeile, ein Zyklus ist ausgeschlossen. Für K4 gilt dasselbe beim Ein- und Abschalten des Bot-Modus (dort schon so
+    vorgesehen, Spec K4 „Entscheidungen verwerfen die Einreihung“).
+21. **Neuer Vorlagegrund `unconfirmed_start`.** Folgt aus Befund 3 (b). Ein neuer Wert in `WishStatusReason` und in dessen Liste
+    `Presented`; er ist Vertrag (gespeichert, im DTO als `statusReason`). Der vorhandene Grund `unconfirmed` meint etwas anderes
+    (Bot hat geschrieben, Bestätigung fehlt) und hängt an `recheck` und `adopt` (`WishTransitions.cs:90-93`); der neue Grund
+    kommt in keine dieser beiden Listen. Folgen: K3 braucht eine Übersetzung für den Grund (Karte und Filter) und einen Satz, was
+    zu tun ist (verlängern, behalten oder von Hand entfernen); K4 lässt „Bot entfernen lassen“ für diesen Grund **nicht** zu
+    (die Liste der Spec, `protected`, `coverage_gap`, `bot_unavailable`, bleibt, wie sie ist). T1 liest `WishTransitionsTests` und
+    nimmt den neuen Wert dort auf, wo die Matrix Gründe aufzählt; erwartet ist dasselbe Verhalten wie für `expired`.
 
 ## 1. Umfang
 
@@ -137,8 +178,8 @@ gemeinsame Nutzungsabfrage (Befund 2), Compose-Mapping, Doku, Live-Verifikation 
 
 | Für | Vertrag aus K2 |
 |---|---|
-| K3 | Ein abgelaufener Wunsch steht spätestens einen Takt nach `ExpiresAtUtc` auf `presented` mit Grund `expired`, zählt damit in `summary` und `mine`, und der Kanal-Stream bekommt `wish.changed` (Live-Probe AK45). Neuer Audit-Typ `wish.due` im Aktivitäts-Feed, Akteur „system“, Details `wishId`, `outcome`, `expiresAtUtc`; K3 übersetzt ihn |
-| K4 | `IWishBotAvailability` zum Ersetzen (eine Registrierung); Zeile 6 schreibt `RemovalQueuedAtUtc` und `RemovalQueuedVersion = DecisionVersion` und lässt `active`; die abgeleitete Warteschlange von K4 liest genau das. K2 stößt den Bot nicht an (kein `WISHBOT:`), der 30-Sekunden-Takt von K4 genügt. Fällt der Bot nach dem Einreihen aus, legt K4 selbst vor (Spec 7, Punkt 8); leert K4 eine Einreihung ohne Zustandswechsel, bewertet der nächste Lauf neu (Befund 11). Die Policy trennt `BotModeEnabled` von `BotSuspendedReason` (Befund 1) |
+| K3 | Ein abgelaufener Wunsch steht spätestens einen Takt nach `ExpiresAtUtc` auf `presented` mit Grund `expired`, zählt damit in `summary` und `mine`, und der Kanal-Stream bekommt `wish.changed` (Live-Probe AK45). Neuer Vorlagegrund `unconfirmed_start` (Befund 21, braucht eine Übersetzung; vor K4 nicht erreichbar). Neuer Audit-Typ `wish.due` im Aktivitäts-Feed, Akteur „system“, Details `wishId`, `outcome`, `expiresAtUtc`; K3 übersetzt ihn |
+| K4 | `IWishBotAvailability` zum Ersetzen (eine Registrierung); Zeile 7 schreibt `RemovalQueuedAtUtc` und `RemovalQueuedVersion = DecisionVersion` und lässt `active`; die abgeleitete Warteschlange von K4 liest genau das. K2 stößt den Bot nicht an (kein `WISHBOT:`), der 30-Sekunden-Takt von K4 genügt. Fällt der Bot nach dem Einreihen aus, legt K4 selbst vor (Spec 7, Punkt 8); leert K4 eine Einreihung ohne Zustandswechsel, bewertet der nächste Lauf neu, ohne zweiten `wish.due` (Befund 11). Die Policy trennt `BotModeEnabled` von `BotSuspendedReason` (Befund 1). Eine Schwellenänderung verwirft Einreihungen aktiver Wünsche (Befund 20); K4 wendet dasselbe Muster auf das Schalten des Bot-Modus an und entscheidet, ob es auch für vorgelegte Wünsche mit Bot-Auftrag gelten soll. `unconfirmed_start` ist kein Grund für „Bot entfernen lassen“ (Befund 21) |
 | K6 | nichts Neues. Ein automatisch aktivierter Wunsch (E21) mit vorläufigem EventAPI-Datum fällt unter die Regel aus Befund 3 und 4; der Verfall offener Wünsche bleibt bei K6 (E26) |
 
 ### 1.3 Draußen
@@ -156,20 +197,23 @@ und `RemovalQueuedAtUtc` leer ist (Index `IX_Wishes_Status_ExpiresAtUtc`). „Je
 `TimeProvider` gelesen nach dem Abgleichsschritt; er ist zugleich der Bewertungszeitpunkt des Fensters (E4). Ein Kandidat mit
 `StartsAtAuthoritative = false` wird **zurückgehalten** (kein Schreiben, kein Audit, kein Event), solange beides gilt: der Kanal
 hat ein `LastSyncedAtUtc` jünger als 24 Stunden, und `ExpiresAtUtc` liegt weniger als 24 Stunden zurück (Befund 3, 4). Die
-24 Stunden stehen einmal als benannte Konstante in `WishLimits`.
+24 Stunden stehen einmal als benannte Konstante in `WishLimits`. Wird ein solcher Kandidat danach fällig, kann die Entscheidung
+nur „vorlegen“ lauten, nie „einreihen“ (Zeile 4 in 2.2).
 
 **2.2 `WishExpiryPolicy` (Core, rein).** Drei Fragen, jede eine statische Funktion ohne I/O:
 
 - *Zurückhalten?* Eingabe: `StartsAtAuthoritative`, `ExpiresAtUtc`, `LastSyncedAtUtc` des Kanals, „jetzt“. Ausgabe: fällig oder
   zurückgehalten, nach 2.1.
 - *Braucht die Entscheidung die Nutzung?* Wahr genau dann, wenn Bot-Modus an, Eigentum besteht, der Bot verfügbar ist (global und
-  je Kanal) und eine Schwelle gesetzt ist.
+  je Kanal), der Start maßgeblich ist und eine Schwelle gesetzt ist.
 - *Entscheidung* (`Decide`): Eingabe sind die Fakten `BotModeEnabled`, `BotSuspendedReason`, `BotOwned`, globale Verfügbarkeit,
-  Schwelle (leer = Schutz aus) und, wo nötig, die Bewertung (Mittel je Tag, Lückenmerkmal). Ausgabe: „vorlegen mit Grund“ oder
-  „Entfernung einreihen“. Erste zutreffende Zeile gewinnt, exakt nach der Tabelle der Spec: (1) Bot-Modus aus → `expired`;
-  (2) kein Eigentum → `not_bot_owned`; (3) Bot global nicht verfügbar oder Kanal ausgesetzt → `bot_unavailable`; (4) Schwelle
-  gesetzt und Lücke → `coverage_gap`; (5) Schwelle gesetzt und Mittel ≥ Schwelle → `protected`; (6) einreihen. Fehlt die
-  Bewertung, obwohl die zweite Frage „ja“ sagt, ist das ein Programmierfehler und wirft.
+  `StartsAtAuthoritative`, Schwelle (leer = Schutz aus) und, wo nötig, die Bewertung (Mittel je Tag, Lückenmerkmal). Ausgabe:
+  „vorlegen mit Grund“ oder „Entfernung einreihen“. Erste zutreffende Zeile gewinnt, exakt nach der Tabelle der Spec (Stand
+  dieser Revision, sieben Zeilen): (1) Bot-Modus aus → `expired`; (2) kein Eigentum → `not_bot_owned`; (3) Bot global nicht
+  verfügbar oder Kanal ausgesetzt → `bot_unavailable`; (4) Start nur vorläufig → `unconfirmed_start`; (5) Schwelle gesetzt und
+  Lücke → `coverage_gap`; (6) Schwelle gesetzt und Mittel ≥ Schwelle → `protected`; (7) einreihen. Zeile 4 steht vor Schutz und
+  Lücke und gilt auch bei ausgeschaltetem Schutz: „Einreihen“ ist mit vorläufigem Start nicht erreichbar, das ist als eigene
+  Eigenschaft getestet. Fehlt die Bewertung, obwohl die zweite Frage „ja“ sagt, ist das ein Programmierfehler und wirft.
 
 Die Gründe sind die Konstanten aus `WishStatusReason`; das `outcome` im Audit ist der Grund bzw. die Zeichenkette `queued`
 (eine Konstante an der Policy). Fenster, Mittel und Lücke rechnet weiter `WishUsageWindow` aus K1; die Policy rechnet sie nicht nach.
@@ -182,8 +226,10 @@ prüfen (ein inzwischen verlängerter, behaltener, entfernter, eingereihter oder
   `StatusChangedAtUtc` = „jetzt“. Unverändert bleiben `ExpiresAtUtc`, `EndedAtUtc` (leer), `DecisionVersion`, Slot und Eigentum.
 - *Einreihen:* `RemovalQueuedAtUtc` = „jetzt“, `RemovalQueuedVersion` = `DecisionVersion`. Zustand, Grund und
   `StatusChangedAtUtc` bleiben.
-- *Audit:* genau ein Eintrag `wish.due` unter `AuditActor.System`, Kanalname gesetzt, Ziel der Wunsch, Details nach Befund 10,
-  im selben `SaveChanges` wie die Änderung. Nie Alias, Emote-Name oder Einlöser.
+- *Audit:* ein Eintrag `wish.due` unter `AuditActor.System`, Kanalname gesetzt, Ziel der Wunsch, Details nach Befund 10,
+  im selben `SaveChanges` wie die Änderung. Nie Alias, Emote-Name oder Einlöser. **Genau einer je Ablauf:** Steht für diesen
+  Wunsch schon ein `wish.due` mit demselben `expiresAtUtc` (geprüft hinter der Wunsch-Sperre, Befund 11), entfällt der Eintrag;
+  Zustand bzw. Einreihung und Event werden trotzdem geschrieben. Verglichen wird der Zeitpunkt, nicht die Zeichenkette.
 - *Event:* nach dem letzten Commit eines Kanals genau ein `wish.changed` über `IWishChangedPublisher` (K1 (i)); auch das
   Einreihen zählt, weil die Karte `removalQueuedAtUtc` zeigt.
 - *Fehler:* Ein Fehler an einem Wunsch rollt nur dessen Transaktion zurück, leert den Change-Tracker, wird gezählt und geloggt
@@ -197,6 +243,17 @@ daraus höchstens eine Logzeile.
 **2.5 Zeit und Sprache.** Alles nimmt `TimeProvider`; Zeiten sind UTC-`DateTime` wie im Bestand. Kommentare, Logs, Commits,
 DECISIONS englisch.
 
+**2.6 Schwellenänderung ist eine Entscheidung (T2b; Sol-P1-1).** Ändert `UpdateSettingsAsync` den Wert von
+`ProtectionThresholdPerDay` (ein, aus oder anderer Wert; verglichen wird der gerundete gespeicherte Wert), dann in derselben
+Transaktion und in dieser Reihenfolge: Kanalzeile sperren (wie heute), die Wünsche des Kanals im Zustand `active` nach `Id`
+aufsteigend sperren (`RowLocks.LockWishesByIdsAsync`), erst danach lesen; für jeden davon `DecisionVersion` + 1 und
+`RemovalQueuedAtUtc`, `RemovalQueuedVersion` leeren; Einstellung, Audit `wish.settings` und Wünsche in einem Commit; ein
+`wish.changed` wie bisher. Ändert sich die Schwelle nicht (nur Standardlaufzeit oder Vorlauf), fasst der Befehl keinen Wunsch an.
+Daraus folgen beide Reihenfolgen: Hält der Lauf die Wunsch-Zeile zuerst, wartet die Einstellung und verwirft danach, was der Lauf
+eingereiht hat, und der nächste Lauf bewertet mit der neuen Schwelle. Hält die Einstellung die Wunsch-Zeile zuerst, wartet der
+Lauf und liest hinter der Sperre die schon bestätigte neue Schwelle. Vorgelegte Wünsche fasst der Befehl nicht an (vor K4 trägt
+keiner eine Einreihung; K4 entscheidet für `bot-remove`).
+
 ## 3. Tasks
 
 Je Task ein Subagent mit frischem Kontext, strikt nacheinander (Builds teilen `obj/`). Jeder Task endet mit grünem
@@ -209,6 +266,7 @@ absetzen, keine Ketten mit `cd … &&` (Erfahrung aus dem K1-Lauf). Nie `docker 
 |---|---|---|
 | T1 | Verträge in Core: Policy, Schnittstellen, Option, Konstanten | sonnet |
 | T2 | Gemeinsame Nutzungsabfrage (reines Umziehen) | sonnet |
+| T2b | Schwellenänderung verwirft Einreihungen (Änderung an `UpdateSettingsAsync`) | opus |
 | T3 | `WishExpiryService` samt Standard-Verfügbarkeit und Registrierung | opus |
 | T4 | `WishExpiryWorker`, Registrierung, Compose | sonnet |
 | T5 | Doku | sonnet |
@@ -221,26 +279,30 @@ absetzen, keine Ketten mit `cd … &&` (Erfahrung aus dem K1-Lauf). Nie `docker 
 - **Dateien (neu, `src/EmotePurge.Core/Services/`):** `WishExpiryPolicy.cs`, `IWishExpiryService.cs` (mit der Zusammenfassung
   aus 2.4), `IWishBotAvailability.cs`. **Geändert:** `Services/WishOptions.cs`, `Entities/AuditLogEntry.cs` (Konstante
   `wish.due` bei den übrigen `wish.*`, mit dem Hinweis, dass der Worker sie unter `AuditActor.System` schreibt),
-  `Entities/WishStatus.cs` (in `WishLimits`: die 24 Stunden aus 2.1), `docs/DECISIONS.md`.
+  `Entities/WishStatus.cs` (in `WishLimits`: die 24 Stunden aus 2.1; in `WishStatusReason`: `unconfirmed_start` samt Aufnahme in
+  die Liste `Presented`, Befund 21), `tests/…/Unit/WishTransitionsTests.cs` (der neue Grund in der Matrix), `docs/DECISIONS.md`.
 - **Verträge:** Policy nach 2.2. `IWishBotAvailability`: eine asynchrone Frage „global verfügbar?“ mit Abbruch-Token, sonst
   nichts (Befund 13). `IWishExpiryService`: eine Methode `RunAsync(CancellationToken)` mit Ergebnis nach 2.4.
   `WishOptions.ExpiryIntervalMinutes`: Default 15, `Validate()` wirft außerhalb 1 bis 1440 mit einer Meldung, die den
   Konfigurationsschlüssel nennt (die Methode ist heute leer, `WishOptions.cs:23-25`).
-- **Grenzfälle:** Reihenfolge der Zeilen (ein Fall, der 2 und 5 erfüllt, ergibt `not_bot_owned`; einer, der 3 und 4 erfüllt,
-  `bot_unavailable`; einer, der 4 und 5 erfüllt, `coverage_gap`). Mittel exakt gleich der Schwelle ist geschützt. Schutz aus
-  bei Lücke und hoher Nutzung → einreihen (AK25, dritter Teil). Ausgesetzter Kanal mit Eigentum → `bot_unavailable`, ohne
-  Eigentum → `not_bot_owned`. Zurückhalten: maßgeblicher Start nie; vorläufig mit Sync vor 1 Stunde und Ablauf vor 1 Minute ja;
-  Sync vor 25 Stunden nein; `LastSyncedAtUtc` leer nein; Sync frisch, aber Ablauf vor 25 Stunden nein; beide Grenzen exakt bei
-  24 Stunden als eigene Fälle festlegen und im Test benennen.
+- **Grenzfälle:** Reihenfolge der Zeilen (ein Fall, der 2 und 6 erfüllt, ergibt `not_bot_owned`; einer, der 3 und 5 erfüllt,
+  `bot_unavailable`; einer, der 4 und 6 erfüllt, `unconfirmed_start`; einer, der 5 und 6 erfüllt, `coverage_gap`). Mittel exakt
+  gleich der Schwelle ist geschützt. Schutz aus bei Lücke und hoher Nutzung → einreihen (AK25, dritter Teil). Ausgesetzter Kanal
+  mit Eigentum → `bot_unavailable`, ohne Eigentum → `not_bot_owned`. **Vorläufiger Start wird nie eingereiht:** über alle
+  Kombinationen der übrigen Fakten ist das Ergebnis bei `StartsAtAuthoritative = false` nie „einreihen“ (als Eigenschaft über
+  die volle Kombinatorik geprüft, nicht nur an einem Beispiel); im manuellen Modus bleibt es `expired`. Zurückhalten:
+  maßgeblicher Start nie; vorläufig mit Sync vor 1 Stunde und Ablauf vor 1 Minute ja; Sync vor 25 Stunden nein;
+  `LastSyncedAtUtc` leer nein; Sync frisch, aber Ablauf vor 25 Stunden nein; beide Grenzen exakt bei 24 Stunden als eigene Fälle
+  festlegen und im Test benennen.
 - **AKs:** AK22; reiner Teil von AK23, AK25, AK26.
-- **Tests:** `Infrastructure.Tests/Unit` (dort liegen die reinen Wunsch-Tests aus K1), tabellengetrieben: sechs Zeilen plus
+- **Tests:** `Infrastructure.Tests/Unit` (dort liegen die reinen Wunsch-Tests aus K1), tabellengetrieben: sieben Zeilen plus
   Reihenfolgefälle; Zurückhalte-Regel; „braucht Nutzung“ für jede Kombination; `Decide` ohne Bewertung, wo sie nötig ist, wirft.
   AK23 als Kette aus `WishUsageWindow` und Policy: Laufzeit 30 Tage → Fenster genau 7 Tage; 2 Tage → 2 Tage, Mittel = Summe
   durch 2; 1 Tag → 24 Stunden, gültig; 23 Stunden → Lücke. Vorhandene Fälle in `WishUsageWindowTests`
   (`WishSlotMatcherTests.cs:206-262`) nicht doppeln, nur ergänzen. `WishOptionsTests`: Default 15; 0 und 1441 werfen; 1 und 1440
   gelten. `CoreAssemblyReferenceTests` bleibt grün.
-- **Fertig:** Tests grün; DECISIONS-Eintrag angelegt mit: Tabelle der sechs Zeilen und Befund 1; begrenzter Aufschub (Befund 3,
-  4) als Abweichung von der Spec; `DecisionVersion` bleibt (Befund 9); Schnittstelle nur global (Befund 13).
+- **Fertig:** Tests grün; DECISIONS-Eintrag angelegt mit: Tabelle der sieben Zeilen und Befund 1; begrenzter Aufschub und „vorläufig wird nie eingereiht“ samt neuem Grund (Befund 3,
+  4, 21) als Betreiberentscheidung vom 2026-11-18; `DecisionVersion` bleibt (Befund 9); Schnittstelle nur global (Befund 13).
 - **Commit:** `feat: add wish expiry policy and contracts`
 
 ### T2: Gemeinsame Nutzungsabfrage
@@ -260,6 +322,36 @@ absetzen, keine Ketten mit `cd … &&` (Erfahrung aus dem K1-Lauf). Nie `docker 
   **gleichzeitig aktiven** Aliasen mit 10 und 20 Nutzungen je Tag ergibt 30 je Tag.
 - **Fertig:** Tests grün; kein Diff an bestehenden Testerwartungen.
 - **Commit:** `refactor: share the wish usage window read`
+
+### T2b: Schwellenänderung verwirft Einreihungen
+
+- **Ziel:** Eine Änderung des Schutzes ist gegen Fälligkeitsentscheidungen serialisiert und entwertet, was nach dem alten Stand
+  eingereiht wurde (Befund 20, Vertrag 2.6). Liegt vor T3, damit der Lauf von Anfang an gegen den richtigen Vertrag gebaut wird.
+- **Dateien:** `src/EmotePurge.Infrastructure/Services/WishService.cs` (`UpdateSettingsAsync`, `:45-98`),
+  `tests/…/Integration/WishServiceTests.cs` bzw. eine neue Teildatei daneben, `docs/DECISIONS.md` (Absatz im K2-Eintrag; der
+  K1-Absatz (h) zu den Sperren bleibt unangetastet, der neue verweist auf ihn).
+- **Verträge:** 2.6. Der Vergleich „Schwelle geändert“ läuft auf dem gerundeten Wert gegen den gespeicherten; eine fehlende
+  Einstellungszeile zählt als „Schutz aus“. `wish.settings` bleibt der einzige Audit-Eintrag des Befehls (kein Eintrag je
+  Wunsch); die Zahl der entwerteten Einreihungen steht nicht in den Details **[E]** (das Feld wäre bis K4 immer 0).
+- **Grenzfälle:** Kanal ohne aktive Wünsche (keine Wunsch-Sperre, Verhalten wie heute); gleiche Schwelle erneut gesetzt (kein
+  Wunsch angefasst, `DecisionVersion` unverändert); Schutz von aus auf an, von an auf aus, anderer Wert (jeweils angefasst);
+  nur `active` wird angefasst, `presented`, `approved` und beendete Wünsche nicht; Wünsche anderer Kanäle nie.
+- **AKs:** keins der Spec direkt; Voraussetzung dafür, dass AK25 („Schutz an → vorlegen“) unter Nebenläufigkeit gilt.
+- **Tests:** `Infrastructure.Tests/Integration`, deterministisch über eine fremde Transaktion, die eine Sperre hält, und die
+  Beobachtung „der Befehl ist noch nicht fertig“ vor dem Freigeben (Vorbild: die Wettlauf-Tests am Index aus dem K1-Lauf, die
+  nachweislich am Schlüssel blockieren; kein Schlafen auf Zeit als Beweis):
+  1. Schwelle geändert, zwei aktive Wünsche, einer davon eingereiht (Felder direkt gesetzt) → beide `DecisionVersion` + 1,
+     Einreihung leer, eine neue Einstellung, ein Audit, ein Event, alles oder nichts (ein erzwungener Fehler rollt alles zurück).
+  2. Schwelle unverändert → kein Wunsch geschrieben.
+  3. **Reihenfolge A (Wunsch-Sperre zuerst gehalten):** Eine fremde Transaktion hält die Zeile eines aktiven Wunsches (sie
+     steht für den Lauf) und reiht ihn ein; `UpdateSettingsAsync` blockiert an der Wunsch-Zeile, nicht an der Kanalzeile; nach
+     dem Commit der fremden Transaktion läuft der Befehl durch und die Einreihung ist leer.
+  4. **Reihenfolge B (Kanal zuerst):** Eine fremde Transaktion hält die Kanalzeile; der Befehl wartet dort und hat noch keine
+     Wunsch-Zeile gesperrt (eine dritte Verbindung kann den Wunsch sperren und freigeben). Belegt „Kanal vor Wunsch“.
+  5. Kein Deadlock mit dem Abgleich: Abgleich und Befehl gleichzeitig auf demselben Kanal enden beide ohne `40P01` (beide
+     nehmen Kanal vor Wunsch).
+- **Fertig:** Tests grün, die bestehenden Einstellungs-Tests unverändert grün.
+- **Commit:** `fix: let a protection change drop queued wish removals`
 
 ### T3: `WishExpiryService`
 
@@ -298,7 +390,7 @@ absetzen, keine Ketten mit `cd … &&` (Erfahrung aus dem K1-Lauf). Nie `docker 
   3. zweiter Durchlauf über denselben Stand → keine Zeile geändert (alle Spalten verglichen), kein Event, kein Audit (AK27).
   4. vorlegen, mit dem echten `WishService` verlängern, Uhr hinter den neuen Ablauf stellen, Durchlauf → zweiter `wish.due`
      mit dem neuen `expiresAtUtc` (AK27; zeigt zugleich, dass ein vorgelegter Wunsch verlängerbar bleibt, Befund 8).
-  5. Zeile 6: Bot-Modus, Eigentum, verfügbar, Schutz aus → `active` bleibt, `RemovalQueuedAtUtc` = Laufzeitpunkt,
+  5. Zeile 7: Bot-Modus, Eigentum, verfügbar, maßgeblicher Start, Schutz aus → `active` bleibt, `RemovalQueuedAtUtc` = Laufzeitpunkt,
      `RemovalQueuedVersion` = `DecisionVersion`, Audit `queued`, ein Event; zweiter Durchlauf: beide Felder unverändert, kein
      Audit (AK27).
   6. eingereiht, dann `extend` aus K1 → Einreihung leer (E25); nach dem neuen Ablauf reiht der Lauf mit der neuen Version ein.
@@ -306,11 +398,14 @@ absetzen, keine Ketten mit `cd … &&` (Erfahrung aus dem K1-Lauf). Nie `docker 
      gesetzt → `coverage_gap`; Schutz aus, sonst gleich → eingereiht.
   8. AK24: zwei Aliase mit 10 und 20 je Tag, Schwelle 30 → `protected`; Schwelle knapp darüber → eingereiht.
   9. AK23 an der Datenbank: Laufzeit 2 Tage, Summe durch 2 gegen die Schwelle; 23 Stunden im Set → `coverage_gap`.
-  10. Zeile 2 vor Zeile 5: kein Eigentum bei Nutzung über der Schwelle → `not_bot_owned`.
+  10. Zeile 2 vor Zeile 6: kein Eigentum bei Nutzung über der Schwelle → `not_bot_owned`.
   11. Zeile 3: Standard-Verfügbarkeit (nie) → `bot_unavailable`; verfügbar, aber `BotSuspendedReason` gesetzt →
       `bot_unavailable`.
-  12. AK26: vorläufiger Start, Sync vor 1 Stunde → nichts geschrieben, Zähler „zurückgehalten“; Sync vor 25 Stunden →
-      vorgelegt; `LastSyncedAtUtc` leer → vorgelegt; Sync frisch, Ablauf vor 25 Stunden → vorgelegt (Befund 3).
+  12. AK26: vorläufiger Start, Sync vor 1 Stunde, Ablauf vor 1 Minute → nichts geschrieben, Zähler „zurückgehalten“. Danach
+      fällig, je einmal im manuellen Modus und im Bot-Modus (Eigentum, Bot verfügbar, **Schutz aus**): Sync vor 25 Stunden;
+      `LastSyncedAtUtc` leer; Sync frisch, Ablauf vor 25 Stunden. Erwartet manuell `presented` (`expired`), im Bot-Modus
+      `presented` (`unconfirmed_start`) mit `RemovalQueuedAtUtc` leer, Audit-`outcome` gleich dem Grund. Gegenprobe: derselbe
+      Bot-Fall mit maßgeblichem Start wird eingereiht.
   13. Abgleich zuerst: `active`, abgelaufen, Slot archiviert, mit dem **echten** Abgleichsdienst → `removed_externally`, kein
       `wish.due`.
   14. Abgleich scheitert für Kanal A (Double wirft): Kanal B läuft normal, der fällige Wunsch in A wird trotzdem vorgelegt, die
@@ -320,12 +415,24 @@ absetzen, keine Ketten mit `cd … &&` (Erfahrung aus dem K1-Lauf). Nie `docker 
   16. Zwei fällige Wünsche in einem Kanal → ein Event; in zwei Kanälen → zwei.
   17. Nicht gewählt werden: `presented`, eingereihte, beendete Wünsche und `active` ohne Ablauf.
   18. Die Verfügbarkeit wird im rein manuellen Durchlauf nie gefragt und sonst höchstens einmal.
+  19. **Ein `wish.due` je Ablauf (Sol-P2-2), mit den echten Schreibern:** Wunsch im Bot-Modus mit Eigentum wird eingereiht (ein
+      `wish.due`, `queued`); der Slot wird umbenannt und der **echte** Abgleich läuft (`EndOwnership`: Eigentum weg, Einreihung
+      leer, `DecisionVersion` + 1, weiter `active`); nächster Durchlauf → `presented` (`not_bot_owned`), ein `wish.changed`, und
+      im Audit-Log steht weiterhin **genau ein** `wish.due` für diesen Wunsch. Danach `extend`, Uhr hinter den neuen Ablauf,
+      Durchlauf → der zweite Eintrag mit dem neuen `expiresAtUtc`. Dazu ein Fall mit einem fremden `wish.due` desselben Wunsches
+      zu einem **anderen** Ablauf: der unterdrückt nichts.
+  20. **Schwelle gegen Lauf, Reihenfolge A (Sol-P1-1):** Der Lauf reiht bei ausgeschaltetem Schutz ein; danach setzt der echte
+      `UpdateSettingsAsync` eine Schwelle unter der Nutzung → Einreihung leer, `DecisionVersion` + 1; nächster Durchlauf →
+      `presented` (`protected`), kein zweiter `wish.due` (Fall 19).
+  21. **Reihenfolge B:** Eine fremde Transaktion hält die Wunsch-Zeile und hat die Schwelle geändert, aber nicht bestätigt (sie
+      steht für den Einstellungsbefehl); der Lauf wartet an der Zeile; nach dem Commit entscheidet er mit der neuen Schwelle
+      (`protected`), es gibt zu keinem Zeitpunkt eine Einreihung. Der Lauf selbst ändert in keinem Fall `DecisionVersion`.
   Dazu in `Infrastructure.Tests/Unit/WishRegistrationTests`: Dienst und Verfügbarkeit lösen sich mit und ohne Schalter auf, die
   Standard-Verfügbarkeit sagt nein.
 - **Fertig:** Tests grün; `dotnet test` für `Infrastructure.Tests` gesamt grün; DECISIONS ergänzt um: je Wunsch eine Transaktion
   mit Zeilensperre, keine Advisory- und keine Kanalsperre (Befund 12); Kanalauswahl für den Abgleich (Befund 17) und Weiterlaufen
   nach einem gescheiterten Abgleich; Details von `wish.due` (Befund 10) und der zweite Eintrag nach verworfener Einreihung
-  (Befund 11); Nutzung nur bei Bedarf (Befund 16).
+  (Befund 11, genau einer je Ablauf); Nutzung nur bei Bedarf (Befund 16).
 - **Commit:** `feat: add wish expiry run`
 
 ### T4: `WishExpiryWorker`
@@ -361,27 +468,52 @@ absetzen, keine Ketten mit `cd … &&` (Erfahrung aus dem K1-Lauf). Nie `docker 
 
 - **Ziel:** Was ein Betreiber und die nächste Sitzung wissen müssen.
 - **Dateien:** `docs/Operations.md` (englisch, Abschnitt „Wish emotes“: der Ablauf-Lauf in drei Sätzen, die Variable, dass der
-  Lauf nie nach 7TV schreibt, der begrenzte Aufschub bei vorläufigem Start, RR1 als bekannte Grenze; dazu die Auswertung der
-  Pilot-Messgröße (a) aus Spec 13 als Abfrage gegen das Audit-Log: Nenner `wish.due`, zusammengefasst je `wishId` und
-  `expiresAtUtc`, Zähler die Folgeeinträge `wish.extend`, `wish.keep`, `wish.remove`, `wish.close` binnen 24 Stunden;
-  `wish.botRemove` trägt K4 nach), `docs/Architectur.md` (`:86`: fünfzehn, `WishExpiryWorker` in der Liste), `CLAUDE.md`
-  (deutsch: Worker-Liste „fünfzehn“ mit einem Satz zum neuen Dienst, Zeile „Wunsch-Emotes“ im Umsetzungsstand um K2 ergänzt,
-  Branch-Name aktuell), `docs/Feature-Ideen-2026-08-01.md` (Statuszeile A18 oben in der Tabelle: K2 dazu), `docs/DECISIONS.md`
+  Lauf nie nach 7TV schreibt, der begrenzte Aufschub bei vorläufigem Start samt „wird vorgelegt, nie eingereiht“, RR1 als
+  bekannte Grenze, dass eine Schwellenänderung Einreihungen verwirft; dazu die Auswertung der Pilot-Messgröße (a), siehe
+  unten), `docs/Architectur.md` (`:86`: fünfzehn, `WishExpiryWorker` in der Liste), `CLAUDE.md` (deutsch: Worker-Liste
+  „fünfzehn“ mit einem Satz zum neuen Dienst, Zeile „Wunsch-Emotes“ im Umsetzungsstand um K2 ergänzt, Branch-Name aktuell),
+  `docs/Feature-Ideen-2026-08-01.md` (Statuszeile A18 oben in der Tabelle: K2 dazu), `docs/DECISIONS.md`
   (`**Betrifft:**`-Zeile vollständig, auch die Testdateien).
+- **Vertrag der Messgröße (a) (Sol-P2-4; Wortlaut wie Spec 13 nach dieser Revision):**
+  - *Fälligkeit* = ein Paar (`wishId`, `expiresAtUtc`) aus den Details von `wish.due`. Mehrere Einträge zum selben Paar zählen
+    einmal (nach Befund 11 gibt es sie nicht mehr; die Abfrage fasst trotzdem zusammen, damit ein Altbestand nichts verfälscht).
+  - *Kohorte* = Fälligkeiten, deren `expiresAtUtc` im Beobachtungszeitraum liegt (nicht der Zeitpunkt des Eintrags).
+  - *Reife* = `expiresAtUtc` plus 24 Stunden liegt nicht nach dem Auswertungszeitpunkt. Unreife Fälligkeiten gehören weder in
+    den Nenner noch in den Zähler.
+  - *Erledigt* = zum `wishId` gibt es einen Eintrag `wish.extend`, `wish.keep`, `wish.remove` oder `wish.close` (K4 trägt
+    `wish.botRemove` nach) mit Zeitpunkt nach `expiresAtUtc` und höchstens 24 Stunden danach. Die Frist läuft ab
+    `expiresAtUtc`, nie ab dem Zeitpunkt von `wish.due`.
+  - *Verspätet festgestellt* = der früheste `wish.due` der Fälligkeit liegt mehr als 24 Stunden nach `expiresAtUtc`. Solche
+    Fälligkeiten bleiben im Nenner, können nicht erledigt sein und werden als eigene Zahl ausgewiesen, damit ein Worker-Ausfall
+    von säumigen Verwaltern unterscheidbar ist.
+  - *Ausgabe:* Nenner, Zähler, Quote, Zahl der verspätet festgestellten, und die Liste der Nicht-Treffer (`wishId`,
+    `expiresAtUtc`) für die Handzählung extern entfernter Einträge (Spec 13).
+  - *Bekannte Grenze, im Text nennen:* Eine Entscheidung zwischen Ablauf und dem nächsten Takt (höchstens 15 Minuten) erzeugt
+    gar kein `wish.due`; diese Fälligkeit fehlt im Nenner.
 - **AKs:** AK29 (Doku-Teil), Vorbereitung AK31.
-- **Tests:** keine. `grep` nach „fourteen“ und „vierzehn“ außerhalb von `docs/plans`, `docs/superpowers`, `docs/nachtlaeufe` und
+- **Prüffälle der Abfrage (Pflicht, Ergebnis in die Nachtnotiz):** gegen eine eigene Wegwerf-Datenbank im Dev-Postgres-Container
+  (wie in Abschnitt 5, nie die geteilte Dev-Datenbank) mit von Hand gesäten Audit-Zeilen, Auswertungszeitpunkt fest gewählt:
+  (1) rechtzeitig: `wish.due` 10 Minuten nach Ablauf, `wish.keep` 3 Stunden nach Ablauf → Treffer; (2) verspätete
+  Feststellung: `wish.due` 48 Stunden nach Ablauf, `wish.extend` 49 Stunden nach Ablauf → **kein** Treffer, zählt als verspätet
+  festgestellt; (3) knapp daneben: Entscheidung 24 Stunden und 1 Minute nach Ablauf → kein Treffer; exakt 24 Stunden → Treffer;
+  (4) unreif: Ablauf vor 5 Stunden → weder Nenner noch Zähler; (5) doppelt: zwei `wish.due` zum selben Paar → Nenner 1;
+  (6) zwei Fälligkeiten desselben Wunsches (verlängert, erneut abgelaufen) → Nenner 2, jede mit eigener Frist, die Verlängerung
+  der ersten zählt nicht als Erledigung der zweiten; (7) Entscheidung **vor** dem Ablauf (altes `wish.extend`) → kein Treffer;
+  (8) Ablauf außerhalb des Beobachtungszeitraums, Eintrag innerhalb → nicht in der Kohorte. Erwartet insgesamt: die Zahlen, die
+  sich aus dieser Liste ergeben, vorab im Task-Bericht ausgerechnet und dann gegen die Abfrage gelesen.
+- **Tests:** keine automatisierten (die Abfrage ist Betriebsdoku, kein Produktivcode). `grep` nach „fourteen“ und „vierzehn“ außerhalb von `docs/plans`, `docs/superpowers`, `docs/nachtlaeufe` und
   alten DECISIONS-Einträgen findet nichts mehr.
-- **Fertig:** Die Abfrage aus Operations ist einmal gegen eine lokale Datenbank mit Testdaten gelaufen (in T6 gegenlesen).
+- **Fertig:** Alle acht Prüffälle liefern die vorab ausgerechneten Zahlen; die Wegwerf-Datenbank ist entfernt.
 - **Commit:** `docs: document the wish expiry run`
 
 ## 4. AK-Abdeckung
 
 | AK | Task | AK | Task |
 |---|---|---|---|
-| AK22 | T1 (Policy, Reihenfolge), T3 (Fälle 10, 11) | AK27 | T3 (Fälle 3 bis 6, 15) |
+| AK22 | T1 (Policy, Reihenfolge), T3 (Fälle 10, 11) | AK27 | T3 (Fälle 3 bis 6, 15, 19) |
 | AK23 | T1 (Rechnung), T3 (Fall 9) | AK28 | T4 |
 | AK24 | T2 (Summe), T3 (Fall 8) | AK29 | T4, T5 |
-| AK25 | T1 (Regel), T3 (Fall 7) | AK30 | T6 |
+| AK25 | T1 (Regel), T2b (Nebenläufigkeit), T3 (Fälle 7, 20, 21) | AK30 | T6 |
 | AK26 | T1 (Regel), T3 (Fall 12) | AK31 | Pilot nach Freigabe 1, kein Merge-Tor; T5 liefert die Auswertung |
 
 ## 5. Live-Verifikation (T6; Regel 16, AK30)
@@ -431,7 +563,7 @@ absetzen, keine Ketten mit `cd … &&` (Erfahrung aus dem K1-Lauf). Nie `docker 
    7TV-Set wurde nicht angefasst; das im Protokoll ausdrücklich festhalten. Protokoll nach
    `docs/nachtlaeufe/live-484-<Datum>.md`, ohne Kanal- und Kontonamen, eigener `docs:`-Commit.
 
-**Live nicht herstellbar, nur durch Tests belegt (im Protokoll so benennen):** die Zeilen 2 bis 6 der Tabelle (vor K4 gibt es
+**Live nicht herstellbar, nur durch Tests belegt (im Protokoll so benennen):** die Zeilen 2 bis 7 der Tabelle (vor K4 gibt es
 weder einen Weg, den Bot-Modus einzuschalten, noch einen verfügbaren Bot); der Aufschub bei vorläufigem Start (das vorläufige
 Datum hält live nur bis zum nächsten Vollsync, rund eine Minute); zwei gleichzeitige Läufe; AK31 (Pilot nach Freigabe 1).
 
@@ -447,8 +579,9 @@ Datum hält live nur bis zum nächsten Vollsync, rund eine Minute); zwei gleichz
 6. **Nicht im Nachtlauf, gehört dem Orchestrator und dem Betreiber:** Rebase auf `main` nach dem Merge von K1 (falls noch nicht
    geschehen), `/codex:review --model gpt-6.1-sol` einmal über den fertigen Branch und das Ergebnis unverändert vorlegen,
    adversariale Prüfung dieses Plans vor dem Lauf, Push, PR, Merge.
-7. PR-Text (englisch) nennt: keine Migration; die Abweichungen von der Spec (begrenzter Aufschub, `expiresAtUtc` im Audit,
-   Worker-Tests); dass die Zeilen 2 bis 6 bis K4 nur getestet, nicht live erreichbar sind; den neuen Audit-Typ für K3; die
+7. PR-Text (englisch) nennt: keine Migration; die Änderungen an der Spec (begrenzter Aufschub, neue Zeile 4 mit
+   `unconfirmed_start`, `expiresAtUtc` im Audit, Messgröße (a)) und die Abweichung im Testplan (Worker-Tests); die
+   Verhaltensänderung an `PUT …/wishes/settings` (Schwellenänderung verwirft Einreihungen); dass die Zeilen 2 bis 7 bis K4 nur getestet, nicht live erreichbar sind; den neuen Audit-Typ für K3; die
    Übergabepunkte an K4 aus 1.2.
 
 **Migration: keine.** K2 ändert kein Entity und keinen Index; die Spalten (`RemovalQueuedAtUtc`, `RemovalQueuedVersion`,
@@ -465,17 +598,18 @@ den Default 15. Rollback: Schalter aus genügt; ein älteres Image ignoriert die
 | # | Risiko | Umgang |
 |---|---|---|
 | R1 | Worker-Ausfälle im Fenster bleiben unerkannt; ein beliebtes Emote kann trotz Schutz eingereiht werden (RR1 der Spec) | [B], akzeptiert; wirkt erst ab K4; Operations nennt es |
-| R2 | Der begrenzte Aufschub (Befund 3) weicht vom Wortlaut der Spec ab; ein Wunsch auf einem undatierten Slot wird bis zu 24 Stunden später vorgelegt als sein Ablauf | [E], in DECISIONS; ohne die Grenze liefe er nie ab |
-| R3 | Zweiter `wish.due` zur selben Fälligkeit nach verworfener Einreihung (Befund 11) verfälscht den Nenner der Pilot-Messung | `expiresAtUtc` im Audit, Abfrage fasst zusammen; erst ab K4 möglich, K4 liest diesen Punkt |
+| R2 | Ein Wunsch auf einem undatierten Slot wird bis zu 24 Stunden nach seinem Ablauf vorgelegt, und im Bot-Modus muss ihn dann ein Mensch entscheiden (`unconfirmed_start`) | [B] L2; sichere Richtung; die Pilot-Auswertung weist verspätete Feststellungen eigens aus |
+| R3 | Die Suche nach einem vorhandenen `wish.due` (Befund 11) läuft ohne eigenen Index über das Audit-Log | begrenzt über `OccurredAtUtc` ab dem Ablauf; nur je fälligem Wunsch; bei Pilotgröße unkritisch, kein Index gebaut **[E]** |
 | R4 | Der Abgleich je Takt für jeden Kanal mit Wünschen verlängert den Lauf | eine Vorprüf-Abfrage je Kanal, nacheinander; höchstens 80 aktive Kanäle; Fehler isoliert |
 | R5 | `wish.due` erscheint im Aktivitäts-Feed unübersetzt, bis K3 es übersetzt | nur lokal sichtbar (Schalter auf Prod aus); im PR benannt |
-| R6 | Schutz und Lücke sind vor K4 in Produktion ohne Wirkung; ein Fehler in den Zeilen 2 bis 6 fiele erst mit K4 live auf | vollständige Tabellen- und Datenbanktests (T1, T3); Sol-Review mit Blick auf Reihenfolge und Fensterrechnung; K4 wiederholt die Live-Probe im Bot-Modus |
+| R6 | Schutz und Lücke sind vor K4 in Produktion ohne Wirkung; ein Fehler in den Zeilen 2 bis 7 fiele erst mit K4 live auf | vollständige Tabellen- und Datenbanktests (T1, T3); Sol-Review mit Blick auf Reihenfolge und Fensterrechnung; K4 wiederholt die Live-Probe im Bot-Modus |
 | R7 | Kein Limit je Durchlauf: sehr viele gleichzeitig fällige Wünsche (etwa nach einem langen Worker-Ausfall) laufen in einem Takt | je Wunsch eine kurze Transaktion; bei Pilotgröße unkritisch; kein Limit gebaut **[E]** |
-| R8 | Einstellungen ändern sich zwischen Lesen und Schreiben eines Wunsches (ab K4: Bot-Modus wird abgeschaltet) | gelesen hinter der Zeilensperre des Wunsches; den Rest fängt die Prüfung des Bots unter Sperre (E25) |
+| R8 | Eine Schwellenänderung schreibt jede aktive Wunsch-Zeile des Kanals und wartet auf einen gerade laufenden Lauf oder Abgleich | wenige Zeilen je Kanal, Sperren nur für die Dauer einer kurzen Transaktion; Reihenfolge Kanal vor Wunsch wie überall (2.6, T2b Fall 5). Für den Bot-Modus-Schalter zieht K4 nach |
 | R9 | `coverage-local` ist bei der chirurgischen Änderung in `WishService.cs` unscharf | der Umzug (T2) verschiebt gedeckte Zeilen in eine neue, durch die Detail-Tests gedeckte Datei |
-| R10 | Die Rückkehr eines extern entfernten Wunsches kurz vor Ablauf verkürzt die echte Zeit im Set, ohne dass das Fenster es zeigt | Lesart L1 in Abschnitt 9; wirkt nur im Bot-Modus mit Schutz |
+| R10 | Die Rückkehr eines extern entfernten Wunsches kurz vor Ablauf verkürzt die echte Zeit im Set, ohne dass das Fenster es zeigt | [B] L1 (Abschnitt 9): Fenster ab Start des Wunsches; wirkt nur im Bot-Modus mit Schutz |
 
-**Für den Sol-Review dieses Branches (Fokus):** Reihenfolge der sechs Zeilen und Trennung von Zeile 1 und 3; Idempotenz unter
+**Für den Sol-Review dieses Branches (Fokus):** Reihenfolge der sieben Zeilen und Trennung von Zeile 1 und 3; dass ein vorläufiger Start auf keinem Weg eingereiht wird; beide
+Sperr-Reihenfolgen zwischen Schwellenänderung und Lauf; genau ein `wish.due` je Ablauf; Idempotenz unter
 zwei gleichzeitigen Läufen und gegen Befehle aus K1; die Zurückhalte-Regel an ihren beiden 24-Stunden-Grenzen; dass der Lauf nie
 `ExpiresAtUtc` oder `DecisionVersion` schreibt; dass kein Log und kein Audit-Eintrag Alias, Namen oder Einlöser trägt.
 
@@ -486,29 +620,28 @@ zwei gleichzeitigen Läufen und gegen Befehle aus K1; die Zurückhalte-Regel an 
   kurze Laufzeiten ohne eigene Logik (T1, T3 Fall 9), Dateiliste samt Compose und `CLAUDE.md` (T4, T5). AK22 bis AK31 sind
   zugeordnet (Abschnitt 4).
 - Namen sind über die Tasks gleich: `WishExpiryPolicy`, `IWishExpiryService.RunAsync`, `WishExpiryService`, `WishExpiryWorker`,
-  `IWishBotAvailability`, `WishOptions.ExpiryIntervalMinutes`, `wish.due`, `WishUsageQueries`.
+  `IWishBotAvailability`, `WishOptions.ExpiryIntervalMinutes`, `wish.due`, `WishUsageQueries`, `unconfirmed_start`.
 - Lagen, die die Spec nicht ausbuchstabiert und die ein Test festhält: ausgesetzter Bot-Kanal (T1, T3 Fall 11), ewig vorläufiger
   Start (T1, T3 Fall 12), nie gesyncter Kanal (T1), zwei gleichzeitige Läufe (T3 Fall 15), gescheiterter Abgleich (T3 Fall 14),
-  Abgleich entfernt den Kandidaten (T3 Fall 13), erneutes Einreihen nach `extend` (T3 Fall 6), Worker mit Fehler im Durchlauf (T4).
+  Abgleich entfernt den Kandidaten (T3 Fall 13), erneutes Einreihen nach `extend` (T3 Fall 6), Neubewertung ohne zweiten Audit-Eintrag (T3 Fall 19), Schwellenänderung gegen
+  den Lauf in beiden Reihenfolgen (T2b, T3 Fälle 20, 21), Worker mit Fehler im Durchlauf (T4).
 - Kein Task braucht eine Rückfrage; was Betreiber oder Orchestrator braucht, steht in Abschnitt 6 Punkt 6 und in Abschnitt 9.
 
-## 9. Betreiberfragen vor dem Lauf und Lesarten
+## 9. Betreiberfragen vor dem Lauf und Betreiberentscheidungen
 
-**Blockierende Betreiberfragen: keine.** Alles Übrige ist als **[E]** entschieden und widerrufbar; der Lauf kann starten.
+**Offene Betreiberfragen: keine.** Alles Übrige ist als **[E]** entschieden und widerrufbar; der Lauf kann starten.
 
-**Vor dem Lauf zu erledigen (Orchestrator, keine Entscheidung):** Der Worktree steht auf einem Stand, der die K1-Commits enthält
-(`git log` zeigt `ec8d9697` oder dessen Entsprechung auf `main` nach dem Merge). Ein Rebase mitten im Lauf findet nicht statt.
+**Vor dem Lauf zu erledigen (Orchestrator, keine Entscheidung):** Der Worktree steht auf `origin/main` mit den K1-Commits
+(erledigt, Basis `ab4882ea`). Ein Rebase mitten im Lauf findet nicht statt.
 
-**Lesarten zur Bestätigung beim Review des Plans (blockieren nichts):**
+**Entschieden [B], 2026-11-18:**
 
-- **L1, „tatsächliche Zeit im Set“ bei Rückkehrern.** Der Betreiber hat das Fenster als min(7 Tage, tatsächliche Zeit im Set)
-  gefasst; Spec E4 und der K1-Code (`WishUsageWindow.WindowStart`) rechnen ab dem **Start des Wunsches**. Beides ist gleich,
-  außer bei einem Wunsch, der extern entfernt und binnen 6 Stunden wieder übernommen wurde: Er behält Start und Frist, war aber
-  bis zu 6 Stunden nicht im Set. Der Plan bleibt bei Spec und Code (Fenster ab Start; die Nutzung früherer Aufenthalte zählt mit,
-  die Abwesenheit senkt das Mittel geringfügig). Die Alternative wäre, das Fenster frühestens bei der aktuellen Slot-Generation
-  (`SlotAddedAtUtc`) beginnen zu lassen: Dann gälte eine Rückkehr weniger als 24 Stunden vor Ablauf als Lücke (vorlegen statt
-  entfernen), die Nutzung des früheren Aufenthalts fiele aber aus dem Mittel. Wirkung nur im Bot-Modus mit Schutz, also ab K4;
-  ein Widerspruch kostet eine Zeile in der Fensterfunktion und zwei Tests.
-- **L2, begrenzter Aufschub (Befund 3).** Die Spec kennt nur „Sync älter als 24 Stunden“. Der Plan ergänzt „oder Ablauf älter
-  als 24 Stunden“. Wer den Wortlaut der Spec will, streicht die zweite Bedingung in der Policy und nimmt in Kauf, dass ein Wunsch
-  auf einem undatierten Eintrag in einem gesunden Kanal nie abläuft.
+- **L1, Fenster ab Start des Wunsches: angenommen.** Das Bewertungsfenster rechnet wie Spec E4 und der K1-Code
+  (`WishUsageWindow.WindowStart`) ab dem Start des Wunsches, auch bei einem Rückkehrer, der bis zu 6 Stunden nicht im Set war.
+  Die Nutzung früherer Aufenthalte zählt mit, die Abwesenheit senkt das Mittel geringfügig. Keine Änderung an der
+  Fensterfunktion.
+- **L2, begrenzter Aufschub: angenommen, mit Präzisierung.** Kein Wunsch hängt dauerhaft: Ein vorläufiger Start hält die
+  Fälligkeit höchstens zurück, solange der Sync frisch ist und der Ablauf weniger als 24 Stunden zurückliegt. Danach wird der
+  Wunsch **vorgelegt** und **nie** zur Bot-Entfernung eingereiht (`unconfirmed_start` im Bot-Modus, `expired` im manuellen
+  Modus). Eingearbeitet in Befund 3 und 21, Vertrag 2.1 und 2.2, T1, T3 Fall 12, und in die Spec (K2-Text, Tabelle, AK22, AK25,
+  AK26, Gründe in Abschnitt 5).

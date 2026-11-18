@@ -144,8 +144,8 @@ oder der Bot noch nicht reagiert hat. **„Handlungsbedarf“** (Zähler) = `pen
 Gründe in `StatusReason` bei `presented`: `expired` (abgelaufen, manuell zu erledigen),
 `protected` (Schutzschwelle erreicht), `coverage_gap` (Zähllücke), `not_bot_owned` (Bot-Modus, aber
 kein Eigentum, schließt F12 ein), `ownership_lost` (frischer Read wich ab), `unconfirmed` (E11),
-`bot_unavailable` (Ausfall bei fälliger Entfernung), `already_in_set`, `repair_review` (nach
-Reparatur). Bei `failed`: `alias_conflict`, `set_full`, `emote_gone`, `not_editor`, `unknown`.
+`bot_unavailable` (Ausfall bei fälliger Entfernung), `unconfirmed_start` (Bot-Modus, Ablauf erreicht, aber
+der Start ist nur vorläufig; K2), `already_in_set`, `repair_review` (nach Reparatur). Bei `failed`: `alias_conflict`, `set_full`, `emote_gone`, `not_editor`, `unknown`.
 Bei `pending` nur als Hinweis für die Arbeitsliste, kein eigener Zustand: `ambiguous_match`,
 `already_in_set`, `already_running`, `unparsed`.
 
@@ -578,10 +578,16 @@ die Pilot-Liste (E8). Der eigene Kanal des Betreibers ist kein Affiliate und hat
   (c) nur zur Kenntnis: Anteil der erfassten Wünsche, die ohne Handgriff zugeordnet wurden, und
   Zahl der Erfassungslücken.
 - **Auswertung über das Audit-Log**, nicht über Felder der Wunsch-Zeile: `ExpiresAtUtc` wird beim
-  Verlängern überschrieben, `StatusChangedAtUtc` bei jedem Übergang. Nenner von (a) sind die
-  Einträge `wish.due` im Beobachtungszeitraum, deren Zeitpunkt mindestens 24 Stunden zurückliegt.
-  Zähler sind die davon, zu deren `wishId` binnen 24 Stunden danach ein Eintrag `wish.extend`,
-  `wish.keep`, `wish.remove`, `wish.botRemove` oder `wish.close` folgt. Ein außerhalb von Emote
+  Verlängern überschrieben, `StatusChangedAtUtc` bei jedem Übergang. Maßgeblich ist der im
+  Eintrag `wish.due` festgehaltene Ablauf (`expiresAtUtc` in den Details), nicht der Zeitpunkt des
+  Eintrags (Plan-484, Revision 1). Kohorte von (a) sind die Fälligkeiten, also die verschiedenen
+  Paare (`wishId`, `expiresAtUtc`) aus `wish.due`, deren `expiresAtUtc` im Beobachtungszeitraum
+  liegt und zum Auswertungszeitpunkt mindestens 24 Stunden zurückliegt (Reife). Zähler sind die
+  davon, zu deren `wishId` ein Eintrag `wish.extend`, `wish.keep`, `wish.remove`, `wish.botRemove`
+  oder `wish.close` mit Zeitpunkt nach `expiresAtUtc` und höchstens 24 Stunden danach vorliegt.
+  Stellt der Lauf eine Fälligkeit erst später als 24 Stunden nach dem Ablauf fest (Worker-Ausfall,
+  vorläufiger Start), zählt sie als nicht rechtzeitig erledigt und wird in der Auswertung eigens
+  ausgewiesen. Ein außerhalb von Emote
   Purge entfernter Eintrag hinterlässt keinen dieser Einträge; solche Fälle zählt der Betreiber aus
   der Liste der Nicht-Treffer von Hand als erledigt (erwartet: einzelne). (c) zählt `wish.autoLink`
   gegen die Zahl der erfassten Wünsche. Die Abfragen stehen im Operations-Runbook. Keine eigene
@@ -983,17 +989,26 @@ fällige Wünsche feststellen, Schutz und Lücke bewerten, vorlegen oder zur Bot
   (2) Für jeden `active` mit `ExpiresAtUtc` ≤ jetzt die Entscheidung aus der Tabelle unten. (3) Ein
   `wish.changed` je betroffenem Kanal. (4) Eine Logzeile mit reinen Zählwerten, nur wenn sich etwas
   geändert hat. Einen Zweig für offene Wünsche gibt es nicht (W1).
-- Ein Wunsch mit `StartsAtAuthoritative = false` wird nicht fällig gestellt, solange der Kanal
-  aktiv gesynct wird; ist der letzte erfolgreiche Sync älter als 24 Stunden, gilt das vorläufige
-  Datum.
+- Ein Wunsch mit `StartsAtAuthoritative = false` wird zurückgehalten (nicht fällig gestellt), solange
+  der letzte erfolgreiche Sync des Kanals jünger als 24 Stunden ist **und** der Ablauf weniger als
+  24 Stunden zurückliegt. Danach wird er fällig, damit kein Wunsch dauerhaft hängt (ein Eintrag ohne
+  Datum bei 7TV bliebe sonst für immer vorläufig). Ein vorläufiger Start führt aber **nie** zur
+  Einreihung einer Bot-Entfernung: Zeile 4 der Tabelle legt ihn vor (Betreiberentscheidung
+  2026-11-18, Plan-484 Revision 1).
+- Eine Änderung der Schutzschwelle (`PUT …/wishes/settings`) ist eine Entscheidung im Sinn von E25: Sie
+  sperrt nach der Kanalzeile die aktiven Wünsche des Kanals, erhöht deren `DecisionVersion` und leert
+  deren Einreihung im selben Commit. Der Lauf selbst erhöht `DecisionVersion` nie (Plan-484 Revision 1).
 - Jeder Übergang ist ein bedingtes Update; ein zweiter Lauf über denselben Stand ändert nichts.
   Der Lauf betrachtet nur Wünsche mit `Status = active`, `ExpiresAtUtc` ≤ jetzt **und
   `RemovalQueuedAtUtc IS NULL`**; ein schon eingereihter Wunsch wird weder erneut bewertet noch
   erneut eingereiht, seine Einreihung und ihre Version bleiben unverändert. Ein vorgelegter Wunsch
   ist nicht mehr `active` und fällt von selbst heraus.
 - Je Fälligkeit schreibt der Lauf genau einen Audit-Eintrag `wish.due` unter `AuditActor.System`
-  (Details `wishId`, `outcome`: der Grund der Vorlage oder `queued`), im selben Update wie die
-  Entscheidung. Nach einer Verlängerung ist die nächste Fälligkeit ein neuer Eintrag. Das ist die
+  (Details `wishId`, `outcome`: der Grund der Vorlage oder `queued`, und `expiresAtUtc`: der Ablauf,
+  auf den sich der Eintrag bezieht), im selben Update wie die
+  Entscheidung. Nach einer Verlängerung ist die nächste Fälligkeit ein neuer Eintrag. Wird derselbe
+  Ablauf erneut bewertet (eine Einreihung wurde ohne Verlängerung verworfen, etwa weil das Eigentum
+  durch Umbenennen endete), entsteht **kein** zweiter Eintrag. Das ist die
   Grundlage der Pilot-Messung (Abschnitt 13).
 
 Entscheidung bei Fälligkeit (`WishExpiryPolicy.Decide`, erste zutreffende Zeile gewinnt):
@@ -1003,19 +1018,20 @@ Entscheidung bei Fälligkeit (`WishExpiryPolicy.Decide`, erste zutreffende Zeile
 | 1 | Kanal im manuellen Modus | `presented` (`expired`) |
 | 2 | Bot-Modus, `BotOwned` falsch | `presented` (`not_bot_owned`) |
 | 3 | Bot ausgefallen (global oder `BotSuspendedReason`) | `presented` (`bot_unavailable`) |
-| 4 | Schutz an und Zähllücke nach E5 | `presented` (`coverage_gap`) |
-| 5 | Schutz an und Mittel je Tag (E4) ≥ Schwelle | `presented` (`protected`) |
-| 6 | sonst | `RemovalQueuedAtUtc = jetzt`, `RemovalQueuedVersion = DecisionVersion`, Zustand bleibt `active` |
+| 4 | Start nur vorläufig (`StartsAtAuthoritative = false`) | `presented` (`unconfirmed_start`) |
+| 5 | Schutz an und Zähllücke nach E5 | `presented` (`coverage_gap`) |
+| 6 | Schutz an und Mittel je Tag (E4) ≥ Schwelle | `presented` (`protected`) |
+| 7 | sonst | `RemovalQueuedAtUtc = jetzt`, `RemovalQueuedVersion = DecisionVersion`, Zustand bleibt `active` |
 
 Bis K4 liefert die Bot-Verfügbarkeit eine Schnittstelle `IWishBotAvailability` mit einer
-Standard-Implementierung „nie verfügbar“; Zeile 6 ist damit vor K4 nur im Unit-Test erreichbar.
+Standard-Implementierung „nie verfügbar“; Zeile 7 ist damit vor K4 nur im Test erreichbar.
 
 Kurze Laufzeiten brauchen keine eigene Logik: Bei 1 bis 6 Tagen ist das Fenster die ganze Zeit im
 Set (E4), bei 1 Tag genau 24 Stunden. Stellt ein Lauf die Fälligkeit bis zu 15 Minuten nach Ablauf
 fest, ist das Fenster entsprechend länger, nie kürzer.
 
 ## Akzeptanzkriterien
-22. **AK22** `WishExpiryPolicy` liefert für jede der sechs Zeilen das genannte Ergebnis; die
+22. **AK22** `WishExpiryPolicy` liefert für jede der sieben Zeilen das genannte Ergebnis; die
     Reihenfolge ist getestet (ein Fall, der Zeile 2 und 5 erfüllt, ergibt `not_bot_owned`).
 23. **AK23** Fenster E4: Laufzeit 30 Tage → Fenster genau 7 Tage; Laufzeit 2 Tage → Fenster 2 Tage,
     Mittel = Summe geteilt durch 2; Laufzeit 1 Tag → Fenster 24 h, gültig; ein Wunsch, der 23 h im
@@ -1024,9 +1040,12 @@ fest, ist das Fenster entsprechend länger, nie kürzer.
     zwei Aliasen mit 10 und 20 Nutzungen je Tag ergibt 30.
 25. **AK25** Lücke E5: `TrackedSince` einen Tag nach Fensterbeginn → `coverage_gap`, auch wenn die
     Nutzung über der Schwelle liegt; `DeactivatedAtUtc` gesetzt → `coverage_gap`; Schutz aus und
-    dieselbe Lage → Zeile 6.
-26. **AK26** Ein Wunsch mit vorläufigem Start wird bei frischem Sync nicht fällig gestellt, bei
-    einem letzten Sync vor 25 h schon.
+    dieselbe Lage → Zeile 7.
+26. **AK26** Ein Wunsch mit vorläufigem Start wird bei frischem Sync nicht fällig gestellt, solange
+    sein Ablauf weniger als 24 Stunden zurückliegt; bei einem letzten Sync vor 25 h oder einem
+    Ablauf vor 25 h wird er fällig. Im manuellen Modus ergibt das `presented` (`expired`); im
+    Bot-Modus mit Eigentum und verfügbarem Bot `presented` (`unconfirmed_start`), nie eine
+    Einreihung, auch bei ausgeschaltetem Schutz.
 27. **AK27** Zwei Durchläufe hintereinander über denselben Stand: der zweite ändert keine Zeile,
     veröffentlicht kein Event und schreibt keinen Audit-Eintrag. Ein eingereihter Wunsch behält
     `RemovalQueuedAtUtc` und `RemovalQueuedVersion` unverändert. Je Fälligkeit gibt es genau einen
