@@ -5,6 +5,7 @@ import {
   afterNextRender,
   Component,
   computed,
+  DestroyRef,
   effect,
   ElementRef,
   inject,
@@ -17,7 +18,7 @@ import {
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
-import { EMPTY, filter, interval, Observable, pairwise, switchMap } from 'rxjs';
+import { EMPTY, filter, interval, map, Observable, pairwise, switchMap } from 'rxjs';
 
 import { normalizeChannelName } from '../../core/channels/channel-name';
 import {
@@ -35,11 +36,13 @@ import {
   SEVEN_TV_RUN_KIND_LABEL_KEY,
   SevenTvRunArbiter,
 } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { WishAddService, WishAddState } from '../../core/wishes/wish-add.service';
 import { wishErrorKey } from '../../core/wishes/wish-error';
 import type { Wish, WishListView } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
 import { isConfirmedAction, isSevenTvAction, WishAction } from '../../core/wishes/wish-view';
 import { Pager } from '../../shared/pagination/pager';
+import { openSevenTvTokenPromptDialog } from '../../shared/seven-tv/seven-tv-token-prompt-dialog';
 import { Button } from '../../shared/ui/button';
 import { openConfirmDialog } from '../../shared/ui/confirm-dialog';
 import { EmptyState } from '../../shared/ui/empty-state';
@@ -52,6 +55,7 @@ import {
 } from './wish-adopt-dialog';
 import { openWishEditDialog } from './wish-edit-dialog';
 import { openWishEntryDialog, WishEntryDialogResult } from './wish-entry-dialog';
+import { wishAddOperationView, WishOperationView } from './wish-operation';
 import { openWishReAddDialog } from './wish-readd-dialog';
 import { WishRow } from './wish-row';
 import { WishUsageStore } from './wish-usage';
@@ -66,10 +70,11 @@ const CLOCK_TICK_MS = 60_000;
 
 /**
  * The actions this page carries out. The action table knows more; a row renders only what is in
- * here, so nothing offers an action that is not built yet: T8 adds `add7tv`, T9 `remove`. `adopt`,
- * `edit` and `reAdd` open a dialog instead of sending a command (T6, T7).
+ * here, so nothing offers an action that is not built yet: T9 adds `remove`. `adopt`, `edit` and
+ * `reAdd` open a dialog instead of sending a command (T6, T7); `add7tv` starts the wish add (T8).
  */
 const OFFERED_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
+  'add7tv',
   'extend',
   'retry',
   'keep',
@@ -337,6 +342,7 @@ type PinnedState =
           [knownStill]="isKnownStill(wish.sevenTvEmoteId)"
           [usage]="usageStore.blockFor(wish)"
           [trackUsage]="section !== 'ended'"
+          [operation]="operationOf(wish)"
           (seen)="usageStore.setVisible(wish, $event)"
           (action)="onAction(section, wish, $event)"
         />
@@ -358,6 +364,7 @@ export class ChannelWishesPage {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly lookup = inject(SevenTvEmoteLookup);
+  private readonly wishAdd = inject(WishAddService);
 
   protected readonly isCoarse = inject(PointerModeService).isCoarse;
 
@@ -397,6 +404,9 @@ export class ChannelWishesPage {
   /** The target already focused once; a reload must not pull the focus back. */
   private focusedTarget: number | null = null;
 
+  /** Set once the page is gone; a 7TV start that is still deciding then aborts (plan 2.5, 3b i). */
+  private destroyed = false;
+
   private readonly targetId = computed(() => parseWishId(this.wish()));
 
   /** The two lists loaded on entry have answered (with rows or an error). */
@@ -412,6 +422,12 @@ export class ChannelWishesPage {
     }
     return ids;
   });
+
+  /** Every wish on screen: the loaded lists and the pinned row. */
+  private readonly shownWishes = computed<Wish[]>(() => [
+    ...this.usageRows(),
+    ...(this.endedOpen() ? (this.ended.result()?.items ?? []) : []),
+  ]);
 
   /** The wishes on screen that may show usage: the two loaded lists and the pinned row. */
   private readonly usageRows = computed<Wish[]>(() => [
@@ -482,6 +498,15 @@ export class ChannelWishesPage {
       untracked(() => this.usageStore.sync(rows));
     });
 
+    // An add result says what it had to once its wish left `approved`; drop it then (plan 2.5a).
+    effect(() => {
+      const channel = this.channel();
+      const shown = this.shownWishes();
+      untracked(() => this.wishAdd.prune(channel, shown));
+    });
+
+    inject(DestroyRef).onDestroy(() => (this.destroyed = true));
+
     interval(CLOCK_TICK_MS)
       .pipe(takeUntilDestroyed())
       .subscribe(() => {
@@ -541,6 +566,10 @@ export class ChannelWishesPage {
       this.openAdopt({ wish, sevenTvEmoteId: wish.sevenTvEmoteId });
       return;
     }
+    if (action === 'add7tv') {
+      this.startAdd(sectionId, wish);
+      return;
+    }
     if (action === 'edit') {
       this.openEdit(wish, sectionId);
       return;
@@ -562,6 +591,11 @@ export class ChannelWishesPage {
         this.runAction(sectionId, wish, action);
       }
     });
+  }
+
+  /** The row's own 7TV operation (T8: the add), from the root service that outlives this page. */
+  protected operationOf(wish: Wish): WishOperationView | null {
+    return wishAddOperationView(this.wishAdd.stateFor(this.channel(), wish));
   }
 
   protected isKnownStill(sevenTvEmoteId: string): boolean {
@@ -618,6 +652,30 @@ export class ChannelWishesPage {
       } else if (result?.kind === 'stale') {
         this.onStale(sectionId, result.errorKey);
       }
+    });
+  }
+
+  /**
+   * "In 7TV hinzufügen" (plan 2.5a): the start contract runs in `WishAddService`; this page hands it
+   * the token prompt and tells it whether it still lives and which channel it shows (3b i). An
+   * abort or a skipped send says "nothing was changed" at the row and reloads the lists (plan 2.5);
+   * the outcome itself stays at the row, also after leaving and coming back.
+   */
+  private startAdd(sectionId: SectionId, wish: Wish): void {
+    const channel = this.channel();
+    this.actionErrorOf(sectionId).set(null);
+    this.wishAdd.start({
+      channelName: channel,
+      wish,
+      caller: { alive: () => !this.destroyed, channelName: () => this.channel() },
+      promptToken: () =>
+        openSevenTvTokenPromptDialog(this.dialog).closed.pipe(map((done) => done === true)),
+      onEnd: (state: WishAddState) => {
+        const stopped = state.kind === 'notStarted' || state.kind === 'skipped';
+        if (stopped && !this.destroyed && channel === this.channel()) {
+          this.reloadAll();
+        }
+      },
     });
   }
 

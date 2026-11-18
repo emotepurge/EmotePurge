@@ -2919,6 +2919,16 @@
       "noActiveSet": "The channel has no active set in 7TV.",
       "wishChanged": "The wish has changed in the meantime.",
       "wishUnverified": "The wish could not be reloaded just now."
+    },
+    "add": {
+      "starting": "Preparing to add …",
+      "running": "Adding in 7TV …",
+      "paused": "7TV is throttling right now. Next attempt in {{ seconds }} s.",
+      "added": "Added in 7TV. The next sync takes the wish over.",
+      "unknown": "7TV’s answer got lost. The next sync shows whether the emote is in the set.",
+      "nameTaken": "7TV refused: the name is already taken in the set.",
+      "tokenInvalid": "7TV did not accept the token. Please enter a new 7TV token and try again.",
+      "rejected": "7TV refused: {{ message }}"
     }
   }
 }

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import de from '../../../../public/i18n/de.json';
 import type { Wish, WishUsage } from '../../core/wishes/wish.model';
 import type { WishAction } from '../../core/wishes/wish-view';
+import type { WishOperationView } from './wish-operation';
 import { WishRow } from './wish-row';
 import type { WishUsageBlock } from './wish-usage';
 
@@ -83,6 +84,7 @@ describe('WishRow', () => {
       busy?: boolean;
       now?: Date;
       usage?: WishUsageBlock | null;
+      operation?: WishOperationView | null;
     } = {},
   ): void {
     fixture = TestBed.createComponent(WishRow);
@@ -94,6 +96,7 @@ describe('WishRow', () => {
     fixture.componentRef.setInput('lockDescriptionId', inputs.lockDescriptionId ?? null);
     fixture.componentRef.setInput('busy', inputs.busy ?? false);
     fixture.componentRef.setInput('usage', inputs.usage ?? null);
+    fixture.componentRef.setInput('operation', inputs.operation ?? null);
     emitted = [];
     fixture.componentInstance.action.subscribe((action) => emitted.push(action));
     fixture.detectChanges();
@@ -171,6 +174,45 @@ describe('WishRow', () => {
     expect(extend.getAttribute('aria-disabled')).toBeNull();
     extend.click();
     expect(emitted).toEqual(['extend']);
+  });
+
+  describe('its own 7TV operation', () => {
+    function region(): HTMLElement {
+      return fixture.nativeElement.querySelector('[role="status"]');
+    }
+
+    it('keeps an empty status region mounted while there is no operation', () => {
+      render(wish({ status: 'approved', slotId: null, expiresAtUtc: null }));
+
+      expect(region()).not.toBeNull();
+      expect(region().textContent?.trim()).toBe('');
+    });
+
+    it('speaks the operation in the mounted region, a stopped one behind its lead', () => {
+      const approved = wish({ status: 'approved', slotId: null, expiresAtUtc: null });
+      render(approved);
+
+      fixture.componentRef.setInput('operation', {
+        tone: 'problem',
+        leadKey: 'wishes.start.nothingChanged',
+        key: 'wishes.start.wishChanged',
+      } satisfies WishOperationView);
+      fixture.detectChanges();
+
+      const spoken = region().textContent?.replace(/\s+/g, ' ').trim();
+      expect(spoken).toBe(`${de.wishes.start.nothingChanged} ${de.wishes.start.wishChanged}`);
+    });
+  });
+
+  it('offers the add only beside an approved wish and only on a fine pointer', () => {
+    const approved = wish({ status: 'approved', slotId: null, expiresAtUtc: null });
+    render(approved);
+    expect(names()[0]).toBe(LABEL.add7tv);
+    button(LABEL.add7tv).click();
+    expect(emitted).toEqual(['add7tv']);
+
+    render(approved, { coarse: true });
+    expect(names()).not.toContain(LABEL.add7tv);
   });
 
   it('disables every button of the row while its own request runs', () => {

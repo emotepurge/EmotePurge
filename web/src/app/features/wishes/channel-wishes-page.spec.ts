@@ -4,6 +4,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideRouter, Router } from '@angular/router';
 import { TranslocoTestingModule } from '@jsverse/transloco';
+import { signal } from '@angular/core';
 import { Subject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,9 +14,11 @@ import { LIVE_CONNECTION_RELEASE_FACTORY } from '../../core/live/live-connection
 import { CHANNEL_RELOAD_DEBOUNCE_MS } from '../../core/live/live-reload';
 import { PagedResult } from '../../core/models/paged-result.model';
 import { SevenTvEmoteLookup } from '../../core/seven-tv/seven-tv-emote-lookup';
+import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { WishAddRequest, WishAddService, WishAddState } from '../../core/wishes/wish-add.service';
 import type { Wish, WishDetail, WishListView, WishUsage } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
-import { ChannelWishesPage, WISH_SAFETY_RELOAD_MS } from './channel-wishes-page';
+import { ChannelWishesPage, WISH_RUN_LOCK_ID, WISH_SAFETY_RELOAD_MS } from './channel-wishes-page';
 import { WishAdoptDialog } from './wish-adopt-dialog';
 import { WishEntryDialog } from './wish-entry-dialog';
 import { WishEditDialog } from './wish-edit-dialog';
@@ -164,6 +167,9 @@ describe('ChannelWishesPage', () => {
   let dialogs: Subject<boolean>[];
   let openDialog: ReturnType<typeof vi.fn>;
   let stillIds: Set<string>;
+  let addRequests: WishAddRequest[];
+  let addStates: ReturnType<typeof signal<ReadonlyMap<number, WishAddState>>>;
+  let pruned: { channel: string; ids: number[] }[];
   const fixtures: ComponentFixture<ChannelWishesPage>[] = [];
 
   beforeEach(() => {
@@ -174,6 +180,9 @@ describe('ChannelWishesPage', () => {
     actions = [];
     dialogs = [];
     stillIds = new Set();
+    addRequests = [];
+    addStates = signal<ReadonlyMap<number, WishAddState>>(new Map());
+    pruned = [];
     openDialog = vi.fn(() => {
       const closed = new Subject<boolean>();
       dialogs.push(closed);
@@ -218,6 +227,15 @@ describe('ChannelWishesPage', () => {
           },
         },
         { provide: Dialog, useValue: { open: openDialog } },
+        {
+          provide: WishAddService,
+          useValue: {
+            start: (request: WishAddRequest) => addRequests.push(request),
+            stateFor: (_channel: string, target: Wish) => addStates().get(target.id) ?? null,
+            prune: (channel: string, wishes: Wish[]) =>
+              pruned.push({ channel, ids: wishes.map((shown) => shown.id) }),
+          },
+        },
         provideRouter([]),
         {
           provide: SevenTvEmoteLookup,
@@ -982,6 +1000,120 @@ describe('ChannelWishesPage', () => {
       });
       closeWith(1, { kind: 'edited', wish: approved });
       expect(calls('open')).toHaveLength(2);
+    });
+  });
+  describe('add in 7TV (T8)', () => {
+    const approved = (id: number) =>
+      wish(id, { status: 'approved', slotId: null, expiresAtUtc: null, startsAtUtc: null });
+
+    function rowOf(fixture: ComponentFixture<ChannelWishesPage>, id: number): HTMLElement {
+      return fixture.nativeElement.querySelector(`[data-wish-id="${id}"]`);
+    }
+
+    it('hands the wish and the normalised channel to the add, and tells it when the page is gone', () => {
+      const fixture = create('Chan');
+      settle(fixture, [approved(7)]);
+
+      buttonIn(rowOf(fixture, 7), de.wishes.actions.add7tv).click();
+
+      expect(addRequests).toHaveLength(1);
+      const [request] = addRequests;
+      expect(request.channelName).toBe('chan');
+      expect(request.wish.id).toBe(7);
+      expect(request.caller.alive()).toBe(true);
+      expect(request.caller.channelName()).toBe('chan');
+
+      fixture.componentRef.setInput('channelName', 'other');
+      fixture.detectChanges();
+      expect(request.caller.channelName()).toBe('other');
+
+      fixture.destroy();
+      expect(request.caller.alive()).toBe(false);
+    });
+
+    it('opens the token prompt through the add when it asks for one', () => {
+      const fixture = create();
+      settle(fixture, [approved(7)]);
+      buttonIn(rowOf(fixture, 7), de.wishes.actions.add7tv).click();
+
+      let answered: boolean | undefined;
+      addRequests[0].promptToken().subscribe((done) => (answered = done));
+      expect(openDialog).toHaveBeenCalledOnce();
+      close(dialogs[0], true);
+
+      expect(answered).toBe(true);
+    });
+
+    it('reloads the lists after an add that stopped, and not after one that went through', () => {
+      const fixture = create();
+      settle(fixture, [approved(7)]);
+      buttonIn(rowOf(fixture, 7), de.wishes.actions.add7tv).click();
+
+      addRequests[0].onEnd?.({ kind: 'added' });
+      expect(calls('open')).toHaveLength(1);
+
+      addRequests[0].onEnd?.({ kind: 'notStarted', reason: 'wishChanged' });
+      expect(calls('open')).toHaveLength(2);
+      expect(calls('running')).toHaveLength(2);
+    });
+
+    it('reloads nothing for an add that ends after the page is gone', () => {
+      const fixture = create();
+      settle(fixture, [approved(7)]);
+      buttonIn(rowOf(fixture, 7), de.wishes.actions.add7tv).click();
+      fixture.destroy();
+
+      addRequests[0].onEnd?.({ kind: 'skipped', reason: 'setChanged' });
+
+      expect(calls('open')).toHaveLength(1);
+    });
+
+    it('shows the add state of a row at that row only', () => {
+      const fixture = create();
+      settle(fixture, [approved(7), approved(8)]);
+
+      addStates.set(new Map([[7, { kind: 'notStarted', reason: 'pageLeft' }]]));
+      fixture.detectChanges();
+
+      const spoken = (id: number) =>
+        rowOf(fixture, id)
+          .querySelector('[role="status"]')
+          ?.textContent?.replace(/\s+/g, ' ')
+          .trim();
+      expect(spoken(7)).toBe(`${de.wishes.start.nothingChanged} ${de.wishes.start.pageLeft}`);
+      expect(spoken(8)).toBe('');
+    });
+
+    it('hands every shown wish to the add, so results of wishes that moved on are dropped', () => {
+      const fixture = create();
+      settle(fixture, [approved(7)], [wish(9)]);
+
+      expect(pruned.at(-1)).toEqual({ channel: 'chan', ids: [7, 9] });
+    });
+
+    it('locks the add while a 7TV run holds the start and names that run in the one status line', () => {
+      const running = signal(false);
+      TestBed.inject(SevenTvRunArbiter).register({
+        kind: 'import',
+        isRunning: running,
+        isSettling: signal(false),
+        destructiveOpen: signal(false),
+      });
+      const fixture = create();
+      settle(fixture, [approved(7)]);
+
+      running.set(true);
+      fixture.detectChanges();
+
+      const add = buttonIn(rowOf(fixture, 7), de.wishes.actions.add7tv);
+      expect(add.getAttribute('aria-disabled')).toBe('true');
+      expect(add.getAttribute('aria-describedby')).toBe(WISH_RUN_LOCK_ID);
+      const line = fixture.nativeElement.querySelector(`#${WISH_RUN_LOCK_ID}`);
+      expect(line?.textContent?.trim()).toBe(
+        de.wishes.lock.running.replace('{{ kind }}', de.sevenTvRun.kind.import),
+      );
+      add.click();
+      expect(addRequests).toEqual([]);
     });
   });
 });

@@ -2919,6 +2919,16 @@
       "noActiveSet": "Der Kanal hat in 7TV kein aktives Set.",
       "wishChanged": "Der Wunsch hat sich inzwischen geändert.",
       "wishUnverified": "Der Wunsch ließ sich gerade nicht neu laden."
+    },
+    "add": {
+      "starting": "Hinzufügen wird vorbereitet …",
+      "running": "Wird in 7TV hinzugefügt …",
+      "paused": "7TV bremst gerade. Nächster Versuch in {{ seconds }} s.",
+      "added": "In 7TV hinzugefügt. Der nächste Sync übernimmt den Wunsch.",
+      "unknown": "Die Antwort von 7TV ging verloren. Der nächste Sync zeigt, ob das Emote im Set ist.",
+      "nameTaken": "7TV hat abgelehnt: Der Name ist im Set schon vergeben.",
+      "tokenInvalid": "7TV hat das Token nicht angenommen. Bitte ein neues 7TV-Token eintragen und erneut versuchen.",
+      "rejected": "7TV hat abgelehnt: {{ message }}"
     }
   }
 }

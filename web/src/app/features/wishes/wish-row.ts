@@ -29,6 +29,7 @@ import { UsageSparkline } from '../../shared/emotes/usage-sparkline';
 import { Button } from '../../shared/ui/button';
 import { StatusBadge, StatusBadgeTone } from '../../shared/ui/status-badge';
 import { WishImage } from './wish-image';
+import type { WishOperationView } from './wish-operation';
 import { usageSeries, usageWindowLabel, WishUsageBlock } from './wish-usage';
 
 /** The thirteen statuses of spec 5 that have a name; anything else reads as "unknown". */
@@ -133,6 +134,29 @@ interface TextPart {
           @if (sevenTvHint()) {
             <p class="text-xs text-fg-secondary">{{ 'wishes.row.sevenTvHint' | transloco }}</p>
           }
+          <!-- The row's own 7TV operation (plan 2.5a). The sr-only region stays mounted so a change is
+               announced (§4.5); the visible twin is aria-hidden so it is not read twice. -->
+          <p role="status" class="sr-only">
+            @if (operation(); as op) {
+              @if (op.leadKey) {
+                {{ op.leadKey | transloco }}
+              }
+              {{ op.key | transloco: op.params }}
+            }
+          </p>
+          @if (operation(); as op) {
+            <p
+              aria-hidden="true"
+              class="text-sm"
+              [class.text-danger-fg]="op.tone === 'problem'"
+              [class.text-fg-secondary]="op.tone !== 'problem'"
+            >
+              @if (op.leadKey) {
+                {{ op.leadKey | transloco }}
+              }
+              {{ op.key | transloco: op.params }}
+            </p>
+          }
           <a
             [href]="pageUrl()"
             target="_blank"
@@ -208,6 +232,8 @@ export class WishRow {
   readonly usage = input<WishUsageBlock | null>(null);
   /** The page wants to know when this row is in view (usage loads only then). */
   readonly trackUsage = input(false);
+  /** Where this wish's own 7TV operation stands (T8 add, T9 removal); `null` shows nothing. */
+  readonly operation = input<WishOperationView | null>(null);
 
   readonly action = output<WishAction>();
   /** Whether the row is in the viewport; only while `trackUsage` is set, and only on change. */
