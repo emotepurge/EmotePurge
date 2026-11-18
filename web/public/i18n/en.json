@@ -2886,6 +2886,26 @@
         "login": "The Twitch login does not fit."
       },
       "submit": "Add wish"
+    },
+    "edit": {
+      "title": "Edit wish",
+      "intro": "Change the alias or the duration of “{{ name }}”. Only what you change is sent.",
+      "submit": "Save",
+      "blocked": {
+        "unchanged": "Alias and duration are unchanged."
+      }
+    },
+    "readd": {
+      "title": "Add wish again",
+      "intro": "Put “{{ name }}” into the set once more.",
+      "submit": "Add again",
+      "mode": {
+        "legend": "How long should the emote stay?",
+        "timed": "Timed",
+        "permanent": "Permanent"
+      },
+      "permanentHint": "After it is added the emote is carried as kept; no deadline runs.",
+      "running": "A wish for this emote is already running."
     }
   }
 }

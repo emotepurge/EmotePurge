@@ -50,7 +50,9 @@ import {
   WishAdoptDialogData,
   WishAdoptDialogResult,
 } from './wish-adopt-dialog';
+import { openWishEditDialog } from './wish-edit-dialog';
 import { openWishEntryDialog, WishEntryDialogResult } from './wish-entry-dialog';
+import { openWishReAddDialog } from './wish-readd-dialog';
 import { WishRow } from './wish-row';
 import { WishUsageStore } from './wish-usage';
 
@@ -64,8 +66,8 @@ const CLOCK_TICK_MS = 60_000;
 
 /**
  * The actions this page carries out. The action table knows more; a row renders only what is in
- * here, so nothing offers an action that is not built yet: T7 adds `edit` and `reAdd`, T8 `add7tv`,
- * T9 `remove`. `adopt` opens the take-over dialog instead of sending a command (T6).
+ * here, so nothing offers an action that is not built yet: T8 adds `add7tv`, T9 `remove`. `adopt`,
+ * `edit` and `reAdd` open a dialog instead of sending a command (T6, T7).
  */
 const OFFERED_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
   'extend',
@@ -73,6 +75,8 @@ const OFFERED_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
   'keep',
   'close',
   'adopt',
+  'edit',
+  'reAdd',
 ]);
 
 /** Id of the page's one status line that names a blocking 7TV run (plan 2.7). */
@@ -537,6 +541,14 @@ export class ChannelWishesPage {
       this.openAdopt({ wish, sevenTvEmoteId: wish.sevenTvEmoteId });
       return;
     }
+    if (action === 'edit') {
+      this.openEdit(wish, sectionId);
+      return;
+    }
+    if (action === 'reAdd') {
+      this.openReAdd(wish, sectionId);
+      return;
+    }
     if (!isConfirmedAction(action)) {
       this.runAction(sectionId, wish, action);
       return;
@@ -578,6 +590,43 @@ export class ChannelWishesPage {
     );
   }
 
+  /** "Bearbeiten": from a row, or from the entry dialog when the running wish is `approved`/`failed`. */
+  protected openEdit(wish: Wish, sectionId: SectionId = 'open'): void {
+    const channel = this.channel();
+    openWishEditDialog(this.dialog, { channelName: channel, wish }).closed.subscribe((result) => {
+      if (channel !== this.channel()) {
+        return;
+      }
+      if (result?.kind === 'edited') {
+        this.reloadAll();
+      } else if (result?.kind === 'stale') {
+        this.onStale(sectionId, result.errorKey);
+      }
+    });
+  }
+
+  protected openReAdd(wish: Wish, sectionId: SectionId = 'open'): void {
+    const channel = this.channel();
+    openWishReAddDialog(this.dialog, { channelName: channel, wish }).closed.subscribe((result) => {
+      if (channel !== this.channel()) {
+        return;
+      }
+      if (result?.kind === 'readded') {
+        this.reloadAll();
+      } else if (result?.kind === 'jump') {
+        this.jumpTo(result.wishId);
+      } else if (result?.kind === 'stale') {
+        this.onStale(sectionId, result.errorKey);
+      }
+    });
+  }
+
+  /** The row showed a state the server no longer has: say so at its section and show the current one. */
+  private onStale(sectionId: SectionId, errorKey: string): void {
+    this.actionErrorOf(sectionId).set(errorKey);
+    this.reloadAll();
+  }
+
   private onEntryClosed(result: WishEntryDialogResult | undefined): void {
     switch (result?.kind) {
       case 'created':
@@ -586,6 +635,9 @@ export class ChannelWishesPage {
         return;
       case 'extended':
         this.reloadAll();
+        return;
+      case 'edit':
+        this.openEdit(result.wish);
         return;
       case 'jump':
         this.jumpTo(result.wishId);

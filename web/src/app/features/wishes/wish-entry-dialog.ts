@@ -38,14 +38,16 @@ export interface WishEntryDialogData {
 
 /**
  * How the dialog closed: a wish was filed (with the set-full hint), the manager wants to go to a wish,
- * to take the emote over from the set instead (the 409 of plan 2.8 a, outcomes 1 and 3), or extended
- * the wish that already runs. `undefined`: dismissed.
+ * to take the emote over from the set instead (the 409 of plan 2.8 a, outcomes 1 and 3), extended
+ * the wish that already runs, or wants to edit it (`edit`: the running wish is `approved` or `failed`,
+ * so there is nothing to extend, plan 2.8 a). `undefined`: dismissed.
  */
 export type WishEntryDialogResult =
   | { kind: 'created'; wish: Wish; setFull: boolean }
   | { kind: 'jump'; wishId: number }
   | { kind: 'adopt'; sevenTvEmoteId: string; slotIds: string[]; wish: Wish | null }
-  | { kind: 'extended'; wish: Wish };
+  | { kind: 'extended'; wish: Wish }
+  | { kind: 'edit'; wish: Wish };
 
 /**
  * The 7TV read of the emote field, always tied to the id it ran for (Sol-P2-10). `none` while the field
@@ -62,7 +64,7 @@ export type WishEntryReadState =
 type EntryConflict =
   | { kind: 'resolving' }
   | { kind: 'adopt'; sevenTvEmoteId: string; slotIds: string[]; wish: Wish | null }
-  | { kind: 'running'; wish: Wish; canExtend: boolean }
+  | { kind: 'running'; wish: Wish; canExtend: boolean; canEdit: boolean }
   | { kind: 'kept'; wishId: number }
   | { kind: 'other'; wishId: number };
 
@@ -237,6 +239,16 @@ type EntryConflict =
                       (click)="extend(notice.wish)"
                     >
                       {{ 'wishes.actions.extend' | transloco }}
+                    </button>
+                  }
+                  @if (notice.canEdit) {
+                    <button
+                      type="button"
+                      appButton="outline"
+                      [disabled]="busy()"
+                      (click)="edit(notice.wish)"
+                    >
+                      {{ 'wishes.actions.edit' | transloco }}
                     </button>
                   }
                   <button
@@ -593,6 +605,12 @@ export class WishEntryDialog {
     });
   }
 
+  protected edit(wish: Wish): void {
+    if (!this.busy()) {
+      this.dialogRef.close({ kind: 'edit', wish });
+    }
+  }
+
   protected jump(wishId: number): void {
     if (!this.busy()) {
       this.dialogRef.close({ kind: 'jump', wishId });
@@ -755,7 +773,13 @@ function holdsSlot(wish: Wish): boolean {
 }
 
 function runningConflict(wish: Wish): EntryConflict {
-  return { kind: 'running', wish, canExtend: wishActions(wish).includes('extend') };
+  const actions = wishActions(wish);
+  return {
+    kind: 'running',
+    wish,
+    canExtend: actions.includes('extend'),
+    canEdit: actions.includes('edit'),
+  };
 }
 
 export function openWishEntryDialog(

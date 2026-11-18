@@ -18,6 +18,8 @@ import { WishService } from '../../core/wishes/wish.service';
 import { ChannelWishesPage, WISH_SAFETY_RELOAD_MS } from './channel-wishes-page';
 import { WishAdoptDialog } from './wish-adopt-dialog';
 import { WishEntryDialog } from './wish-entry-dialog';
+import { WishEditDialog } from './wish-edit-dialog';
+import { WishReAddDialog } from './wish-readd-dialog';
 import { WishRow } from './wish-row';
 import { WISH_USAGE_TTL_MS } from './wish-usage';
 
@@ -892,6 +894,94 @@ describe('ChannelWishesPage', () => {
         .queryAll(By.directive(WishRow))
         .map((row) => (row.componentInstance as WishRow).knownStill());
       expect(known).toEqual([false, true]);
+    });
+  });
+  describe('edit and re-add dialogs (T7)', () => {
+    function openCall(index: number): { component: unknown; data: Record<string, unknown> } {
+      const [component, config] = openDialog.mock.calls[index] as [
+        unknown,
+        { data: Record<string, unknown> },
+      ];
+      return { component, data: config.data };
+    }
+
+    function closeWith(index: number, result: unknown): void {
+      (dialogs[index] as Subject<unknown>).next(result);
+      dialogs[index].complete();
+    }
+
+    it('opens the edit dialog for the row’s wish, and reloads after an edit', () => {
+      const fixture = create('Chan');
+      const approved = wish(4, { status: 'approved', slotId: null });
+      settle(fixture, [approved]);
+      buttonIn(section(fixture, 'open'), de.wishes.actions.edit).click();
+      expect(openCall(0)).toEqual({
+        component: WishEditDialog,
+        data: { channelName: 'chan', wish: approved },
+      });
+      closeWith(0, { kind: 'edited', wish: { ...approved, durationDays: 10 } });
+      expect(calls('open')).toHaveLength(2);
+    });
+
+    it('opens the re-add dialog for a removed wish', () => {
+      const fixture = create();
+      const removed = wish(5, {
+        status: 'removed',
+        slotId: 's',
+        slotAddedAtUtc: '2026-11-01T00:00:00Z',
+      });
+      settle(fixture, [removed]);
+      buttonIn(section(fixture, 'open'), de.wishes.actions.reAdd).click();
+      expect(openCall(0)).toEqual({
+        component: WishReAddDialog,
+        data: { channelName: 'chan', wish: removed },
+      });
+      closeWith(0, { kind: 'readded', wish: { ...removed, status: 'active' } });
+      expect(calls('open')).toHaveLength(2);
+    });
+
+    it('does nothing after a dismissed dialog', () => {
+      const fixture = create();
+      settle(fixture, [wish(4, { status: 'approved', slotId: null })]);
+      buttonIn(section(fixture, 'open'), de.wishes.actions.edit).click();
+      closeWith(0, undefined);
+      expect(calls('open')).toHaveLength(1);
+    });
+
+    it('shows a stale answer of either dialog at the row’s section and reloads', () => {
+      const fixture = create();
+      settle(fixture, [wish(4, { status: 'approved', slotId: null })]);
+      buttonIn(section(fixture, 'open'), de.wishes.actions.edit).click();
+      closeWith(0, { kind: 'stale', errorKey: 'errors.api.wish_state_conflict' });
+      fixture.detectChanges();
+      expect(alerts(fixture, 'open')).toEqual([de.errors.api.wish_state_conflict]);
+      expect(calls('open')).toHaveLength(2);
+    });
+
+    it('jumps to the running wish the re-add dialog names', () => {
+      const fixture = create();
+      settle(fixture, [wish(5, { status: 'removed' })]);
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+      buttonIn(section(fixture, 'open'), de.wishes.actions.reAdd).click();
+      closeWith(0, { kind: 'jump', wishId: 12 });
+      expect(navigate).toHaveBeenCalledWith(
+        [],
+        expect.objectContaining({ queryParams: { wish: 12 } }),
+      );
+    });
+
+    it('opens the edit dialog for the wish the entry dialog names', () => {
+      const fixture = create();
+      settle(fixture);
+      buttonIn(fixture.nativeElement, de.wishes.page.header.entry).click();
+      const approved = wish(7, { status: 'approved', slotId: null });
+      closeWith(0, { kind: 'edit', wish: approved });
+      expect(openCall(1)).toEqual({
+        component: WishEditDialog,
+        data: { channelName: 'chan', wish: approved },
+      });
+      closeWith(1, { kind: 'edited', wish: approved });
+      expect(calls('open')).toHaveLength(2);
     });
   });
 });

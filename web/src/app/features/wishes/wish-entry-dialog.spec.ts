@@ -461,12 +461,26 @@ describe('WishEntryDialog', () => {
       expect(hasButton(t('wishes.actions.extend'))).toBe(true);
     });
 
-    it('offers only the way to an approved wish', () => {
+    it('offers the way to an approved wish and "Bearbeiten", but not "Verlängern"', () => {
       refuseRunning(wish(3));
       expect(fixture.nativeElement.textContent).toContain(t('wishes.entry.conflict.running'));
       expect(hasButton(t('wishes.actions.extend'))).toBe(false);
       button(t('wishes.dialog.toWish')).click();
       expect(closed).toEqual([{ kind: 'jump', wishId: 3 }]);
+    });
+
+    it('closes with the wish to edit for an approved or failed wish', () => {
+      const approved = wish(3);
+      refuseRunning(approved);
+      button(t('wishes.actions.edit')).click();
+      expect(closed).toEqual([{ kind: 'edit', wish: { ...approved, usage: null } }]);
+    });
+
+    it('offers no "Bearbeiten" for a wish that already holds its slot', () => {
+      refuseRunning(
+        wish(3, { status: 'presented', slotId: 's', expiresAtUtc: '2026-11-10T00:00:00Z' }),
+      );
+      expect(hasButton(t('wishes.actions.edit'))).toBe(false);
     });
   });
 

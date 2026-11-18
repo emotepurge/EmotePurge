@@ -2886,6 +2886,26 @@
         "login": "Der Twitch-Login passt nicht."
       },
       "submit": "Nachtragen"
+    },
+    "edit": {
+      "title": "Wunsch bearbeiten",
+      "intro": "Ändere Alias oder Laufzeit von „{{ name }}“. Gesendet wird nur, was du änderst.",
+      "submit": "Speichern",
+      "blocked": {
+        "unchanged": "Alias und Laufzeit sind unverändert."
+      }
+    },
+    "readd": {
+      "title": "Wunsch wieder hinzufügen",
+      "intro": "„{{ name }}“ noch einmal in das Set aufnehmen.",
+      "submit": "Wieder hinzufügen",
+      "mode": {
+        "legend": "Wie lange soll das Emote bleiben?",
+        "timed": "Befristet",
+        "permanent": "Dauerhaft"
+      },
+      "permanentHint": "Das Emote wird nach dem Hinzufügen als behalten geführt, es läuft keine Frist.",
+      "running": "Für dieses Emote läuft bereits ein Wunsch."
     }
   }
 }
