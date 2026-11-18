@@ -269,7 +269,9 @@ interface StaleNotice {
               {{ (query() ? 'wishes.adopt.noMatch' : 'wishes.adopt.empty') | transloco }}
             </p>
           } @else {
-            <fieldset class="flex flex-col">
+            <!-- min-w-0: a fieldset never shrinks below its content by default, so one unbroken long
+                 alias would widen the dialog past the viewport instead of truncating. -->
+            <fieldset class="flex min-w-0 flex-col">
               <legend class="mb-2 text-sm text-fg-secondary">
                 {{ 'wishes.adopt.entriesLegend' | transloco }}
               </legend>
