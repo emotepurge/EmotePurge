@@ -156,7 +156,7 @@ const DESTRUCTIVE_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>(['remov
             [href]="pageUrl()"
             target="_blank"
             rel="noopener"
-            class="self-start text-sm text-fg-secondary underline decoration-border-strong underline-offset-2 transition hover:text-fg hover:decoration-accent"
+            class="inline-flex min-h-6 items-center self-start text-sm text-fg-secondary underline decoration-border-strong underline-offset-2 transition hover:text-fg hover:decoration-accent"
             >{{ 'wishes.row.openOnSevenTv' | transloco
             }}<span class="sr-only"> {{ 'common.opensInNewTab' | transloco }}</span></a
           >
