@@ -19,6 +19,7 @@ import {
   SYNC_RETRY_DELAY_MS,
   timeoutReportAttempt,
 } from './seven-tv-delete.service';
+import { ADD_EMOTE_MUTATION } from './seven-tv-add-emote';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import { ResyncTriggerState } from './seven-tv-restore.service';
 import {
@@ -64,27 +65,11 @@ const DUPLICATE_NOTICE_MS = 4000;
  *  keeps `DUPLICATE_NOTICE_MS`: its settled summary carries the refusal lines from then on. */
 const NOT_STARTED_NOTICE_MS = ABORTED_DELETE_NOTICE_MS;
 
-/** The same ADD the restore run uses — an import *is* an ADD, only with rows that come from
- *  somewhere else. `alias` carries the plan row's alias: the source alias for an `add` row, so the
- *  copy keeps the name the source channel knew it by, the user-typed alias for a `renameSource`
- *  row; without it 7TV would fall back to the emote's default name. It travels *inside* the
- *  `EmoteSetEmoteId` input object, not as a sibling argument — v4's `addEmote` field replaces v3's
- *  single `emotes(action: ADD, name:)` mutation with one field per operation (see docs/DECISIONS.md,
- *  #149). */
-const ADD_EMOTE_MUTATION: SevenTvMutation = {
-  query: `
-  mutation AddEmote($setId: Id!, $emoteId: Id!, $alias: String) {
-    emoteSets {
-      emoteSet(id: $setId) {
-        addEmote(id: { emoteId: $emoteId, alias: $alias }) {
-          id
-        }
-      }
-    }
-  }
-`,
-  resultPath: ['emoteSets', 'emoteSet', 'addEmote'],
-};
+// An import sends the shared `ADD_EMOTE_MUTATION` (`seven-tv-add-emote.ts`), the same ADD the
+// restore run uses — an import *is* an ADD, only with rows that come from somewhere else. `$alias`
+// carries the plan row's alias: the source alias for an `add` row, so the copy keeps the name the
+// source channel knew it by, the user-typed alias for a `renameSource` row; without it 7TV would
+// fall back to the emote's default name.
 
 /** An `adoptSourceName` row's one mutation: renames an existing entry in place. The *current* alias
  *  inside the `EmoteSetEmoteId` input selects the entry — even on a #74 duplicate — and `alias` is
