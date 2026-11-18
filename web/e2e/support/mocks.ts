@@ -2633,6 +2633,25 @@ export async function mockSevenTvSetBackend(
         return {
           data: { emoteSets: { emoteSet: { addEmote: { id: request.variables['setId'] } } } },
         };
+      case 'emoteRead': {
+        // The wish forms' single read (#485 T6): an emote of the mocked set answers with its alias as
+        // default name, anything else as unknown to 7TV.
+        const entry = backend.live.find((candidate) => candidate.id === request.variables['id']);
+        return {
+          data: {
+            emotes: {
+              emote: entry
+                ? {
+                    id: entry.id,
+                    defaultName: entry.alias,
+                    deleted: false,
+                    flags: { animated: false },
+                  }
+                : null,
+            },
+          },
+        };
+      }
       default: {
         const withDate = request.query.includes('addedAt');
         const items = backend.live.map((entry) => ({
@@ -2681,11 +2700,12 @@ export interface SevenTvGqlErrorFixture {
  * and a mutation share this one endpoint and a caller cannot otherwise tell an `addEmote` from the
  * live set read `loadSevenTvSetEntries` issues before/after a run that touches a `replace` row
  * (#230: the confirm dialog's own pre-removal read, the pre-send duplicate/drift recheck, and the
- * post-run settle read for a lost answer all go through the identical endpoint). `'unknown'` is
- * reached only if 7TV's GQL surface grows a fifth request shape this helper does not know yet.
+ * post-run settle read for a lost answer all go through the identical endpoint). `'emoteRead'` is
+ * the single-emote read of the wish forms (`seven-tv-emote-lookup.ts`, #485 T6). `'unknown'` is
+ * reached only if 7TV's GQL surface grows a sixth request shape this helper does not know yet.
  */
 export type SevenTvGqlRequestKind =
-  'addEmote' | 'removeEmote' | 'updateEmoteAlias' | 'setRead' | 'unknown';
+  'addEmote' | 'removeEmote' | 'updateEmoteAlias' | 'setRead' | 'emoteRead' | 'unknown';
 
 /** See {@link SevenTvGqlRequestKind}. */
 export function sevenTvGqlRequestKind(request: SevenTvGqlRequest): SevenTvGqlRequestKind {
@@ -2701,6 +2721,9 @@ export function sevenTvGqlRequestKind(request: SevenTvGqlRequest): SevenTvGqlReq
   }
   if (query.includes('emotes(page:')) {
     return 'setRead';
+  }
+  if (query.includes('emote(id:')) {
+    return 'emoteRead';
   }
   return 'unknown';
 }
