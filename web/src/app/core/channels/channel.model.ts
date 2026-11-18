@@ -23,6 +23,8 @@ export interface ChannelPermissions {
   canPurgeAsBroadcaster: boolean;
   /** Server flag `ChatLogBackfill:Enabled` (#346): the settings tab and the backfill routes exist. */
   chatLogBackfillEnabled: boolean;
+  /** Server flag `Wishes:Enabled` (#481): the wish routes exist. A missing field counts as false. */
+  wishesEnabled: boolean;
 }
 
 /**

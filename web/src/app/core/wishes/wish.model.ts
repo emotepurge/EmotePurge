@@ -1,0 +1,214 @@
+/**
+ * Client-side mirror of the wish contracts in `EmotePurge.Core/Services/IWishService.cs` (#481, K3).
+ * Statuses, reasons, sources and link origins are server strings and the contract; each is typed as the
+ * known literals plus `string`, so an unknown value from a newer server still type-checks and is handled
+ * (not dropped) by the consumers.
+ */
+
+export type WishStatus =
+  | 'pending'
+  | 'approved'
+  | 'unconfirmed'
+  | 'failed'
+  | 'active'
+  | 'presented'
+  | 'rejected'
+  | 'expired'
+  | 'removed'
+  | 'removed_externally'
+  | 'kept'
+  | 'closed'
+  | 'merged'
+  | (string & {});
+
+export type WishStatusReason =
+  | 'expired'
+  | 'protected'
+  | 'coverage_gap'
+  | 'not_bot_owned'
+  | 'ownership_lost'
+  | 'unconfirmed'
+  | 'bot_unavailable'
+  | 'unconfirmed_start'
+  | 'already_in_set'
+  | 'repair_review'
+  | 'alias_conflict'
+  | 'set_full'
+  | 'emote_gone'
+  | 'not_editor'
+  | 'unknown'
+  | 'ambiguous_match'
+  | 'already_running'
+  | 'unparsed'
+  | (string & {});
+
+export type WishSource = 'irc' | 'manual' | 'adopted' | (string & {});
+
+export type WishLinkOrigin = 'auto' | 'adopted' | 'bot' | (string & {});
+
+export type WishMode = 'manual' | 'bot' | (string & {});
+
+/** The three lists of the channel page; `open` is the server default. */
+export type WishListView = 'open' | 'running' | 'ended';
+
+export interface WishUsageDay {
+  /** UTC calendar day, `YYYY-MM-DD`. */
+  date: string;
+  useCount: number;
+}
+
+export interface WishUsage {
+  windowFromUtc: string;
+  windowToUtc: string;
+  total: number;
+  perDayMean: number;
+  /** `null` together with `rankOf` while the emote has no active slot to rank. */
+  rank: number | null;
+  rankOf: number | null;
+  coverageGap: boolean;
+  /**
+   * One entry per UTC day of the window, in order, summing to `total`. Optional: an older server omits
+   * it, and an empty list means the same, "no series".
+   */
+  daily?: WishUsageDay[];
+}
+
+export interface Wish {
+  id: number;
+  sevenTvEmoteId: string;
+  emoteName: string;
+  alias: string;
+  source: WishSource;
+  status: WishStatus;
+  statusReason: WishStatusReason | null;
+  requesterLogin: string | null;
+  durationDays: number;
+  createdAtUtc: string;
+  approvedAtUtc: string | null;
+  startsAtUtc: string | null;
+  startsAtAuthoritative: boolean;
+  probationStartsAtUtc: string | null;
+  expiresAtUtc: string | null;
+  endedAtUtc: string | null;
+  slotId: string | null;
+  /** The slot generation the wish is bound to, verbatim for `completeRemoval`; `null` = unknown. */
+  slotAddedAtUtc: string | null;
+  imageUrl: string | null;
+  linkOrigin: WishLinkOrigin | null;
+  extensionCount: number;
+  permanent: boolean;
+  botOwned: boolean;
+  botWritePending: boolean;
+  botNextAttemptAtUtc: string | null;
+  removalQueuedAtUtc: string | null;
+  mode: WishMode;
+}
+
+/** `GET …/wishes/{id}`: the wish plus the usage of its window (`null` without a start). */
+export interface WishDetail extends Wish {
+  usage: WishUsage | null;
+}
+
+/** Answer of the manual entry: the wish, plus the hint that the set was at capacity (never a refusal). */
+export interface CreatedWish extends Wish {
+  setFull?: boolean;
+}
+
+/** One entry of `GET …/wishes/slots`, with the conflict `adopt` would decide. */
+export interface WishAdoptableSlot {
+  slotId: string;
+  sevenTvEmoteId: string;
+  alias: string;
+  /** `null` = undated. Return it verbatim as `expectedAddedAtUtc` when adopting. */
+  addedAtUtc: string | null;
+  addedAtAuthoritative: boolean;
+  imageUrl: string | null;
+  heldByWishId: number | null;
+  runningWishId: number | null;
+  runningWishAdoptable: boolean;
+}
+
+export interface WishSettings {
+  defaultDurationDays: number;
+  probationLeadDays: number;
+  protectionThresholdPerDay: number | null;
+  botModeEnabled: boolean;
+  botSuspendedReason: string | null;
+}
+
+/** `GET …/wishes/settings`: the settings plus whether this caller may write them. */
+export interface WishSettingsRead extends WishSettings {
+  canEdit: boolean;
+}
+
+/**
+ * Body of `PUT …/wishes/settings`. `protectionThresholdPerDay` absent keeps the stored value, `null`
+ * switches protection off, a number sets it; the three are different on the wire, so the key is optional.
+ */
+export interface WishSettingsUpdate {
+  defaultDurationDays: number;
+  probationLeadDays: number;
+  protectionThresholdPerDay?: number | null;
+}
+
+export interface CreateWishBody {
+  sevenTvEmoteId: string;
+  emoteName?: string;
+  alias?: string;
+  durationDays?: number;
+  requesterLogin?: string;
+}
+
+export interface AdoptWishBody {
+  slotId: string;
+  /** Alias of the entry the manager picked from `listSlots`. */
+  expectedAlias: string;
+  /** `addedAtUtc` of that entry, verbatim; `null` = an undated entry was picked. */
+  expectedAddedAtUtc: string | null;
+  wishId?: number;
+  durationDays?: number;
+  startsAtUtc?: string;
+}
+
+export type WishRemovalEvidence = 'acknowledged' | 'absent';
+
+/** What the client's removal run did: slot, generation and set are all required. */
+export interface CompleteWishRemovalBody {
+  slotId: string;
+  /** `slotAddedAtUtc` of the wish, verbatim from the DTO. */
+  slotAddedAtUtc: string;
+  /** The 7TV set the run wrote against. */
+  emoteSetId: string;
+  evidence?: WishRemovalEvidence;
+}
+
+export interface UpdateWishBody {
+  alias?: string;
+  durationDays?: number;
+}
+
+export type WishReAddMode = 'timed' | 'permanent';
+
+export interface ReAddWishBody {
+  mode: WishReAddMode;
+  durationDays?: number;
+}
+
+/** One row of `GET /api/wishes/mine`. */
+export interface WishOverviewItem {
+  channelName: string;
+  wish: Wish;
+}
+
+export interface WishSummary {
+  actionCount: number;
+}
+
+/**
+ * The ids a 409 names (`slotIds` on `wish_emote_already_in_set`, `wishId` on it, on `wish_already_running`
+ * and on `wish_slot_already_linked`). Absent fields stay `undefined`; `wishId` may be `null`.
+ */
+export interface WishConflict {
+  slotIds?: string[];
+  wishId?: number | null;
+}

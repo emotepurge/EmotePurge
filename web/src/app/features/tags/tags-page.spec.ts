@@ -91,6 +91,7 @@ const MANAGER: ChannelPermissions = {
   tagRunsEnabled: false,
   canPurgeAsBroadcaster: false,
   chatLogBackfillEnabled: false,
+  wishesEnabled: false,
 };
 
 function setStatus(activeEmoteSetId: string): EmoteSetStatus {
