@@ -44,6 +44,7 @@ import {
   mockUsageChannelSeries,
   mockUsageDaily,
   mockUsageTotals,
+  mockWishSummary,
   mockWorkerHealth,
   trendBursts,
 } from '../support/mocks';
@@ -751,6 +752,44 @@ const SCENARIOS: Scenario[] = [
       await mockAuthMe(page, AUTH_USER);
       await mockWorkerHealth(page, 'stale');
       await mockMyChannelsWithFlags(page, TYPICAL_CHANNELS);
+    },
+  },
+  {
+    // The wishes link with a count next to "Abstimmungen" while a header badge stands (#485, F4,
+    // AK44): the fullest the header row gets. Step 2 shows the bare count below sm and word plus
+    // count from sm on. The worker warning because it is the longer of the two badges in both
+    // locales; a two-digit count because it is wider than one. The document metrics cannot see an
+    // element that an ancestor clips, so afterLoad checks the fit explicitly (assertHeaderFits).
+    // Known red at 360 px in de (2026-11-18): "Abstimmungen" runs 33 px into the badge, while every
+    // document metric stays clean. Step 3 would deviate from AK44 and waits for the operator
+    // (DECISIONS, wish emotes child 3); until then this case is the open finding, not a flake.
+    slug: 'shell-wishes-count-badge',
+    path: '/',
+    setup: async (page) => {
+      await mockAuthMe(page, AUTH_USER);
+      await mockWorkerHealth(page, 'stale');
+      await mockWishSummary(page, 12);
+      await mockMyChannelsWithFlags(page, TYPICAL_CHANNELS);
+    },
+    afterLoad: async (page) => {
+      await page.locator('header a[href="/my-wishes"]').waitFor();
+      await page.locator('header app-health-marker').waitFor();
+      await assertHeaderFits(page, 'shell-wishes-count-badge', { badge: true });
+    },
+  },
+  {
+    // The same count without a badge: the everyday case of the header with the wishes link.
+    slug: 'shell-wishes-count',
+    path: '/',
+    setup: async (page) => {
+      await mockAuthMe(page, AUTH_USER);
+      await mockWorkerHealth(page, 'connected');
+      await mockWishSummary(page, 12);
+      await mockMyChannelsWithFlags(page, TYPICAL_CHANNELS);
+    },
+    afterLoad: async (page) => {
+      await page.locator('header a[href="/my-wishes"]').waitFor();
+      await assertHeaderFits(page, 'shell-wishes-count', { badge: false });
     },
   },
   {
@@ -2032,6 +2071,164 @@ async function collectMetrics(page: Page) {
       interactiveCount: interactive.length,
     };
   });
+}
+
+/**
+ * The header fit gate of #485 (plan T12, Sol-R2-P3), its own gate beside the document metrics: those
+ * measure page overflow, and an element that an ancestor clips (`overflow: hidden`, `truncate`)
+ * lengthens nothing. Checks the wishes link, the header badge, the "Abstimmungen" link and the
+ * account trigger: each whole inside the viewport and inside every ancestor that clips; no text cut
+ * (no element of it narrower than its content, its text on one line and inside every clipping
+ * ancestor); no two of them overlapping. The wordmark may truncate as before and is not checked.
+ * Writes what it measured to `.audit-out/fit/` and fails softly, so the screenshot still lands.
+ */
+async function assertHeaderFits(
+  page: Page,
+  slug: string,
+  options: { badge: boolean },
+): Promise<void> {
+  const report = await page.evaluate((withBadge) => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const targets: [string, Element | null][] = [
+      ['wishesLink', document.querySelector('header a[href="/my-wishes"]')],
+      ['votingsLink', document.querySelector('header a[href="/my-votings"]')],
+      // Scoped to the menu: the live-quota badge is a dialog trigger as well.
+      [
+        'accountTrigger',
+        document.querySelector('header app-account-menu [aria-haspopup="dialog"]'),
+      ],
+    ];
+    if (withBadge) {
+      targets.push([
+        'badge',
+        document.querySelector('header app-health-marker app-status-badge > span'),
+      ]);
+    }
+    type Box = { left: number; top: number; right: number; bottom: number };
+    const box = (r: DOMRect): Box => ({
+      left: Math.round(r.left * 10) / 10,
+      top: Math.round(r.top * 10) / 10,
+      right: Math.round(r.right * 10) / 10,
+      bottom: Math.round(r.bottom * 10) / 10,
+    });
+    const inside = (inner: Box, outer: Box) =>
+      inner.left >= outer.left - 0.5 &&
+      inner.top >= outer.top - 0.5 &&
+      inner.right <= outer.right + 0.5 &&
+      inner.bottom <= outer.bottom + 0.5;
+    const clippers = (el: Element): Element[] => {
+      const found: Element[] = [];
+      for (let up = el.parentElement; up; up = up.parentElement) {
+        const style = getComputedStyle(up);
+        if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+          found.push(up);
+        }
+      }
+      return found;
+    };
+    const problems: string[] = [];
+    const boxes: Record<string, Box> = {};
+    for (const [name, el] of targets) {
+      if (!el) {
+        problems.push(`${name}: not rendered`);
+        continue;
+      }
+      const rect = box(el.getBoundingClientRect());
+      boxes[name] = rect;
+      if (!inside(rect, { left: 0, top: 0, right: vw, bottom: vh })) {
+        problems.push(`${name}: outside the viewport ${JSON.stringify(rect)}`);
+      }
+      const clipping = clippers(el);
+      for (const clip of clipping) {
+        const clipBox = box(clip.getBoundingClientRect());
+        if (!inside(rect, clipBox)) {
+          problems.push(
+            `${name}: clipped by <${clip.tagName.toLowerCase()} class="${clip.className}">`,
+          );
+        }
+      }
+      for (const part of [el, ...Array.from(el.querySelectorAll('*'))]) {
+        const style = getComputedStyle(part);
+        if (style.display !== 'inline' && part.scrollWidth > part.clientWidth + 0.5) {
+          problems.push(
+            `${name}: <${part.tagName.toLowerCase()}> narrower than its content (${part.clientWidth} < ${part.scrollWidth})`,
+          );
+        }
+      }
+      // Per text node: one node on two lines is a wrap; the chip and the word sitting at different
+      // heights inside one flex row are not.
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.textContent?.trim()) {
+          continue;
+        }
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0);
+        if (rects.length === 0) {
+          continue;
+        }
+        const lines = new Set(rects.map((r) => Math.round(r.top)));
+        if (lines.size > 1) {
+          problems.push(`${name}: "${node.textContent.trim()}" wraps onto ${lines.size} lines`);
+        }
+        const textBox = box(range.getBoundingClientRect());
+        if (!inside(textBox, { left: 0, top: 0, right: vw, bottom: vh })) {
+          problems.push(`${name}: "${node.textContent.trim()}" outside the viewport`);
+        }
+        for (const clip of clipping) {
+          if (!inside(textBox, box(clip.getBoundingClientRect()))) {
+            problems.push(
+              `${name}: "${node.textContent.trim()}" clipped by <${clip.tagName.toLowerCase()}>`,
+            );
+          }
+        }
+      }
+    }
+    const names = Object.keys(boxes);
+    for (let i = 0; i < names.length; i++) {
+      for (let j = i + 1; j < names.length; j++) {
+        const a = boxes[names[i]];
+        const b = boxes[names[j]];
+        const overlapX = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+        const overlapY = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+        if (overlapX > 0.5 && overlapY > 0.5) {
+          problems.push(`${names[i]} overlaps ${names[j]} by ${overlapX.toFixed(1)} px`);
+        }
+      }
+    }
+    const header = document.querySelector('header');
+    const wordmark = document.querySelector('header a[href="/"] span');
+    const ordered = [...names].sort((a, b) => boxes[a].left - boxes[b].left);
+    return {
+      viewport: { width: vw, height: vh },
+      headerHeight: header ? Math.round(header.getBoundingClientRect().height) : null,
+      wordmarkWidth: wordmark ? Math.round(wordmark.getBoundingClientRect().width * 10) / 10 : null,
+      boxes,
+      // Free space between neighbours, left to right, and after the last one to the viewport edge.
+      gaps: ordered.length
+        ? [
+            ...ordered.slice(1).map((name, i) => ({
+              between: `${ordered[i]}|${name}`,
+              px: Math.round((boxes[name].left - boxes[ordered[i]].right) * 10) / 10,
+            })),
+            {
+              between: `${ordered[ordered.length - 1]}|edge`,
+              px: Math.round((vw - boxes[ordered[ordered.length - 1]].right) * 10) / 10,
+            },
+          ]
+        : [],
+      problems,
+    };
+  }, options.badge);
+  const info = test.info();
+  const dir = path.join(OUT, 'fit');
+  fs.mkdirSync(dir, { recursive: true });
+  const name = `${slug}--${report.viewport.width}--${info.project.name}--${info.title.replace(/[^a-z0-9-]+/gi, '_')}`;
+  fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(report, null, 2));
+  expect.soft(report.problems, `header fit at ${report.viewport.width}px`).toEqual([]);
+  expect.soft(report.headerHeight, 'the header keeps its h-14 contract').toBe(56);
 }
 
 /**

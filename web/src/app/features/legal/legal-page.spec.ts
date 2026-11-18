@@ -2,7 +2,7 @@ import { Location } from '@angular/common';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { provideLocationMocks } from '@angular/common/testing';
-import { Component } from '@angular/core';
+import { Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthUser } from '../../core/auth/auth.model';
 import { LanguageService } from '../../core/i18n/language.service';
 import { NavigationHistoryService } from '../../core/routing/navigation-history.service';
+import { WishSummaryService } from '../../core/wishes/wish-summary.service';
 import { LegalPage } from './legal-page';
 
 // Two arbitrary routed pages, only to give the router something to navigate BETWEEN — their own
@@ -98,6 +99,9 @@ describe('LegalPage', () => {
           { path: 'b', component: DummyPageB },
         ]),
         provideLocationMocks(),
+        // AccountMenu reads whether the header's wish count is available; the real service would
+        // ask /api/wishes/summary once a user resolves, which is not this page's business.
+        { provide: WishSummaryService, useValue: { available: signal(false) } },
       ],
     }).compileComponents();
 

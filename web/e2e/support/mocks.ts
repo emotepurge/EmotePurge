@@ -1,4 +1,4 @@
-import { Page, Route } from '@playwright/test';
+import { ConsoleMessage, Page, Route } from '@playwright/test';
 
 export const AUTH_USER = {
   twitchUserId: '1',
@@ -20,10 +20,41 @@ async function fulfillJson(
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 }
 
-/** GET /api/auth/me — pass `null` to simulate a logged-out visitor (401). */
+/**
+ * GET /api/auth/me — pass `null` to simulate a logged-out visitor (401).
+ *
+ * With a user it also registers the default for the header's wish count (#485): 404
+ * `wishes_disabled`, the switch off, so no wishes link and no further request. The count is asked on
+ * every page as soon as someone is signed in; unmocked it would fall through to the dev proxy.
+ * Wish specs override it with `mockWishSummary` (a later route wins).
+ */
 export async function mockAuthMe(page: Page, user: typeof AUTH_USER | null): Promise<void> {
   await page.route('**/api/auth/me', (route) =>
     user ? fulfillJson(route, 200, user) : route.fulfill({ status: 401 }),
+  );
+  if (user) {
+    await mockWishSummary(page, 'disabled');
+  }
+}
+
+/**
+ * Chromium logs every 4xx answer as a console error ("Failed to load resource"). The 404 of the
+ * default summary mock is the switch-off answer the app expects, not a problem — specs that assert a
+ * clean console skip exactly this message.
+ */
+export function isWishSummaryNotFound(message: ConsoleMessage): boolean {
+  return message.type() === 'error' && message.location().url.endsWith('/api/wishes/summary');
+}
+
+/**
+ * GET /api/wishes/summary — the header's count of wishes needing action (#485). `'disabled'` answers
+ * 404 `wishes_disabled` (the switch off). Register after `mockAuthMe` to replace its default.
+ */
+export async function mockWishSummary(page: Page, actionCount: number | 'disabled'): Promise<void> {
+  await page.route('**/api/wishes/summary', (route) =>
+    actionCount === 'disabled'
+      ? fulfillJson(route, 404, { errorCode: 'wishes_disabled' })
+      : fulfillJson(route, 200, { actionCount }),
   );
 }
 

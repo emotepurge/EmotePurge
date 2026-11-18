@@ -3,6 +3,7 @@ import { expect, test } from './support/test';
 import {
   AUTH_USER,
   installLiveStub,
+  isWishSummaryNotFound,
   mockAuthMe,
   mockLegalAvailability,
   mockMyChannels,
@@ -102,6 +103,9 @@ test.describe('theme', () => {
     // neither the build nor a unit test hears a runtime image warning.
     const problems: string[] = [];
     page.on('console', (message) => {
+      if (isWishSummaryNotFound(message)) {
+        return;
+      }
       if (message.type() === 'error' || message.type() === 'warning') {
         problems.push(`${message.type()}: ${message.text()}`);
       }

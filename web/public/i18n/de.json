@@ -40,6 +40,11 @@
     "admin": "Admin",
     "myVotings": "Meine Abstimmungen",
     "votings": "Abstimmungen",
+    "wishes": "Wünsche",
+    "wishesCount": {
+      "one": "Wünsche, {{count}} mit Handlungsbedarf",
+      "other": "Wünsche, {{count}} mit Handlungsbedarf"
+    },
     "logout": "Logout",
     "login": "Login"
   },

@@ -19,6 +19,7 @@ import { catchError, map, of } from 'rxjs';
 
 import { AuthService } from '../../core/auth/auth.service';
 import { ChannelService } from '../../core/channels/channel.service';
+import { WishSummaryService } from '../../core/wishes/wish-summary.service';
 import { Avatar } from './avatar';
 import { DisplayPreferences } from './display-preferences';
 import { Popover } from './popover';
@@ -133,6 +134,20 @@ import { openTypedConfirmDialog } from './typed-confirm-dialog';
                   <span class="truncate text-sm font-medium text-fg">{{ user.displayName }}</span>
                 </div>
 
+                @if (wishesAvailable()) {
+                  <!-- Below sm only (#485, F4 step 2): there the header shows the wishes link as a
+                       bare count and only when the count is above 0, so this entry keeps the page
+                       reachable at 0. From sm on the header link carries the word itself, and a
+                       second entry here would say the same thing twice. -->
+                  <a
+                    routerLink="/my-wishes"
+                    class="flex min-h-11 items-center border-t border-border px-3 text-sm text-fg-body transition hover:bg-surface-inset sm:hidden"
+                    (click)="close()"
+                  >
+                    {{ 'shell.wishes' | transloco }}
+                  </a>
+                }
+
                 @if (user.isGlobalAdmin) {
                   <!-- Visibility only — /admin is behind adminGuard and every admin endpoint behind
                        GlobalAdminAuthorizationFilter. The flag rides along on the cached /me. -->
@@ -225,6 +240,7 @@ import { openTypedConfirmDialog } from './typed-confirm-dialog';
 export class AccountMenu {
   private readonly authService = inject(AuthService);
   private readonly channelService = inject(ChannelService);
+  private readonly wishSummary = inject(WishSummaryService);
   private readonly transloco = inject(TranslocoService);
   private readonly dialog = inject(Dialog);
   private readonly document = inject(DOCUMENT);
@@ -237,6 +253,7 @@ export class AccountMenu {
 
   protected readonly currentUser = this.authService.currentUser;
   protected readonly authResolved = this.authService.isResolved;
+  protected readonly wishesAvailable = this.wishSummary.available;
   protected readonly isOpen = signal(false);
   /**
    * Which level of the panel is showing. Reset on close, so the menu always opens where it was

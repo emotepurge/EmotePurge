@@ -49,6 +49,7 @@ import { WishRemovalTracker } from '../../core/wishes/wish-removal-tracker';
 import { wishErrorKey } from '../../core/wishes/wish-error';
 import type { Wish, WishListView } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
+import { WishSummaryService } from '../../core/wishes/wish-summary.service';
 import { isConfirmedAction, isSevenTvAction, WishAction } from '../../core/wishes/wish-view';
 import { Pager } from '../../shared/pagination/pager';
 import { DeleteAbortNotice } from '../../shared/seven-tv/delete-flow';
@@ -414,6 +415,7 @@ export class ChannelWishesPage {
   readonly wish = input<string>();
 
   private readonly wishService = inject(WishService);
+  private readonly wishSummary = inject(WishSummaryService);
   private readonly dialog = inject(Dialog);
   private readonly transloco = inject(TranslocoService);
   private readonly arbiter = inject(SevenTvRunArbiter);
@@ -641,7 +643,7 @@ export class ChannelWishesPage {
     // stop "nothing was changed", after a booking or a refused booking the wish moved.
     this.removals.ended.pipe(takeUntilDestroyed()).subscribe((end) => {
       if (end.channelName === this.channel()) {
-        this.reloadAll();
+        this.reloadAfterChange();
       }
     });
 
@@ -656,11 +658,16 @@ export class ChannelWishesPage {
     liveReload(this.liveUrl, {
       accept: [LIVE_EVENT_TYPES.wishChanged, LIVE_EVENT_TYPES.channelSynced],
       debounceMs: CHANNEL_RELOAD_DEBOUNCE_MS,
-    }).subscribe(() => this.reloadAll());
+    }).subscribe(() => this.reloadAfterChange());
 
     // Reopened stream and a window that is visible again: counts may have moved unseen, so every
-    // held usage value runs out (plan 2.4 c, d) before the lists reload.
-    liveReopened(this.liveUrl).subscribe(() => this.reloadAfterGap());
+    // held usage value runs out (plan 2.4 c, d) before the lists reload. A reopened stream may also
+    // have swallowed a `wish.changed`, so the header count asks again; a visible window it does not
+    // need to, the count asks by itself then.
+    liveReopened(this.liveUrl).subscribe(() => {
+      this.reloadAfterGap();
+      this.wishSummary.refresh();
+    });
 
     const visible$ = toObservable(this.visible);
     visible$
@@ -791,7 +798,7 @@ export class ChannelWishesPage {
         return;
       }
       if (result?.kind === 'edited') {
-        this.reloadAll();
+        this.reloadAfterChange();
       } else if (result?.kind === 'stale') {
         this.onStale(sectionId, result.errorKey);
       }
@@ -805,7 +812,7 @@ export class ChannelWishesPage {
         return;
       }
       if (result?.kind === 'readded') {
-        this.reloadAll();
+        this.reloadAfterChange();
       } else if (result?.kind === 'jump') {
         this.jumpTo(result.wishId);
       } else if (result?.kind === 'stale') {
@@ -863,17 +870,17 @@ export class ChannelWishesPage {
   /** The row showed a state the server no longer has: say so at its section and show the current one. */
   private onStale(sectionId: SectionId, errorKey: string): void {
     this.actionErrorOf(sectionId).set(errorKey);
-    this.reloadAll();
+    this.reloadAfterChange();
   }
 
   private onEntryClosed(result: WishEntryDialogResult | undefined): void {
     switch (result?.kind) {
       case 'created':
         this.setFullNotice.set(result.setFull);
-        this.reloadAll();
+        this.reloadAfterChange();
         return;
       case 'extended':
-        this.reloadAll();
+        this.reloadAfterChange();
         return;
       case 'edit':
         this.openEdit(result.wish);
@@ -895,7 +902,7 @@ export class ChannelWishesPage {
 
   private onAdoptClosed(result: WishAdoptDialogResult | undefined): void {
     if (result?.kind === 'adopted') {
-      this.reloadAll();
+      this.reloadAfterChange();
     } else if (result?.kind === 'jump') {
       this.jumpTo(result.wishId);
     }
@@ -942,6 +949,16 @@ export class ChannelWishesPage {
   private reloadAfterGap(): void {
     this.usageStore.expireAll();
     this.reloadAll();
+  }
+
+  /**
+   * A wish changed — by a command here, a dialog, a finished removal or a live event: the lists
+   * reload, and the header count asks again (plan 2.4: one extra request, debounced in the service,
+   * so a command and its own `wish.changed` make one).
+   */
+  private reloadAfterChange(): void {
+    this.reloadAll();
+    this.wishSummary.refresh();
   }
 
   /** Every loaded view once, plus the pinned wish; the ended list only while it is open. */
@@ -1076,7 +1093,7 @@ export class ChannelWishesPage {
       next: () => {
         this.setPending(wish.id, false);
         if (channel === this.channel()) {
-          this.reloadAll();
+          this.reloadAfterChange();
         }
       },
       error: (error: unknown) => {
@@ -1092,7 +1109,7 @@ export class ChannelWishesPage {
         // The row showed a state the server no longer has: show the current one.
         const code = apiErrorCode(error);
         if (code === 'wish_state_conflict' || code === 'wish_not_found') {
-          this.reloadAll();
+          this.reloadAfterChange();
         }
       },
     });

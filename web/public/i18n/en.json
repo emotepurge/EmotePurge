@@ -40,6 +40,11 @@
     "admin": "Admin",
     "myVotings": "My votes",
     "votings": "Votes",
+    "wishes": "Wishes",
+    "wishesCount": {
+      "one": "Wishes, {{count}} needs action",
+      "other": "Wishes, {{count}} need action"
+    },
     "logout": "Logout",
     "login": "Login"
   },

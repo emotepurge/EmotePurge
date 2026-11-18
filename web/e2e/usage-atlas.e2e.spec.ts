@@ -7,6 +7,7 @@ import {
   MockSyncInSetAnswer,
   emitLive,
   installLiveStub,
+  isWishSummaryNotFound,
   mockActiveEmoteSet,
   mockAuthMe,
   mockChannelEmoteSetList,
@@ -1258,6 +1259,9 @@ test.describe('set view (#200, K4)', () => {
   }) => {
     const consoleProblems: string[] = [];
     page.on('console', (message) => {
+      if (isWishSummaryNotFound(message)) {
+        return;
+      }
       if (message.type() === 'error' || message.type() === 'warning') {
         consoleProblems.push(`${message.type()}: ${message.text()}`);
       }
@@ -1481,6 +1485,9 @@ test.describe('emote slot cards (#365, #377)', () => {
   function watchConsole(page: Page): string[] {
     const problems: string[] = [];
     page.on('console', (message) => {
+      if (isWishSummaryNotFound(message)) {
+        return;
+      }
       if (message.type() === 'error' || message.type() === 'warning') {
         problems.push(`${message.type()}: ${message.text()}`);
       }

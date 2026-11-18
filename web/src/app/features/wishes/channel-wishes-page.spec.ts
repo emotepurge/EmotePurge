@@ -25,6 +25,7 @@ import {
 import { WishRemovalProgress } from '../../core/wishes/wish-removal';
 import type { Wish, WishDetail, WishListView, WishUsage } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
+import { WishSummaryService } from '../../core/wishes/wish-summary.service';
 import { ChannelWishesPage, WISH_RUN_LOCK_ID, WISH_SAFETY_RELOAD_MS } from './channel-wishes-page';
 import { WishAdoptDialog } from './wish-adopt-dialog';
 import { WishEntryDialog } from './wish-entry-dialog';
@@ -183,10 +184,12 @@ describe('ChannelWishesPage', () => {
   let removalCalls: { channel: string; id: number; progress: WishRemovalProgress }[];
   let reportRetries: { channel: string; id: number }[];
   let prunedRemovals: { channel: string; ids: number[] }[];
+  let summaryRefresh: ReturnType<typeof vi.fn>;
   const fixtures: ComponentFixture<ChannelWishesPage>[] = [];
 
   beforeEach(() => {
     vi.useFakeTimers();
+    summaryRefresh = vi.fn();
     FakeEventSource.instances = [];
     listCalls = [];
     getCalls = [];
@@ -246,6 +249,7 @@ describe('ChannelWishesPage', () => {
           },
         },
         { provide: Dialog, useValue: { open: openDialog } },
+        { provide: WishSummaryService, useValue: { refresh: summaryRefresh } },
         {
           provide: WishAddService,
           useValue: {
@@ -543,6 +547,20 @@ describe('ChannelWishesPage', () => {
       vi.advanceTimersByTime(WISH_SAFETY_RELOAD_MS * 2);
       expect(calls('open')).toHaveLength(2);
     });
+
+    it('leaves the header count to its own poll on the safety reload and a visible window', () => {
+      const fixture = create();
+      settle(fixture);
+
+      vi.advanceTimersByTime(WISH_SAFETY_RELOAD_MS);
+      setVisibility('hidden');
+      fixture.detectChanges();
+      setVisibility('visible');
+      fixture.detectChanges();
+
+      expect(calls('open')).toHaveLength(3);
+      expect(summaryRefresh).not.toHaveBeenCalled();
+    });
   });
 
   describe('live reloads', () => {
@@ -577,20 +595,32 @@ describe('ChannelWishesPage', () => {
       expect(calls('open')).toHaveLength(2);
       expect(calls('running')).toHaveLength(2);
     });
+
+    it('asks the header count again on a live change of this channel', () => {
+      const fixture = create();
+      settle(fixture);
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+
+      expect(summaryRefresh).toHaveBeenCalledOnce();
+    });
   });
 
   describe('booking actions', () => {
-    it('reloads at once after its own command', () => {
+    it('reloads at once after its own command, and the header count asks again', () => {
       const fixture = create();
       settle(fixture, [], [wish(1)]);
 
       buttonIn(section(fixture, 'running'), de.wishes.actions.extend).click();
       expect(actions).toEqual([expect.objectContaining({ name: 'extend', id: 1 })]);
+      expect(summaryRefresh).not.toHaveBeenCalled();
       actions[0].answer.next(wish(1));
       fixture.detectChanges();
 
       expect(calls('open')).toHaveLength(2);
       expect(calls('running')).toHaveLength(2);
+      expect(summaryRefresh).toHaveBeenCalledOnce();
     });
 
     it('sends keep and close only after the confirmation', () => {
