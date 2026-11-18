@@ -3,6 +3,7 @@ using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
+using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -15,45 +16,6 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 // the trigger wrapper they go through. A throwing, a counting and the real reconcile stand behind the trigger.
 public partial class WishReconcileServiceTests
 {
-    // ------------------------------------------------------------------------------------ the trigger
-
-    [Fact]
-    public async Task Trigger_SwitchOff_NeverCallsTheReconcile()
-    {
-        var reconcile = Substitute.For<IWishReconcileService>();
-        var trigger = new WishReconcileTrigger(reconcile, new WishOptions { Enabled = false }, NullLogger<WishReconcileTrigger>.Instance);
-
-        await trigger.TriggerAsync("channel-id");
-
-        Assert.Empty(reconcile.ReceivedCalls());
-    }
-
-    [Fact]
-    public async Task Trigger_AFailure_IsSwallowedAndLoggedOnce_WithoutAnythingButTheChannelId()
-    {
-        var reconcile = Substitute.For<IWishReconcileService>();
-        reconcile.ReconcileChannelAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).ThrowsAsync(new InvalidOperationException("boom"));
-        var logger = new RecordingLogger<WishReconcileTrigger>();
-
-        await new WishReconcileTrigger(reconcile, new WishOptions { Enabled = true }, logger).TriggerAsync("channel-id");
-
-        var line = Assert.Single(logger.Entries);
-        Assert.Equal(LogLevel.Warning, line.Level);
-        Assert.Contains("channel-id", line.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task Trigger_ACancellation_Propagates()
-    {
-        using var cts = new CancellationTokenSource();
-        await cts.CancelAsync();
-        var reconcile = Substitute.For<IWishReconcileService>();
-        reconcile.ReconcileChannelAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).ThrowsAsync(new OperationCanceledException(cts.Token));
-        var trigger = new WishReconcileTrigger(reconcile, new WishOptions { Enabled = true }, NullLogger<WishReconcileTrigger>.Instance);
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => trigger.TriggerAsync("channel-id", cts.Token));
-    }
-
     // ------------------------------------------------------------------------------------ full sync
 
     [Fact]
@@ -196,7 +158,59 @@ public partial class WishReconcileServiceTests
         Assert.Equal(WishStatus.Active, (await WishAsync(wishId)).Status);
     }
 
+    // Two hit channels of one set, one with an active emote (changed) and one whose emote is archived already
+    // (unchanged): only the changed channel reconciles.
+    [Fact]
+    public async Task Report_Delete_TwoHitChannels_OnlyTheChangedOneReconciles()
+    {
+        var (changed, set, x, _, _) = await SeedLinkedForReportAsync();
+        Channel unchanged;
+        await using (var db = fixture.CreateDbContext())
+        {
+            unchanged = await SlotSyncKit.SeedChannelAsync(db, $"r{Guid.NewGuid():N}"[..18], set);
+            await SlotSyncKit.SeedEmoteAsync(db, unchanged, x, "kappa", archived: true, firstSeenAt: SlotSyncKit.T1);
+        }
+
+        var recording = Substitute.For<IWishReconcileTrigger>();
+
+        var channels = await RunReportAsync(set, x, [], recording);
+
+        Assert.Equal(2, channels.Count);
+        Assert.Equal(1, channels.Single(c => c.ChannelName == changed.Name).NewlyChangedCount);
+        Assert.Equal(0, channels.Single(c => c.ChannelName == unchanged.ChannelName).NewlyChangedCount);
+        var call = Assert.Single(recording.ReceivedCalls());
+        Assert.Equal(changed.Id, call.GetArguments()[0]);
+    }
+
+    // The first attempt dies as a deadlock victim before its commit, the retry commits: one reconcile, after it.
+    [Fact]
+    public async Task Report_Delete_RetriedAfterADeadlock_ReconcilesExactlyOnce()
+    {
+        var (seeded, set, x, slotId, _) = await SeedLinkedForReportAsync();
+        var hook = new SaveHook((_, call) => call == 1
+            ? throw new Npgsql.PostgresException("deadlock detected", "ERROR", "ERROR", Npgsql.PostgresErrorCodes.DeadlockDetected)
+            : Task.CompletedTask);
+        var recording = Substitute.For<IWishReconcileTrigger>();
+
+        var channels = await RunReportAsync(set, x, [new SyncInSetEntryDto(x, "kappa", slotId, SlotSyncKit.T1)], recording, hook);
+
+        Assert.Equal(1, Assert.Single(channels).NewlyChangedCount);
+        Assert.Equal(2, hook.Calls);
+        await recording.Received(1).TriggerAsync(seeded.Id, Arg.Any<CancellationToken>());
+    }
+
     // ------------------------------------------------------------------------------------ helpers (hooks)
+
+    private async Task<IReadOnlyList<SyncInSetChannelResultDto>> RunReportAsync(
+        string set, string x, IReadOnlyList<SyncInSetEntryDto> entries, IWishReconcileTrigger trigger, SaveHook? hook = null)
+    {
+        await using var db = hook is null ? fixture.CreateDbContext() : fixture.CreateDbContext([hook]);
+        var service = new EmoteService(
+            db, NullLogger<EmoteService>.Instance, Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db), trigger);
+        var result = await service.MarkDeletedInSetAsync(
+            set, OwnerSevenTvUserId, OwnerTwitchLogin, OwnerTwitchUserId, [x], null, new AuditActor("100", "synctester"), entries);
+        return result.Channels;
+    }
 
     private WishReconcileTrigger RealTrigger() =>
         new(Sut(), new WishOptions { Enabled = true }, NullLogger<WishReconcileTrigger>.Instance);

@@ -1,4 +1,5 @@
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using NSubstitute;
@@ -38,6 +39,30 @@ public class WishRegistrationTests
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IWishReconcileService>());
         Assert.Same(
             provider.GetRequiredService<IWishReconcileService>(), scope.ServiceProvider.GetRequiredService<IWishReconcileService>());
+    }
+
+    // The trigger parameters of SevenTvSyncService and EmoteService are optional (null = no hook), so a
+    // miswired graph would silently drop the hook. A recording double behind the registration cannot be
+    // reached without a database, so this reads the injected field instead — by its type, not its name, which
+    // the compiler generates for a primary-constructor parameter and may change.
+    [Fact]
+    public void SlotWriters_ReceiveTheRegisteredTrigger()
+    {
+        using var provider = BuildProvider("true");
+        using var scope = provider.CreateScope();
+        var registered = provider.GetRequiredService<IWishReconcileTrigger>();
+
+        Assert.Same(registered, InjectedTrigger(scope.ServiceProvider.GetRequiredService<ISevenTvSyncService>()));
+        Assert.Same(registered, InjectedTrigger(scope.ServiceProvider.GetRequiredService<IEmoteService>()));
+    }
+
+    private static object? InjectedTrigger(object service)
+    {
+        var fields = service.GetType()
+            .GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            .Where(f => f.FieldType == typeof(IWishReconcileTrigger))
+            .ToList();
+        return Assert.Single(fields).GetValue(service);
     }
 
     private static ServiceProvider BuildProvider(string? wishesEnabled)
