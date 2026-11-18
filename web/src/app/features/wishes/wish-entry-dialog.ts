@@ -128,7 +128,7 @@ type EntryConflict =
                   [sevenTvEmoteId]="hit.id"
                   [knownStill]="hit.animated === false"
                 />
-                <span class="text-fg-body">{{
+                <span class="min-w-0 break-words text-fg-body">{{
                   'wishes.entry.read.found' | transloco: { name: hit.name || hit.id }
                 }}</span>
               }
