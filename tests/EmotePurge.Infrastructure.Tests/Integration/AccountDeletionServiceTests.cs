@@ -94,6 +94,83 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
         Assert.Equal(other.TwitchUsername, untouched.RequestedByLogin);
     }
 
+    // Wish emotes (AK18, plan T9): the requester fields of every wish with the account's id are cleared, the
+    // wishes stay; the bot-mode activator and a pending activation request become the marker. A manual entry
+    // that names the same login without an id is not touched (plan finding 16).
+    [Fact]
+    public async Task Delete_ClearsTheRequesterOfTheirWishes_AndPseudonymisesTheBotModeActivator()
+    {
+        var user = await SeedUserAsync("acctdel-wish");
+        var other = await SeedUserAsync("acctdel-wish-other");
+        var (channel, _, _, _) = await SeedChannelWithSessionsAsync("acctdelwish");
+        var (otherChannel, _, _, _) = await SeedChannelWithSessionsAsync("acctdelwishother");
+        long first, second, foreign, loginOnly;
+        await using (var seedDb = fixture.CreateDbContext())
+        {
+            var wishes = new[]
+            {
+                AccountWish(channel.Id, WishStatus.Approved, user.Id, user.TwitchUsername),
+                AccountWish(otherChannel.Id, WishStatus.Removed, user.Id, user.TwitchUsername),
+                AccountWish(channel.Id, WishStatus.Approved, other.Id, other.TwitchUsername),
+                AccountWish(channel.Id, WishStatus.Approved, requesterId: null, user.TwitchUsername)
+            };
+            seedDb.Wishes.AddRange(wishes);
+            seedDb.ChannelWishSettings.AddRange(
+                new ChannelWishSettings
+                {
+                    ChannelId = channel.Id,
+                    BotModeEnabled = true,
+                    BotModeActivatedByTwitchUserId = user.Id,
+                    BotModeActivatedByLogin = user.TwitchUsername,
+                    BotActivationRequestedByTwitchUserId = other.Id,
+                    BotActivationRequestedByLogin = other.TwitchUsername
+                },
+                new ChannelWishSettings
+                {
+                    ChannelId = otherChannel.Id,
+                    BotModeActivatedByTwitchUserId = other.Id,
+                    BotModeActivatedByLogin = other.TwitchUsername,
+                    BotActivationRequestedByTwitchUserId = user.Id,
+                    BotActivationRequestedByLogin = user.TwitchUsername
+                });
+            await seedDb.SaveChangesAsync();
+            (first, second, foreign, loginOnly) = (wishes[0].Id, wishes[1].Id, wishes[2].Id, wishes[3].Id);
+        }
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            var result = await CreateService(db).DeleteAsync(user.Id, Admin, AccountDeletionReason.AdminRequest, null);
+            Assert.Equal(AccountDeletionOutcome.Deleted, result.Outcome);
+        }
+
+        await using var verify = fixture.CreateDbContext();
+        var rows = await verify.Wishes.AsNoTracking()
+            .Where(w => w.ChannelId == channel.Id || w.ChannelId == otherChannel.Id)
+            .ToDictionaryAsync(w => w.Id);
+        Assert.Equal(4, rows.Count);
+        foreach (var id in new[] { first, second })
+        {
+            Assert.Null(rows[id].RequesterTwitchUserId);
+            Assert.Null(rows[id].RequesterLogin);
+        }
+
+        Assert.Equal(WishStatus.Removed, rows[second].Status);
+        Assert.Equal(other.Id, rows[foreign].RequesterTwitchUserId);
+        Assert.Equal(other.TwitchUsername, rows[foreign].RequesterLogin);
+        Assert.Null(rows[loginOnly].RequesterTwitchUserId);
+        Assert.Equal(user.TwitchUsername, rows[loginOnly].RequesterLogin);
+
+        var own = await verify.ChannelWishSettings.AsNoTracking().SingleAsync(s => s.ChannelId == channel.Id);
+        Assert.Equal(AuditActor.DeletedUser.TwitchUserId, own.BotModeActivatedByTwitchUserId);
+        Assert.Equal(AuditActor.DeletedUser.Login, own.BotModeActivatedByLogin);
+        Assert.True(own.BotModeEnabled);
+        Assert.Equal(other.Id, own.BotActivationRequestedByTwitchUserId);
+        var otherSettings = await verify.ChannelWishSettings.AsNoTracking().SingleAsync(s => s.ChannelId == otherChannel.Id);
+        Assert.Equal(other.Id, otherSettings.BotModeActivatedByTwitchUserId);
+        Assert.Equal(AuditActor.DeletedUser.TwitchUserId, otherSettings.BotActivationRequestedByTwitchUserId);
+        Assert.Equal(AuditActor.DeletedUser.Login, otherSettings.BotActivationRequestedByLogin);
+    }
+
     [Fact]
     public async Task Delete_OpenSessionLosesTheVote_AndItsScoreDrops()
     {
@@ -687,6 +764,21 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
         TargetType = "emoteSet",
         TargetId = "set-other",
         DetailsJson = detailsJson
+    };
+
+    private static Wish AccountWish(string channelId, string status, string? requesterId, string requesterLogin) => new()
+    {
+        ChannelId = channelId,
+        SevenTvEmoteId = Guid.NewGuid().ToString("N")[..24],
+        EmoteName = "Emote",
+        Alias = "Alias",
+        Source = WishSource.Manual,
+        Status = status,
+        StatusChangedAtUtc = DateTime.UtcNow,
+        CreatedAtUtc = DateTime.UtcNow,
+        EndedAtUtc = WishStatus.IsEnded(status) ? DateTime.UtcNow : null,
+        RequesterTwitchUserId = requesterId,
+        RequesterLogin = requesterLogin
     };
 
     private AccountDeletionService CreateService(AppDbContext db, IRateLimitTelemetry? telemetry = null) =>

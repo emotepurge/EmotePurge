@@ -11,7 +11,8 @@ namespace EmotePurge.Infrastructure.Services;
 /// <summary>
 /// One retention pass (data-retention plan, "Der Job") — see <see cref="IDataRetentionService"/> for
 /// the contract. The categories run in a fixed order, each in its own transaction(s), and never inside
-/// an outer one: tokens → accounts → ended vote sessions → audit log → chat-log backfill runs → channels → system load.
+/// an outer one: tokens → accounts → ended vote sessions → audit log → chat-log backfill runs → ended wishes →
+/// wish requester data → channels → system load.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -60,6 +61,7 @@ public class DataRetentionService(
     private const int BackfillRunBatchSize = 500;
     private const int SystemLoadBatchSize = 5_000;
     private const int LogEntryBatchSize = 5_000;
+    private const int WishBatchSize = 1_000;
     private const string SystemLoadSampleImmediateSuccessorJoin = """
         LEFT JOIN LATERAL (
             SELECT s2."SampledAtUtc"
@@ -84,6 +86,14 @@ public class DataRetentionService(
                   AND successor_hourly."HourUtc" = date_trunc('hour', succ."SampledAtUtc" AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'))
         """;
 
+    // E14 (a): every state without an end, except active. E14 (b): exactly the four states the spec names;
+    // a pending wish (K6) is bounded by its own pending window and by (c).
+    private static readonly string[] WishEndedStates = [.. WishStatus.Ended];
+    private static readonly string[] WishHangingStates =
+        [WishStatus.Pending, WishStatus.Approved, WishStatus.Unconfirmed, WishStatus.Failed, WishStatus.Presented];
+    private static readonly string[] WishStatesWithoutExpiry =
+        [WishStatus.Approved, WishStatus.Unconfirmed, WishStatus.Failed, WishStatus.Presented];
+
     public async Task<RetentionRunSummary> RunAsync(bool enforce, CancellationToken cancellationToken = default)
     {
         // Computed once, so every category of this pass measures against the same instant. UtcDateTime
@@ -96,6 +106,12 @@ public class DataRetentionService(
         var voteSessions = await RunVoteSessionsAsync(enforce, sessionCutoff, removedAccountIds, cancellationToken);
         var auditEntriesDeleted = await RunAuditLogAsync(enforce, now - RetentionPolicy.AuditLogEntry, cancellationToken);
         var backfillRunsDeleted = await RunChatLogBackfillRunsAsync(enforce, now - RetentionPolicy.ChatLogBackfillRun, cancellationToken);
+        var wishCutoffs = new WishCutoffs(
+            EndedWish: now - RetentionPolicy.EndedWish,
+            Requester: now - RetentionPolicy.WishRequester,
+            NeverActive: now - RetentionPolicy.WishNeverActiveRequesterCap);
+        var endedWishesDeleted = await RunEndedWishesAsync(enforce, wishCutoffs, cancellationToken);
+        var wishRequestersCleared = await RunWishRequestersAsync(enforce, wishCutoffs, cancellationToken);
         var channels = await RunChannelsAsync(
             enforce, now, now - RetentionPolicy.DeactivatedChannel, sessionCutoff, removedAccountIds, cancellationToken);
 
@@ -129,7 +145,9 @@ public class DataRetentionService(
         return new RetentionRunSummary(
             enforce, now, tokensCleared, accounts, voteSessions, auditEntriesDeleted, channels, backfillRunsDeleted,
             systemLoadRawDeleted, systemLoadRawWithoutHourly, systemLoadHourlyDeleted,
-            systemLoadRawFailed, systemLoadHourlyFailed);
+            systemLoadRawFailed, systemLoadHourlyFailed,
+            EndedWishesDeleted: endedWishesDeleted,
+            WishRequestersCleared: wishRequestersCleared);
     }
 
     public async Task<LogRetentionSummary> ExpireLogsAsync(bool enforce, CancellationToken cancellationToken = default)
@@ -434,6 +452,86 @@ public class DataRetentionService(
     }
 
     /// <summary>
+    /// Category 4c: wishes in an end state whose <c>EndedAtUtc</c> is older than
+    /// <see cref="RetentionPolicy.EndedWish"/>, in id batches like the audit log. Runs before the requester
+    /// clearing, so a row that goes here is never also counted there. A wish another one was merged into
+    /// leaves that one's <c>MergedIntoWishId</c> null (FK SET NULL). No audit entry.
+    /// </summary>
+    private async Task<int> RunEndedWishesAsync(bool enforce, WishCutoffs cutoffs, CancellationToken cancellationToken)
+    {
+        var deleted = 0;
+        var lastId = 0L;
+        while (true)
+        {
+            var batch = await db.Wishes
+                .Where(EndedWishDue(cutoffs))
+                .Where(w => w.Id > lastId)
+                .OrderBy(w => w.Id)
+                .Select(w => w.Id)
+                .Take(WishBatchSize)
+                .ToListAsync(cancellationToken);
+            if (batch.Count == 0)
+            {
+                break;
+            }
+
+            lastId = batch[^1];
+            // The predicate once more on top of the ids: a re-add that committed in between brought the
+            // wish back out of its end state, and it must not be deleted for having been selected.
+            deleted += enforce
+                ? await db.Wishes
+                    .Where(EndedWishDue(cutoffs))
+                    .Where(w => batch.Contains(w.Id))
+                    .ExecuteDeleteAsync(cancellationToken)
+                : batch.Count;
+        }
+
+        return deleted;
+    }
+
+    /// <summary>
+    /// Category 4d: requester data (<c>RequesterTwitchUserId</c>, <c>RequesterLogin</c>) of wishes due under
+    /// <see cref="RequesterDue"/>, cleared in id batches with one conditional update each; the row stays.
+    /// Leaves out the rows category 4c deletes (in an enforced pass they are gone already, in a dry run the
+    /// exclusion is the exact correction). The update re-evaluates the predicate against the current row
+    /// version, so a command that committed in between (a re-add, a retry) is judged on its new state.
+    /// </summary>
+    private async Task<int> RunWishRequestersAsync(bool enforce, WishCutoffs cutoffs, CancellationToken cancellationToken)
+    {
+        var cleared = 0;
+        var lastId = 0L;
+        while (true)
+        {
+            var batch = await db.Wishes
+                .Where(RequesterDue(cutoffs))
+                .Where(Not(EndedWishDue(cutoffs)))
+                .Where(w => w.Id > lastId)
+                .OrderBy(w => w.Id)
+                .Select(w => w.Id)
+                .Take(WishBatchSize)
+                .ToListAsync(cancellationToken);
+            if (batch.Count == 0)
+            {
+                break;
+            }
+
+            lastId = batch[^1];
+            cleared += enforce
+                ? await db.Wishes
+                    .Where(RequesterDue(cutoffs))
+                    .Where(w => batch.Contains(w.Id))
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(w => w.RequesterTwitchUserId, (string?)null)
+                            .SetProperty(w => w.RequesterLogin, (string?)null),
+                        cancellationToken)
+                : batch.Count;
+        }
+
+        return cleared;
+    }
+
+    /// <summary>
     /// Deletes old raw samples only when their own and their immediate successor's source/hour summaries
     /// exist. Rows needed to roll up an unclosed successor hour remain available for catch-up and are
     /// reported as a count-only warning.
@@ -641,6 +739,25 @@ public class DataRetentionService(
               || r.Status == ChatLogBackfillRunStatus.Cancelled)
              && r.FinishedAtUtc < cutoffUtc;
 
+    /// <summary>In an end state, and ended at least <see cref="RetentionPolicy.EndedWish"/> ago.</summary>
+    private static Expression<Func<Wish, bool>> EndedWishDue(WishCutoffs cutoffs) =>
+        w => WishEndedStates.Contains(w.Status) && w.EndedAtUtc < cutoffs.EndedWish;
+
+    /// <summary>
+    /// Holds requester data and is due under one of four rules (spec 6.5, E14): ended at least 30 days ago;
+    /// (a) without an end, not active, and expired at least 30 days ago; (b) without an end and without an
+    /// expiry, in approved, unconfirmed, failed or presented, and unchanged in state for at least 30 days;
+    /// (c) never active (<c>FirstActivatedAtUtc</c> null, deliberately not <c>StartsAtUtc</c>, which a re-add
+    /// clears) and created at least 120 days ago, whatever the state. (c) is a cap and applies to ended
+    /// wishes too.
+    /// </summary>
+    private static Expression<Func<Wish, bool>> RequesterDue(WishCutoffs cutoffs) =>
+        w => (w.RequesterTwitchUserId != null || w.RequesterLogin != null)
+            && ((WishEndedStates.Contains(w.Status) && w.EndedAtUtc < cutoffs.Requester)
+                || (WishHangingStates.Contains(w.Status) && w.ExpiresAtUtc < cutoffs.Requester)
+                || (WishStatesWithoutExpiry.Contains(w.Status) && w.ExpiresAtUtc == null && w.StatusChangedAtUtc < cutoffs.Requester)
+                || (w.FirstActivatedAtUtc == null && w.CreatedAtUtc < cutoffs.NeverActive));
+
     /// <summary>Left, and stamped as deactivated at least one period ago. A missing stamp is never due.</summary>
     private static Expression<Func<Channel, bool>> DeactivatedBefore(DateTime cutoffUtc) =>
         c => !c.IsBotActive && c.DeactivatedAtUtc < cutoffUtc;
@@ -678,6 +795,9 @@ public class DataRetentionService(
 
     private static bool IsCancellation(Exception exception, CancellationToken cancellationToken) =>
         exception is OperationCanceledException && cancellationToken.IsCancellationRequested;
+
+    /// <summary>The three wish cutoffs of one pass, computed from its one reference instant.</summary>
+    private readonly record struct WishCutoffs(DateTime EndedWish, DateTime Requester, DateTime NeverActive);
 
     private readonly record struct ChannelCascade(int Emotes, int UsageRows, int LiveDays, int VoteSessions, int Votes, int Observations)
     {

@@ -225,4 +225,32 @@ internal static class ApiErrorCodes
     public const string LogEntryNotFound = "log_entry_not_found";
     // 503: the query exceeded its time limit.
     public const string LogQueryTimeout = "log_query_timeout";
+
+    // Wish emotes (#481, K1). The wish routes also reuse channel_not_found, emote_ids_invalid (a malformed
+    // 7TV emote id) and invalid_request_body (an unbindable body, a start date outside its bounds, a re-add
+    // mode that is neither timed nor permanent).
+    // 404 on every wish route while Wishes:Enabled is false, after the authorization filter.
+    public const string WishesDisabled = "wishes_disabled";
+    // 404: no such wish in this channel.
+    public const string WishNotFound = "wish_not_found";
+    // 409: the wish's state does not allow the command, or changed under it; nothing was written.
+    public const string WishStateConflict = "wish_state_conflict";
+    // 409 from the manual entry: the emote is active in the set; the body carries slotIds.
+    public const string WishEmoteAlreadyInSet = "wish_emote_already_in_set";
+    // 409: a wish for the emote is running; the body carries wishId.
+    public const string WishAlreadyRunning = "wish_already_running";
+    // 400: durationDays outside 1..365.
+    public const string WishDurationOutOfRange = "wish_duration_out_of_range";
+    // 400: the alias is not a valid emote name.
+    public const string WishAliasInvalid = "wish_alias_invalid";
+    // 400: the requester login is not a valid Twitch login.
+    public const string WishRequesterInvalid = "wish_requester_invalid";
+    // 400 from PUT /settings: a value outside its bounds.
+    public const string WishSettingsOutOfRange = "wish_settings_out_of_range";
+    // 403 from PUT /settings in bot mode for a manager who is neither broadcaster, activator nor global admin.
+    public const string WishSettingsRestricted = "wish_settings_restricted";
+    // 404 from adopt: the slot does not exist, is not active or does not fit the wish.
+    public const string WishSlotNotFound = "wish_slot_not_found";
+    // 409 from adopt: another live wish holds the slot.
+    public const string WishSlotAlreadyLinked = "wish_slot_already_linked";
 }

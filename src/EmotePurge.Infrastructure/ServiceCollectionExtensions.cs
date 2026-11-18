@@ -341,6 +341,21 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(chatLogBackfillOptions);
         services.TryAddSingleton(TimeProvider.System);
 
+        // Wish emotes (#481): the feature switch, bound and validated eagerly like the options above; read by
+        // Api (routes, /permissions) and Worker (later children). The publisher is the one path of
+        // wish.changed for every writer in either process.
+        var wishOptions = new WishOptions();
+        configuration.GetSection(WishOptions.SectionName).Bind(wishOptions);
+        wishOptions.Validate();
+        services.AddSingleton(wishOptions);
+        services.AddSingleton<IWishChangedPublisher, WishChangedPublisher>();
+        services.AddScoped<IWishService, WishService>();
+        services.AddScoped<IWishOverviewService, WishOverviewService>();
+        // The reconcile opens a scope and a context of its own per call (never the caller's), so it can be a
+        // singleton that scoped and singleton callers alike take.
+        services.AddSingleton<IWishReconcileService, WishReconcileService>();
+        services.AddSingleton<IWishReconcileTrigger, WishReconcileTrigger>();
+
         // The backfill's database side for both processes (spec section 3). Scoped like every service
         // on AppDbContext; the worker resolves it from a scope that lives as long as its loop, because
         // the instance holds the loop's advisory-lock connection (D46).

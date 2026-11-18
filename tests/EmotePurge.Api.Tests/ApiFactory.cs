@@ -247,6 +247,15 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// <summary>Substituted for the imported-data removal route (#384) for the same reason as <see cref="ChatLogBackfill"/>.</summary>
     public IChatLogImportRemovalService ChatLogImportRemoval { get; } = Substitute.For<IChatLogImportRemovalService>();
 
+    /// <summary>
+    /// Substituted for the wish routes (#481): the handlers take it before any filter runs and the real
+    /// service sits on <c>AppDbContext</c>. The switch is <b>on</b> here; <see cref="WithWishesDisabled"/> is the off variant.
+    /// </summary>
+    public IWishService Wishes { get; } = Substitute.For<IWishService>();
+
+    /// <summary>Substituted like <see cref="Wishes"/>, for the cross-channel overview.</summary>
+    public IWishOverviewService WishOverview { get; } = Substitute.For<IWishOverviewService>();
+
     public ApiFactory()
     {
         LegalContent.GetAvailabilityAsync(Arg.Any<CancellationToken>())
@@ -277,6 +286,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 
         // On, so the filter matrix reaches the backfill handlers; the off variant overrides it.
         builder.UseSetting("ChatLogBackfill:Enabled", "true");
+
+        // Likewise for the wish routes; the off variant overrides it.
+        builder.UseSetting("Wishes:Enabled", "true");
 
         // Warnings and above still reach the console. A failing filter test reports only a status
         // code, and the difference between "the filter answered 500" and "the filter answered the
@@ -325,6 +337,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddSingleton(_ => LogStatus);
             services.AddScoped(_ => LogFilters);
             services.AddScoped(_ => ChatLogImportRemoval);
+            services.AddScoped(_ => Wishes);
+            services.AddScoped(_ => WishOverview);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected
             // services *before* it runs the endpoint filter pipeline. A request the filter is about
@@ -346,6 +360,10 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// <summary>The same factory — same substitutes — with <c>ChatLogBackfill:Enabled</c> off, the production default.</summary>
     public WebApplicationFactory<Program> WithBackfillDisabled() =>
         WithWebHostBuilder(builder => builder.UseSetting("ChatLogBackfill:Enabled", "false"));
+
+    /// <summary>The same factory — same substitutes — with <c>Wishes:Enabled</c> off, the production default.</summary>
+    public WebApplicationFactory<Program> WithWishesDisabled() =>
+        WithWebHostBuilder(builder => builder.UseSetting("Wishes:Enabled", "false"));
 
     private static IChannelEmoteSetObservationService CreateDefaultObservationService()
     {

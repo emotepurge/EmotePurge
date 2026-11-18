@@ -23,7 +23,7 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 // are never older than a cutoff, and whole seconds so a row stamped exactly at a cutoff reads back
 // exactly at it (Postgres keeps microseconds, .NET ticks).
 [Collection("Postgres")]
-public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
+public partial class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
 {
     private const string DatabaseName = "retention_service_tests";
 
@@ -748,7 +748,8 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
         bool enforce,
         int maxAccountsPerRun = 100,
         Func<string, Task>? beforeAccountDeletion = null,
-        Func<string, Task>? beforeChannelPurge = null)
+        Func<string, Task>? beforeChannelPurge = null,
+        DateTime? at = null)
     {
         await using var db = CreateDbContext();
 
@@ -786,7 +787,7 @@ public class DataRetentionServiceTests(PostgresFixture fixture) : IAsyncLifetime
             accounts,
             channels,
             new RetentionOptions { MaxAccountsPerRun = maxAccountsPerRun },
-            new HandWoundTimeProvider(new DateTimeOffset(_now)),
+            new HandWoundTimeProvider(new DateTimeOffset(at ?? _now)),
             _logs.For<DataRetentionService>());
 
         return await service.RunAsync(enforce);

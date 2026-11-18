@@ -971,6 +971,10 @@ public class ChannelIdentityService(
             session.ChannelId = survivor.Id;
         }
 
+        // Wish emotes (plan T9): a loser without emotes and tags can still carry wishes (none with a slot,
+        // it has no emotes) and wish settings, which the cascade below would silently delete with it.
+        var wishes = await MoveWishesAsync(survivor.Id, loser.Id, ct);
+
         // Captured before the flip: DeactivatedAtUtc must only be nulled when the merge is what
         // makes the survivor active, not when it already was (in which case the column is already
         // null and nulling it again is a no-op, but the read makes the condition mean what it says).
@@ -1004,7 +1008,10 @@ public class ChannelIdentityService(
                 newLogin,
                 movedLiveDays,
                 collapsedLiveDays,
-                movedVoteSessions = sessions.Count
+                movedVoteSessions = sessions.Count,
+                movedWishes = wishes.Moved,
+                mergedWishes = wishes.EndedAsMerged,
+                movedWishSettings = wishes.SettingsMoved
             });
         db.Channels.Remove(loser);
         // One SaveChangesAsync, although the survivor takes over a name the loser still holds in the
@@ -1031,6 +1038,106 @@ public class ChannelIdentityService(
             loser.ChannelName, loser.Id, oldLogin, survivor.Id, newLogin, movedLiveDays, collapsedLiveDays, sessions.Count);
         await PublishHandoverAsync(oldLogin, newLogin, ct);
         return true;
+    }
+
+    /// <summary>
+    /// Moves the loser's wishes and wish settings to the survivor, inside the merge's transaction and
+    /// before the loser row is deleted (plan T9, finding 15). Every column travels unchanged, the slot
+    /// generation and <c>FirstActivatedAtUtc</c> included; only <c>ChannelId</c> changes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Collision.</b> Both channels may run a wish for the same 7TV emote, which the partial unique
+    /// index allows once per channel (E13). Of such a pair the wish with a trace in 7TV wins (operator ruling
+    /// 2026-11-18): a <c>SlotId</c> in a state that holds its link (<c>unconfirmed</c>, <c>active</c>,
+    /// <c>presented</c>; an <c>approved</c> wish's <c>SlotId</c> is history), or a set <c>BotWriteAtUtc</c>.
+    /// Only when both or neither have one, the older wins (smaller <c>CreatedAtUtc</c>, on a tie the smaller id).
+    /// The other ends as <c>merged</c> with <c>MergedIntoWishId</c> pointing at the winner, before the move, so
+    /// the index never sees two. Ending it counts as a decision (E25): <c>DecisionVersion</c> + 1 and a queued
+    /// bot removal is dropped. The winner keeps its state, start and expiry as they are.
+    /// </para>
+    /// <para>
+    /// <b>Settings.</b> The survivor's row wins; only when it has none does the loser's move over, otherwise the
+    /// loser's goes with the cascade.
+    /// </para>
+    /// <para>
+    /// <b>Locks.</b> The caller holds both channel rows <c>FOR UPDATE</c>, so no wish or settings row of either
+    /// channel can be inserted meanwhile (a manual entry and the settings upsert take the channel row first,
+    /// plan 2.3, Sol-R2-1). The wish rows are then locked ascending by id (channel before wish, the order
+    /// everywhere) and read only afterwards: every loser wish, and every survivor wish of an emote the loser
+    /// has a wish for, whatever its state, so a concurrent re-add (which takes only its wish row) can neither
+    /// slip a second running wish in nor be decided on a state the merge no longer sees.
+    /// </para>
+    /// </remarks>
+    private async Task<WishMergeCounts> MoveWishesAsync(string survivorId, string loserId, CancellationToken ct)
+    {
+        var loserEmoteIds = await db.Wishes
+            .Where(w => w.ChannelId == loserId)
+            .Select(w => w.SevenTvEmoteId)
+            .Distinct()
+            .ToListAsync(ct);
+
+        var moved = 0;
+        var endedAsMerged = 0;
+        if (loserEmoteIds.Count > 0)
+        {
+            var lockIds = await db.Wishes
+                .Where(w => w.ChannelId == loserId
+                    || (w.ChannelId == survivorId && loserEmoteIds.Contains(w.SevenTvEmoteId)))
+                .Select(w => w.Id)
+                .ToListAsync(ct);
+            await db.LockWishesByIdsAsync(lockIds, ct);
+
+            var running = WishStatus.Running.ToArray();
+            var contenders = await db.Wishes
+                .AsNoTracking()
+                .Where(w => (w.ChannelId == loserId || w.ChannelId == survivorId)
+                    && loserEmoteIds.Contains(w.SevenTvEmoteId)
+                    && running.Contains(w.Status))
+                .Select(w => new { w.Id, w.ChannelId, w.SevenTvEmoteId, w.CreatedAtUtc, w.Status, w.SlotId, w.BotWriteAtUtc })
+                .ToListAsync(ct);
+
+            var now = DateTime.UtcNow;
+            foreach (var pair in contenders.GroupBy(w => w.SevenTvEmoteId, StringComparer.Ordinal).Where(g => g.Count() > 1))
+            {
+                // At most one per channel (the index), so a pair is exactly one of each. A trace in 7TV first,
+                // then age.
+                var ordered = pair
+                    .OrderByDescending(w => HasSevenTvTrace(w.Status, w.SlotId, w.BotWriteAtUtc))
+                    .ThenBy(w => w.CreatedAtUtc)
+                    .ThenBy(w => w.Id)
+                    .ToList();
+                var winner = ordered[0];
+                var other = ordered[^1];
+                endedAsMerged += await db.Wishes
+                    .Where(w => w.Id == other.Id)
+                    .ExecuteUpdateAsync(
+                        setters => setters
+                            .SetProperty(w => w.Status, WishStatus.Merged)
+                            .SetProperty(w => w.StatusReason, (string?)null)
+                            .SetProperty(w => w.StatusChangedAtUtc, now)
+                            .SetProperty(w => w.EndedAtUtc, now)
+                            .SetProperty(w => w.MergedIntoWishId, winner.Id)
+                            .SetProperty(w => w.DecisionVersion, w => w.DecisionVersion + 1)
+                            .SetProperty(w => w.RemovalQueuedAtUtc, (DateTime?)null)
+                            .SetProperty(w => w.RemovalQueuedVersion, (int?)null),
+                        ct);
+            }
+
+            moved = await db.Wishes
+                .Where(w => w.ChannelId == loserId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(w => w.ChannelId, survivorId), ct);
+        }
+
+        var settingsMoved = 0;
+        if (!await db.ChannelWishSettings.AnyAsync(s => s.ChannelId == survivorId, ct))
+        {
+            settingsMoved = await db.ChannelWishSettings
+                .Where(s => s.ChannelId == loserId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(s => s.ChannelId, survivorId), ct);
+        }
+
+        return new WishMergeCounts(moved, endedAsMerged, settingsMoved);
     }
 
     /// <summary>
@@ -1079,10 +1186,19 @@ public class ChannelIdentityService(
         return row.CreatedAt < cutoff && (row.LastSyncedAtUtc is null || row.LastSyncedAtUtc < cutoff);
     }
 
+    // A running wish has left a trace in 7TV when it holds a slot link (an approved wish's SlotId is
+    // history, a re-add keeps it) or the bot has written for it (K4).
+    private static bool HasSevenTvTrace(string status, string? slotId, DateTime? botWriteAtUtc) =>
+        (slotId is not null && status != WishStatus.Approved) || botWriteAtUtc is not null;
+
     // The snapshot one pass works from. A record rather than a tuple so the projection reads as
     // named facts about a channel; the two timestamps serve the D2 grace period (#245).
     private sealed record ChannelIdentityRow(
         string Id, string? TwitchChannelId, string ChannelName, DateTime CreatedAt, DateTime? LastSyncedAtUtc);
+
+    // What MoveWishesAsync did, for the merge's audit entry: wishes moved to the survivor, wishes ended as
+    // merged on an index collision (either channel's), and whether the loser's settings row moved (0 or 1).
+    private readonly record struct WishMergeCounts(int Moved, int EndedAsMerged, int SettingsMoved);
 
     private sealed class ReconcileCounters
     {

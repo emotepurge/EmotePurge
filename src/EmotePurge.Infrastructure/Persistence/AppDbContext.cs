@@ -32,6 +32,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<LogEntry> LogEntries => Set<LogEntry>();
     public DbSet<LogCaptureStatus> LogCaptureStatuses => Set<LogCaptureStatus>();
     public DbSet<LogFilter> LogFilters => Set<LogFilter>();
+    public DbSet<Wish> Wishes => Set<Wish>();
+    public DbSet<ChannelWishSettings> ChannelWishSettings => Set<ChannelWishSettings>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -474,6 +476,80 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(f => f.NameKey).HasMaxLength(60);
             entity.Property(f => f.Filter).HasMaxLength(512);
             entity.HasIndex(f => f.NameKey).IsUnique();
+        });
+
+        modelBuilder.Entity<Wish>(entity =>
+        {
+            entity.Property(w => w.SevenTvEmoteId).HasMaxLength(WishLimits.SevenTvEmoteIdMaxLength);
+            entity.Property(w => w.EmoteName).HasMaxLength(WishLimits.EmoteNameMaxLength);
+            entity.Property(w => w.Alias).HasMaxLength(WishLimits.AliasMaxLength);
+            entity.Property(w => w.RequesterLogin).HasMaxLength(WishLimits.RequesterLoginMaxLength);
+
+            entity.ToTable(t => t.HasCheckConstraint(
+                "CK_Wishes_DurationDays",
+                $"\"DurationDays\" BETWEEN {WishLimits.DurationDaysMin} AND {WishLimits.DurationDaysMax}"));
+
+            entity.HasIndex(w => new { w.ChannelId, w.Status });
+            entity.HasIndex(w => new { w.Status, w.ExpiresAtUtc });
+
+            // E13: at most one running wish per channel and 7TV emote id; the index is the last word in a race.
+            entity.HasIndex(w => new { w.ChannelId, w.SevenTvEmoteId })
+                .IsUnique()
+                .HasDatabaseName("IX_Wishes_ChannelId_SevenTvEmoteId_Running")
+                .HasFilter(
+                    $"\"Status\" IN ('{WishStatus.Approved}', '{WishStatus.Unconfirmed}', '{WishStatus.Active}', '{WishStatus.Presented}')");
+
+            // One slot-holding wish per slot: a live one, or a kept one, which keeps its entry for good
+            // (operator ruling 2026-11-18). Other ended wishes keep their SlotId without competing for it.
+            entity.HasIndex(w => w.SlotId)
+                .IsUnique()
+                .HasDatabaseName("IX_Wishes_SlotId_Live")
+                .HasFilter($"\"SlotId\" IS NOT NULL AND \"Status\" IN ('{WishStatus.Active}', '{WishStatus.Presented}', '{WishStatus.Kept}')");
+
+            // Retention sweeps only rows that carry requester data.
+            entity.HasIndex(w => w.EndedAtUtc)
+                .HasDatabaseName("IX_Wishes_EndedAtUtc_WithRequester")
+                .HasFilter("\"RequesterLogin\" IS NOT NULL OR \"RequesterTwitchUserId\" IS NOT NULL");
+
+            entity.HasOne(w => w.Channel)
+                .WithMany()
+                .HasForeignKey(w => w.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(w => w.Slot)
+                .WithMany()
+                .HasForeignKey(w => w.SlotId)
+                .OnDelete(DeleteBehavior.SetNull);
+
+            // The reference survives only while the target does.
+            entity.HasOne<Wish>()
+                .WithMany()
+                .HasForeignKey(w => w.MergedIntoWishId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<ChannelWishSettings>(entity =>
+        {
+            entity.HasKey(s => s.ChannelId);
+            entity.Property(s => s.ProtectionThresholdPerDay).HasPrecision(10, 2);
+
+            entity.ToTable(t =>
+            {
+                t.HasCheckConstraint(
+                    "CK_ChannelWishSettings_DefaultDurationDays",
+                    $"\"DefaultDurationDays\" BETWEEN {WishLimits.DurationDaysMin} AND {WishLimits.DurationDaysMax}");
+                t.HasCheckConstraint(
+                    "CK_ChannelWishSettings_ProbationLeadDays",
+                    $"\"ProbationLeadDays\" BETWEEN {WishLimits.ProbationLeadDaysMin} AND {WishLimits.ProbationLeadDaysMax}");
+                t.HasCheckConstraint(
+                    "CK_ChannelWishSettings_ProtectionThreshold",
+                    "\"ProtectionThresholdPerDay\" IS NULL OR \"ProtectionThresholdPerDay\" > 0");
+            });
+
+            entity.HasOne(s => s.Channel)
+                .WithOne()
+                .HasForeignKey<ChannelWishSettings>(s => s.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

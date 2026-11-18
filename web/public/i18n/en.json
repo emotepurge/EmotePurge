@@ -2535,7 +2535,19 @@
       "backfill_channel_identity_changed": "The channel changed while your request was running. Please reload and try again.",
       "backfill_slots_unsettled": "The emote slots of this set are not fully matched yet. This usually clears after the next sync. If it persists, an emote in the set has no add date.",
       "backfill_remove_run_active": "A backfill is queued or running for this channel. Cancel it first, then you can remove the imported data.",
-      "backfill_remove_scope_changed": "The imported data has changed in the meantime. Check the new state and confirm again."
+      "backfill_remove_scope_changed": "The imported data has changed in the meantime. Check the new state and confirm again.",
+      "wishes_disabled": "Wish emotes are not available.",
+      "wish_not_found": "This wish no longer exists.",
+      "wish_state_conflict": "That is not possible for this wish right now, its state has changed. Please reload and try again.",
+      "wish_emote_already_in_set": "This emote is already in the set. You can take it over instead.",
+      "wish_already_running": "A wish for this emote is already running. You can extend it.",
+      "wish_duration_out_of_range": "The duration must be between 1 and 365 days.",
+      "wish_alias_invalid": "This name is not valid as an emote name.",
+      "wish_requester_invalid": "This Twitch name is not valid.",
+      "wish_settings_out_of_range": "At least one settings value is outside the allowed range.",
+      "wish_settings_restricted": "Only the broadcaster, whoever activated the bot, and admins may change these settings.",
+      "wish_slot_not_found": "This entry is not (or no longer) active in the set.",
+      "wish_slot_already_linked": "This entry already belongs to another wish."
     }
   },
   "backfill": {

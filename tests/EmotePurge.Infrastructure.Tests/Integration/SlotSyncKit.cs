@@ -45,14 +45,16 @@ internal static class SlotSyncKit
         EmoteMatchCache? cache = null,
         ILogger<SevenTvSyncService>? logger = null,
         MatchMapExclusionTracker? exclusions = null,
-        DuplicateEmoteNameTracker? duplicates = null) =>
+        DuplicateEmoteNameTracker? duplicates = null,
+        IWishReconcileTrigger? wishReconcile = null) =>
         new(
             db, apiClient, cache ?? new EmoteMatchCache(), duplicates ?? new DuplicateEmoteNameTracker(), new ChannelEmoteSetObservationService(db),
             new ChannelSyncGate(), Substitute.For<IExcludedChannelFilter>(), new BroadcasterChannelLockService(db),
             new RecordingSevenTvSearchBudget(), new TwitchIdResolutionBackoff(new SevenTvSearchBudgetOptions(), TimeProvider.System),
             new EmptySetConfirmationTracker(new EmptySetConfirmationOptions(), TimeProvider.System),
             logger ?? new RecordingLogger<SevenTvSyncService>(),
-            exclusions);
+            exclusions,
+            wishReconcile);
 
     /// <summary>One sync of <paramref name="channel"/> against <paramref name="emotes"/> as set <paramref name="setId"/>.</summary>
     public static Task<SevenTvSyncResult?> SyncAsync(

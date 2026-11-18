@@ -40,6 +40,12 @@ public static class LiveEvents
     /// </summary>
     public const string BackfillProgress = "backfill.progress";
 
+    /// <summary>
+    /// A wish of this channel changed. Thin, no payload; clients refetch the wish list. Channel stream
+    /// only: the global stream would show the channel name to every signed-in user (E18).
+    /// </summary>
+    public const string WishChanged = "wish.changed";
+
     /// <summary>The worker published a fresh health snapshot. No channel scope.</summary>
     public const string WorkerHealth = "worker.health";
 
@@ -69,7 +75,7 @@ public static class LiveEvents
 
     /// <summary>Types the channel stream (<c>GET /api/channels/{channelName}/live</c>) forwards.</summary>
     public static readonly IReadOnlySet<string> ChannelTypes =
-        new HashSet<string>(StringComparer.Ordinal) { UsageFlushed, VoteChanged, ChannelSynced, LiveChanged, BackfillProgress };
+        new HashSet<string>(StringComparer.Ordinal) { UsageFlushed, VoteChanged, ChannelSynced, LiveChanged, BackfillProgress, WishChanged };
 }
 
 /// <summary>

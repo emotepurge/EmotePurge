@@ -24,7 +24,8 @@ namespace EmotePurge.Infrastructure.Persistence;
 /// autocommit would release the lock the moment it returns.</item>
 /// </list>
 /// Across tables the order is always <c>Channels</c>, then <c>Emotes</c>, then
-/// <c>EmoteSetLeaveObservations</c>. The one shared entry, <see cref="LockEmotesForShareByIdsAsync"/>
+/// <c>EmoteSetLeaveObservations</c>; the wish emotes work (<see cref="LockWishesByIdsAsync"/>) takes the channel row
+/// before the <c>Wishes</c> rows, and the wish rows by <c>Id</c> ascending. The one shared entry, <see cref="LockEmotesForShareByIdsAsync"/>
 /// (plan #373 E11a), sits in the <c>Emotes</c> position of that order like every other emote entry.
 /// </summary>
 internal static class RowLocks
@@ -119,6 +120,29 @@ internal static class RowLocks
         var ids = channelIds.Distinct(StringComparer.Ordinal).ToArray();
         return await db.Database
             .SqlQuery<string>($"""SELECT "Id" AS "Value" FROM "Channels" WHERE "Id" = ANY({ids}) ORDER BY "Id" COLLATE "C" FOR NO KEY UPDATE""")
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Locks the <c>Wishes</c> rows with the given ids <c>FOR UPDATE</c> and returns the ids found, in lock
+    /// order (ascending by id; wish ids are numeric, so no collation is involved). Wish emotes, plan 2.3: a
+    /// command or the reconcile locks the wish row before it reads and decides, so two of them never both
+    /// compute from the same old state. The order across tables is the channel row first
+    /// (<see cref="LockChannelsByIdsAsync"/>), then the wish rows. A requested id that is not returned does
+    /// not exist (any more).
+    /// </summary>
+    public static async Task<IReadOnlyList<long>> LockWishesByIdsAsync(
+        this AppDbContext db, IReadOnlyCollection<long> wishIds, CancellationToken cancellationToken)
+    {
+        RequireTransaction(db);
+        if (wishIds.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = wishIds.Distinct().ToArray();
+        return await db.Database
+            .SqlQuery<long>($"""SELECT "Id" AS "Value" FROM "Wishes" WHERE "Id" = ANY({ids}) ORDER BY "Id" FOR UPDATE""")
             .ToListAsync(cancellationToken);
     }
 

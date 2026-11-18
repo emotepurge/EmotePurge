@@ -81,6 +81,18 @@ public class EmoteRoutePolicyTests : IClassFixture<ApiFactory>
     [InlineData("DELETE", "/api/channels/{channelName}/backfill", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("POST", "/api/channels/{channelName}/backfill/imported/remove", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("GET", "/api/channels/{channelName}/usage-stats/import-coverage", RateLimitPolicyNames.InteractiveRead)]
+    // #481 wish emotes: reads are navigation, every write is bookkeeping, the overview reads are navigation.
+    [InlineData("GET", "/api/channels/{channelName}/wishes", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("GET", "/api/channels/{channelName}/wishes/{id:long}", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("GET", "/api/channels/{channelName}/wishes/settings", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("PUT", "/api/channels/{channelName}/wishes/settings", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/channels/{channelName}/wishes", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/channels/{channelName}/wishes/adopt", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("PATCH", "/api/channels/{channelName}/wishes/{id:long}", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/channels/{channelName}/wishes/{id:long}/extend", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("POST", "/api/channels/{channelName}/wishes/{id:long}/recheck", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("GET", "/api/wishes/mine", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("GET", "/api/wishes/summary", RateLimitPolicyNames.InteractiveRead)]
     public void EmoteGroupRoute_CarriesTheExpectedRateLimitPolicy(string method, string routePattern, string expectedPolicy)
     {
         // Resolving from Services boots the host; the endpoints exist only afterwards (same as

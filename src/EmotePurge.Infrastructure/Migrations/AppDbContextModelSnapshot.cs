@@ -17,7 +17,7 @@ namespace EmotePurge.Infrastructure.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.12")
+                .HasAnnotation("ProductVersion", "10.0.14")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -200,6 +200,63 @@ namespace EmotePurge.Infrastructure.Migrations
                     NpgsqlIndexBuilderExtensions.IncludeProperties(b.HasIndex("ChannelId", "Date"), new[] { "LiveMinutes" });
 
                     b.ToTable("ChannelLiveDays");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.ChannelWishSettings", b =>
+                {
+                    b.Property<string>("ChannelId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("BotActivationError")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("BotActivationRequestedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("BotActivationRequestedByLogin")
+                        .HasColumnType("text");
+
+                    b.Property<string>("BotActivationRequestedByTwitchUserId")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("BotEditorCheckedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("BotModeActivatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("BotModeActivatedByLogin")
+                        .HasColumnType("text");
+
+                    b.Property<string>("BotModeActivatedByTwitchUserId")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("BotModeEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("BotSuspendedReason")
+                        .HasColumnType("text");
+
+                    b.Property<int>("DefaultDurationDays")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("ProbationLeadDays")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal?>("ProtectionThresholdPerDay")
+                        .HasPrecision(10, 2)
+                        .HasColumnType("numeric(10,2)");
+
+                    b.HasKey("ChannelId");
+
+                    b.ToTable("ChannelWishSettings", t =>
+                        {
+                            t.HasCheckConstraint("CK_ChannelWishSettings_DefaultDurationDays", "\"DefaultDurationDays\" BETWEEN 1 AND 365");
+
+                            t.HasCheckConstraint("CK_ChannelWishSettings_ProbationLeadDays", "\"ProbationLeadDays\" BETWEEN 1 AND 30");
+
+                            t.HasCheckConstraint("CK_ChannelWishSettings_ProtectionThreshold", "\"ProtectionThresholdPerDay\" IS NULL OR \"ProtectionThresholdPerDay\" > 0");
+                        });
                 });
 
             modelBuilder.Entity("EmotePurge.Core.Entities.ChatLogBackfillCoverageDay", b =>
@@ -1198,6 +1255,151 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.ToTable("VoteSessionEmotes");
                 });
 
+            modelBuilder.Entity("EmotePurge.Core.Entities.Wish", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("Alias")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime?>("ApprovedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("BotAttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("BotNextAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("BotOwned")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("BotOwnedAddedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("BotWriteAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("DecisionVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("DurationDays")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("EmoteName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime?>("EndedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("ExtensionCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime?>("FirstActivatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LinkOrigin")
+                        .HasColumnType("text");
+
+                    b.Property<long?>("MergedIntoWishId")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("Permanent")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("RemovalQueuedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("RemovalQueuedVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("RequesterLogin")
+                        .HasMaxLength(25)
+                        .HasColumnType("character varying(25)");
+
+                    b.Property<string>("RequesterTwitchUserId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("SevenTvEmoteId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime?>("SlotAddedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("SlotConfirmedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SlotId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("StartsAtAuthoritative")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("StartsAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("StatusChangedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("StatusReason")
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EndedAtUtc")
+                        .HasDatabaseName("IX_Wishes_EndedAtUtc_WithRequester")
+                        .HasFilter("\"RequesterLogin\" IS NOT NULL OR \"RequesterTwitchUserId\" IS NOT NULL");
+
+                    b.HasIndex("MergedIntoWishId");
+
+                    b.HasIndex("SlotId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_Wishes_SlotId_Live")
+                        .HasFilter("\"SlotId\" IS NOT NULL AND \"Status\" IN ('active', 'presented', 'kept')");
+
+                    b.HasIndex("ChannelId", "SevenTvEmoteId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_Wishes_ChannelId_SevenTvEmoteId_Running")
+                        .HasFilter("\"Status\" IN ('approved', 'unconfirmed', 'active', 'presented')");
+
+                    b.HasIndex("ChannelId", "Status");
+
+                    b.HasIndex("Status", "ExpiresAtUtc");
+
+                    b.ToTable("Wishes", t =>
+                        {
+                            t.HasCheckConstraint("CK_Wishes_DurationDays", "\"DurationDays\" BETWEEN 1 AND 365");
+                        });
+                });
+
             modelBuilder.Entity("EmotePurge.Core.Entities.ChannelEmoteSetObservation", b =>
                 {
                     b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
@@ -1214,6 +1416,17 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
                         .WithMany()
                         .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Channel");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.ChannelWishSettings", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
+                        .WithOne()
+                        .HasForeignKey("EmotePurge.Core.Entities.ChannelWishSettings", "ChannelId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
@@ -1424,6 +1637,29 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Navigation("Emote");
 
                     b.Navigation("VoteSession");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.Wish", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("EmotePurge.Core.Entities.Wish", null)
+                        .WithMany()
+                        .HasForeignKey("MergedIntoWishId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("EmotePurge.Core.Entities.EmoteSlot", "Slot")
+                        .WithMany()
+                        .HasForeignKey("SlotId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Channel");
+
+                    b.Navigation("Slot");
                 });
 
             modelBuilder.Entity("EmotePurge.Core.Entities.Channel", b =>
