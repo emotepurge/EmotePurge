@@ -1958,28 +1958,6 @@ FROM judged;
 
 ```sql
 -- same WITH chain as above up to and including "judged", then:
-SELECT wish_id, expiry, min(due_at) AS first_due
-  FROM sources
-  GROUP BY wish_id, expiry
-),
-cohort AS (
-  SELECT d.*
-  FROM dues d, params p
-  WHERE d.expiry >= p.obs_from AND d.expiry < p.obs_to
-    AND d.expiry + interval '24 hours' <= p.eval_at
-),
-judged AS (
-  SELECT c.wish_id, c.expiry,
-         EXISTS (
-           SELECT 1 FROM "AuditLogEntries" a
-           WHERE a."Action" IN ('wish.extend', 'wish.keep', 'wish.remove', 'wish.close')
-             AND (a."DetailsJson"->>'wishId')::bigint = c.wish_id
-             AND a."OccurredAtUtc" > c.expiry
-             AND a."OccurredAtUtc" <= c.expiry + interval '24 hours'
-         ) AS done,
-         (c.first_due IS NULL OR c.first_due > c.expiry + interval '24 hours') AS seen_late
-  FROM cohort c
-)
 SELECT wish_id, expiry, seen_late AS late
 FROM judged WHERE NOT done ORDER BY wish_id, expiry;
 ```
