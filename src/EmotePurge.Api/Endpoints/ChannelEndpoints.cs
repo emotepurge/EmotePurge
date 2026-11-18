@@ -102,6 +102,7 @@ public static class ChannelEndpoints
             IChannelService channelService,
             EmoteTagOptions tagOptions,
             ChatLogBackfillOptions backfillOptions,
+            WishOptions wishOptions,
             CancellationToken ct) =>
         {
             var principal = httpContext.User.TryBuildTwitchPrincipal();
@@ -125,7 +126,8 @@ public static class ChannelEndpoints
                 IsBotActive: channel?.IsBotActive ?? false,
                 TagRunsEnabled: tagOptions.RunsEnabled,
                 CanPurgeAsBroadcaster: BroadcasterOwnership.CanPurge(channel, principal),
-                ChatLogBackfillEnabled: backfillOptions.Enabled));
+                ChatLogBackfillEnabled: backfillOptions.Enabled,
+                WishesEnabled: wishOptions.Enabled));
         })
         // Ordinary navigation, and the single most requested route in the app: every page that shows
         // anything channel-scoped asks it first. Both access checks can reach Helix or 7TV on a cache
@@ -710,6 +712,10 @@ public static class ChannelEndpoints
 /// backfill routes answer 404 <c>backfill_disabled</c> while it is off.
 /// </para>
 /// <para>
+/// <c>WishesEnabled</c> (#481) is the operator's <c>Wishes:Enabled</c> switch, global like the two above;
+/// the wish routes answer 404 <c>wishes_disabled</c> while it is off.
+/// </para>
+/// <para>
 /// No <c>IsSevenTvEditor</c> field, despite the review's sketch: nothing consumes it today, and
 /// computing it would defeat the short-circuit above and put a 7TV call in every manager's request.
 /// Add it together with its first consumer.
@@ -723,7 +729,8 @@ internal sealed record ChannelPermissionsDto(
     bool IsBotActive,
     bool TagRunsEnabled,
     bool CanPurgeAsBroadcaster,
-    bool ChatLogBackfillEnabled);
+    bool ChatLogBackfillEnabled,
+    bool WishesEnabled);
 
 /// <summary>
 /// Body of <c>POST /api/channels/{channelName}/backfill</c>. Both members are nullable on purpose: a

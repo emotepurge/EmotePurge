@@ -94,6 +94,18 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'backfill_slots_unsettled',
   'backfill_remove_run_active',
   'backfill_remove_scope_changed',
+  'wishes_disabled',
+  'wish_not_found',
+  'wish_state_conflict',
+  'wish_emote_already_in_set',
+  'wish_already_running',
+  'wish_duration_out_of_range',
+  'wish_alias_invalid',
+  'wish_requester_invalid',
+  'wish_settings_out_of_range',
+  'wish_settings_restricted',
+  'wish_slot_not_found',
+  'wish_slot_already_linked',
 ]);
 
 /**
