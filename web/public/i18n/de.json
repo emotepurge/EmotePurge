@@ -2743,6 +2743,10 @@
         "one": "{{ count }} Tag Laufzeit",
         "other": "{{ count }} Tage Laufzeit"
       },
+      "initialDuration": {
+        "one": "Ausgangslaufzeit {{ count }} Tag",
+        "other": "Ausgangslaufzeit {{ count }} Tage"
+      },
       "permanent": "dauerhaft",
       "inSetSince": "im Set seit {{ date }}",
       "inSetSinceProvisional": "im Set seit {{ date }} (vorläufig)",

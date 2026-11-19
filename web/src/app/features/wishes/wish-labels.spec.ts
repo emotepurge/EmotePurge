@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { wishReasonKey, wishRemainingPart, wishStatusKey, wishStatusTone } from './wish-labels';
+import {
+  wishDurationPart,
+  wishReasonKey,
+  wishRemainingPart,
+  wishStatusKey,
+  wishStatusTone,
+} from './wish-labels';
 
 const NOW = new Date('2026-11-18T12:00:00Z');
 const DAY = 86_400_000;
@@ -70,5 +76,25 @@ describe('wishRemainingPart', () => {
     expect(
       wishRemainingPart({ status: 'active', permanent: false, expiresAtUtc: null }, NOW),
     ).toBeNull();
+  });
+});
+
+describe('wishDurationPart', () => {
+  it('names the run time as is while never extended', () => {
+    expect(wishDurationPart({ permanent: false, durationDays: 7, extensionCount: 0 })).toEqual({
+      key: 'wishes.row.duration.other',
+      params: { count: 7 },
+    });
+  });
+
+  it('names it the initial run time once extended', () => {
+    expect(wishDurationPart({ permanent: false, durationDays: 1, extensionCount: 2 })).toEqual({
+      key: 'wishes.row.initialDuration.one',
+      params: { count: 1 },
+    });
+  });
+
+  it('has none for a permanent wish', () => {
+    expect(wishDurationPart({ permanent: true, durationDays: 7, extensionCount: 0 })).toBeNull();
   });
 });

@@ -2743,6 +2743,10 @@
         "one": "runs {{ count }} day",
         "other": "runs {{ count }} days"
       },
+      "initialDuration": {
+        "one": "initial run time {{ count }} day",
+        "other": "initial run time {{ count }} days"
+      },
       "permanent": "permanent",
       "inSetSince": "in the set since {{ date }}",
       "inSetSinceProvisional": "in the set since {{ date }} (provisional)",

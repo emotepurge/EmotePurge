@@ -79,3 +79,18 @@ export function wishRemainingPart(
       return null;
   }
 }
+
+/**
+ * The run time part of a row: "N days run time", or with extensions "initial run time N days" (the
+ * extension count follows as its own part), since an extension moves the expiry, not `durationDays`.
+ * `null` for a permanent wish.
+ */
+export function wishDurationPart(
+  wish: Pick<Wish, 'permanent' | 'durationDays' | 'extensionCount'>,
+): TextPart | null {
+  if (wish.permanent) {
+    return null;
+  }
+  const base = wish.extensionCount > 0 ? 'wishes.row.initialDuration' : 'wishes.row.duration';
+  return { key: pluralKey(wish.durationDays, base), params: { count: wish.durationDays } };
+}

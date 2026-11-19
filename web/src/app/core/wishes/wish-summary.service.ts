@@ -22,8 +22,12 @@ import { WishService } from './wish.service';
 /** How often the header count asks again while the window is visible (plan 2.4). */
 export const WISH_SUMMARY_POLL_MS = 5 * 60_000;
 
-/** A burst of `refresh()` calls (a command plus its own `wish.changed`) becomes one request. */
-export const WISH_SUMMARY_REFRESH_DEBOUNCE_MS = 500;
+/**
+ * A burst of `refresh()` calls (a command plus its own `wish.changed`) becomes one request. Must stay
+ * above `CHANNEL_RELOAD_DEBOUNCE_MS` (1000 ms): the live event follows the command by that debounce,
+ * and a shorter window would fire once for the command and once more for the event.
+ */
+export const WISH_SUMMARY_REFRESH_DEBOUNCE_MS = 1500;
 
 type SummaryOutcome = { kind: 'count'; count: number } | { kind: 'disabled' } | { kind: 'failed' };
 

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthUser } from '../auth/auth.model';
 import { AuthService } from '../auth/auth.service';
+import { CHANNEL_RELOAD_DEBOUNCE_MS } from '../live/live-reload';
 import {
   WISH_SUMMARY_POLL_MS,
   WISH_SUMMARY_REFRESH_DEBOUNCE_MS,
@@ -182,6 +183,21 @@ describe('WishSummaryService', () => {
     answer(3);
     expect(service.actionCount()).toBe(3);
 
+    vi.advanceTimersByTime(WISH_SUMMARY_REFRESH_DEBOUNCE_MS * 4);
+    httpMock.expectNone(SUMMARY_URL);
+  });
+
+  it('answers a command and its live event 1000 ms later with exactly one request', () => {
+    const service = start();
+    answer(1);
+
+    service.refresh();
+    vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+    service.refresh();
+    httpMock.expectNone(SUMMARY_URL);
+
+    vi.advanceTimersByTime(WISH_SUMMARY_REFRESH_DEBOUNCE_MS);
+    answer(2);
     vi.advanceTimersByTime(WISH_SUMMARY_REFRESH_DEBOUNCE_MS * 4);
     httpMock.expectNone(SUMMARY_URL);
   });

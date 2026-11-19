@@ -31,6 +31,7 @@ import { WishImage } from './wish-image';
 import {
   TextPart,
   wishReasonKey,
+  wishDurationPart,
   wishRemainingPart,
   wishStatusKey,
   wishStatusTone,
@@ -309,14 +310,7 @@ export class WishRow {
     if (KNOWN_SOURCES.has(wish.source)) {
       parts.push({ key: `wishes.source.${wish.source}` });
     }
-    parts.push(
-      wish.permanent
-        ? { key: 'wishes.row.permanent' }
-        : {
-            key: pluralKey(wish.durationDays, 'wishes.row.duration'),
-            params: { count: wish.durationDays },
-          },
-    );
+    parts.push(wishDurationPart(wish) ?? { key: 'wishes.row.permanent' });
     const inSet = timeInSet(wish);
     if (inSet) {
       parts.push({
