@@ -25,6 +25,8 @@ export interface ChannelPermissions {
   chatLogBackfillEnabled: boolean;
   /** Server flag `Wishes:Enabled` (#481): the wish routes exist. A missing field counts as false. */
   wishesEnabled: boolean;
+  /** Server flag `Wishes:Capture:Enabled` (#486) as the Api sees it: the reward routes and the settings section exist. */
+  wishCaptureEnabled: boolean;
 }
 
 /**

@@ -1169,6 +1169,8 @@ export async function mockChannelPermissions(
     chatLogBackfillEnabled: boolean;
     /** #485: the operator switch for wish emotes. Off by default; the wish specs switch it on. */
     wishesEnabled: boolean;
+    /** #486: the operator switch for chat capture of wishes. Off by default; the capture specs switch it on. */
+    wishCaptureEnabled: boolean;
   }> = {},
 ): Promise<void> {
   await page.route(`**/api/channels/${channelName}/permissions`, (route) =>
@@ -1182,6 +1184,7 @@ export async function mockChannelPermissions(
       canPurgeAsBroadcaster: false,
       chatLogBackfillEnabled: true,
       wishesEnabled: false,
+      wishCaptureEnabled: false,
       ...overrides,
     }),
   );
@@ -3595,6 +3598,7 @@ export interface MockWishSettings {
   protectionThresholdPerDay: number | null;
   botModeEnabled: boolean;
   botSuspendedReason: string | null;
+  pendingExpiryDays: number;
   canEdit: boolean;
 }
 
@@ -3660,6 +3664,7 @@ export async function mockWishBackend(
       protectionThresholdPerDay: null,
       botModeEnabled: false,
       botSuspendedReason: null,
+      pendingExpiryDays: 14,
       canEdit: true,
       ...init.settings,
     },

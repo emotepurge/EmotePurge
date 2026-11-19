@@ -41,6 +41,7 @@ function read(over: Partial<WishSettingsRead> = {}): WishSettingsRead {
     protectionThresholdPerDay: 5,
     botModeEnabled: false,
     botSuspendedReason: null,
+    pendingExpiryDays: 14,
     canEdit: true,
     ...over,
   };

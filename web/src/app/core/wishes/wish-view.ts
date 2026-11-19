@@ -12,7 +12,46 @@ const DAY_MS = 24 * HOUR_MS;
 export type WishRuleInput = Pick<
   Wish,
   'status' | 'statusReason' | 'slotId' | 'slotAddedAtUtc' | 'expiresAtUtc' | 'mode'
->;
+> &
+  Partial<Pick<Wish, 'source' | 'linkOrigin'>>;
+
+/**
+ * Whether the wish knows its 7TV emote. An open wish captured in chat may not yet: it carries `''` in
+ * `sevenTvEmoteId`, `emoteName` and `alias` (plan 2.8a). Every place that treats the id as real (image,
+ * 7TV link, usage, a write to 7TV, a dialog pre-fill) asks this one question first.
+ */
+export function hasEmote(wish: Pick<Wish, 'sevenTvEmoteId'>): boolean {
+  return wish.sevenTvEmoteId !== '';
+}
+
+/**
+ * The name an open wish is shown under: its alias once it knows the emote, else the name the viewer
+ * typed, else the redemption text (the last two are redeemer data and may be absent). `''` when nothing
+ * is known; the caller decides what an empty title reads as.
+ */
+export function wishTitle(
+  wish: Pick<Wish, 'sevenTvEmoteId' | 'alias' | 'requestedName' | 'requestText'>,
+): string {
+  if (hasEmote(wish)) {
+    return wish.alias;
+  }
+  return wish.requestedName || wish.requestText || '';
+}
+
+/** An automatic chat link the manager may take back: `active`, from chat, linked by the system. */
+export function canUnlink(
+  wish: Pick<Wish, 'status'> & Partial<Pick<Wish, 'source' | 'linkOrigin'>>,
+): boolean {
+  return wish.status === 'active' && wish.source === 'irc' && wish.linkOrigin === 'auto';
+}
+
+/**
+ * Approving a wish whose emote already runs for another wish books an extension of that one instead of
+ * a new entry; the button then reads as an extension. That is the hint `already_running`.
+ */
+export function approveExtendsRunning(wish: Pick<Wish, 'status' | 'statusReason'>): boolean {
+  return wish.status === 'pending' && wish.statusReason === 'already_running';
+}
 
 function parseUtc(value: string | null | undefined): number | null {
   if (!value) {
@@ -132,7 +171,18 @@ export function canRemove(
 }
 
 export type WishAction =
-  'add7tv' | 'adopt' | 'edit' | 'close' | 'retry' | 'extend' | 'keep' | 'remove' | 'reAdd';
+  | 'add7tv'
+  | 'adopt'
+  | 'edit'
+  | 'close'
+  | 'retry'
+  | 'extend'
+  | 'keep'
+  | 'remove'
+  | 'reAdd'
+  | 'approve'
+  | 'reject'
+  | 'unlink';
 
 /** The actions that write to 7TV (the stars of the plan table); they vanish on a coarse pointer. */
 const SEVEN_TV_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>(['add7tv', 'remove']);
@@ -141,9 +191,26 @@ export function isSevenTvAction(action: WishAction): boolean {
   return SEVEN_TV_ACTIONS.has(action);
 }
 
-/** Actions that end a wish for good and need a confirmation (plan 2.7). */
+/** Actions that end a wish, or take a link back, and need a confirmation (plan 2.7, K6 2.10). */
 export function isConfirmedAction(action: WishAction): boolean {
-  return action === 'keep' || action === 'close';
+  return action === 'keep' || action === 'close' || action === 'reject' || action === 'unlink';
+}
+
+/**
+ * The actions of an open (`pending`) wish by its hint (`statusReason`), in the order the row shows them
+ * (plan 2.10). An unknown or missing hint reads as no hint.
+ */
+const PENDING_ACTIONS: Readonly<Record<string, readonly WishAction[]>> = {
+  unparsed: ['approve', 'adopt', 'reject'],
+  ambiguous_match: ['adopt', 'approve', 'reject'],
+  already_in_set: ['adopt', 'reject'],
+  already_running: ['approve', 'reject'],
+};
+const PENDING_ACTIONS_DEFAULT: readonly WishAction[] = ['approve', 'adopt', 'edit', 'reject'];
+
+function pendingActions(reason: string | null): WishAction[] {
+  const known = reason === null ? undefined : PENDING_ACTIONS[reason];
+  return [...(known ?? PENDING_ACTIONS_DEFAULT)];
 }
 
 /** A `presented` wish may be linked to an entry only for these reasons. */
@@ -161,6 +228,8 @@ export function wishActions(wish: WishRuleInput): WishAction[] {
   const hasSlot = !!wish.slotId;
   const hasExpiry = !!wish.expiresAtUtc;
   switch (wish.status as WishStatus) {
+    case 'pending':
+      return pendingActions(wish.statusReason);
     case 'approved':
       return wish.mode === 'manual' ? ['add7tv', 'adopt', 'edit', 'close'] : [];
     case 'failed':
@@ -169,6 +238,7 @@ export function wishActions(wish: WishRuleInput): WishAction[] {
       return [
         ...(hasExpiry ? (['extend'] as const) : []),
         'keep',
+        ...(canUnlink(wish) ? (['unlink'] as const) : []),
         ...(hasSlot ? (['remove'] as const) : []),
       ];
     case 'presented':

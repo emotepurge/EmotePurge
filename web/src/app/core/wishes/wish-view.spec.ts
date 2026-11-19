@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { Wish } from './wish.model';
 import {
+  approveExtendsRunning,
   canRemove,
+  canUnlink,
   endedDate,
   groupWishes,
+  hasEmote,
   isConfirmedAction,
   isDue,
   isProbation,
@@ -13,6 +16,7 @@ import {
   remainingTime,
   timeInSet,
   wishActions,
+  wishTitle,
   type WishAction,
   type WishRuleInput,
 } from './wish-view';
@@ -75,8 +79,41 @@ describe('wishActions (the action table, AK35)', () => {
   const noExpiry = { expiresAtUtc: null };
 
   const table: Row[] = [
-    { name: 'pending: neutral row', given: { status: 'pending' }, expected: [] },
-    { name: 'pending, bot mode', given: { status: 'pending', mode: 'bot' }, expected: [] },
+    {
+      name: 'pending, no hint',
+      given: { status: 'pending' },
+      expected: ['approve', 'adopt', 'edit', 'reject'],
+    },
+    {
+      name: 'pending, bot mode: the same, a manager decides',
+      given: { status: 'pending', mode: 'bot' },
+      expected: ['approve', 'adopt', 'edit', 'reject'],
+    },
+    {
+      name: 'pending, unparsed',
+      given: { status: 'pending', statusReason: 'unparsed' },
+      expected: ['approve', 'adopt', 'reject'],
+    },
+    {
+      name: 'pending, ambiguous_match',
+      given: { status: 'pending', statusReason: 'ambiguous_match' },
+      expected: ['adopt', 'approve', 'reject'],
+    },
+    {
+      name: 'pending, already_in_set',
+      given: { status: 'pending', statusReason: 'already_in_set' },
+      expected: ['adopt', 'reject'],
+    },
+    {
+      name: 'pending, already_running',
+      given: { status: 'pending', statusReason: 'already_running' },
+      expected: ['approve', 'reject'],
+    },
+    {
+      name: 'pending, unknown hint reads as no hint',
+      given: { status: 'pending', statusReason: 'from_the_future' },
+      expected: ['approve', 'adopt', 'edit', 'reject'],
+    },
 
     {
       name: 'approved, manual',
@@ -108,6 +145,26 @@ describe('wishActions (the action table, AK35)', () => {
     },
 
     { name: 'active', given: { status: 'active' }, expected: ['extend', 'keep', 'remove'] },
+    {
+      name: 'active, linked automatically from chat: unlink comes before the destroying remove',
+      given: { status: 'active', source: 'irc', linkOrigin: 'auto' },
+      expected: ['extend', 'keep', 'unlink', 'remove'],
+    },
+    {
+      name: 'active, from chat but adopted by a manager',
+      given: { status: 'active', source: 'irc', linkOrigin: 'adopted' },
+      expected: ['extend', 'keep', 'remove'],
+    },
+    {
+      name: 'active, auto link but entered by hand',
+      given: { status: 'active', source: 'manual', linkOrigin: 'auto' },
+      expected: ['extend', 'keep', 'remove'],
+    },
+    {
+      name: 'presented, auto link from chat: no unlink (only active)',
+      given: { status: 'presented', statusReason: 'expired', source: 'irc', linkOrigin: 'auto' },
+      expected: ['extend', 'keep', 'remove'],
+    },
     {
       name: 'active, no expiry',
       given: { status: 'active', ...noExpiry },
@@ -233,11 +290,14 @@ describe('wishActions (the action table, AK35)', () => {
       'keep',
       'remove',
       'reAdd',
+      'approve',
+      'reject',
+      'unlink',
     ];
     expect(all.filter(isSevenTvAction)).toEqual(['add7tv', 'remove']);
   });
 
-  it('asks for confirmation only for the two final actions', () => {
+  it('asks for confirmation only for the final actions and for taking a link back', () => {
     const all: WishAction[] = [
       'add7tv',
       'adopt',
@@ -248,8 +308,74 @@ describe('wishActions (the action table, AK35)', () => {
       'keep',
       'remove',
       'reAdd',
+      'approve',
+      'reject',
+      'unlink',
     ];
-    expect(all.filter(isConfirmedAction)).toEqual(['close', 'keep']);
+    expect(all.filter(isConfirmedAction)).toEqual(['close', 'keep', 'reject', 'unlink']);
+  });
+});
+
+describe('hasEmote', () => {
+  it.each([
+    ['', false],
+    ['01F1ABCDEFGHJKMNPQRSTVWXYZ', true],
+  ])('id %j -> %s', (sevenTvEmoteId, expected) => {
+    expect(hasEmote({ sevenTvEmoteId })).toBe(expected);
+  });
+});
+
+describe('wishTitle', () => {
+  const base = { sevenTvEmoteId: '', alias: '', requestedName: null, requestText: null };
+
+  it.each([
+    ['the alias once the emote is known', { sevenTvEmoteId: 'e1', alias: 'KEKW' }, 'KEKW'],
+    [
+      'the alias even when redeemer data is present',
+      { sevenTvEmoteId: 'e1', alias: 'KEKW', requestedName: 'kekw', requestText: 'kekw pls' },
+      'KEKW',
+    ],
+    [
+      'the typed name without an emote',
+      { requestedName: 'peepo', requestText: 'peepo pls' },
+      'peepo',
+    ],
+    [
+      'the redemption text without emote and name',
+      { requestText: 'a link, no emote' },
+      'a link, no emote',
+    ],
+    ['nothing when nothing is known', {}, ''],
+  ])('%s', (_name, over, expected) => {
+    expect(wishTitle({ ...base, ...over })).toBe(expected);
+  });
+});
+
+describe('canUnlink', () => {
+  it.each([
+    ['active', 'irc', 'auto', true],
+    ['active', 'irc', 'adopted', false],
+    ['active', 'irc', null, false],
+    ['active', 'manual', 'auto', false],
+    ['presented', 'irc', 'auto', false],
+    ['pending', 'irc', 'auto', false],
+  ])('%s from %s linked as %s -> %s', (status, source, linkOrigin, expected) => {
+    expect(canUnlink({ status, source, linkOrigin })).toBe(expected);
+  });
+
+  it('is false when the fields are missing (an older server)', () => {
+    expect(canUnlink({ status: 'active' })).toBe(false);
+  });
+});
+
+describe('approveExtendsRunning', () => {
+  it.each([
+    ['pending', 'already_running', true],
+    ['pending', 'already_in_set', false],
+    ['pending', null, false],
+    ['presented', 'already_running', false],
+  ])('%s with hint %s -> %s', (status, statusReason, expected) => {
+    expect(approveExtendsRunning({ status, statusReason })).toBe(expected);
   });
 });
 
