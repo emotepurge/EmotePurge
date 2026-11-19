@@ -35,6 +35,10 @@ public static class WorkerServiceRegistration
         // sink and read by the capture worker through the concrete type — the same instance under both names.
         services.AddSingleton<RewardObservationQueue>();
         services.AddSingleton<IRewardObservationSink>(provider => provider.GetRequiredService<RewardObservationQueue>());
+        // The capture gaps (plan 2.7): the watchdog reports through the narrow recorder, the capture worker drives the
+        // concrete tracker — again one instance under both names.
+        services.AddSingleton<CaptureGapTracker>();
+        services.AddSingleton<ICaptureGapRecorder>(provider => provider.GetRequiredService<CaptureGapTracker>());
         // Construct eagerly while the process service graph is assembled: a Redis live snapshot from
         // before this worker's first poll must not be treated as this process's own live count.
         services.AddSingleton(new WorkerSystemLoadCounterBaselines());
@@ -46,8 +50,8 @@ public static class WorkerServiceRegistration
     }
 
     /// <summary>
-    /// The fifteen hosted services of the long-running worker (the log capture writer, or its heartbeat when
-    /// capture is off, goes first and so stops last). The host starts them in registration
+    /// The sixteen hosted services of the long-running worker (the log capture writer, or its heartbeat when
+    /// capture is off, goes first and so stops last; the wish capture worker goes last and so stops first). The host starts them in registration
     /// order, and Worker deliberately goes first: it runs the boot recovery (rejoin every tracked
     /// channel, initial 7TV sync) that the others assume has happened. The ordering is not
     /// load-bearing on its own, though — BootRecoveryGate is what actually enforces it, because
@@ -75,6 +79,12 @@ public static class WorkerServiceRegistration
         services.AddHostedService<ChatLogBackfillWorker>();
         // Exits after one log line unless Wishes:Enabled is true; does not wait for BootRecoveryGate.
         services.AddHostedService<WishExpiryWorker>();
+        // K6 (plan #486 2.3): last on purpose. The host stops services one after the other in reverse order, so this one
+        // stops first: it closes the observation queue while the chat client (Worker) still runs, drains with a budget
+        // of its own of a few seconds, and leaves the rest of the shutdown timeout to the final usage flush and to the
+        // log capture writer, both of which stop after it. Housekeeping runs whatever the switches say; the queue is
+        // drained only with Wishes:Capture:Enabled and Wishes:Enabled.
+        services.AddHostedService<WishCaptureWorker>();
         return services;
     }
 }

@@ -25,7 +25,8 @@ public class WorkerHealthPublisher(
     WorkerIdentity identity,
     IConfiguration configuration,
     IRedisPublisher redisPublisher,
-    IConnectionMultiplexer redis) : BackgroundService
+    IConnectionMultiplexer redis,
+    WishOptions wishOptions) : BackgroundService
 {
     private static readonly TimeSpan PublishInterval = TimeSpan.FromSeconds(20);
 
@@ -81,7 +82,8 @@ public class WorkerHealthPublisher(
                     _resyncIntervalSeconds,
                     identity.ProcessStartedUtc,
                     identity.InstanceId,
-                    twitchChatManager.LastFrameReceivedUtc),
+                    twitchChatManager.LastFrameReceivedUtc,
+                    wishOptions.CaptureActive),
                 JsonSerializerOptions.Web);
 
             await redis.GetDatabase().StringSetAsync(WorkerHealthKeys.TwitchConnection, payload, WorkerHealthKeys.Ttl);

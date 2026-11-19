@@ -23,14 +23,15 @@ public class WorkerServiceRegistrationTests
     [Theory]
     [InlineData("true")]
     [InlineData("false")]
-    public void AddWorkerHostedServices_RegistersExactlyTheFifteenOfTheWorker(string captureEnabled)
+    public void AddWorkerHostedServices_RegistersExactlyTheSixteenOfTheWorker(string captureEnabled)
     {
         var configuration = Configuration(captureEnabled);
         var services = new ServiceCollection();
         services.AddWorkerCore(configuration);
         services.AddWorkerHostedServices(configuration);
 
-        Assert.Equal(15, services.Count(d => d.ServiceType == typeof(IHostedService)));
+        Assert.Equal(16, services.Count(d => d.ServiceType == typeof(IHostedService)));
+        Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(WishCaptureWorker));
         Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(ChatLogBackfillWorker));
         Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(SystemLoadRollupWorker));
         Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(WishExpiryWorker));
@@ -83,6 +84,33 @@ public class WorkerServiceRegistrationTests
         Assert.Contains(provider.GetServices<IHostedService>(), s => s is WishExpiryWorker);
         using var scope = provider.CreateScope();
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IWishExpiryService>());
+    }
+
+    // K6 (plan #486 2.3, Sol-R2-P2-8): the host stops in reverse registration order, so the capture worker — last —
+    // stops first and its drain cannot eat into the final usage flush or the log capture writer, which stop after it.
+    [Fact]
+    public void LastHostedService_IsTheWishCaptureWorker_SoItStopsBeforeTheUsageFlushAndTheLogCapture()
+    {
+        using var provider = BuildWorkerProvider("true");
+
+        var hosted = provider.GetServices<IHostedService>().ToList();
+
+        Assert.IsType<WishCaptureWorker>(hosted[^1]);
+        Assert.IsType<LogCaptureWriter>(hosted[0]);
+        Assert.True(hosted.FindIndex(s => s is UsageFlushWorker) < hosted.Count - 1);
+        Assert.Single(hosted, s => s is WishCaptureWorker);
+    }
+
+    // The watchdog reports through the recorder, the capture worker drives the tracker: one instance under both names.
+    [Fact]
+    public void AddWorkerCore_RegistersOneCaptureGapTracker_UnderBothNames()
+    {
+        using var provider = BuildWorkerProvider("false");
+
+        var tracker = provider.GetRequiredService<CaptureGapTracker>();
+
+        Assert.Same(tracker, provider.GetRequiredService<ICaptureGapRecorder>());
+        Assert.Same(tracker, provider.GetRequiredService<CaptureGapTracker>());
     }
 
     // K6 (plan #486 2.1): the chat manager writes through the sink, the capture worker reads the concrete queue —

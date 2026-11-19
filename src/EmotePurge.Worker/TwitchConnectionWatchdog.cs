@@ -1,4 +1,5 @@
 using EmotePurge.Core.Twitch;
+using EmotePurge.Worker.WishCapture;
 
 namespace EmotePurge.Worker;
 
@@ -37,13 +38,19 @@ namespace EmotePurge.Worker;
 /// this one stops before <see cref="UsageFlushWorker"/>, and every second spent here is a second
 /// missing from the final flush before Docker's stop grace period expires (#122).
 /// </para>
+/// <para>
+/// <b>Capture gaps (K6, plan #486 2.7).</b> Two calls on <see cref="ICaptureGapRecorder"/>, both synchronous and in
+/// memory only: the loss before the first rebuild attempt, with the signal's time, and the end of the rejoin round.
+/// Neither feeds anything back into the rebuild, the backoff or the signals.
+/// </para>
 /// </summary>
 public class TwitchConnectionWatchdog(
     ILogger<TwitchConnectionWatchdog> logger,
     ITwitchChatManager twitchChatManager,
     ITwitchAppTokenProvider appTokenProvider,
     IServiceScopeFactory scopeFactory,
-    WorkerStats stats) : BackgroundService
+    WorkerStats stats,
+    ICaptureGapRecorder captureGaps) : BackgroundService
 {
     private static readonly TimeSpan CheckInterval = TimeSpan.FromMinutes(1);
 
@@ -130,6 +137,7 @@ public class TwitchConnectionWatchdog(
         stats.RecordTwitchRebuild();
 
         var lostAt = request.RequestedUtc;
+        captureGaps.ConnectionLost(lostAt);
         var delay = _backoff.NextDelay(new TwitchSessionResult(request.Reason, request.SessionDuration));
         logger.LogWarning(
             "Twitch-Verbindung verloren ({Reason}: {Detail}, Sitzung {SessionSeconds}s) — Wiederaufbau #1 in {Delay}s, Client #{Generation}.",
@@ -168,6 +176,7 @@ public class TwitchConnectionWatchdog(
             Seconds(DateTime.UtcNow - lostAt), attempt, outcome.ClientGeneration);
 
         var rejoin = await twitchChatManager.RejoinDesiredChannelsAsync(ct);
+        captureGaps.RejoinRoundCompleted();
 
         // SLO-2: from the loss to the last join confirmation. Warning as soon as a desired channel
         // is left unconfirmed or the round was cut short — those are the two ways this line could

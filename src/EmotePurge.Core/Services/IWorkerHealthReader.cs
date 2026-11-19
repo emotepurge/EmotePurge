@@ -56,7 +56,11 @@ public record WorkerHealthSnapshot(
     // received IRC line including Twitch's ~5-minute server PING, so it stays fresh on a healthy
     // connection whose channels are all silent. Staleness derivation keys off this; the last chat
     // message above remains observability. Same trailing-and-defaulted rule as every field before.
-    DateTime? TwitchLastFrameUtc = null);
+    DateTime? TwitchLastFrameUtc = null,
+    // Appended 2026-11-19 (K6, plan #486 2.3): whether this worker captures reward redemptions, i.e. its own
+    // WishOptions.CaptureActive. The worker is the authority for the capture; null means an older worker that does not
+    // know the field, not "off".
+    bool? WishCaptureActive = null);
 
 /// <summary>
 /// Reads the health snapshot the worker publishes. The API and the worker deliberately never talk
