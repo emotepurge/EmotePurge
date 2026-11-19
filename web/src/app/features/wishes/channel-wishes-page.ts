@@ -446,9 +446,14 @@ type PinnedState =
               </h3>
               <ul class="-mx-3 divide-y divide-border border-y border-border">
                 @for (wish of groups.pending; track wish.id) {
+                  <!-- The group heading says "Offen" already: the rows leave out the same pill. -->
                   <ng-container
                     [ngTemplateOutlet]="row"
-                    [ngTemplateOutletContext]="{ $implicit: wish, section: section.view }"
+                    [ngTemplateOutletContext]="{
+                      $implicit: wish,
+                      section: section.view,
+                      statusImplied: true,
+                    }"
                   />
                 }
               </ul>
@@ -490,7 +495,7 @@ type PinnedState =
       }
     </ng-template>
 
-    <ng-template #row let-wish let-section="section">
+    <ng-template #row let-wish let-section="section" let-statusImplied="statusImplied">
       <!-- tabindex="-1": the jump target of ?wish= takes focus without becoming a tab stop. -->
       <li class="px-3 py-3" tabindex="-1" [attr.data-wish-id]="wish.id">
         <app-wish-row
@@ -503,6 +508,7 @@ type PinnedState =
           [busy]="pendingIds().has(wish.id)"
           [knownStill]="isKnownStill(wish.sevenTvEmoteId)"
           [previewName]="previewNameOf(wish)"
+          [statusImplied]="statusImplied === true"
           [usage]="usageStore.blockFor(wish)"
           [trackUsage]="section !== 'ended'"
           [operation]="operationOf(wish)"

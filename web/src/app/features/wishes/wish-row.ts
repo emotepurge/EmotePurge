@@ -94,7 +94,11 @@ const DESTRUCTIVE_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
                 name() || ('wishes.pending.untitled' | transloco)
               }}</span>
             }
-            <app-status-badge [tone]="statusTone()">{{ statusKey() | transloco }}</app-status-badge>
+            @if (!statusImplied()) {
+              <app-status-badge [tone]="statusTone()">{{
+                statusKey() | transloco
+              }}</app-status-badge>
+            }
             @if (probation()) {
               <app-status-badge tone="accent">{{
                 'wishes.row.probation' | transloco
@@ -262,6 +266,12 @@ export class WishRow {
    * link knows the emote but has no alias or name yet. `null` while unknown.
    */
   readonly previewName = input<string | null>(null);
+  /**
+   * The surrounding group already names the status (the "Offen" group of the work list): the pill
+   * would repeat the heading on every row (UI-Designsprache §4.3, notable how often), so it is left
+   * out. Wherever the same wish stands outside that group, the pill stays.
+   */
+  readonly statusImplied = input(false);
 
   /**
    * The usage of this wish's window, handed in by the page (T5); `null` shows nothing. The row
