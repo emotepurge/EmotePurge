@@ -591,6 +591,8 @@ export class ChannelWishesPage {
   /** The channel's active set as the last sync stored it (`…/emotes/active-set`), per channel. */
   private readonly activeSet = signal<{ channel: string; setId: string | null } | null>(null);
   private activeSetSeq = 0;
+  /** A read of the active set is on its way; a list reload does not start a second one. */
+  private activeSetPending = false;
 
   /** The dock's rendered height — the page's bottom padding and the shell's clearance. */
   protected readonly dockHeightPx = signal(0);
@@ -981,29 +983,39 @@ export class ChannelWishesPage {
     this.focusedTarget = null;
     this.usageStore.reset();
     this.removalNotice.set(false);
-    this.activeSetSeq++;
-    this.activeSet.set(null);
     if (channel) {
       this.load(this.open);
       this.load(this.running);
-      this.loadActiveSet();
     }
+    this.loadActiveSet();
   }
 
-  /** The stored active set of the channel on screen; a failed read keeps what is known (or `null`). */
+  /**
+   * The stored active set of the channel on screen. What was known is dropped first: while the read
+   * is out, and after a failed one (429, 5xx, network), the dock stands for "unknown" and the restore
+   * warns (E21) instead of comparing against a set a sync may have left. The next list reload asks
+   * again (`reloadAll`).
+   */
   private loadActiveSet(): void {
     const seq = ++this.activeSetSeq;
+    this.activeSet.set(null);
+    this.activeSetPending = false;
     const channel = this.channel();
     if (!channel) {
       return;
     }
+    this.activeSetPending = true;
     this.emoteAdminService.getSetStatus(channel).subscribe({
       next: (status) => {
         if (seq === this.activeSetSeq && channel === this.channel()) {
+          this.activeSetPending = false;
           this.activeSet.set({ channel, setId: status.activeEmoteSetId || null });
         }
       },
       error: (error: unknown) => {
+        if (seq === this.activeSetSeq) {
+          this.activeSetPending = false;
+        }
         // 404: the channel has no row (yet), so no set either.
         if (
           seq === this.activeSetSeq &&
@@ -1019,9 +1031,9 @@ export class ChannelWishesPage {
 
   private reloadAfterGap(): void {
     this.usageStore.expireAll();
-    this.reloadAll();
-    // A sync may have gone by unseen, and with it a set switch.
+    // A sync may have gone by unseen, and with it a set switch (first, so `reloadAll` sees it pending).
     this.loadActiveSet();
+    this.reloadAll();
   }
 
   /**
@@ -1036,6 +1048,10 @@ export class ChannelWishesPage {
 
   /** Every loaded view once, plus the pinned wish; the ended list only while it is open. */
   private reloadAll(): void {
+    // The set read failed earlier: ask again with the lists (also on the five-minute safety tick).
+    if (this.activeSet() === null && !this.activeSetPending && this.channel()) {
+      this.loadActiveSet();
+    }
     this.load(this.open);
     this.load(this.running);
     if (this.endedOpen()) {

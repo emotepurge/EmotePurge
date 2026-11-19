@@ -1291,7 +1291,9 @@ describe('ChannelWishesPage', () => {
       );
       fixture.detectChanges();
 
-      expect(spoken(fixture, 9)).toBe(de.wishes.remove.notBooked);
+      // The page's own region speaks a refused booking; the row keeps the text, silently.
+      expect(spoken(fixture, 9)).toBe('');
+      expect(rowOf(fixture, 9).textContent).toContain(de.wishes.remove.notBooked);
       expect(spoken(fixture, 10)).toBe(de.wishes.remove.reportPending);
       buttonIn(rowOf(fixture, 10), de.wishes.remove.retryReport).click();
       expect(reportRetries).toEqual([{ channel: 'chan', id: 10 }]);
@@ -1413,6 +1415,39 @@ describe('ChannelWishesPage', () => {
       http.expectOne('/api/channels/b/emotes/active-set').flush(setStatus('set-b2'));
       fixture.detectChanges();
       expect(dockSetId(fixture)).toBe('set-b2');
+    });
+
+    it('treats a failed set read as unknown, not as the set before, and asks again with the next list reload', () => {
+      const http = TestBed.inject(HttpTestingController);
+      TestBed.inject(SevenTvTokenService).setToken('token');
+      const fixture = create('B');
+      settle(fixture, [], [], 'b');
+      TestBed.inject(SevenTvDeleteService).startDeleteRun(
+        'set-a',
+        'a',
+        [{ sevenTvEmoteId: 'emote1', name: 'alias1' }],
+        null,
+        null,
+      );
+      http.expectOne('/api/channels/b/emotes/active-set').flush(setStatus('set-a'));
+      fixture.detectChanges();
+      expect(dockSetId(fixture)).toBe('set-a');
+
+      // A sync switched to set b, but the read fails: the dock must not keep standing for set a.
+      streamOf('b').emit('channel.synced');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      http
+        .expectOne('/api/channels/b/emotes/active-set')
+        .flush(null, { status: 429, statusText: 'Too Many Requests' });
+      fixture.detectChanges();
+      expect(dockSetId(fixture)).toBeNull();
+
+      // The next list reload (a wish event) asks again.
+      streamOf('b').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      http.expectOne('/api/channels/b/emotes/active-set').flush(setStatus('set-b'));
+      fixture.detectChanges();
+      expect(dockSetId(fixture)).toBe('set-b');
     });
 
     it('forgets the set on a channel switch and drops the old channel’s late answer', () => {
