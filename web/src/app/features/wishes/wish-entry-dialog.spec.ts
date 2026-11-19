@@ -440,6 +440,44 @@ describe('WishEntryDialog', () => {
       typeEmote(B);
       expect(fixture.nativeElement.textContent).not.toContain(t('wishes.entry.conflict.adopt'));
     });
+
+    it.each([
+      ['wish_emote_already_in_set', { slotIds: ['s1'], wishId: 8 }],
+      ['wish_already_running', { wishId: 8 }],
+    ])(
+      'offers nothing for the sent emote when %s arrives after the field moved to another one',
+      (errorCode, body) => {
+        foundEmote(A);
+        submitButton().click();
+        typeEmote(B);
+
+        creates[0].answer.error(apiError(409, { errorCode, ...body }));
+        fixture.detectChanges();
+
+        expect(gets).toHaveLength(0);
+        expect(hasButton(t('wishes.entry.conflict.takeOver'))).toBe(false);
+        expect(hasButton(t('wishes.actions.extend'))).toBe(false);
+        expect(hasButton(t('wishes.dialog.toWish'))).toBe(false);
+        expect(closed).toEqual([]);
+        // B can be sent once its own read has answered.
+        waitDebounce();
+        answer(lookups.length - 1, { id: B, kind: 'found', name: 'Other', animated: false });
+        expect(submitButton().disabled).toBe(false);
+      },
+    );
+
+    it('still offers the actions when the field went back to the sent emote', () => {
+      foundEmote(A);
+      submitButton().click();
+      typeEmote(B);
+      typeEmote(A);
+
+      creates[0].answer.error(
+        apiError(409, { errorCode: 'wish_emote_already_in_set', slotIds: ['s1'], wishId: null }),
+      );
+      fixture.detectChanges();
+      expect(hasButton(t('wishes.entry.conflict.takeOver'))).toBe(true);
+    });
   });
 
   describe('409 wish_already_running', () => {

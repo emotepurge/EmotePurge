@@ -31,6 +31,13 @@ import { WishImage } from './wish-image';
 /** Typing settles this long before the 7TV read goes out; the read state flips at once regardless. */
 export const WISH_ENTRY_LOOKUP_DEBOUNCE_MS = 300;
 
+/** The refusals of a create that are about the emote sent, not about the other fields. */
+const EMOTE_BOUND_CODES: ReadonlySet<string> = new Set([
+  'wish_emote_already_in_set',
+  'wish_already_running',
+  'emote_ids_invalid',
+]);
+
 export interface WishEntryDialogData {
   /** Normalised. */
   channelName: string;
@@ -671,7 +678,14 @@ export class WishEntryDialog {
       this.errorKey.set(GENERIC_ERROR_TRANSLATION_KEY);
       return;
     }
-    switch (apiErrorCode(error)) {
+    const code = apiErrorCode(error);
+    // The current-id rule (Sol-P2-10) holds for the create answer too: what it says about the sent
+    // emote counts only while the field still shows that emote. A manager who switched the field
+    // meanwhile sees no conflict and no field error for the emote they left; nothing was filed.
+    if (EMOTE_BOUND_CODES.has(code ?? '') && sentId !== this.currentId()) {
+      return;
+    }
+    switch (code) {
       case 'wish_emote_already_in_set':
         this.resolveInSet(error, sentId);
         return;

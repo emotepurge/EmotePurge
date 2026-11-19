@@ -13,9 +13,12 @@ import de from '../../../../public/i18n/de.json';
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
 import { LIVE_CONNECTION_RELEASE_FACTORY } from '../../core/live/live-connection-release.factory';
 import { CHANNEL_RELOAD_DEBOUNCE_MS } from '../../core/live/live-reload';
+import type { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
 import { PagedResult } from '../../core/models/paged-result.model';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
 import { SevenTvEmoteLookup } from '../../core/seven-tv/seven-tv-emote-lookup';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
+import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { WishAddRequest, WishAddService, WishAddState } from '../../core/wishes/wish-add.service';
 import {
   WishRemovalEnd,
@@ -26,6 +29,7 @@ import { WishRemovalProgress } from '../../core/wishes/wish-removal';
 import type { Wish, WishDetail, WishListView, WishUsage } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
 import { WishSummaryService } from '../../core/wishes/wish-summary.service';
+import { DeleteProgressSection } from '../../shared/seven-tv/delete-progress-section';
 import { ChannelWishesPage, WISH_RUN_LOCK_ID, WISH_SAFETY_RELOAD_MS } from './channel-wishes-page';
 import { WishAdoptDialog } from './wish-adopt-dialog';
 import { WishEntryDialog } from './wish-entry-dialog';
@@ -740,6 +744,24 @@ describe('ChannelWishesPage', () => {
       expect(rowIds(fixture, 'running')).toEqual([5]);
     });
 
+    it('asks the pinned wish again when a change arrives while its first request is out', () => {
+      const fixture = create('chan', '5');
+      settle(fixture);
+      expect(getCalls.map((call) => call.id)).toEqual([5]);
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      expect(getCalls.map((call) => call.id)).toEqual([5, 5]);
+
+      // The first answer read the state before the change: it does not count.
+      getCalls[1].answer.next({ ...wish(5, { status: 'presented', slotId: null }), usage: null });
+      getCalls[0].answer.next({ ...wish(5), usage: null });
+      fixture.detectChanges();
+
+      expect(rowIds(fixture, 'pinned')).toEqual([5]);
+      expect(() => buttonIn(section(fixture, 'pinned'), de.wishes.actions.close)).not.toThrow();
+    });
+
     it('reloads the pinned wish together with the lists', () => {
       const fixture = create('chan', '5');
       settle(fixture);
@@ -1287,11 +1309,134 @@ describe('ChannelWishesPage', () => {
       expect(calls('running')).toHaveLength(2);
     });
 
+    it('says a refused booking at the page, also when the reload moves the wish out of sight', () => {
+      const fixture = create();
+      settle(fixture, [], [wish(9)]);
+
+      removalEnds.next({ channelName: 'chan', wishId: 9, state: { kind: 'notBooked' } });
+      // The reconcile ended the wish: it moves to the collapsed "Beendet".
+      settle(fixture, [], []);
+
+      expect(rowIds(fixture, 'running')).toEqual([]);
+      const spoken = Array.from(
+        fixture.nativeElement.querySelectorAll('p[role="status"].sr-only') as NodeListOf<Element>,
+      ).map((region) => region.textContent?.trim());
+      expect(spoken).toContain(de.wishes.remove.notBooked);
+    });
+
+    it('says nothing at the page for a booked removal or one of another channel', () => {
+      const fixture = create();
+      settle(fixture, [], [wish(9)]);
+
+      removalEnds.next({ channelName: 'chan', wishId: 9, state: { kind: 'booked' } });
+      removalEnds.next({ channelName: 'other', wishId: 9, state: { kind: 'notBooked' } });
+      fixture.detectChanges();
+
+      expect(fixture.nativeElement.textContent).not.toContain(de.wishes.remove.notBooked);
+    });
+
     it('hands every shown wish to the removal, so lines of wishes that moved on are dropped', () => {
       const fixture = create();
       settle(fixture, [wish(7, { status: 'approved' })], [wish(9)]);
 
       expect(prunedRemovals.at(-1)).toEqual({ channel: 'chan', ids: [7, 9] });
+    });
+  });
+
+  describe('the run dock (restore spec E21)', () => {
+    function setStatus(activeEmoteSetId: string): EmoteSetStatus {
+      return {
+        activeEmoteSetId,
+        capacity: null,
+        occupiedSlots: 0,
+        trackedSince: '2026-11-01T00:00:00Z',
+        syncFailureReason: null,
+        lastSyncAttemptAtUtc: null,
+        botsExcludedSince: null,
+        sharedChatSeparatedSince: null,
+        duplicateNames: [],
+      };
+    }
+
+    function dockSetId(fixture: ComponentFixture<ChannelWishesPage>): string | null {
+      const dock = fixture.debugElement.query(By.directive(DeleteProgressSection));
+      expect(dock).not.toBeNull();
+      return (dock.componentInstance as DeleteProgressSection).hostSelectedSetId();
+    }
+
+    beforeEach(() => {
+      // jsdom has no ResizeObserver; the dock's height measurement needs a stand-in.
+      vi.stubGlobal(
+        'ResizeObserver',
+        class {
+          observe(): void {
+            /* no layout in jsdom */
+          }
+          disconnect(): void {
+            /* nothing observed */
+          }
+        },
+      );
+    });
+
+    afterEach(() => {
+      TestBed.inject(SevenTvTokenService).clearToken();
+      vi.unstubAllGlobals();
+    });
+
+    it('stands for the active set of the channel on screen, not for the set of the run it shows', () => {
+      const http = TestBed.inject(HttpTestingController);
+      TestBed.inject(SevenTvTokenService).setToken('token');
+      const fixture = create('B');
+      settle(fixture, [], [], 'b');
+
+      // A removal started on channel a's page is still running when channel b's page shows it.
+      const started = TestBed.inject(SevenTvDeleteService).startDeleteRun(
+        'set-a',
+        'a',
+        [{ sevenTvEmoteId: 'emote1', name: 'alias1' }],
+        null,
+        null,
+      );
+      expect(started.started).toBe(true);
+      fixture.detectChanges();
+
+      // Unknown until the channel's set has answered: then the restore warns.
+      expect(dockSetId(fixture)).toBeNull();
+      http.expectOne('/api/channels/b/emotes/active-set').flush(setStatus('set-b'));
+      fixture.detectChanges();
+      expect(dockSetId(fixture)).toBe('set-b');
+
+      // A sync may have switched the set: the dock follows the stored one.
+      streamOf('b').emit('channel.synced');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      http.expectOne('/api/channels/b/emotes/active-set').flush(setStatus('set-b2'));
+      fixture.detectChanges();
+      expect(dockSetId(fixture)).toBe('set-b2');
+    });
+
+    it('forgets the set on a channel switch and drops the old channel’s late answer', () => {
+      const http = TestBed.inject(HttpTestingController);
+      TestBed.inject(SevenTvTokenService).setToken('token');
+      const fixture = create('B');
+      const oldRead = http.expectOne('/api/channels/b/emotes/active-set');
+      TestBed.inject(SevenTvDeleteService).startDeleteRun(
+        'set-a',
+        'a',
+        [{ sevenTvEmoteId: 'emote1', name: 'alias1' }],
+        null,
+        null,
+      );
+
+      fixture.componentRef.setInput('channelName', 'C');
+      fixture.detectChanges();
+      oldRead.flush(setStatus('set-b'));
+      fixture.detectChanges();
+
+      expect(dockSetId(fixture)).toBeNull();
+      http.expectOne('/api/channels/c/emotes/active-set').flush(setStatus('set-c'));
+      fixture.detectChanges();
+      expect(dockSetId(fixture)).toBe('set-c');
     });
   });
 });

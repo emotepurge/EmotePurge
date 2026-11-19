@@ -189,6 +189,18 @@ type PinnedState =
             'wishes.page.setFull' | transloco
           }}</app-notice-banner>
         }
+        <!-- A removal whose booking was refused: said here as well as at its row, which the reload
+             may move out of sight (plan 2.6). Same pair of regions as the set-full hint. -->
+        <p role="status" class="sr-only">
+          @if (removalNotice()) {
+            {{ 'wishes.remove.notBooked' | transloco }}
+          }
+        </p>
+        @if (removalNotice()) {
+          <app-notice-banner variant="info" aria-hidden="true">{{
+            'wishes.remove.notBooked' | transloco
+          }}</app-notice-banner>
+        }
       </div>
 
       <!-- The one place that names a blocking 7TV run; the locked 7TV buttons point at the visible
@@ -429,9 +441,10 @@ export class ChannelWishesPage {
   private readonly deleteService = inject(SevenTvDeleteService);
   private readonly restoreService = inject(SevenTvRestoreService);
   private readonly dockClearance = inject(DockClearanceService);
+  private readonly emoteAdminService = inject(EmoteAdminService);
   private readonly removalDeps: WishRemovalFlowDeps = {
     emoteSetService: inject(SevenTvEmoteSetService),
-    emoteAdminService: inject(EmoteAdminService),
+    emoteAdminService: this.emoteAdminService,
     wishService: this.wishService,
     tokenService: inject(SevenTvTokenService),
     arbiter: this.arbiter,
@@ -474,6 +487,10 @@ export class ChannelWishesPage {
 
   /** A wish filed by hand landed in a full set (`setFull`); stays until the next filing. */
   protected readonly setFullNotice = signal(false);
+
+  /** A removal of this channel left 7TV but was not booked (`notBooked`, plan 2.6); stays until the
+   *  next removal starts or the channel changes. */
+  protected readonly removalNotice = signal(false);
 
   /** Wishes whose action request is on the way; their row's buttons wait. */
   protected readonly pendingIds = signal<ReadonlySet<number>>(new Set());
@@ -560,9 +577,20 @@ export class ChannelWishesPage {
       this.restoreService.duplicateNoticePending(),
   );
 
-  /** The set this page stands for in the dock's restore check: the shown run's own set. A removal
-   *  started here runs against the channel's active set, which is what the page lists. */
-  protected readonly dockSetId = computed(() => this.deleteService.run()?.setId ?? null);
+  /**
+   * The set this page stands for in the dock's restore check (restore spec E21): the active set of
+   * the channel on screen, which is what the page lists — `null` while it is unknown. Never the shown
+   * run's own set: a run that started on another channel's page would otherwise compare its set with
+   * itself, and the restore would lose its "not the set on screen" warning.
+   */
+  protected readonly dockSetId = computed(() => {
+    const known = this.activeSet();
+    return known !== null && known.channel === this.channel() ? known.setId : null;
+  });
+
+  /** The channel's active set as the last sync stored it (`…/emotes/active-set`), per channel. */
+  private readonly activeSet = signal<{ channel: string; setId: string | null } | null>(null);
+  private activeSetSeq = 0;
 
   /** The dock's rendered height — the page's bottom padding and the shell's clearance. */
   protected readonly dockHeightPx = signal(0);
@@ -640,9 +668,14 @@ export class ChannelWishesPage {
     });
 
     // A removal of this channel that ended: show the server's state (plan 2.5, 2.6) — after a
-    // stop "nothing was changed", after a booking or a refused booking the wish moved.
+    // stop "nothing was changed", after a booking or a refused booking the wish moved. A refused
+    // booking (`notBooked`) is said at the page as well: the reload may move the wish into a list
+    // that is not shown (a collapsed "Beendet"), and its row with it.
     this.removals.ended.pipe(takeUntilDestroyed()).subscribe((end) => {
       if (end.channelName === this.channel()) {
+        if (end.state.kind === 'notBooked') {
+          this.removalNotice.set(true);
+        }
         this.reloadAfterChange();
       }
     });
@@ -659,6 +692,12 @@ export class ChannelWishesPage {
       accept: [LIVE_EVENT_TYPES.wishChanged, LIVE_EVENT_TYPES.channelSynced],
       debounceMs: CHANNEL_RELOAD_DEBOUNCE_MS,
     }).subscribe(() => this.reloadAfterChange());
+
+    // A set switch in 7TV reaches the stored active set with a sync: the dock's set follows it.
+    liveReload(this.liveUrl, {
+      accept: [LIVE_EVENT_TYPES.channelSynced],
+      debounceMs: CHANNEL_RELOAD_DEBOUNCE_MS,
+    }).subscribe(() => this.loadActiveSet());
 
     // Reopened stream and a window that is visible again: counts may have moved unseen, so every
     // held usage value runs out (plan 2.4 c, d) before the lists reload. A reopened stream may also
@@ -857,6 +896,7 @@ export class ChannelWishesPage {
       return;
     }
     this.actionErrorOf(sectionId).set(null);
+    this.removalNotice.set(false);
     startWishRemovalFlow(this.removalDeps, {
       channelName: channel,
       wish,
@@ -940,15 +980,48 @@ export class ChannelWishesPage {
     this.setFullNotice.set(false);
     this.focusedTarget = null;
     this.usageStore.reset();
+    this.removalNotice.set(false);
+    this.activeSetSeq++;
+    this.activeSet.set(null);
     if (channel) {
       this.load(this.open);
       this.load(this.running);
+      this.loadActiveSet();
     }
+  }
+
+  /** The stored active set of the channel on screen; a failed read keeps what is known (or `null`). */
+  private loadActiveSet(): void {
+    const seq = ++this.activeSetSeq;
+    const channel = this.channel();
+    if (!channel) {
+      return;
+    }
+    this.emoteAdminService.getSetStatus(channel).subscribe({
+      next: (status) => {
+        if (seq === this.activeSetSeq && channel === this.channel()) {
+          this.activeSet.set({ channel, setId: status.activeEmoteSetId || null });
+        }
+      },
+      error: (error: unknown) => {
+        // 404: the channel has no row (yet), so no set either.
+        if (
+          seq === this.activeSetSeq &&
+          channel === this.channel() &&
+          error instanceof HttpErrorResponse &&
+          error.status === 404
+        ) {
+          this.activeSet.set({ channel, setId: null });
+        }
+      },
+    });
   }
 
   private reloadAfterGap(): void {
     this.usageStore.expireAll();
     this.reloadAll();
+    // A sync may have gone by unseen, and with it a set switch.
+    this.loadActiveSet();
   }
 
   /**
@@ -968,8 +1041,10 @@ export class ChannelWishesPage {
     if (this.endedOpen()) {
       this.load(this.ended);
     }
+    // A pinned wish still loading is asked again as well: the new request supersedes the one on the
+    // way, which may have read the state before the change (plan 2.4: the same reload rules).
     const pinned = this.pinnedView();
-    if (pinned !== null && pinned.kind !== 'loading') {
+    if (pinned !== null) {
       this.loadPinned(pinned.id, false);
     }
   }
