@@ -971,8 +971,9 @@ public class ChannelIdentityService(
             session.ChannelId = survivor.Id;
         }
 
-        // Wish emotes (plan T9): a loser without emotes and tags can still carry wishes (none with a slot,
-        // it has no emotes) and wish settings, which the cascade below would silently delete with it.
+        // Wish emotes (K1 plan T9, K6 plan #486 T9): a loser without emotes and tags can still carry wishes (none
+        // with a slot, it has no emotes), wish settings, rewards, a learning session, gaps and receipts, which the
+        // cascade below would silently delete with it. Not behind the wish switches.
         var wishes = await MoveWishesAsync(survivor.Id, loser.Id, ct);
 
         // Captured before the flip: DeactivatedAtUtc must only be nulled when the merge is what
@@ -1011,7 +1012,17 @@ public class ChannelIdentityService(
                 movedVoteSessions = sessions.Count,
                 movedWishes = wishes.Moved,
                 mergedWishes = wishes.EndedAsMerged,
-                movedWishSettings = wishes.SettingsMoved
+                movedWishSettings = wishes.SettingsMoved,
+                movedWishRewards = wishes.Rewards.Moved,
+                collapsedWishRewards = wishes.Rewards.Collapsed,
+                reattachedWishes = wishes.Rewards.WishesReattached,
+                deletedDuplicateWishes = wishes.IrcDuplicates.Deleted,
+                releasedIrcMessageIds = wishes.IrcDuplicates.Released,
+                movedWishLearning = wishes.Capture.LearningMoved,
+                droppedWishLearning = wishes.Capture.LearningDropped,
+                movedWishCaptureGaps = wishes.Capture.GapsMoved,
+                movedWishCaptureReceipts = wishes.Capture.ReceiptsMoved,
+                collapsedWishCaptureReceipts = wishes.Capture.ReceiptsCollapsed
             });
         db.Channels.Remove(loser);
         // One SaveChangesAsync, although the survivor takes over a name the loser still holds in the
@@ -1041,89 +1052,102 @@ public class ChannelIdentityService(
     }
 
     /// <summary>
-    /// Moves the loser's wishes and wish settings to the survivor, inside the merge's transaction and
-    /// before the loser row is deleted (plan T9, finding 15). Every column travels unchanged, the slot
-    /// generation and <c>FirstActivatedAtUtc</c> included; only <c>ChannelId</c> changes.
+    /// Moves the loser's wishes, wish settings and chat-capture rows to the survivor, inside the merge's transaction
+    /// and before the loser row is deleted (K1 plan T9, finding 15; K6 plan #486 T9). Every wish column travels
+    /// unchanged, the slot generation and <c>FirstActivatedAtUtc</c> included; only <c>ChannelId</c> changes, plus
+    /// <c>RewardId</c> where two reward rows collapse into one and <c>IrcMessageId</c> where a decided duplicate
+    /// gives it up.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>Collision.</b> Both channels may run a wish for the same 7TV emote, which the partial unique
+    /// <b>Not behind a switch.</b> Nothing here reads <c>Wishes:Enabled</c> or <c>Wishes:Capture:Enabled</c>: the
+    /// loser's rows go with the cascade otherwise, whether the feature is on or not (plan 2.8a, Sol-P2-10).
+    /// </para>
+    /// <para>
+    /// <b>Order.</b> No foreign key and no unique index is violated in between: the wish rows are locked first;
+    /// then the rewards merge (a loser wish of a collapsing reward row is pointed at the survivor's row before that
+    /// row goes, so no wish loses its <c>RewardId</c> to the <c>SET NULL</c>); then the same IRC message in both
+    /// channels is reduced to one owner; then the running collision; then the wishes move; then the settings, the
+    /// learning row, the gaps and the receipts.
+    /// </para>
+    /// <para>
+    /// <b>Running collision.</b> Both channels may run a wish for the same 7TV emote, which the partial unique
     /// index allows once per channel (E13). Of such a pair the wish with a trace in 7TV wins (operator ruling
     /// 2026-11-18): a <c>SlotId</c> in a state that holds its link (<c>unconfirmed</c>, <c>active</c>,
     /// <c>presented</c>; an <c>approved</c> wish's <c>SlotId</c> is history), or a set <c>BotWriteAtUtc</c>.
     /// Only when both or neither have one, the older wins (smaller <c>CreatedAtUtc</c>, on a tie the smaller id).
     /// The other ends as <c>merged</c> with <c>MergedIntoWishId</c> pointing at the winner, before the move, so
     /// the index never sees two. Ending it counts as a decision (E25): <c>DecisionVersion</c> + 1 and a queued
-    /// bot removal is dropped. The winner keeps its state, start and expiry as they are.
+    /// bot removal is dropped. The winner keeps its state, start and expiry as they are. The placeholder of an
+    /// open wish without an emote (the empty id, plan 2.8a) takes no part: it is no emote, and in the lock set it
+    /// would pull in every open survivor wish without one.
     /// </para>
     /// <para>
-    /// <b>Settings.</b> The survivor's row wins; only when it has none does the loser's move over, otherwise the
-    /// loser's goes with the cascade.
+    /// <b>Same IRC message in both channels (Sol-P2-7, Sol-R2-P1-2).</b> Constructively impossible with the
+    /// binding (one row carries a room id), handled anyway for old or hand-made rows; exactly one wish owns the id
+    /// afterwards, see <see cref="ResolveIrcDuplicatesAsync"/>.
     /// </para>
     /// <para>
-    /// <b>Locks.</b> The caller holds both channel rows <c>FOR UPDATE</c>, so no wish or settings row of either
-    /// channel can be inserted meanwhile (a manual entry and the settings upsert take the channel row first,
-    /// plan 2.3, Sol-R2-1). The wish rows are then locked ascending by id (channel before wish, the order
-    /// everywhere) and read only afterwards: every loser wish, and every survivor wish of an emote the loser
-    /// has a wish for, whatever its state, so a concurrent re-add (which takes only its wish row) can neither
-    /// slip a second running wish in nor be decided on a state the merge no longer sees.
+    /// <b>Locks.</b> The caller holds both channel rows <c>FOR UPDATE</c>, so no wish, reward, learning or receipt
+    /// row of either channel can be written meanwhile (every writer takes the channel row first, plan 2.3,
+    /// Sol-R2-1, plan #486 2.4). The wish rows are then locked ascending by id (channel before wish, the order
+    /// everywhere) and read only afterwards: every loser wish, every survivor wish of an emote or an IRC message the
+    /// loser has a wish for, whatever its state, and every wish of a loser reward row, so a concurrent re-add (which
+    /// takes only its wish row) can neither slip a second running wish in nor be decided on a state the merge no
+    /// longer sees.
     /// </para>
     /// </remarks>
     private async Task<WishMergeCounts> MoveWishesAsync(string survivorId, string loserId, CancellationToken ct)
     {
-        var loserEmoteIds = await db.Wishes
+        var loserWishes = await db.Wishes
             .Where(w => w.ChannelId == loserId)
-            .Select(w => w.SevenTvEmoteId)
-            .Distinct()
+            .Select(w => new { w.SevenTvEmoteId, w.IrcMessageId })
             .ToListAsync(ct);
+        // Whether anything moves is a question about the loser's wishes, not about their emotes: a loser with
+        // only open wishes without an emote has no emote id to collide on and still has to move them.
+        var loserHasWishes = loserWishes.Count > 0;
+        var loserEmoteIds = loserWishes
+            .Select(w => w.SevenTvEmoteId)
+            .Where(id => id.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var loserIrcMessageIds = loserWishes
+            .Select(w => w.IrcMessageId)
+            .OfType<string>()
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var loserRewardRowIds = await db.ChannelWishRewards
+            .Where(r => r.ChannelId == loserId)
+            .Select(r => (long?)r.Id)
+            .ToListAsync(ct);
+
+        if (loserHasWishes || loserRewardRowIds.Count > 0)
+        {
+            var lockIds = await db.Wishes
+                .Where(w => w.ChannelId == loserId
+                    || (w.ChannelId == survivorId
+                        && (loserEmoteIds.Contains(w.SevenTvEmoteId)
+                            || (w.IrcMessageId != null && loserIrcMessageIds.Contains(w.IrcMessageId))))
+                    || (w.RewardId != null && loserRewardRowIds.Contains(w.RewardId)))
+                .Select(w => w.Id)
+                .ToListAsync(ct);
+            await db.LockWishesByIdsAsync(lockIds, ct);
+        }
+
+        var rewards = await MergeWishRewardsAsync(survivorId, loserId, ct);
+        var irc = loserIrcMessageIds.Count > 0
+            ? await ResolveIrcDuplicatesAsync(survivorId, loserId, loserIrcMessageIds, ct)
+            : default;
 
         var moved = 0;
         var endedAsMerged = 0;
         if (loserEmoteIds.Count > 0)
         {
-            var lockIds = await db.Wishes
-                .Where(w => w.ChannelId == loserId
-                    || (w.ChannelId == survivorId && loserEmoteIds.Contains(w.SevenTvEmoteId)))
-                .Select(w => w.Id)
-                .ToListAsync(ct);
-            await db.LockWishesByIdsAsync(lockIds, ct);
+            endedAsMerged = await EndRunningCollisionsAsync(survivorId, loserId, loserEmoteIds, ct);
+        }
 
-            var running = WishStatus.Running.ToArray();
-            var contenders = await db.Wishes
-                .AsNoTracking()
-                .Where(w => (w.ChannelId == loserId || w.ChannelId == survivorId)
-                    && loserEmoteIds.Contains(w.SevenTvEmoteId)
-                    && running.Contains(w.Status))
-                .Select(w => new { w.Id, w.ChannelId, w.SevenTvEmoteId, w.CreatedAtUtc, w.Status, w.SlotId, w.BotWriteAtUtc })
-                .ToListAsync(ct);
-
-            var now = DateTime.UtcNow;
-            foreach (var pair in contenders.GroupBy(w => w.SevenTvEmoteId, StringComparer.Ordinal).Where(g => g.Count() > 1))
-            {
-                // At most one per channel (the index), so a pair is exactly one of each. A trace in 7TV first,
-                // then age.
-                var ordered = pair
-                    .OrderByDescending(w => HasSevenTvTrace(w.Status, w.SlotId, w.BotWriteAtUtc))
-                    .ThenBy(w => w.CreatedAtUtc)
-                    .ThenBy(w => w.Id)
-                    .ToList();
-                var winner = ordered[0];
-                var other = ordered[^1];
-                endedAsMerged += await db.Wishes
-                    .Where(w => w.Id == other.Id)
-                    .ExecuteUpdateAsync(
-                        setters => setters
-                            .SetProperty(w => w.Status, WishStatus.Merged)
-                            .SetProperty(w => w.StatusReason, (string?)null)
-                            .SetProperty(w => w.StatusChangedAtUtc, now)
-                            .SetProperty(w => w.EndedAtUtc, now)
-                            .SetProperty(w => w.MergedIntoWishId, winner.Id)
-                            .SetProperty(w => w.DecisionVersion, w => w.DecisionVersion + 1)
-                            .SetProperty(w => w.RemovalQueuedAtUtc, (DateTime?)null)
-                            .SetProperty(w => w.RemovalQueuedVersion, (int?)null),
-                        ct);
-            }
-
+        if (loserHasWishes)
+        {
             moved = await db.Wishes
                 .Where(w => w.ChannelId == loserId)
                 .ExecuteUpdateAsync(setters => setters.SetProperty(w => w.ChannelId, survivorId), ct);
@@ -1137,7 +1161,202 @@ public class ChannelIdentityService(
                 .ExecuteUpdateAsync(setters => setters.SetProperty(s => s.ChannelId, survivorId), ct);
         }
 
-        return new WishMergeCounts(moved, endedAsMerged, settingsMoved);
+        var capture = await MoveWishCaptureStateAsync(survivorId, loserId, ct);
+        return new WishMergeCounts(moved, endedAsMerged, settingsMoved, rewards, irc, capture);
+    }
+
+    /// <summary>
+    /// The loser's reward rows go to the survivor. A row whose Twitch reward id the survivor already knows
+    /// collapses into the survivor's row: the survivor's label, duration and pause win, its "last seen" becomes
+    /// the later of the two (an observation, never moved back, like the capture's own update), every wish of the
+    /// loser's row points at the survivor's row, and only then the loser's row is deleted. More than
+    /// <see cref="WishLimits.MaxRewardsPerChannel"/> rows afterwards are allowed; only learning a new one is refused.
+    /// </summary>
+    private async Task<WishRewardMergeCounts> MergeWishRewardsAsync(string survivorId, string loserId, CancellationToken ct)
+    {
+        var loserRewards = await db.ChannelWishRewards
+            .AsNoTracking()
+            .Where(r => r.ChannelId == loserId)
+            .Select(r => new { r.Id, r.RewardId, r.LastRedemptionSeenAtUtc })
+            .ToListAsync(ct);
+        if (loserRewards.Count == 0)
+        {
+            return default;
+        }
+
+        var tags = loserRewards.Select(r => r.RewardId).ToList();
+        var survivorRowsByTag = await db.ChannelWishRewards
+            .AsNoTracking()
+            .Where(r => r.ChannelId == survivorId && tags.Contains(r.RewardId))
+            .ToDictionaryAsync(r => r.RewardId, r => r.Id, StringComparer.Ordinal, ct);
+
+        var collapsed = 0;
+        var reattached = 0;
+        foreach (var loserRow in loserRewards)
+        {
+            if (!survivorRowsByTag.TryGetValue(loserRow.RewardId, out var survivorRowId))
+            {
+                continue;
+            }
+
+            reattached += await db.Wishes
+                .Where(w => w.RewardId == loserRow.Id)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(w => w.RewardId, survivorRowId), ct);
+            if (loserRow.LastRedemptionSeenAtUtc is { } seen)
+            {
+                await db.ChannelWishRewards
+                    .Where(r => r.Id == survivorRowId && (r.LastRedemptionSeenAtUtc == null || r.LastRedemptionSeenAtUtc < seen))
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(r => r.LastRedemptionSeenAtUtc, seen), ct);
+            }
+
+            collapsed += await db.ChannelWishRewards.Where(r => r.Id == loserRow.Id).ExecuteDeleteAsync(ct);
+        }
+
+        var moved = await db.ChannelWishRewards
+            .Where(r => r.ChannelId == loserId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(r => r.ChannelId, survivorId), ct);
+        return new WishRewardMergeCounts(moved, collapsed, reattached);
+    }
+
+    /// <summary>
+    /// Reduces wishes of both channels that carry the same IRC message id (the same redemption) to exactly one owner
+    /// of that id, so the unique <c>(ChannelId, IrcMessageId)</c> index holds after the move and the redemption stays
+    /// decidable once (plan #486 T9, Sol-P2-7, Sol-R2-P1-2). The wish rows are locked by the caller.
+    /// <list type="bullet">
+    /// <item>One open (<c>pending</c>), the other not: the open one is deleted. Nothing is booked on it, and it is
+    /// the same redemption; its slot exclusions go with the cascade. The other keeps the id.</item>
+    /// <item>Both open: the one with the greater id is deleted.</item>
+    /// <item>Neither open: both stay, no booked decision is rewritten; the one with the greater id gives up its IRC
+    /// message id (null) before anything moves.</item>
+    /// </list>
+    /// Deleted rather than ended as <c>merged</c>: an open wish without an emote in <c>merged</c> would break
+    /// <c>CK_Wishes_EmotePlaceholder</c>, and <c>MergeChannels</c> is a transition of running wishes only. No wish is
+    /// extended, and the audit entries of a deleted wish stay (the log has no foreign key).
+    /// </summary>
+    private async Task<IrcDuplicateCounts> ResolveIrcDuplicatesAsync(
+        string survivorId, string loserId, List<string> loserIrcMessageIds, CancellationToken ct)
+    {
+        var holders = await db.Wishes
+            .AsNoTracking()
+            .Where(w => (w.ChannelId == survivorId || w.ChannelId == loserId)
+                && w.IrcMessageId != null
+                && loserIrcMessageIds.Contains(w.IrcMessageId))
+            .Select(w => new { w.Id, w.IrcMessageId, w.Status })
+            .ToListAsync(ct);
+
+        var delete = new List<long>();
+        var release = new List<long>();
+        // At most one per channel (the index), so a group of two is exactly one of each.
+        foreach (var pair in holders.GroupBy(w => w.IrcMessageId!, StringComparer.Ordinal).Where(g => g.Count() > 1))
+        {
+            var ordered = pair.OrderBy(w => w.Id).ToList();
+            var (lower, greater) = (ordered[0], ordered[^1]);
+            var lowerOpen = lower.Status == WishStatus.Pending;
+            var greaterOpen = greater.Status == WishStatus.Pending;
+            if (greaterOpen)
+            {
+                // Both open, or only the greater one: the greater one goes.
+                delete.Add(greater.Id);
+            }
+            else if (lowerOpen)
+            {
+                delete.Add(lower.Id);
+            }
+            else
+            {
+                release.Add(greater.Id);
+            }
+        }
+
+        var deleted = delete.Count == 0
+            ? 0
+            : await db.Wishes.Where(w => delete.Contains(w.Id)).ExecuteDeleteAsync(ct);
+        var released = release.Count == 0
+            ? 0
+            : await db.Wishes
+                .Where(w => release.Contains(w.Id))
+                .ExecuteUpdateAsync(setters => setters.SetProperty(w => w.IrcMessageId, (string?)null), ct);
+        return new IrcDuplicateCounts(deleted, released);
+    }
+
+    // The running collision of the remarks on MoveWishesAsync; returns how many wishes ended as merged.
+    private async Task<int> EndRunningCollisionsAsync(
+        string survivorId, string loserId, List<string> loserEmoteIds, CancellationToken ct)
+    {
+        var running = WishStatus.Running.ToArray();
+        var contenders = await db.Wishes
+            .AsNoTracking()
+            .Where(w => (w.ChannelId == loserId || w.ChannelId == survivorId)
+                && loserEmoteIds.Contains(w.SevenTvEmoteId)
+                && running.Contains(w.Status))
+            .Select(w => new { w.Id, w.ChannelId, w.SevenTvEmoteId, w.CreatedAtUtc, w.Status, w.SlotId, w.BotWriteAtUtc })
+            .ToListAsync(ct);
+
+        var now = DateTime.UtcNow;
+        var endedAsMerged = 0;
+        foreach (var pair in contenders.GroupBy(w => w.SevenTvEmoteId, StringComparer.Ordinal).Where(g => g.Count() > 1))
+        {
+            // At most one per channel (the index), so a pair is exactly one of each. A trace in 7TV first,
+            // then age.
+            var ordered = pair
+                .OrderByDescending(w => HasSevenTvTrace(w.Status, w.SlotId, w.BotWriteAtUtc))
+                .ThenBy(w => w.CreatedAtUtc)
+                .ThenBy(w => w.Id)
+                .ToList();
+            var winner = ordered[0];
+            var other = ordered[^1];
+            endedAsMerged += await db.Wishes
+                .Where(w => w.Id == other.Id)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(w => w.Status, WishStatus.Merged)
+                        .SetProperty(w => w.StatusReason, (string?)null)
+                        .SetProperty(w => w.StatusChangedAtUtc, now)
+                        .SetProperty(w => w.EndedAtUtc, now)
+                        .SetProperty(w => w.MergedIntoWishId, winner.Id)
+                        .SetProperty(w => w.DecisionVersion, w => w.DecisionVersion + 1)
+                        .SetProperty(w => w.RemovalQueuedAtUtc, (DateTime?)null)
+                        .SetProperty(w => w.RemovalQueuedVersion, (int?)null),
+                    ct);
+        }
+
+        return endedAsMerged;
+    }
+
+    /// <summary>
+    /// The capture rows that hang on the channel and not on a wish: the learning row moves when the survivor has
+    /// none, otherwise the survivor's session stays and the loser's is dropped (one session per channel, the
+    /// primary key); every gap moves; every receipt moves, except one whose IRC message id the survivor already
+    /// has, where the survivor's stays. Slot exclusions hang on their wish and move with it.
+    /// </summary>
+    private async Task<WishCaptureMergeCounts> MoveWishCaptureStateAsync(string survivorId, string loserId, CancellationToken ct)
+    {
+        var learningMoved = 0;
+        var learningDropped = 0;
+        if (await db.WishRewardLearnings.AnyAsync(l => l.ChannelId == survivorId, ct))
+        {
+            learningDropped = await db.WishRewardLearnings.Where(l => l.ChannelId == loserId).ExecuteDeleteAsync(ct);
+        }
+        else
+        {
+            learningMoved = await db.WishRewardLearnings
+                .Where(l => l.ChannelId == loserId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(l => l.ChannelId, survivorId), ct);
+        }
+
+        var gapsMoved = await db.WishCaptureGaps
+            .Where(g => g.ChannelId == loserId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(g => g.ChannelId, survivorId), ct);
+
+        var receiptsCollapsed = await db.WishCaptureReceipts
+            .Where(l => l.ChannelId == loserId
+                && db.WishCaptureReceipts.Any(s => s.ChannelId == survivorId && s.IrcMessageId == l.IrcMessageId))
+            .ExecuteDeleteAsync(ct);
+        var receiptsMoved = await db.WishCaptureReceipts
+            .Where(r => r.ChannelId == loserId)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(r => r.ChannelId, survivorId), ct);
+
+        return new WishCaptureMergeCounts(learningMoved, learningDropped, gapsMoved, receiptsMoved, receiptsCollapsed);
     }
 
     /// <summary>
@@ -1197,8 +1416,25 @@ public class ChannelIdentityService(
         string Id, string? TwitchChannelId, string ChannelName, DateTime CreatedAt, DateTime? LastSyncedAtUtc);
 
     // What MoveWishesAsync did, for the merge's audit entry: wishes moved to the survivor, wishes ended as
-    // merged on an index collision (either channel's), and whether the loser's settings row moved (0 or 1).
-    private readonly record struct WishMergeCounts(int Moved, int EndedAsMerged, int SettingsMoved);
+    // merged on an index collision (either channel's), whether the loser's settings row moved (0 or 1), and the
+    // chat-capture counts (K6).
+    private readonly record struct WishMergeCounts(
+        int Moved,
+        int EndedAsMerged,
+        int SettingsMoved,
+        WishRewardMergeCounts Rewards,
+        IrcDuplicateCounts IrcDuplicates,
+        WishCaptureMergeCounts Capture);
+
+    // Reward rows moved, loser rows collapsed into the survivor's row of the same Twitch reward, wishes pointed at it.
+    private readonly record struct WishRewardMergeCounts(int Moved, int Collapsed, int WishesReattached);
+
+    // Open duplicates of the same IRC message deleted, and decided wishes that gave up the IRC message id.
+    private readonly record struct IrcDuplicateCounts(int Deleted, int Released);
+
+    // Learning row moved or dropped (0 or 1 each), gaps moved, receipts moved, receipts the survivor already had.
+    private readonly record struct WishCaptureMergeCounts(
+        int LearningMoved, int LearningDropped, int GapsMoved, int ReceiptsMoved, int ReceiptsCollapsed);
 
     private sealed class ReconcileCounters
     {
