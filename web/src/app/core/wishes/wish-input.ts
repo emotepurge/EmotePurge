@@ -9,6 +9,11 @@ export const WISH_DURATION_DAYS_MAX = 365;
 export const WISH_PROBATION_LEAD_DAYS_MIN = 1;
 export const WISH_PROBATION_LEAD_DAYS_MAX = 30;
 export const WISH_ALIAS_MAX_LENGTH = 100;
+/** K6: how many days a captured wish may stay open (`WishLimits.PendingExpiryDaysMin/Max`). */
+export const WISH_PENDING_EXPIRY_DAYS_MIN = 1;
+export const WISH_PENDING_EXPIRY_DAYS_MAX = 90;
+/** K6: the label a manager gives a learned reward (`WishLimits.RewardLabelMaxLength`). */
+export const WISH_REWARD_LABEL_MAX_LENGTH = 50;
 
 /** 7TV hands out two id forms: a 24-character hex ObjectID and a 26-character ULID (Crockford base32). */
 const OBJECT_ID = /^[0-9a-f]{24}$/i;
@@ -18,6 +23,7 @@ const SEVEN_TV_HOST_PREFIX = /^(?:www\.|old\.)?7tv\.(?:app|gg)\//i;
 const LOGIN = /^[a-z0-9_]{4,25}$/;
 const WHOLE_NUMBER = /^\d+$/;
 const ALIAS_FORBIDDEN = /[\p{Cc}\p{White_Space}]/u;
+const CONTROL_CHAR = /\p{Cc}/u;
 
 export type EmoteInputResult =
   { ok: true; id: string } | { ok: false; reason: 'empty' | 'invalid' };
@@ -142,4 +148,28 @@ export function validateWishAlias(alias: string): WishAliasResult {
   return ALIAS_FORBIDDEN.test(alias)
     ? { ok: false, reason: 'forbidden_char' }
     : { ok: true, alias };
+}
+
+/** How many days a captured wish may stay open (channel settings, K6), 1 to 90. */
+export function parsePendingExpiryDays(raw: string | number | null | undefined): WholeDaysResult {
+  return parseWholeDays(raw, WISH_PENDING_EXPIRY_DAYS_MIN, WISH_PENDING_EXPIRY_DAYS_MAX);
+}
+
+export type WishRewardLabelResult =
+  { ok: true; label: string } | { ok: false; reason: 'empty' | 'too_long' | 'forbidden_char' };
+
+/**
+ * The label of a learned reward (K6): trimmed, then 1 to 50 code points without control characters,
+ * the server's rule (`WishRewardService.NormalizeLabel`). A space inside it is fine; the label is the
+ * manager's own name for the reward, not an emote name.
+ */
+export function validateRewardLabel(raw: string): WishRewardLabelResult {
+  const label = raw.trim();
+  if (label.length === 0) {
+    return { ok: false, reason: 'empty' };
+  }
+  if ([...label].length > WISH_REWARD_LABEL_MAX_LENGTH) {
+    return { ok: false, reason: 'too_long' };
+  }
+  return CONTROL_CHAR.test(label) ? { ok: false, reason: 'forbidden_char' } : { ok: true, label };
 }

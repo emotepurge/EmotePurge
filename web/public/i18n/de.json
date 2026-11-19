@@ -2886,7 +2886,97 @@
       "changed": "Die Einstellungen wurden inzwischen geändert. Deine Eingaben sind noch nicht gespeichert.",
       "reload": "Neu laden",
       "loadFailed": "Die Einstellungen konnten nicht geladen werden.",
-      "retry": "Erneut versuchen"
+      "retry": "Erneut versuchen",
+      "pending": {
+        "label": "Verfall offener Wünsche in Tagen",
+        "hint": "So lange bleibt ein aus dem Chat erfasster Wunsch offen. Entscheidet bis dahin niemand, verfällt er."
+      },
+      "pendingInvalid": {
+        "empty": "Gib eine Zahl von Tagen an.",
+        "not_integer": "Der Verfall ist eine ganze Zahl von Tagen.",
+        "out_of_range": "Der Verfall liegt zwischen 1 und {{ max }} Tagen."
+      },
+      "rewards": {
+        "title": "Belohnungen aus dem Chat",
+        "count": "{{ count }} von {{ limit }}",
+        "intro": "Löst ein Zuschauer eine angelernte Kanalpunkte-Belohnung ein, entsteht daraus ein offener Wunsch. Erkannt werden nur Belohnungen mit Texteingabe.",
+        "unbound": "Dieser Kanal ist noch nicht mit seinem Twitch-Konto verknüpft. Belohnungen lassen sich nach dem nächsten Sync anlernen.",
+        "forbidden": "Die Belohnungen dieses Kanals kannst du nicht sehen. Dafür muss Twitch dich als Broadcaster oder Moderator dieses Kanals bestätigen.",
+        "loadFailed": "Die Belohnungen konnten nicht geladen werden.",
+        "captureStopped": "Die Erfassung im Chat hat sich seit mehr als drei Minuten nicht gemeldet. Einlösungen werden gerade vielleicht nicht erkannt.",
+        "empty": "Noch keine Belohnung angelernt",
+        "emptyHint": "Lerne die Belohnung an, mit der sich Zuschauer ein Emote wünschen.",
+        "paused": "Pausiert",
+        "duration": {
+          "one": "Standardlaufzeit {{ count }} Tag",
+          "other": "Standardlaufzeit {{ count }} Tage"
+        },
+        "lastSeen": "Zuletzt erkannt am {{ date }}",
+        "neverSeen": "Noch nie erkannt",
+        "edit": "Bearbeiten",
+        "pause": "Pausieren",
+        "remove": "Vergessen",
+        "removeConfirm": "Belohnung „{{ label }}“ vergessen? Ihre Einlösungen werden danach nicht mehr erkannt. Wünsche, die schon da sind, bleiben.",
+        "readOnly": "Belohnungen anlernen und ändern dürfen nur der Broadcaster, wer den Bot aktiviert hat, und Admins.",
+        "reload": "Neu laden",
+        "learning": {
+          "start": "Belohnung anlernen",
+          "startHint": "Starte das Anlernen und löse die Belohnung danach innerhalb von 10 Minuten einmal selbst ein. Diese Einlösung wird kein Wunsch.",
+          "limit": "Dieser Kanal hat schon {{ limit }} Belohnungen. Vergiss zuerst eine.",
+          "waiting": "Anlernen läuft: Warte auf eine Einlösung.",
+          "waitingHint": "Löse die Belohnung jetzt in deinem Kanal ein, mit beliebigem Text. Die erste Einlösung einer noch unbekannten Belohnung erscheint hier.",
+          "candidate": "Einlösung erkannt",
+          "candidateHint": "Ist das die Belohnung für Emote-Wünsche? Dann bestätige sie. Diese Einlösung selbst wird kein Wunsch.",
+          "textLabel": "Text der Einlösung:",
+          "noText": "Ohne Text",
+          "seenBy": "von {{ login }} um {{ time }}",
+          "remaining": "Noch {{ time }}",
+          "expired": "Das Anlernen ist abgelaufen, ohne dass eine Belohnung bestätigt wurde.",
+          "cancel": "Anlernen abbrechen",
+          "confirm": "Bestätigen"
+        },
+        "feedback": {
+          "cancelled": "Anlernen abgebrochen.",
+          "learned": "Belohnung „{{ label }}“ angelernt.",
+          "saved": "Belohnung gespeichert.",
+          "paused": "„{{ label }}“ pausiert.",
+          "resumed": "„{{ label }}“ wird wieder erkannt.",
+          "removed": "„{{ label }}“ vergessen."
+        },
+        "gaps": {
+          "title": "Erfassungslücken",
+          "none": "Keine Erfassungslücken in den letzten 14 Tagen.",
+          "hint": "Ungefähre Zeiträume der letzten 14 Tage, in denen Einlösungen vielleicht nicht erfasst wurden. Die Messung ist eine Näherung. Sieh für diese Zeiten in der Twitch-Warteschlange der Belohnung nach.",
+          "reason": {
+            "disconnect": "Verbindung zu Twitch unterbrochen",
+            "worker_restart": "Erfassung neu gestartet",
+            "not_joined": "Kanal nicht betreten",
+            "unknown": "Ohne bekannten Grund"
+          }
+        },
+        "dialog": {
+          "confirmTitle": "Belohnung bestätigen",
+          "editTitle": "Belohnung bearbeiten",
+          "candidateIntro": "Erkannte Einlösung:",
+          "notAWish": "Diese Einlösung wird kein Wunsch.",
+          "label": "Bezeichnung",
+          "labelHint": "Euer Name für die Belohnung, zum Beispiel ihr Titel in Twitch.",
+          "labelInvalid": {
+            "empty": "Gib eine Bezeichnung an.",
+            "too_long": "Die Bezeichnung hat höchstens {{ max }} Zeichen.",
+            "forbidden_char": "Die Bezeichnung enthält ein Steuerzeichen.",
+            "rejected": "Diese Bezeichnung nimmt der Server nicht an."
+          },
+          "duration": "Standardlaufzeit neuer Wünsche in Tagen",
+          "save": "Speichern",
+          "blocked": {
+            "stale": "Nicht mehr aktuell.",
+            "expired": "Das Anlernen ist abgelaufen.",
+            "label": "Gib eine gültige Bezeichnung an.",
+            "unchanged": "Du hast nichts geändert."
+          }
+        }
+      }
     },
     "dialog": {
       "toWish": "Zum Wunsch",

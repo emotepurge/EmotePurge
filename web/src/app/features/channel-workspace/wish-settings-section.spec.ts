@@ -75,6 +75,18 @@ describe('wishSettingsBody', () => {
     expect(wishSettingsBody('1', '1')).not.toBeNull();
     expect(wishSettingsBody('365', '30')).not.toBeNull();
   });
+
+  it('carries the open-wish expiry only when its field is given', () => {
+    expect(wishSettingsBody('14', '3', '30')).toEqual({
+      defaultDurationDays: 14,
+      probationLeadDays: 3,
+      pendingExpiryDays: 30,
+    });
+    const without = wishSettingsBody('14', '3');
+    expect(without && 'pendingExpiryDays' in without).toBe(false);
+    expect(wishSettingsBody('14', '3', '91')).toBeNull();
+    expect(wishSettingsBody('14', '3', '')).toBeNull();
+  });
 });
 
 describe('WishSettingsSection', () => {
@@ -83,7 +95,9 @@ describe('WishSettingsSection', () => {
     typeof vi.fn<(channel: string, body: WishSettingsUpdate) => Observable<WishSettings>>
   >;
 
-  async function create(): Promise<ComponentFixture<WishSettingsSection>> {
+  let getRewards: ReturnType<typeof vi.fn>;
+
+  async function create(captureEnabled = false): Promise<ComponentFixture<WishSettingsSection>> {
     FakeEventSource.instances = [];
     TestBed.configureTestingModule({
       imports: [
@@ -94,7 +108,7 @@ describe('WishSettingsSection', () => {
         }),
       ],
       providers: [
-        { provide: WishService, useValue: { getSettings, updateSettings } },
+        { provide: WishService, useValue: { getSettings, updateSettings, getRewards } },
         {
           provide: EVENT_SOURCE_FACTORY,
           useValue: (url: string) => new FakeEventSource(url) as unknown as EventSource,
@@ -103,6 +117,7 @@ describe('WishSettingsSection', () => {
     });
     const fixture = TestBed.createComponent(WishSettingsSection);
     fixture.componentRef.setInput('channelName', 'sensitron');
+    fixture.componentRef.setInput('captureEnabled', captureEnabled);
     fixture.detectChanges();
     await fixture.whenStable();
     fixture.detectChanges();
@@ -150,6 +165,7 @@ describe('WishSettingsSection', () => {
   }
 
   beforeEach(() => {
+    getRewards = vi.fn(() => new Subject<never>());
     getSettings = vi.fn(() => of(read()));
     updateSettings = vi.fn((_channel, body) =>
       of({
@@ -158,6 +174,56 @@ describe('WishSettingsSection', () => {
         probationLeadDays: body.probationLeadDays,
       }),
     );
+  });
+
+  describe('with the chat capture (K6)', () => {
+    function pendingInput(fixture: ComponentFixture<unknown>): HTMLInputElement | null {
+      return el(fixture).querySelector<HTMLInputElement>('#wish-settings-pending');
+    }
+
+    it('has neither the open-wish expiry nor the rewards while the capture is off', async () => {
+      const fixture = await create(false);
+      type(fixture, 'duration', '30');
+      saveButton(fixture)!.click();
+
+      expect(pendingInput(fixture)).toBeNull();
+      expect(el(fixture).querySelector('app-wish-rewards-section')).toBeNull();
+      expect(getRewards).not.toHaveBeenCalled();
+      expect('pendingExpiryDays' in updateSettings.mock.calls[0][1]).toBe(false);
+    });
+
+    it('fills the expiry, sends it on a change and mounts the rewards', async () => {
+      getSettings.mockReturnValue(of(read({ pendingExpiryDays: 10 })));
+      const fixture = await create(true);
+
+      expect(pendingInput(fixture)!.value).toBe('10');
+      expect(getRewards).toHaveBeenCalledWith('sensitron');
+
+      const target = pendingInput(fixture)!;
+      target.value = '30';
+      target.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+      saveButton(fixture)!.click();
+
+      expect(updateSettings).toHaveBeenCalledWith('sensitron', {
+        defaultDurationDays: 14,
+        probationLeadDays: 3,
+        pendingExpiryDays: 30,
+      });
+    });
+
+    it('names an expiry outside 1 to 90 at the field and keeps Save locked', async () => {
+      const fixture = await create(true);
+
+      const target = pendingInput(fixture)!;
+      target.value = '91';
+      target.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(target.getAttribute('aria-invalid')).toBe('true');
+      expect(target.getAttribute('aria-describedby')).toContain('wish-settings-pending-error');
+      expect(saveButton(fixture)!.disabled).toBe(true);
+    });
   });
 
   it('fills the fields from the loaded settings', async () => {

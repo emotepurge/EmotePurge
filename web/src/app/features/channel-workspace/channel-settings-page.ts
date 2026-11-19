@@ -17,7 +17,10 @@ import { WishSettingsSection } from './wish-settings-section';
     <div class="flex flex-col gap-6">
       <h2 class="text-lg font-semibold">{{ 'channelWorkspace.settings.title' | transloco }}</h2>
       @if (wishesEnabled()) {
-        <app-wish-settings-section [channelName]="channelName()" />
+        <app-wish-settings-section
+          [channelName]="channelName()"
+          [captureEnabled]="wishCaptureEnabled()"
+        />
       }
       @if (chatLogBackfillEnabled()) {
         <app-backfill-section [channelName]="channelName()" />
@@ -34,6 +37,8 @@ export class ChannelSettingsPage {
   // has already read the same (cached) answer, so this is not a second request in practice.
   protected readonly chatLogBackfillEnabled = signal(false);
   protected readonly wishesEnabled = signal(false);
+  /** K6: the chat capture is on; the wishes block then carries the rewards and the open-wish expiry. */
+  protected readonly wishCaptureEnabled = signal(false);
 
   constructor() {
     effect((onCleanup) => {
@@ -41,10 +46,12 @@ export class ChannelSettingsPage {
         next: (permissions) => {
           this.chatLogBackfillEnabled.set(permissions.chatLogBackfillEnabled);
           this.wishesEnabled.set(permissions.wishesEnabled);
+          this.wishCaptureEnabled.set(permissions.wishCaptureEnabled);
         },
         error: () => {
           this.chatLogBackfillEnabled.set(false);
           this.wishesEnabled.set(false);
+          this.wishCaptureEnabled.set(false);
         },
       });
       onCleanup(() => subscription.unsubscribe());
