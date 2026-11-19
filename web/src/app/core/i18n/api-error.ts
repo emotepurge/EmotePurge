@@ -108,6 +108,14 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'wish_slot_already_linked',
   'wish_emote_required',
   'wish_running_not_extendable',
+  'wish_capture_disabled',
+  'wish_channel_unbound',
+  'wish_learning_active',
+  'wish_learning_stale',
+  'wish_reward_no_candidate',
+  'wish_reward_already_known',
+  'wish_reward_limit',
+  'wish_reward_not_found',
 ]);
 
 /**

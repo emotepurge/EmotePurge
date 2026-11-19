@@ -2576,7 +2576,15 @@
       "wish_slot_not_found": "Dieser Eintrag ist nicht (mehr) aktiv im Set.",
       "wish_slot_already_linked": "Dieser Eintrag gehört bereits zu einem anderen Wunsch.",
       "wish_emote_required": "Wähle zuerst das Emote: Füge einen 7TV-Link oder eine Emote-ID ein.",
-      "wish_running_not_extendable": "Der laufende Wunsch für dieses Emote ist noch nicht im Set. Freigeben geht, sobald er es ist."
+      "wish_running_not_extendable": "Der laufende Wunsch für dieses Emote ist noch nicht im Set. Freigeben geht, sobald er es ist.",
+      "wish_capture_disabled": "Die Erfassung aus dem Chat ist nicht verfügbar.",
+      "wish_channel_unbound": "Dieser Kanal ist noch nicht vollständig eingerichtet. Belohnungen lassen sich nach dem nächsten Sync anlernen.",
+      "wish_learning_active": "Für diesen Kanal läuft bereits ein Anlernen.",
+      "wish_learning_stale": "Inzwischen hat jemand neu angelernt. Lade neu und sieh dir den aktuellen Stand an.",
+      "wish_reward_no_candidate": "Es liegt keine erkannte Einlösung zum Bestätigen vor. Starte das Anlernen neu.",
+      "wish_reward_already_known": "Diese Belohnung ist bereits angelernt.",
+      "wish_reward_limit": "Dieser Kanal hat schon die höchste Zahl an Belohnungen. Vergiss zuerst eine.",
+      "wish_reward_not_found": "Diese Belohnung gibt es nicht mehr."
     }
   },
   "backfill": {

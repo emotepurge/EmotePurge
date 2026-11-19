@@ -58,6 +58,10 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         { "POST", "/api/channels/{0}/wishes/7/re-add", """{"mode":"timed"}""" },
         { "POST", "/api/channels/{0}/wishes/7/complete-removal", RemovalBody },
         { "POST", "/api/channels/{0}/wishes/7/recheck", null },
+        // K6 (plan #486 2.9, W7): the commands on an open wish follow the wish ladder, not the capture switch.
+        { "POST", "/api/channels/{0}/wishes/7/approve", "{}" },
+        { "POST", "/api/channels/{0}/wishes/7/reject", null },
+        { "POST", "/api/channels/{0}/wishes/7/unlink", null },
     };
 
     // ---- AK13: the filter ladder on every route ----
@@ -134,6 +138,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     [InlineData("PATCH", "/api/channels/handofblood/wishes/7")]
     [InlineData("POST", "/api/channels/handofblood/wishes/7/re-add")]
     [InlineData("POST", "/api/channels/handofblood/wishes/7/complete-removal")]
+    [InlineData("POST", "/api/channels/handofblood/wishes/7/approve")]
     [InlineData("PUT", "/api/channels/handofblood/wishes/settings")]
     public async Task SwitchOff_ChecksTheSwitch_BeforeTheBody(string method, string path)
     {
@@ -153,6 +158,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     [InlineData("PATCH", "/api/channels/handofblood/wishes/7")]
     [InlineData("POST", "/api/channels/handofblood/wishes/7/re-add")]
     [InlineData("POST", "/api/channels/handofblood/wishes/7/complete-removal")]
+    [InlineData("POST", "/api/channels/handofblood/wishes/7/approve")]
     [InlineData("PUT", "/api/channels/handofblood/wishes/settings")]
     public async Task SwitchOn_AnEmptyOrUnbindableBody_Answers400InvalidRequestBody(string method, string path)
     {
@@ -250,7 +256,8 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
             using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
             Assert.Equal(expected, json.RootElement.GetProperty("canEdit").GetBoolean());
             string[] names =
-                ["defaultDurationDays", "probationLeadDays", "protectionThresholdPerDay", "botModeEnabled", "botSuspendedReason", "canEdit"];
+                ["defaultDurationDays", "probationLeadDays", "protectionThresholdPerDay", "botModeEnabled", "botSuspendedReason",
+                    "pendingExpiryDays", "canEdit"];
             Assert.True(names.ToHashSet().SetEquals(json.RootElement.EnumerateObject().Select(p => p.Name)));
         }
 
@@ -565,6 +572,39 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         await _factory.Wishes.Received(1).UpdateSettingsAsync(Channel, expected, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
     }
 
+    // K6 (plan #486 2.8): the expiry of open wishes is optional on the write; absent keeps the stored value.
+    [Theory]
+    [InlineData("""{"defaultDurationDays":14,"probationLeadDays":5,"pendingExpiryDays":30}""", 30)]
+    [InlineData("""{"defaultDurationDays":14,"probationLeadDays":5,"pendingExpiryDays":null}""", null)]
+    [InlineData("""{"defaultDurationDays":14,"probationLeadDays":5}""", null)]
+    public async Task PutSettings_ForwardsThePendingExpiry_OrNullToKeepIt(string body, int? pendingExpiryDays)
+    {
+        _factory.Wishes.CanChangeSettingsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(new WishCommandResult(WishOutcome.Success, Settings: Settings() with { PendingExpiryDays = 30 }));
+
+        var response = await SendAsync(_factory, "PUT", $"/api/channels/{Channel}/wishes/settings", body);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(30, json.RootElement.GetProperty("pendingExpiryDays").GetInt32());
+        var request = (UpdateWishSettingsRequest)Assert.Single(
+            _factory.Wishes.ReceivedCalls(), c => c.GetMethodInfo().Name == nameof(IWishService.UpdateSettingsAsync)).GetArguments()[1]!;
+        Assert.Equal(pendingExpiryDays, request.PendingExpiryDays);
+    }
+
+    [Fact]
+    public async Task GetSettings_CarriesThePendingExpiry()
+    {
+        _factory.Wishes.GetSettingsAsync(Channel, Arg.Any<CancellationToken>()).Returns(Settings() with { PendingExpiryDays = 3 });
+
+        var response = await SendAsync(_factory, "GET", $"/api/channels/{Channel}/wishes/settings");
+
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(3, json.RootElement.GetProperty("pendingExpiryDays").GetInt32());
+    }
+
     // ---- Wire shape ----
 
     [Fact]
@@ -747,8 +787,9 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
                     || raw.StartsWith("/api/wishes", StringComparison.Ordinal)))
             .ToList();
 
-        // 15 channel routes (the Routes table) plus the two overview reads: the scan is not vacuous.
-        Assert.Equal(17, endpoints.Count);
+        // 18 channel routes (the Routes table), the six reward routes (WishCaptureEndpointsTests) and the two overview
+        // reads: the scan is not vacuous.
+        Assert.Equal(26, endpoints.Count);
         foreach (var endpoint in endpoints)
         {
             var handler = endpoint.Metadata.GetMetadata<MethodInfo>();
