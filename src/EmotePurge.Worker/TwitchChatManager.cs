@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using EmotePurge.Core.Chat;
 using EmotePurge.Core.Matching;
 using EmotePurge.Core.Services;
+using EmotePurge.Worker.WishCapture;
 using TwitchLib.Client;
 using TwitchLib.Client.Enums;
 using TwitchLib.Client.Events;
@@ -26,7 +27,9 @@ public class TwitchChatManager(
     IEmoteUsageCounter usageCounter,
     IBotChatterDetector botChatterDetector,
     IExcludedChatterFilter excludedChatterFilter,
-    WorkerStats stats) : ITwitchChatManager
+    WorkerStats stats,
+    WishOptions wishOptions,
+    IRewardObservationSink rewardObservationSink) : ITwitchChatManager
 {
     // Twitch permits 20 joins per 10 seconds on a non-verified connection, and TwitchLib paces them
     // not at all: JOINs bypass its ThrottlingService (that one only covers chat messages) and its
@@ -69,6 +72,10 @@ public class TwitchChatManager(
     private static readonly TimeSpan JoinConfirmationTimeout = TimeSpan.FromSeconds(5);
 
     private static readonly TimeSpan JoinConfirmationPollInterval = TimeSpan.FromMilliseconds(150);
+
+    // The worker's effective capture switch (plan #486 2.1, 2.8), read once at construction: off, the capture
+    // branch in OnMessageReceived is never entered, not even for a line with the reward tag (AK65).
+    private readonly bool _wishCaptureActive = wishOptions.CaptureActive;
 
     // Desired channels, not confirmed ones — the value records whether Twitch confirmed the JOIN.
     // Tracking intent instead of success is what makes a failed join retryable (see TryJoinAsync
@@ -1055,27 +1062,46 @@ public class TwitchChatManager(
 
         // Objection gate (GDPR Art. 21, issue #252): dropped here, immediately after the liveness
         // bookkeeping above and before anything else touches this message — splice diagnostics,
-        // room/bot classification and emote counting all stay untouched for an excluded id. Matches
-        // only the immutable Twitch user id, never the login (ExcludedChatterFilter never reads
-        // one). The liveness update above is deliberately not skipped: an objecting chatter's
-        // messages still prove the socket is alive, same reasoning as for bot/Shared-Chat traffic
-        // in the class-level comment on this ordering.
-        if (excludedChatterFilter.IsExcluded(e.ChatMessage.UserId))
+        // reward capture, room/bot classification and emote counting all stay untouched for an
+        // excluded id. Matches only the immutable Twitch user id, never the login
+        // (ExcludedChatterFilter never reads one). The liveness update above is deliberately not
+        // skipped: an objecting chatter's messages still prove the socket is alive, same reasoning as
+        // for bot/Shared-Chat traffic in the class-level comment on this ordering.
+        var message = e.ChatMessage;
+        var isExcluded = excludedChatterFilter.IsExcluded(message.UserId);
+
+        // The other inputs of the route are read only for a line that is not excluded. Sentinel for the
+        // TwitchLib double-read-loop defect (#114): reads RawIrcMessage, not UndocumentedTags (E6, see
+        // IrcLineSpliceRule). The snapshot is read once, here, before the route (plan #486 T10): the
+        // capture needs to know whether it was empty, the emote matching below uses the same read.
+        // Hot path: no allocation on the (overwhelming) non-splice, no-reward branch — the reward
+        // check is a null test on a typed property, no UndocumentedTags lookup.
+        var rawIrc = message.RawIrcMessage;
+        var isSpliced = !isExcluded && IrcLineSpliceRule.IsSpliced(rawIrc);
+        var snapshot = isExcluded ? default : emoteMatchCache.GetChannelSnapshot(message.Channel);
+        var snapshotIsEmpty = isExcluded || snapshot.NameToSlotId.Count == 0;
+
+        // Exclusion, then capture, then the cache check (plan 2.1, AK67): the order lives in
+        // ChatMessageRoute, tested there; this handler only follows its flags.
+        var route = ChatMessageRoute.Decide(
+            isExcluded,
+            _wishCaptureActive,
+            hasRewardTag: message.CustomRewardId is not null,
+            isSpliced,
+            snapshotIsEmpty);
+        if (!route.CountLine)
         {
             return Task.CompletedTask;
         }
 
         stats.RecordChatLine();
 
-        // Sentinel for the TwitchLib double-read-loop defect (#114): warn and count, never drop —
-        // the line still carries a real message and must be classified and matched like any other.
-        // Reads RawIrcMessage, not UndocumentedTags (E6, see IrcLineSpliceRule). Hot path: one
-        // call, no allocation on the (overwhelming) non-splice branch.
-        var rawIrc = e.ChatMessage.RawIrcMessage;
-        if (IrcLineSpliceRule.IsSpliced(rawIrc))
+        // Warn and count, never drop — the line still carries a real message and must be classified
+        // and matched like any other.
+        if (isSpliced)
         {
             stats.RecordSplicedIrcLine();
-            var fields = IrcLineSpliceRule.ForSpliceWarning(e.ChatMessage.Channel, e.ChatMessage.RoomId, rawIrc);
+            var fields = IrcLineSpliceRule.ForSpliceWarning(message.Channel, message.RoomId, rawIrc);
 
             // No message text here on purpose (data minimisation) — the tag keys alone are enough
             // to diagnose the splice. ForSpliceWarning logs keys only: every tag value is replaced
@@ -1086,12 +1112,28 @@ public class TwitchChatManager(
             logger.LogWarning(IrcLineSpliceRule.SpliceWarningTemplate, fields.Channel, fields.RoomId, fields.TagBlock);
         }
 
-        var snapshot = emoteMatchCache.GetChannelSnapshot(e.ChatMessage.Channel);
-        var channelEmotes = snapshot.NameToSlotId;
-        if (channelEmotes.Count == 0)
+        // A spliced line may mix the tags and text of two messages: its reward tag is not evaluated,
+        // only counted (plan W23).
+        if (route.CountSplicedRedemption)
+        {
+            stats.RecordSplicedRewardRedemption();
+        }
+
+        // Reward capture (K6): a non-blocking hand-over to the observation queue, nothing else — no
+        // await, no lock, no I/O, and RewardCapture.Capture swallows and counts every exception, so
+        // TwitchLib's event chain and the emote counting below are untouched (plan 2.1, AK49). No log
+        // line on this path names text, login or user id (AK64).
+        if (route.Observe)
+        {
+            RewardCapture.Capture(message, snapshotIsEmpty, rewardObservationSink, stats);
+        }
+
+        if (!route.MatchEmotes)
         {
             return Task.CompletedTask;
         }
+
+        var channelEmotes = snapshot.NameToSlotId;
 
         // Classified exactly once per message, after the watchdog bookkeeping above (see the
         // class-level comment on that ordering) and before the token loop, so every emote match in
@@ -1100,13 +1142,13 @@ public class TwitchChatManager(
         // foreign room, or one whose room cannot be determined, is Shared Chat regardless of who
         // sent it. SharedChatRule.FromTags is null-safe — UndocumentedTags is null for the ordinary
         // message that carries no unknown tag at all, not an error case.
-        var origin = SharedChatRule.FromTags(e.ChatMessage.RoomId, e.ChatMessage.UndocumentedTags);
+        var origin = SharedChatRule.FromTags(message.RoomId, message.UndocumentedTags);
         if (origin == MessageOrigin.Indeterminate)
         {
             stats.RecordIndeterminateSharedChatMessage();
         }
 
-        var isBot = botChatterDetector.IsBot(e.ChatMessage.UserId, e.ChatMessage.Badges);
+        var isBot = botChatterDetector.IsBot(message.UserId, message.Badges);
         var category = UsageCategoryRule.Resolve(origin, isBot);
 
         // Owns the set and iterates it through its concrete type below, so the struct enumerator
@@ -1114,7 +1156,7 @@ public class TwitchChatManager(
         // MatchEmoteIds overload's doc comment. Exactly one HashSet<string> allocated per message,
         // same as before this class existed.
         var matchedThisMessage = new HashSet<string>();
-        EmoteNameMatching.MatchEmoteIds(e.ChatMessage.Message, channelEmotes, matchedThisMessage);
+        EmoteNameMatching.MatchEmoteIds(message.Message, channelEmotes, matchedThisMessage);
         foreach (var slotId in matchedThisMessage)
         {
             usageCounter.Increment(slotId, snapshot.EmoteSetId, category);

@@ -5,6 +5,7 @@ using EmotePurge.Infrastructure.Logging;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Worker.ChatLogBackfill;
 using EmotePurge.Worker.SevenTv;
+using EmotePurge.Worker.WishCapture;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -30,6 +31,10 @@ public static class WorkerServiceRegistration
         // Set by Worker on a BACKFILL: command, awaited by ChatLogBackfillWorker (spec 4.8).
         services.AddSingleton<ChatLogBackfillSignal>();
         services.AddSingleton<WorkerStats>();
+        // The reward capture's hand-over (K6, plan #486 2.1): one queue, written by TwitchChatManager through the
+        // sink and read by the capture worker through the concrete type — the same instance under both names.
+        services.AddSingleton<RewardObservationQueue>();
+        services.AddSingleton<IRewardObservationSink>(provider => provider.GetRequiredService<RewardObservationQueue>());
         // Construct eagerly while the process service graph is assembled: a Redis live snapshot from
         // before this worker's first poll must not be treated as this process's own live count.
         services.AddSingleton(new WorkerSystemLoadCounterBaselines());

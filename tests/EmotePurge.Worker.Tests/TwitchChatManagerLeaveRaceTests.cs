@@ -1,4 +1,5 @@
 using EmotePurge.Core.Services;
+using EmotePurge.Worker.WishCapture;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -73,5 +74,7 @@ public class TwitchChatManagerLeaveRaceTests
         Substitute.For<IEmoteUsageCounter>(),
         Substitute.For<IBotChatterDetector>(),
         Substitute.For<IExcludedChatterFilter>(),
-        new WorkerStats());
+        new WorkerStats(),
+        new WishOptions(),
+        Substitute.For<IRewardObservationSink>());
 }

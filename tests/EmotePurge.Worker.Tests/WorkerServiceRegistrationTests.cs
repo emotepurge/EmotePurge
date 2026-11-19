@@ -4,6 +4,7 @@ using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Logging;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Worker.ChatLogBackfill;
+using EmotePurge.Worker.WishCapture;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -82,6 +83,20 @@ public class WorkerServiceRegistrationTests
         Assert.Contains(provider.GetServices<IHostedService>(), s => s is WishExpiryWorker);
         using var scope = provider.CreateScope();
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IWishExpiryService>());
+    }
+
+    // K6 (plan #486 2.1): the chat manager writes through the sink, the capture worker reads the concrete queue —
+    // two instances would leave every observation unread.
+    [Fact]
+    public void AddWorkerCore_RegistersOneRewardObservationQueue_UnderBothNames_AndTheManagerResolves()
+    {
+        using var provider = BuildWorkerProvider("false");
+
+        var queue = provider.GetRequiredService<RewardObservationQueue>();
+
+        Assert.Same(queue, provider.GetRequiredService<IRewardObservationSink>());
+        Assert.Same(queue, provider.GetRequiredService<RewardObservationQueue>());
+        Assert.IsType<TwitchChatManager>(provider.GetRequiredService<ITwitchChatManager>());
     }
 
     [Fact]
