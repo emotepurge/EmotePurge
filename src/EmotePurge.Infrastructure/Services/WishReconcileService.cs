@@ -13,17 +13,26 @@ namespace EmotePurge.Infrastructure.Services;
 /// The state-based reconcile of wishes against slots (E9, spec 6.3, plan T7). See
 /// <see cref="IWishReconcileService"/> for the contract.
 /// <para>
-/// <b>Flow.</b> (1) One pre-check query without a wall clock: does the channel have a wish in <c>approved</c>,
-/// <c>active</c> or <c>presented</c>, an open returner (plan Sol-R2-3), or a kept wish to release? No: return
-/// without a transaction.
+/// <b>Flow.</b> (1) One pre-check query without a wall clock: does the channel have a wish in <c>pending</c>,
+/// <c>approved</c>, <c>active</c> or <c>presented</c>, an open returner (plan Sol-R2-3), or a kept wish to
+/// release? No: return without a transaction.
 /// (2) Transaction: the channel row (<c>FOR NO KEY UPDATE</c>), then the affected wish rows (<c>FOR UPDATE</c>,
 /// ascending id), then the slots. (3) Linked <c>active</c> and <c>presented</c> wishes against their slot:
 /// archived, unchanged (rename, confirmation refresh, authoritative healing), date confirmation, or generation
-/// change; then <c>kept</c> wishes whose stay is over give their slot back. (4) Unlinked <c>approved</c> and
-/// <c>removed_externally</c> wishes through <see cref="WishSlotMatcher"/>.
-/// (5) Every changed wish is saved on its own behind a savepoint; a hit on a wish unique index rolls back to
-/// it and leaves that wish as it was. (6) Commit, then at most one <c>wish.changed</c>, only for a change a
-/// client can see.
+/// change; then <c>kept</c> wishes whose stay is over give their slot back. (4) Unlinked <c>pending</c>,
+/// <c>approved</c> and <c>removed_externally</c> wishes through <see cref="WishSlotMatcher"/>, an open wish
+/// also gets its hint there (K6, plan #486 2.5).
+/// (5) Every changed wish is saved on its own behind a savepoint, together with its audit entry; a hit on a
+/// wish unique index rolls back to it and leaves that wish as it was (an open wish then shows
+/// <c>already_running</c>). (6) Commit, then at most one <c>wish.changed</c>, only for a change a client can see.
+/// </para>
+/// <para>
+/// <b>Date correction of a capture link (K6, plan #486 2.5, Sol-P1-3).</b> A late EventAPI delta stamps a new
+/// slot with the time it was seen, so a capture can link an entry that was in the set before the redemption.
+/// When the authoritative date replaces the provisional one and lies before <see cref="Wish.CreatedAtUtc"/>, a
+/// wish the reconcile linked without any click (<c>irc</c>, <c>auto</c>, never approved) and nobody extended
+/// goes back to <c>pending</c> with <c>already_in_set</c>, before start and expiry would become authoritative.
+/// Hand entries, approved wishes, extended ones and <c>kept</c> keep the behaviour from before K6.
 /// </para>
 /// <para>
 /// <b>Start of a date confirmation.</b> The start moves with the slot's confirmed date only when it was taken
@@ -49,9 +58,12 @@ public sealed class WishReconcileService(
     private const string RunningEmoteIndex = "IX_Wishes_ChannelId_SevenTvEmoteId_Running";
     private const string LiveSlotIndex = "IX_Wishes_SlotId_Live";
     private const string SavepointName = "wish_reconcile";
+    private const string WishTargetType = "wish";
+    private const string DateCorrectionCause = "date_correction";
 
     // The states the reconcile always looks at; removed_externally only as an open returner.
-    private static readonly string[] ReconciledStatuses = [WishStatus.Approved, WishStatus.Active, WishStatus.Presented];
+    private static readonly string[] ReconciledStatuses =
+        [WishStatus.Pending, WishStatus.Approved, WishStatus.Active, WishStatus.Presented];
 
     // The states whose SlotId holds the slot against other wishes: the running ones with a live link, and
     // kept, which keeps its entry for good (operator ruling 2026-11-18). An approved wish's SlotId is history
@@ -159,14 +171,32 @@ public sealed class WishReconcileService(
             .Select(w => new OtherWish(w.SevenTvEmoteId, w.Status, w.SlotId))
             .ToListAsync(cancellationToken);
 
-        var emoteIds = wishes.Select(w => w.SevenTvEmoteId).Distinct(StringComparer.Ordinal).ToArray();
+        var emoteIds = wishes.Where(w => w.HasEmote).Select(w => w.SevenTvEmoteId).Distinct(StringComparer.Ordinal).ToArray();
         var linkedSlotIds = wishes.Where(w => w.SlotId is not null).Select(w => w.SlotId!).Distinct(StringComparer.Ordinal).ToArray();
+        // An open name wish compares with every alias in the set, so then every live slot is read; the casing
+        // rule is .NET's, not the database's.
+        var allLive = wishes.Any(w => w.Status == WishStatus.Pending && !w.HasEmote && w.MatchKind == WishMatchKind.Name);
         var slots = await db.EmoteSlots.AsNoTracking()
-            .Where(s => s.Emote.ChannelId == channelId && (emoteIds.Contains(s.Emote.SevenTvEmoteId) || linkedSlotIds.Contains(s.Id)))
-            .Select(s => new SlotRow(s.Id, s.Emote.SevenTvEmoteId, s.Name, s.AddedAt, s.AddedAtFromRest, s.IsArchived, s.ArchivedAt, s.SeedUnsettled))
+            .Where(s => s.Emote.ChannelId == channelId
+                && (emoteIds.Contains(s.Emote.SevenTvEmoteId) || linkedSlotIds.Contains(s.Id) || (allLive && !s.IsArchived)))
+            .Select(s => new SlotRow(
+                s.Id, s.Emote.SevenTvEmoteId, s.Name, s.Emote.Name, s.AddedAt, s.AddedAtFromRest, s.IsArchived, s.ArchivedAt, s.SeedUnsettled))
             .ToListAsync(cancellationToken);
 
-        var pass = new Pass(wishes, others, slots, now);
+        // The released links of these wishes (K6): the reconcile never offers such a slot to that wish again.
+        var excluded = (await db.WishSlotExclusions.AsNoTracking()
+                .Where(e => ids.Contains(e.WishId))
+                .Select(e => new { e.WishId, e.SlotId })
+                .ToListAsync(cancellationToken))
+            .Select(e => (e.WishId, e.SlotId))
+            .ToHashSet();
+        var pendingExpiryDays = await db.ChannelWishSettings.AsNoTracking()
+            .Where(s => s.ChannelId == channelId)
+            .Select(s => (int?)s.PendingExpiryDays)
+            .FirstOrDefaultAsync(cancellationToken) ?? WishLimits.DefaultPendingExpiryDays;
+
+        var pass = new Pass(wishes, others, slots, excluded, pendingExpiryDays, now);
+        var save = new Saver(db, transaction, channelId, channelName, pass, now, logger);
         var before = wishes.ToDictionary(w => w.Id, Visible.Of);
 
         // Step 3: linked live wishes against their slot.
@@ -175,7 +205,7 @@ public sealed class WishReconcileService(
             if (pass.SlotById(wish.SlotId!) is { } slot)
             {
                 pass.ReconcileLinked(wish, slot);
-                await SaveOneAsync(db, transaction, channelId, wish, cancellationToken);
+                await save.OneAsync(wish, cancellationToken);
             }
         }
 
@@ -185,14 +215,16 @@ public sealed class WishReconcileService(
             if (pass.SlotById(wish.SlotId!) is { } slot)
             {
                 ReleaseKept(wish, slot);
-                await SaveOneAsync(db, transaction, channelId, wish, cancellationToken);
+                await save.OneAsync(wish, cancellationToken);
             }
         }
 
-        // Step 4: wishes without a valid link, in creation order, so the older of two contenders wins a slot.
-        // An approved wish counts as unlinked whatever its SlotId says (a re-add keeps the old one).
+        // Step 4: wishes without a valid link, in creation order over every state, so the older of two contenders
+        // wins a slot, also a hand entry against a younger redemption (AK58). An approved wish counts as unlinked
+        // whatever its SlotId says (a re-add keeps the old one). An open wish released by step 3 is one of them.
         var unlinked = wishes
-            .Where(w => (w.Status == WishStatus.Approved && w.BotWriteAtUtc is null)
+            .Where(w => w.Status == WishStatus.Pending
+                || (w.Status == WishStatus.Approved && w.BotWriteAtUtc is null)
                 || w.Status == WishStatus.RemovedExternally
                 || (w.Status == WishStatus.Active && w.SlotId is null))
             .OrderBy(w => w.CreatedAtUtc)
@@ -201,7 +233,21 @@ public sealed class WishReconcileService(
         foreach (var wish in unlinked)
         {
             pass.ReconcileUnlinked(wish);
-            await SaveOneAsync(db, transaction, channelId, wish, cancellationToken);
+            if (await save.OneAsync(wish, cancellationToken) && wish.Status == WishStatus.Pending)
+            {
+                // The link hit the running index (another wish of the emote committed meanwhile): the wish stays
+                // open and says so, in a second save (plan #486 2.5).
+                wish.StatusReason = WishStatusReason.AlreadyRunning;
+                await save.OneAsync(wish, cancellationToken);
+            }
+        }
+
+        // Step 4b: a link later in step 4 can change an earlier open wish's hint (an older wish whose slot is
+        // excluded sees a younger one take it); the hints of the wishes still open are decided once more.
+        foreach (var wish in unlinked.Where(w => w.Status == WishStatus.Pending))
+        {
+            pass.RefreshHint(wish);
+            await save.OneAsync(wish, cancellationToken);
         }
 
         await transaction.CommitAsync(cancellationToken);
@@ -209,33 +255,58 @@ public sealed class WishReconcileService(
         return wishes.Any(w => before[w.Id] != Visible.Of(w)) ? channelName : null;
     }
 
-    // Step 5: one wish, one save, behind a savepoint. A unique-index hit (a running wish of the emote or a live
-    // link of the slot committed meanwhile without this run seeing it) rolls back to the savepoint and puts
-    // the tracked row back to what the database holds, so no later save retries it; the run goes on. Every
-    // other error propagates and the transaction rolls back on dispose.
-    private async Task SaveOneAsync(
-        AppDbContext db, IDbContextTransaction transaction, string channelId, Wish wish, CancellationToken cancellationToken)
+    // Step 5: one wish, one save, behind a savepoint, with the audit entries the pass staged for it. A unique-index
+    // hit (a running wish of the emote or a live link of the slot committed meanwhile without this run seeing it)
+    // rolls back to the savepoint, puts the tracked row back to what the database holds and drops its audit
+    // entries, so no later save retries them; the run goes on and OneAsync says true. Every other error
+    // propagates and the transaction rolls back on dispose.
+    private sealed class Saver(
+        AppDbContext db, IDbContextTransaction transaction, string channelId, string channelName, Pass pass, DateTime now, ILogger logger)
     {
-        var entry = db.Entry(wish);
-        if (entry.State != EntityState.Modified)
+        public async Task<bool> OneAsync(Wish wish, CancellationToken cancellationToken)
         {
-            return;
-        }
+            var entry = db.Entry(wish);
+            var audits = pass.TakeAudits(wish.Id);
+            if (entry.State != EntityState.Modified)
+            {
+                return false;
+            }
 
-        await transaction.CreateSavepointAsync(SavepointName, cancellationToken);
-        try
-        {
-            await db.SaveChangesAsync(cancellationToken);
-            await transaction.ReleaseSavepointAsync(SavepointName, cancellationToken);
-        }
-        catch (DbUpdateException ex) when (WishIndexOf(ex) is { } index)
-        {
-            await transaction.RollbackToSavepointAsync(SavepointName, cancellationToken);
-            entry.CurrentValues.SetValues(entry.OriginalValues);
-            entry.State = EntityState.Unchanged;
-            logger.LogInformation(
-                "Wish reconcile for channel {ChannelId}: wish {WishId} keeps its state; its change hit {IndexName}.",
-                channelId, wish.Id, index);
+            var staged = new List<AuditLogEntry>();
+            foreach (var (action, details) in audits)
+            {
+                staged.Add(db.AddAuditEntry(
+                    AuditActor.System,
+                    action,
+                    channelName: channelName,
+                    targetType: WishTargetType,
+                    targetId: wish.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    details: details,
+                    occurredAtUtc: now));
+            }
+
+            await transaction.CreateSavepointAsync(SavepointName, cancellationToken);
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+                await transaction.ReleaseSavepointAsync(SavepointName, cancellationToken);
+                return false;
+            }
+            catch (DbUpdateException ex) when (WishIndexOf(ex) is { } index)
+            {
+                await transaction.RollbackToSavepointAsync(SavepointName, cancellationToken);
+                entry.CurrentValues.SetValues(entry.OriginalValues);
+                entry.State = EntityState.Unchanged;
+                foreach (var audit in staged)
+                {
+                    db.Entry(audit).State = EntityState.Detached;
+                }
+
+                logger.LogInformation(
+                    "Wish reconcile for channel {ChannelId}: wish {WishId} keeps its state; its change hit {IndexName}.",
+                    channelId, wish.Id, index);
+                return true;
+            }
         }
     }
 
@@ -268,11 +339,22 @@ public sealed class WishReconcileService(
     // The decisions of one run over in-memory state. Tracked wishes change in place; the sets of running
     // emotes and live links are derived from them on every question, so a wish moved earlier in the run
     // (a return, a link, a revert after a savepoint) is seen by the next one.
-    private sealed class Pass(List<Wish> wishes, List<OtherWish> others, List<SlotRow> slots, DateTime now)
+    private sealed class Pass(
+        List<Wish> wishes,
+        List<OtherWish> others,
+        List<SlotRow> slots,
+        HashSet<(long WishId, string SlotId)> excluded,
+        int pendingExpiryDays,
+        DateTime now)
     {
         private readonly Dictionary<string, SlotRow> _slotsById = slots.ToDictionary(s => s.Id, StringComparer.Ordinal);
+        private readonly Dictionary<long, List<(string Action, object Details)>> _audits = [];
 
         public SlotRow? SlotById(string slotId) => _slotsById.GetValueOrDefault(slotId);
+
+        // The audit entries staged for a wish since its last save; the saver writes them behind the same savepoint.
+        public List<(string Action, object Details)> TakeAudits(long wishId) =>
+            _audits.Remove(wishId, out var staged) ? staged : [];
 
         // Step 3, by the slot's state (plan finding 19).
         public void ReconcileLinked(Wish wish, SlotRow slot)
@@ -319,7 +401,11 @@ public sealed class WishReconcileService(
                     return;
                 }
 
-                ConfirmDate(wish, slot, startFromSlot: wish.StartsAtUtc == wish.SlotConfirmedAtUtc);
+                if (!ReleasedByDateCorrection(wish, slot))
+                {
+                    ConfirmDate(wish, slot, startFromSlot: wish.StartsAtUtc == wish.SlotConfirmedAtUtc);
+                }
+
                 return;
             }
 
@@ -341,8 +427,13 @@ public sealed class WishReconcileService(
 
             if (!wish.StartsAtAuthoritative && slot.AddedAtFromRest && addedAt <= generation)
             {
-                // AK8: the provisional date is confirmed by an authoritative one not after it.
-                ConfirmDate(wish, slot, startFromSlot: wish.StartsAtUtc == generation);
+                // AK8: the provisional date is confirmed by an authoritative one not after it, unless it shows that
+                // a capture link took an entry from before the redemption (plan #486 2.5).
+                if (!ReleasedByDateCorrection(wish, slot))
+                {
+                    ConfirmDate(wish, slot, startFromSlot: wish.StartsAtUtc == generation);
+                }
+
                 return;
             }
 
@@ -357,6 +448,10 @@ public sealed class WishReconcileService(
         {
             switch (wish.Status)
             {
+                case WishStatus.Pending:
+                    ReconcilePending(wish);
+                    break;
+
                 case WishStatus.Approved:
                     if (Match(wish, wish.Status, wish.ApprovedAtUtc) is { } approvedSlot)
                     {
@@ -388,6 +483,38 @@ public sealed class WishReconcileService(
             }
         }
 
+        // An open wish (K6, plan #486 2.5): a link by emote id or by name, else the hint, decided anew every run.
+        // A hint changes neither StatusChangedAtUtc (the clock of the pending expiry) nor anything else.
+        private void ReconcilePending(Wish wish)
+        {
+            var decision = DecidePending(wish);
+            if (decision.SlotId is { } slotId)
+            {
+                Link(wish, _slotsById[slotId]);
+                return;
+            }
+
+            wish.StatusReason = decision.Hint;
+        }
+
+        private WishPendingDecision DecidePending(Wish wish)
+        {
+            var visible = Admissible(wish).ToList();
+            var linked = LinkedSlotIdsExcept(wish);
+            var free = visible.Where(c => !linked.Contains(c.SlotId)).ToList();
+            return WishSlotMatcher.DecidePending(
+                InputOf(wish, WishStatus.Pending, wish.ApprovedAtUtc), free, visible, RunningCheckFor(wish));
+        }
+
+        // Step 4b: only the hint; a link waits for the next run (step 4 only takes slots, so none can appear here).
+        public void RefreshHint(Wish wish)
+        {
+            if (DecidePending(wish) is { IsLink: false } decision)
+            {
+                wish.StatusReason = decision.Hint;
+            }
+        }
+
         private SlotRow? Match(Wish wish, string ruleStatus, DateTime? approvedAtUtc)
         {
             // A match by emote id needs an emote: the K6 placeholder of an open wish matches no slot this way.
@@ -397,26 +524,45 @@ public sealed class WishReconcileService(
             }
 
             var linked = LinkedSlotIdsExcept(wish);
-            var candidates = slots
-                .Where(s => string.Equals(s.SevenTvEmoteId, wish.SevenTvEmoteId, StringComparison.Ordinal)
-                    && !s.IsArchived
-                    && !s.SeedUnsettled
-                    && s.AddedAt is not null
-                    && !linked.Contains(s.Id))
-                .Select(s => new WishSlotCandidate(s.Id, s.SevenTvEmoteId, s.Name, s.AddedAt!.Value))
-                .ToList();
+            var candidates = Admissible(wish).Where(c => !linked.Contains(c.SlotId)).ToList();
             if (candidates.Count == 0)
             {
                 return null;
             }
 
-            var result = WishSlotMatcher.Match(
-                new WishMatchInput(ruleStatus, wish.SevenTvEmoteId, wish.Alias, approvedAtUtc, wish.EndedAtUtc), candidates);
+            var result = WishSlotMatcher.Match(InputOf(wish, ruleStatus, approvedAtUtc), candidates);
             return result.SlotId is { } slotId ? _slotsById[slotId] : null;
         }
 
-        // approved -> active (kept when permanent): start = AddedAt, expiry from start and duration, alias
-        // follows the slot, LinkOrigin auto, never bot ownership.
+        // Not archived, settled, dated, and not excluded for this wish (K6, every path of the reconcile); of the
+        // wish's emote when it has one, else every slot (a name wish; the matcher compares the alias).
+        private IEnumerable<WishSlotCandidate> Admissible(Wish wish) =>
+            slots
+                .Where(s => (!wish.HasEmote || string.Equals(s.SevenTvEmoteId, wish.SevenTvEmoteId, StringComparison.Ordinal))
+                    && !s.IsArchived
+                    && !s.SeedUnsettled
+                    && s.AddedAt is not null
+                    && !excluded.Contains((wish.Id, s.Id)))
+                .Select(s => new WishSlotCandidate(s.Id, s.SevenTvEmoteId, s.Name, s.AddedAt!.Value));
+
+        private WishMatchInput InputOf(Wish wish, string ruleStatus, DateTime? approvedAtUtc) =>
+            new(
+                ruleStatus,
+                wish.SevenTvEmoteId,
+                wish.Alias,
+                approvedAtUtc,
+                wish.EndedAtUtc,
+                wish.CreatedAtUtc,
+                wish.MatchKind,
+                wish.RequestedName,
+                WishSlotMatcher.PendingWindowEndFor(wish.StatusChangedAtUtc, pendingExpiryDays),
+                wish.FirstActivatedAtUtc,
+                wish.Source);
+
+        // pending or approved -> active (kept when permanent): start = AddedAt, expiry from start and duration,
+        // alias follows the slot, LinkOrigin auto, never bot ownership, ApprovedAtUtc untouched. The placeholder of
+        // an open wish is filled in the same update (plan #486 2.8a): the id from the slot for a name match, the
+        // name from the slot's emote row, or the slot's name when that is empty. One wish.autoLink per link (W12).
         private void Link(Wish wish, SlotRow slot)
         {
             var target = WishTransitions.Target(
@@ -426,13 +572,24 @@ public sealed class WishReconcileService(
                 return;
             }
 
+            var fromStatus = wish.Status;
             var start = slot.AddedAt!.Value;
             wish.Status = target;
             wish.StatusReason = null;
             wish.StatusChangedAtUtc = now;
             wish.EndedAtUtc = WishStatus.IsEnded(target) ? now : null;
             wish.SlotId = slot.Id;
+            if (!wish.HasEmote)
+            {
+                wish.SevenTvEmoteId = slot.SevenTvEmoteId;
+            }
+
             wish.Alias = slot.Name;
+            if (wish.EmoteName.Length == 0)
+            {
+                wish.EmoteName = slot.EmoteName.Length > 0 ? slot.EmoteName : slot.Name;
+            }
+
             wish.LinkOrigin = WishLinkOrigin.Auto;
             wish.StartsAtUtc = start;
             wish.ExpiresAtUtc = WishSchedule.ExpiresAt(start, wish.DurationDays);
@@ -441,6 +598,56 @@ public sealed class WishReconcileService(
             {
                 wish.FirstActivatedAtUtc ??= now;
             }
+
+            Stage(wish, AuditActions.WishAutoLink, new
+            {
+                wishId = wish.Id,
+                source = wish.Source,
+                fromStatus,
+                matchKind = wish.MatchKind,
+            });
+        }
+
+        // Sol-P1-3 (plan #486 2.5): the authoritative date of the slot a capture linked without any click lies
+        // before the redemption. Nobody decided yet (no extension booked, never approved): the link goes, spotless,
+        // back to pending with already_in_set, before start, expiry and the flag would turn authoritative. No
+        // exclusion row: the window rules the slot out anyway. Every other wish keeps the behaviour from before K6.
+        private bool ReleasedByDateCorrection(Wish wish, SlotRow slot)
+        {
+            if (!slot.AddedAtFromRest
+                || slot.AddedAt is not { } authoritative
+                || authoritative >= wish.CreatedAtUtc
+                || wish.Source != WishSource.Irc
+                || wish.LinkOrigin != WishLinkOrigin.Auto
+                || wish.ApprovedAtUtc is not null
+                || wish.ExtensionCount > 0)
+            {
+                return false;
+            }
+
+            // active, or presented with unconfirmed_start; the table says no to every other state.
+            var fromStatus = wish.Status;
+            if (WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.Unlink, new WishTransitionContext(IrcAutoLinked: true))
+                is not WishStatus.Pending)
+            {
+                return false;
+            }
+
+            var slotId = wish.SlotId;
+            WishUnlinkReset.ToPending(wish, now, WishStatusReason.AlreadyInSet);
+            Stage(wish, AuditActions.WishUnlink, new { wishId = wish.Id, fromStatus, slotId, cause = DateCorrectionCause });
+            return true;
+        }
+
+        private void Stage(Wish wish, string action, object details)
+        {
+            if (!_audits.TryGetValue(wish.Id, out var staged))
+            {
+                staged = [];
+                _audits[wish.Id] = staged;
+            }
+
+            staged.Add((action, details));
         }
 
         // removed_externally -> the state before, with the old deadline and without ownership: presented with
@@ -527,12 +734,16 @@ public sealed class WishReconcileService(
             wish.RemovalQueuedVersion = null;
         }
 
-        private bool IsEmoteRunningElsewhere(Wish wish) =>
-            wishes.Any(w => w.Id != wish.Id
+        private bool IsEmoteRunningElsewhere(Wish wish) => RunningCheckFor(wish)(wish.SevenTvEmoteId);
+
+        // Whether a wish other than this one runs for a 7TV emote id (the running index's question).
+        private Func<string, bool> RunningCheckFor(Wish wish) => emoteId =>
+            emoteId.Length > 0
+            && (wishes.Any(w => w.Id != wish.Id
                     && WishStatus.IsRunning(w.Status)
-                    && string.Equals(w.SevenTvEmoteId, wish.SevenTvEmoteId, StringComparison.Ordinal))
+                    && string.Equals(w.SevenTvEmoteId, emoteId, StringComparison.Ordinal))
                 || others.Any(o => WishStatus.IsRunning(o.Status)
-                    && string.Equals(o.SevenTvEmoteId, wish.SevenTvEmoteId, StringComparison.Ordinal));
+                    && string.Equals(o.SevenTvEmoteId, emoteId, StringComparison.Ordinal)));
 
         private HashSet<string> LinkedSlotIdsExcept(Wish wish)
         {
@@ -586,6 +797,7 @@ public sealed class WishReconcileService(
         string Id,
         string SevenTvEmoteId,
         string Name,
+        string EmoteName,
         DateTime? AddedAt,
         bool AddedAtFromRest,
         bool IsArchived,
@@ -601,6 +813,8 @@ public sealed class WishReconcileService(
     private readonly record struct Visible(
         string Status,
         string? StatusReason,
+        string SevenTvEmoteId,
+        string EmoteName,
         string Alias,
         DateTime? StartsAtUtc,
         bool StartsAtAuthoritative,
@@ -612,7 +826,7 @@ public sealed class WishReconcileService(
         DateTime? RemovalQueuedAtUtc)
     {
         public static Visible Of(Wish w) => new(
-            w.Status, w.StatusReason, w.Alias, w.StartsAtUtc, w.StartsAtAuthoritative, w.ExpiresAtUtc, w.EndedAtUtc,
+            w.Status, w.StatusReason, w.SevenTvEmoteId, w.EmoteName, w.Alias, w.StartsAtUtc, w.StartsAtAuthoritative, w.ExpiresAtUtc, w.EndedAtUtc,
             w.SlotId, w.LinkOrigin, w.BotOwned, w.RemovalQueuedAtUtc);
     }
 }
