@@ -333,13 +333,17 @@ public sealed record WishAdoptableSlotDto(
     long? RunningWishId,
     bool RunningWishAdoptable);
 
-/// <summary>The channel's wish settings; the defaults of <see cref="Entities.WishLimits"/> while no row exists.</summary>
+/// <summary>
+/// The channel's wish settings; the defaults of <see cref="Entities.WishLimits"/> while no row exists.
+/// <see cref="PendingExpiryDays"/> (K6) is how long a captured wish may stay <c>pending</c>.
+/// </summary>
 public sealed record WishSettingsDto(
     int DefaultDurationDays,
     int ProbationLeadDays,
     decimal? ProtectionThresholdPerDay,
     bool BotModeEnabled,
-    string? BotSuspendedReason);
+    string? BotSuspendedReason,
+    int PendingExpiryDays = Entities.WishLimits.DefaultPendingExpiryDays);
 
 /// <summary>Body of the manual entry; a missing duration takes the channel's default.</summary>
 public sealed record CreateWishRequest(
@@ -404,10 +408,12 @@ public static class WishReAddMode
 /// <summary>
 /// Body of the settings write: a null threshold switches protection off. With
 /// <see cref="KeepProtectionThreshold"/> (the threshold was not sent, plan #485 2.1a) the stored threshold stays and
-/// <see cref="ProtectionThresholdPerDay"/> is ignored.
+/// <see cref="ProtectionThresholdPerDay"/> is ignored. A null <see cref="PendingExpiryDays"/> (not sent, K6 plan #486
+/// 2.8) keeps the stored value; a value must lie in 1 to 90.
 /// </summary>
 public sealed record UpdateWishSettingsRequest(
     int DefaultDurationDays,
     int ProbationLeadDays,
     decimal? ProtectionThresholdPerDay,
-    bool KeepProtectionThreshold = false);
+    bool KeepProtectionThreshold = false,
+    int? PendingExpiryDays = null);

@@ -302,6 +302,7 @@ public class WishOverviewServiceTests(PostgresFixture fixture, RedisFixture redi
             .Returns(call => new Channel { ChannelName = (string)call[0], TwitchChannelId = "owner-" + call[0] });
         return new ChannelAccessService(
             new ModeratorCheckService(provider, NullLogger<ModeratorCheckService>.Instance),
+            provider,
             editors,
             channels,
             new GlobalAdminAllowlist(configuration, NullLogger<GlobalAdminAllowlist>.Instance),

@@ -64,7 +64,8 @@ public sealed class WishService(
 
         if (!IsDurationInRange(request.DefaultDurationDays)
             || request.ProbationLeadDays is < WishLimits.ProbationLeadDaysMin or > WishLimits.ProbationLeadDaysMax
-            || (!request.KeepProtectionThreshold && request.ProtectionThresholdPerDay is { } requested && !IsThresholdInRange(requested)))
+            || (!request.KeepProtectionThreshold && request.ProtectionThresholdPerDay is { } requested && !IsThresholdInRange(requested))
+            || request.PendingExpiryDays is < WishLimits.PendingExpiryDaysMin or > WishLimits.PendingExpiryDaysMax)
         {
             return WishCommandResult.Of(WishOutcome.SettingsOutOfRange);
         }
@@ -103,6 +104,10 @@ public sealed class WishService(
         row.DefaultDurationDays = request.DefaultDurationDays;
         row.ProbationLeadDays = request.ProbationLeadDays;
         row.ProtectionThresholdPerDay = threshold;
+        if (request.PendingExpiryDays is { } pendingExpiryDays)
+        {
+            row.PendingExpiryDays = pendingExpiryDays;
+        }
 
         db.AddAuditEntry(
             actor,
@@ -112,7 +117,8 @@ public sealed class WishService(
             {
                 defaultDurationDays = row.DefaultDurationDays,
                 probationLeadDays = row.ProbationLeadDays,
-                protectionThresholdPerDay = row.ProtectionThresholdPerDay
+                protectionThresholdPerDay = row.ProtectionThresholdPerDay,
+                pendingExpiryDays = row.PendingExpiryDays
             });
         await db.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -138,13 +144,7 @@ public sealed class WishService(
         }
 
         var settings = await LoadSettingsAsync(channel.Id, cancellationToken);
-        if (!settings.IsBotMode || isGlobalAdmin)
-        {
-            return true;
-        }
-
-        return (channel.TwitchChannelId is not null && string.Equals(channel.TwitchChannelId, callerTwitchUserId, StringComparison.Ordinal))
-            || (settings.ActivatedByTwitchUserId is not null && string.Equals(settings.ActivatedByTwitchUserId, callerTwitchUserId, StringComparison.Ordinal));
+        return CanChangeSettings(settings, channel.TwitchChannelId, callerTwitchUserId, isGlobalAdmin);
     }
 
     public async Task<WishCommandResult> CreateAsync(
@@ -1274,13 +1274,31 @@ public sealed class WishService(
         alias.EnumerateRunes().Count() is >= 1 and <= WishLimits.AliasMaxLength
         && !alias.Any(c => char.IsControl(c) || char.IsWhiteSpace(c));
 
+    /// <summary>
+    /// The one rule behind <see cref="CanChangeSettingsAsync"/>, shared with the reward read's <c>canEdit</c>: a manual
+    /// channel answers yes (the caller is a manager already); in bot mode only the broadcaster (by id), the manager
+    /// who activated the bot and a global admin.
+    /// </summary>
+    internal static bool CanChangeSettings(
+        EffectiveSettings settings, string? channelTwitchId, string callerTwitchUserId, bool isGlobalAdmin)
+    {
+        if (!settings.IsBotMode || isGlobalAdmin)
+        {
+            return true;
+        }
+
+        return (channelTwitchId is not null && string.Equals(channelTwitchId, callerTwitchUserId, StringComparison.Ordinal))
+            || (settings.ActivatedByTwitchUserId is not null && string.Equals(settings.ActivatedByTwitchUserId, callerTwitchUserId, StringComparison.Ordinal));
+    }
+
     internal static EffectiveSettings ToSettings(ChannelWishSettings row) => new(
         row.DefaultDurationDays,
         row.ProbationLeadDays,
         row.ProtectionThresholdPerDay,
         row.BotModeEnabled,
         row.BotSuspendedReason,
-        row.BotModeActivatedByTwitchUserId);
+        row.BotModeActivatedByTwitchUserId,
+        row.PendingExpiryDays);
 
     internal static WishDto ToDto(Wish w, EffectiveSettings settings, string? imageUrl) => new(
         w.Id,
@@ -1333,15 +1351,16 @@ public sealed class WishService(
         decimal? ProtectionThresholdPerDay,
         bool BotModeEnabled,
         string? BotSuspendedReason,
-        string? ActivatedByTwitchUserId)
+        string? ActivatedByTwitchUserId,
+        int PendingExpiryDays)
     {
         public static readonly EffectiveSettings Defaults = new(
-            WishLimits.DefaultDurationDays, WishLimits.DefaultProbationLeadDays, null, false, null, null);
+            WishLimits.DefaultDurationDays, WishLimits.DefaultProbationLeadDays, null, false, null, null, WishLimits.DefaultPendingExpiryDays);
 
         // In K1 nothing sets BotModeEnabled, so every channel is manual.
         public bool IsBotMode => BotModeEnabled && BotSuspendedReason is null;
 
         public WishSettingsDto ToDto() => new(
-            DefaultDurationDays, ProbationLeadDays, ProtectionThresholdPerDay, BotModeEnabled, BotSuspendedReason);
+            DefaultDurationDays, ProbationLeadDays, ProtectionThresholdPerDay, BotModeEnabled, BotSuspendedReason, PendingExpiryDays);
     }
 }

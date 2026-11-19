@@ -78,6 +78,14 @@ public static class AuditActions
     /// date correction under <see cref="AuditActor.System"/> with <c>cause: date_correction</c>.
     /// </summary>
     public const string WishUnlink = "wish.unlink";
+
+    // Learned channel-point rewards (K6), written by the reward service under the acting manager. Target
+    // ("wishReward", row id); details carry the row id and, for a change, the names of the changed fields only:
+    // never the label, the reward's Twitch tag, a redemption text or a login. Starting and cancelling a learning
+    // session are not audited.
+    public const string WishRewardAdd = "wish.rewardAdd";
+    public const string WishRewardChange = "wish.rewardChange";
+    public const string WishRewardRemove = "wish.rewardRemove";
 }
 
 /// <summary>
