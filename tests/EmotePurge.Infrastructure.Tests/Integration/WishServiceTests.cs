@@ -834,7 +834,7 @@ public partial class WishServiceTests(PostgresFixture fixture)
     // ------------------------------------------------------------------------------------ helpers
 
     private WishService Sut(AppDbContext? db = null) =>
-        new(db ?? fixture.CreateDbContext(), new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance), _clock);
+        new(db ?? fixture.CreateDbContext(), new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance), _clock, NullLogger<WishService>.Instance);
 
     private Task<WishCommandResult> CreateAsync(Seeded channel, string emoteId, string alias, int? durationDays = null) =>
         Sut().CreateAsync(channel.Name, new CreateWishRequest(emoteId, "Emote", alias, durationDays, null), Actor);

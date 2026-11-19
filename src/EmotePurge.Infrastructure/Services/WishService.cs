@@ -4,6 +4,7 @@ using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 
 namespace EmotePurge.Infrastructure.Services;
@@ -27,7 +28,11 @@ namespace EmotePurge.Infrastructure.Services;
 /// wish rows as well (<see cref="SupersedeActiveDecisionsAsync"/>, plan #484 2.6).
 /// </para>
 /// </summary>
-public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPublisher, TimeProvider timeProvider) : IWishService
+public sealed class WishService(
+    AppDbContext db,
+    IWishChangedPublisher changedPublisher,
+    TimeProvider timeProvider,
+    ILogger<WishService> logger) : IWishService
 {
     private const string RunningEmoteIndex = "IX_Wishes_ChannelId_SevenTvEmoteId_Running";
     private const string LiveSlotIndex = "IX_Wishes_SlotId_Live";
@@ -244,9 +249,8 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         await AuditAndCommitAsync(transaction, actor, AuditActions.WishCreate, channel.ChannelName, wish, cancellationToken);
         await changedPublisher.PublishAsync(channel.ChannelName, cancellationToken);
 
-        var setFull = channel.ActiveEmoteSetCapacity is { } capacity
-            && await db.EmoteSlots.CountAsync(s => !s.IsArchived && !s.SeedUnsettled && s.Emote.ChannelId == channelId, cancellationToken) >= capacity;
-        var imageUrl = await ImageUrlOfAsync(channelId, emoteId, cancellationToken);
+        var setFull = await TryIsSetFullAsync(channel.ActiveEmoteSetCapacity, channelId, cancellationToken);
+        var imageUrl = await TryImageUrlOfAsync(channelId, emoteId, cancellationToken);
         return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings, imageUrl), SetFull: setFull);
     }
 
@@ -655,7 +659,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
             transaction, actor, AuditActions.WishRemove, channel.ChannelName, wish, cancellationToken, previousExpiresAtUtc: previousExpiry,
             removal: removal);
         await changedPublisher.PublishAsync(channel.ChannelName, cancellationToken);
-        var imageUrl = await ImageUrlOfAsync(channelId, wish.SevenTvEmoteId, cancellationToken);
+        var imageUrl = await TryImageUrlOfAsync(channelId, wish.SevenTvEmoteId, cancellationToken);
         return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings, imageUrl));
     }
 
@@ -915,6 +919,40 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         return row is null ? EffectiveSettings.Defaults : ToSettings(row);
     }
 
+    // The reads behind a response are decoration of a command that has already committed: a failure there must
+    // never turn the committed command into an error (the manager would repeat it and book it twice). A caller's
+    // own cancellation still propagates.
+    private async Task<string?> TryImageUrlOfAsync(string channelId, string sevenTvEmoteId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ImageUrlOfAsync(channelId, sevenTvEmoteId, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Reading the wish image after a committed command failed for channel {ChannelId}; answering without an image", channelId);
+            return null;
+        }
+    }
+
+    private async Task<bool> TryIsSetFullAsync(int? capacity, string channelId, CancellationToken cancellationToken)
+    {
+        if (capacity is not { } limit)
+        {
+            return false;
+        }
+
+        try
+        {
+            return await db.EmoteSlots.CountAsync(s => !s.IsArchived && !s.SeedUnsettled && s.Emote.ChannelId == channelId, cancellationToken) >= limit;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Counting the set's entries after a committed command failed for channel {ChannelId}; answering without the full-set hint", channelId);
+            return false;
+        }
+    }
+
     private async Task<string?> ImageUrlOfAsync(string channelId, string sevenTvEmoteId, CancellationToken cancellationToken)
     {
         var images = await db.ReadWishImageUrlsAsync([channelId], [sevenTvEmoteId], cancellationToken);
@@ -1069,7 +1107,7 @@ public sealed class WishService(AppDbContext db, IWishChangedPublisher changedPu
         var channel = ChannelName.Normalize(channelName);
         await AuditAndCommitAsync(transaction, actor, auditAction, channel, wish, cancellationToken, step.AuditDurationDays, previousExpiry);
         await changedPublisher.PublishAsync(channel, cancellationToken);
-        var imageUrl = await ImageUrlOfAsync(channelId, wish.SevenTvEmoteId, cancellationToken);
+        var imageUrl = await TryImageUrlOfAsync(channelId, wish.SevenTvEmoteId, cancellationToken);
         return new WishCommandResult(WishOutcome.Success, Wish: ToDto(wish, settings, imageUrl));
     }
 

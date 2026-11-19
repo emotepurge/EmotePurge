@@ -820,7 +820,7 @@ public partial class WishReconcileServiceTests(PostgresFixture fixture)
         Sut(() => fixture.CreateTaggedDbContext($"wish-reconcile-{Guid.NewGuid():N}"[..40], [hook])).ReconcileChannelAsync(channel.Id);
 
     private WishService WishSut(AppDbContext? db = null) =>
-        new(db ?? fixture.CreateDbContext(), new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance), _clock);
+        new(db ?? fixture.CreateDbContext(), new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance), _clock, NullLogger<WishService>.Instance);
 
     private void AssertPublishedOnce(Seeded channel)
     {

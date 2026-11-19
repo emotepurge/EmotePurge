@@ -120,7 +120,8 @@ public partial class DataRetentionServiceTests
             var service = new WishService(
                 wishDb,
                 new WishChangedPublisher(Substitute.For<IRedisPublisher>(), NullLogger<WishChangedPublisher>.Instance),
-                new HandWoundTimeProvider(new DateTimeOffset(_now)));
+                new HandWoundTimeProvider(new DateTimeOffset(_now)),
+                NullLogger<WishService>.Instance);
             var readd = await service.ReAddAsync(
                 channel.ChannelName, wishId, new ReAddWishRequest(WishReAddMode.Timed, null), new AuditActor("wish-mod", "wishmod"));
             Assert.Equal(WishOutcome.Success, readd.Outcome);
@@ -186,7 +187,8 @@ public partial class DataRetentionServiceTests
             var service = new WishService(
                 wishDb,
                 new WishChangedPublisher(Substitute.For<IRedisPublisher>(), NullLogger<WishChangedPublisher>.Instance),
-                new HandWoundTimeProvider(new DateTimeOffset(_now)));
+                new HandWoundTimeProvider(new DateTimeOffset(_now)),
+                NullLogger<WishService>.Instance);
             var report = await service.CompleteRemovalAsync(
                 channel.ChannelName, reported, new CompleteWishRemovalRequest(slotId, endedAt.AddDays(-40), set), new AuditActor("wish-mod", "wishmod"));
             Assert.Equal(WishOutcome.Success, report.Outcome);
