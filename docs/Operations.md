@@ -1843,7 +1843,9 @@ The statement is `EmoteSlotRollbackSql.CollapseBackfillSnapshotSql`; keep both t
 
 Wishes (a channel asks for a 7TV emote to stay in its set for a limited time) are the backend core of
 epic #481. Child 1 ships the data model, the reconcile against the channel's slots, the retention periods
-and the `/api/channels/{channelName}/wishes` routes; there is no UI yet.
+and the `/api/channels/{channelName}/wishes` routes, child 2 the expiry run, child 3 the manager UI and child 6
+the chat capture (see "Chat capture" below). Bot removal (children 4 and 5, backend and frontend) is not
+built yet.
 
 - **Switch:** `Wishes:Enabled` (environment variable `WISHES_ENABLED`, default `false`). Set it on **both**
   the api and the worker: the api answers the wish routes with 404 `wishes_disabled` while it is off, and
@@ -1851,9 +1853,9 @@ and the `/api/channels/{channelName}/wishes` routes; there is no UI yet.
   epic is released.
 - **Migration:** `AddWishes` is additive (two new tables, no change to an existing one). Apply it by hand
   **before** the images, like every migration (see the tunnel recipe in the repository `CLAUDE.md`): run
-  `dotnet ef migrations list` first, which must show exactly `AddWishes` as pending, then
-  `dotnet ef database update`, then `list` again. The migration guard at startup fails fast if it is
-  missing.
+  `dotnet ef migrations list` first, which must show exactly `AddWishes` as pending (with child 6 on top
+  see "Chat capture": two pending migrations), then `dotnet ef database update`, then `list` again. The
+  migration guard at startup fails fast if it is missing.
 - **Rollback:** switch it off. The tables stay and do not disturb an older image.
 - **Expiry run (child 2, #484):** `WishExpiryWorker` waits one minute after start and then, once per
   `Wishes:ExpiryIntervalMinutes` (environment variable `WISHES_EXPIRY_INTERVAL_MINUTES`, default 15, valid
@@ -1881,6 +1883,81 @@ and the `/api/channels/{channelName}/wishes` routes; there is no UI yet.
   `wish.remove`), so a deadline the run never saw still counts in the pilot measurement.
 - **Retention:** the wish periods are listed under "Data retention" below; they apply only with
   `Retention:Enforce=true`.
+
+### Chat capture (child 6, #486)
+
+Channel-point redemptions that ask the viewer for a text are read from the anonymous chat connection (the
+IRC tag `custom-reward-id`). A manager teaches the channel a reward in the settings tab ("learn": the next
+redemption within ten minutes becomes the candidate), and from then on every redemption of that reward
+becomes an open wish (`pending`) that the reconcile links to a set entry by emote id or alias, or that the
+manager approves, rejects or unlinks. Nothing here writes to 7TV.
+
+- **Switch:** `Wishes:Capture:Enabled` (environment variable `WISHES_CAPTURE_ENABLED`, default `false`,
+  mapped on **api and worker** in both compose files). It has an effect only together with `WISHES_ENABLED`,
+  and it needs the **same value on api and worker**: each process reads its own environment.
+  - **The worker decides the capture.** With the worker on and the api off, redemptions of known rewards are
+    still captured and the open wishes show in the work list, but the reward block of the settings tab and
+    its routes (404 `wish_capture_disabled`) are gone. With the api on and the worker off, the block is
+    there and nothing is captured; it warns "capture looks stopped" when the worker's life stamp is older
+    than three minutes or missing.
+  - **Where to see the state:** the worker logs one line at start, `Wish capture is enabled.` or `Wish capture
+    is disabled (Wishes:Enabled=..., Wishes:Capture:Enabled=...); housekeeping keeps running.`, and
+    `/admin/monitoring` has a section "Wunsch-Erfassung" fed by the worker's health snapshot and the api's
+    own value. It shows a warning when the two disagree, an "unknown" marker when the worker sends no value
+    (an older worker) while the api is on, and **no row at all while neither side is on**.
+  - **Switching on:** migration first (below), then the images, then set the variable and recreate the
+    worker, then the api, so the settings block never appears before something is listening.
+  - **Switching off or rolling back the switch:** set the variable to `false` on the **worker first, then on
+    the api**, and recreate each. After a partial change (one service recreated, the other not) recreate
+    **both** and check the worker's start line and `/admin/monitoring` again; the worker is authoritative.
+- **Migration:** `AddWishCapture` is additive (new columns that are nullable or have a default, six new
+  tables; no existing column changes) and, like `AddWishes`, is applied by hand **before** the images: tunnel
+  as in the repository `CLAUDE.md`, `dotnet ef migrations list`, `dotnet ef database update`, `list` again.
+  The image from before child 6 keeps running against the new schema. **On production `AddWishes` is
+  probably still pending, so `list` shows two pending migrations (`AddWishes`, `AddWishCapture`); both are
+  additive and one `update` applies them in order.**
+- **The housekeeping tick runs even with everything off.** The sixteenth hosted service, `WishCaptureWorker`,
+  runs a tick every minute whatever the switches say: it deletes expired learning rows and capture receipts
+  older than seven days and, on its first tick and every fifteenth minute, expires open wishes that waited
+  longer than the channel's `PendingExpiryDays` (default 14, 1 to 90). It needs the migration; without it the
+  worker warns at most once an hour per step. Only the draining of observations, the gap tracking and the
+  life stamp depend on the switches. While the capture is on, the worker logs a line with counters only (never
+  a login or a text) in each minute in which something happened.
+- **Rolling back to an image from before child 6** is compatible with existing child-6 rows: an open wish
+  carries the empty string, never NULL, in its three emote columns, so the old image reads it without
+  failing. It is an interim state: the old image does not expire open wishes, does not clear the captured
+  request text, and on a channel merge does not carry the loser's rewards, learning row, gaps and receipts over
+  (they go with the loser's row).
+- **Who sees capture data:** the reward routes and the redeemer fields (request text, requested name, reward
+  label, login) are given out only while Twitch confirms the caller **by the channel's Twitch id** (the
+  channel's owner, a global admin by id, or a moderator whose moderated-channel list holds that id). A
+  channel row without a Twitch id shows none of it. An operator listed only in `Auth:AdminTwitchLogins` sees
+  no capture data; list the operator in `Auth:AdminTwitchUserIds`.
+- **Retention of the capture data:** the request text, the requested name, the IRC message id, the
+  requester's login and id on a wish are cleared 30 days after the wish ended (a wish that was never active
+  at the latest 120 days after creation; only with `Retention:Enforce=true`, see the table under "Data
+  retention") and, at once and without that switch, by the account deletion, which also clears a learning
+  candidate whose login equals the account's (matched by login because a candidate has no id). Handled by the
+  housekeeping tick, independent of `Retention:Enforce`: the capture receipts (channel, IRC message id and
+  time, no content) are deleted after seven days, the learning row and its candidate after ten minutes, and
+  an open wish is set to `expired` after `PendingExpiryDays` (its personal fields then follow the 30-day rule
+  above). Capture gaps are deleted 30 days after they ended (with `Retention:Enforce=true`). All of it goes with the channel's
+  purge.
+- **The gaps are an approximation, not a measurement.** A stretch in which the worker was not listening (a
+  chat disconnect, a worker restart, a channel not yet joined) is recorded with an accuracy of about one
+  tick or one rejoin round; after a silently stalled connection the gap can come out up to 15 minutes too
+  short, and one shorter than a minute is dropped. The settings tab lists those of the last 14 days as an
+  indication of where a redemption may have gone unseen, not as proof of completeness.
+- **Only rewards with a required text input are recognized.** A reward without a text produces no chat line,
+  so it cannot be captured. Deleting a reward on Twitch and creating it again gives it a new id, and
+  switching the text input off ends the chat lines: both stop the capture without any error, visible only
+  as "last recognized" in the reward list. Teach the new reward again.
+- **Per-viewer and per-channel limits:** at most `Wishes:Capture:MaxPendingPerRequester` open wishes per
+  viewer (default 3, 1 to 50, no compose mapping; set it as `Wishes__Capture__MaxPendingPerRequester`) and
+  200 per channel; a redemption refused at a limit is decided again if it comes back.
+- **Before switching on in production:** the privacy notice is the operator's own Markdown outside the
+  repository (`Legal:ContentPath`); checking that it covers the captured text, the redeemer's login and
+  the retention periods above is the operator's step.
 
 ### Pilot measurement (a): overdue wishes decided in time
 
