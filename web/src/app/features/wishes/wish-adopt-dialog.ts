@@ -229,7 +229,7 @@ interface StaleNotice {
           <div role="status" [attr.aria-label]="'common.loading' | transloco">
             <ul class="-mx-6 divide-y divide-border border-y border-border" aria-hidden="true">
               @for (row of [0, 1]; track row) {
-                <li class="flex items-start gap-3 px-6 py-2">
+                <li class="relative flex items-start gap-3 px-6 py-2">
                   <div class="app-skeleton size-10 shrink-0"></div>
                   <div class="flex min-w-0 flex-1 flex-col gap-1.5">
                     <div class="app-skeleton h-4 w-32 max-w-full"></div>
@@ -282,7 +282,7 @@ interface StaleNotice {
                       <input
                         type="radio"
                         name="wish-adopt-entry"
-                        class="mt-3 h-4 w-4 shrink-0 accent-accent-solid"
+                        class="relative z-10 mt-1.5 h-6 w-6 shrink-0 accent-accent-solid"
                         [id]="'wish-adopt-entry-' + line.slot.slotId"
                         [value]="line.slot.slotId"
                         [checked]="selectedSlotId() === line.slot.slotId"
@@ -297,7 +297,7 @@ interface StaleNotice {
                       />
                       <div class="flex min-w-0 flex-1 flex-col gap-0.5">
                         <label
-                          class="truncate font-medium"
+                          class="truncate font-medium after:absolute after:inset-0 after:content-['']"
                           [for]="'wish-adopt-entry-' + line.slot.slotId"
                           >{{ line.slot.alias }}</label
                         >
@@ -330,7 +330,7 @@ interface StaleNotice {
                         <button
                           type="button"
                           appButton="outline"
-                          class="shrink-0"
+                          class="relative z-10 shrink-0"
                           [attr.aria-label]="
                             ('wishes.dialog.toWish' | transloco) + ': ' + line.slot.alias
                           "
@@ -343,7 +343,7 @@ interface StaleNotice {
                       <input
                         type="radio"
                         name="wish-adopt-entry"
-                        class="mt-1 h-4 w-4 shrink-0 accent-accent-solid"
+                        class="mt-1.5 h-6 w-6 shrink-0 accent-accent-solid"
                         disabled
                         [id]="'wish-adopt-entry-' + line.slotId"
                       />
@@ -402,7 +402,7 @@ interface StaleNotice {
               <input
                 type="radio"
                 name="wish-adopt-start"
-                class="h-4 w-4 accent-accent-solid"
+                class="h-6 w-6 accent-accent-solid"
                 [checked]="startChoice() === 'added'"
                 [disabled]="saving()"
                 (change)="chooseStart('added')"
@@ -414,7 +414,7 @@ interface StaleNotice {
             <input
               type="radio"
               name="wish-adopt-start"
-              class="h-4 w-4 accent-accent-solid"
+              class="h-6 w-6 accent-accent-solid"
               [checked]="startChoice() === 'now'"
               [disabled]="saving()"
               (change)="chooseStart('now')"
