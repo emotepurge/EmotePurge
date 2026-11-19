@@ -718,22 +718,18 @@ test.describe('wish emotes: the manager page (#485)', () => {
       expect(requested.filter((url) => url.includes(wishUlid('W1')))).toHaveLength(1);
     });
 
-    // fixme: the known open finding of T12 (DECISIONS, wish emotes child 3, "step 3 waits for the
-    // operator"). Measured 2026-11-19 at 360 px in de with a count of 3 and the stale-worker badge:
-    // the "Abstimmungen" link (x 145, w 104) and the badge (x 28, w 143) overlap by 26 px. The case
-    // is written and runs the moment the header layout decision is made; the audit harness carries
-    // the same state as `shell-wishes-count-badge`. The header layout is not changed here.
-    test.fixme('at 360 px with a count of 3 and a status badge the header holds together (AK44)', async ({
+    // AK44, decided by the operator 2026-11-19 (DECISIONS (z), option B): below `sm` the count gives way
+    // while a status badge stands, so the 360 px row holds together; the account menu entry is the way.
+    test('at 360 px with a status badge the header count gives way and nothing overlaps (AK44)', async ({
       page,
     }) => {
       await page.setViewportSize({ width: 360, height: 800 });
-      await mockWorkerHealth(page, 'stale');
+      await mockWorkerHealth(page, 'disconnected');
       await mockWishSummaryLive(page, 3);
       await mockMyChannels(page, []);
       await page.goto('/');
 
       const targets = [
-        page.locator('header a[href="/my-wishes"]'),
         page.locator('header a[href="/my-votings"]'),
         page.locator('header app-account-menu [aria-haspopup="dialog"]'),
         page.locator('header app-health-marker app-status-badge > span'),
@@ -747,7 +743,7 @@ test.describe('wish emotes: the manager page (#485)', () => {
         expect(box!.x).toBeGreaterThanOrEqual(0);
         expect(box!.x + box!.width).toBeLessThanOrEqual(360);
       }
-      // No two of them overlap.
+      await expect(page.locator('header a[href="/my-wishes"]')).toBeHidden();
       for (let first = 0; first < boxes.length; first++) {
         for (let second = first + 1; second < boxes.length; second++) {
           const a = boxes[first];
@@ -765,6 +761,31 @@ test.describe('wish emotes: the manager page (#485)', () => {
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
       ).toBeLessThanOrEqual(0);
+
+      // The way to the page stays open: the account menu entry.
+      await page.locator('header app-account-menu [aria-haspopup="dialog"]').click();
+      await expect(page.getByRole('link', { name: /Wünsche|Wishes/ })).toBeVisible();
+    });
+
+    test('at 360 px without a badge the count shows whole; from sm on it stays with a badge', async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: 360, height: 800 });
+      await mockWorkerHealth(page, 'connected');
+      await mockWishSummaryLive(page, 3);
+      await mockMyChannels(page, []);
+      await page.goto('/');
+      const link = page.locator('header a[href="/my-wishes"]');
+      await expect(link).toBeVisible();
+      const box = await link.boundingBox();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(360);
+
+      await mockWorkerHealth(page, 'disconnected');
+      await page.setViewportSize({ width: 800, height: 800 });
+      await page.reload();
+      await expect(page.locator('header app-health-marker')).toBeVisible();
+      await expect(link).toBeVisible();
     });
   });
 });

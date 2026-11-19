@@ -882,9 +882,9 @@ const SCENARIOS: Scenario[] = [
     // count from sm on. The worker warning because it is the longer of the two badges in both
     // locales; a two-digit count because it is wider than one. The document metrics cannot see an
     // element that an ancestor clips, so afterLoad checks the fit explicitly (assertHeaderFits).
-    // Known red at 360 px in de (2026-11-18): "Abstimmungen" runs 33 px into the badge, while every
-    // document metric stays clean. Step 3 would deviate from AK44 and waits for the operator
-    // (DECISIONS, wish emotes child 3); until then this case is the open finding, not a flake.
+    // Operator decision 2026-11-19 (DECISIONS (z), option B): below `sm` the count gives way while a
+    // badge stands, so this state shows no wishes link at 360 px (nothing may be overlapped); from
+    // `sm` on the link stays and must fit.
     slug: 'shell-wishes-count-badge',
     path: '/',
     setup: async (page) => {
@@ -2372,8 +2372,16 @@ async function assertHeaderFits(
   const report = await page.evaluate((withBadge) => {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    // Below `sm` (640 px) a badge in the header takes the count's place (DECISIONS (z)): the link must
+    // not be there at all. Everywhere else it is measured like the rest.
+    const wishesLink = document.querySelector('header a[href="/my-wishes"]');
+    const wishesYields = withBadge && vw < 640;
+    const problems: string[] = [];
+    if (wishesYields && wishesLink && wishesLink.getBoundingClientRect().width > 0) {
+      problems.push('wishesLink: shown below sm next to a status badge');
+    }
     const targets: [string, Element | null][] = [
-      ['wishesLink', document.querySelector('header a[href="/my-wishes"]')],
+      ...(wishesYields ? [] : ([['wishesLink', wishesLink]] as [string, Element | null][])),
       ['votingsLink', document.querySelector('header a[href="/my-votings"]')],
       // Scoped to the menu: the live-quota badge is a dialog trigger as well.
       [
@@ -2409,7 +2417,6 @@ async function assertHeaderFits(
       }
       return found;
     };
-    const problems: string[] = [];
     const boxes: Record<string, Box> = {};
     for (const [name, el] of targets) {
       if (!el) {
