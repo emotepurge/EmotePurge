@@ -17,7 +17,7 @@ public partial class WishServiceTests
     private const int SeededDecisionVersion = 3;
 
     private static readonly string[] Commands =
-        ["patch", "extend", "keep", "close", "retry", "readd", "complete-removal", "recheck"];
+        ["patch", "extend", "keep", "close", "retry", "readd", "complete-removal", "recheck", "approve", "reject", "unlink"];
 
     // (state, command) -> state after success. Seeded rows have no slot, except for complete-removal, which runs on
     // a row bound to a slot generation and reports exactly that (plan #485 2.1a); presented carries reason
@@ -40,6 +40,10 @@ public partial class WishServiceTests
         [("active", "complete-removal")] = "removed",
         [("presented", "complete-removal")] = "removed",
         [("removed_externally", "complete-removal")] = "removed",
+        // K6 (plan #486 2.6). unlink runs on a row seeded as an automatic capture link to a slot.
+        [("pending", "approve")] = "approved",
+        [("pending", "reject")] = "rejected",
+        [("active", "unlink")] = "pending",
     };
 
     private static readonly Dictionary<string, string> AuditActionOf = new()
@@ -51,6 +55,9 @@ public partial class WishServiceTests
         ["retry"] = "wish.retry",
         ["readd"] = "wish.readd",
         ["complete-removal"] = "wish.remove",
+        ["approve"] = "wish.approve",
+        ["reject"] = "wish.reject",
+        ["unlink"] = "wish.unlink",
     };
 
     // Succeed without any trace: a repeated removal report of a wish already removed (row 5 of plan #485 2.1a).
@@ -80,9 +87,12 @@ public partial class WishServiceTests
     public async Task Matrix_EveryStateAndCommand_SucceedsExactlyWhereListed_ElseConflictsWithoutATrace(string state, string command)
     {
         var channel = await SeedChannelAsync();
-        var wishId = command == "complete-removal"
-            ? (await SeedBoundRowAsync(channel, state)).WishId
-            : await SeedRowAsync(channel, state);
+        var wishId = command switch
+        {
+            "complete-removal" => (await SeedBoundRowAsync(channel, state)).WishId,
+            "unlink" => await SeedCaptureLinkedRowAsync(channel, state),
+            _ => await SeedRowAsync(channel, state),
+        };
         var before = await SnapshotAsync(wishId);
 
         var result = await RunAsync(command, channel, wishId);
@@ -606,8 +616,27 @@ public partial class WishServiceTests
             "retry" => sut.RetryAsync(channel.Name, wishId, Actor),
             "readd" => sut.ReAddAsync(channel.Name, wishId, new ReAddWishRequest("timed", null), Actor),
             "recheck" => sut.RecheckAsync(channel.Name, wishId, Actor),
+            "approve" => sut.ApproveAsync(channel.Name, wishId, new ApproveWishRequest(null, null, null, null), Actor),
+            "reject" => sut.RejectAsync(channel.Name, wishId, Actor),
+            "unlink" => sut.UnlinkAsync(channel.Name, wishId, Actor),
             _ => throw new ArgumentOutOfRangeException(nameof(command), command, null),
         };
+    }
+
+    // The row of SeedRowAsync as the capture's automatic link to a slot of its own (unlink needs source irc, origin
+    // auto and a slot; plan #486 2.6). In every state, so the matrix shows that only active is accepted.
+    private async Task<long> SeedCaptureLinkedRowAsync(Seeded channel, string state)
+    {
+        var emote = await SeedEmoteAsync(channel);
+        var slot = await SeedSlotAsync(emote, "Kappa", Now.AddDays(-10));
+        return await SeedRowAsync(channel, state, w =>
+        {
+            w.SevenTvEmoteId = emote.SevenTvEmoteId;
+            w.Source = WishSource.Irc;
+            w.MatchKind = WishMatchKind.Link;
+            w.LinkOrigin = WishLinkOrigin.Auto;
+            w.SlotId = slot;
+        });
     }
 
     private async Task<string> SnapshotAsync(long wishId)

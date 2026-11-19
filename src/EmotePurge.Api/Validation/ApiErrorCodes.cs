@@ -253,4 +253,9 @@ internal static class ApiErrorCodes
     public const string WishSlotNotFound = "wish_slot_not_found";
     // 409 from adopt: another live wish holds the slot.
     public const string WishSlotAlreadyLinked = "wish_slot_already_linked";
+
+    // Wish emotes, K6 (#486). 400 from approve: neither the body nor the open wish names an emote.
+    public const string WishEmoteRequired = "wish_emote_required";
+    // 409 from approve: a wish of the emote runs without an expiry to extend; the body carries wishId.
+    public const string WishRunningNotExtendable = "wish_running_not_extendable";
 }

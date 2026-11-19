@@ -2574,7 +2574,9 @@
       "wish_settings_out_of_range": "At least one settings value is outside the allowed range.",
       "wish_settings_restricted": "Only the broadcaster, whoever activated the bot, and admins may change these settings.",
       "wish_slot_not_found": "This entry is not (or no longer) active in the set.",
-      "wish_slot_already_linked": "This entry already belongs to another wish."
+      "wish_slot_already_linked": "This entry already belongs to another wish.",
+      "wish_emote_required": "Choose the emote first: paste a 7TV link or an emote ID.",
+      "wish_running_not_extendable": "The running wish for this emote is not in the set yet. You can approve this one once it is."
     }
   },
   "backfill": {

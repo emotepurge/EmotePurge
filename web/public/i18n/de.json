@@ -2574,7 +2574,9 @@
       "wish_settings_out_of_range": "Mindestens ein Wert der Einstellungen liegt außerhalb des erlaubten Bereichs.",
       "wish_settings_restricted": "Diese Einstellungen dürfen nur der Broadcaster, wer den Bot aktiviert hat, und Admins ändern.",
       "wish_slot_not_found": "Dieser Eintrag ist nicht (mehr) aktiv im Set.",
-      "wish_slot_already_linked": "Dieser Eintrag gehört bereits zu einem anderen Wunsch."
+      "wish_slot_already_linked": "Dieser Eintrag gehört bereits zu einem anderen Wunsch.",
+      "wish_emote_required": "Wähle zuerst das Emote: Füge einen 7TV-Link oder eine Emote-ID ein.",
+      "wish_running_not_extendable": "Der laufende Wunsch für dieses Emote ist noch nicht im Set. Freigeben geht, sobald er es ist."
     }
   },
   "backfill": {

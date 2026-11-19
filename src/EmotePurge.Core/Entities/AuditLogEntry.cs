@@ -68,6 +68,16 @@ public static class AuditActions
     public const string WishUpdate = "wish.update";
 
     /// <summary>
+    /// A manager decided an open wish (K6): details <c>wishId</c>, <c>outcome</c> (<c>approved</c> or <c>merged</c>) and
+    /// <c>mergedIntoWishId</c> (null for <c>approved</c>). A merge writes <see cref="WishExtend"/> on the running wish in
+    /// the same transaction.
+    /// </summary>
+    public const string WishApprove = "wish.approve";
+
+    /// <summary>A manager rejected an open wish (K6); the standard wish details, never the redemption text.</summary>
+    public const string WishReject = "wish.reject";
+
+    /// <summary>
     /// The reconcile linked a wish without a click (<c>pending</c> or <c>approved</c>, K6). Written under
     /// <see cref="AuditActor.System"/>; details <c>wishId</c>, <c>source</c>, <c>fromStatus</c>, <c>matchKind</c>.
     /// </summary>

@@ -358,13 +358,15 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         { WishOutcome.SlotNotFound, HttpStatusCode.NotFound, ApiErrorCodes.WishSlotNotFound },
         { WishOutcome.SlotAlreadyLinked, HttpStatusCode.Conflict, ApiErrorCodes.WishSlotAlreadyLinked },
         { WishOutcome.StateConflict, HttpStatusCode.Conflict, ApiErrorCodes.WishStateConflict },
+        { WishOutcome.EmoteRequired, HttpStatusCode.BadRequest, ApiErrorCodes.WishEmoteRequired },
+        { WishOutcome.RunningNotExtendable, HttpStatusCode.Conflict, ApiErrorCodes.WishRunningNotExtendable },
     };
 
     [Theory]
     [MemberData(nameof(FailureOutcomes))]
     public async Task EveryFailureOutcome_MapsToItsStatusAndErrorCode_WithItsPayload(WishOutcome outcome, HttpStatusCode status, string code)
     {
-        _factory.Wishes.ExtendAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.ExtendAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<AuditActor>(), Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(outcome, SlotIds: ["slot-a", "slot-b"], ConflictingWishId: 42));
 
         var response = await SendAsync(_factory, "POST", $"/api/channels/{Channel}/wishes/7/extend");
@@ -378,8 +380,9 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
             Assert.Equal(["slot-a", "slot-b"], slotIds.EnumerateArray().Select(s => s.GetString()));
         }
 
-        // Plan #485 2.1a: the three conflicts about another wish name it.
-        var namesAWish = outcome is WishOutcome.AlreadyRunning or WishOutcome.SlotAlreadyLinked or WishOutcome.EmoteAlreadyInSet;
+        // Plan #485 2.1a: the three conflicts about another wish name it; K6 adds the running wish without an expiry.
+        var namesAWish = outcome is WishOutcome.AlreadyRunning or WishOutcome.SlotAlreadyLinked or WishOutcome.EmoteAlreadyInSet
+            or WishOutcome.RunningNotExtendable;
         Assert.Equal(namesAWish, json.RootElement.TryGetProperty("wishId", out var wishId));
         if (namesAWish)
         {
@@ -437,9 +440,9 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Adopt_Answers201_AndTheOtherCommandsAnswer200()
     {
-        _factory.Wishes.AdoptAsync(Arg.Any<string>(), Arg.Any<AdoptWishRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.AdoptAsync(Arg.Any<string>(), Arg.Any<AdoptWishRequest>(), Arg.Any<AuditActor>(), Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Wish: Wish()));
-        _factory.Wishes.KeepAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.KeepAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<AuditActor>(), Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Wish: Wish()));
 
         var adopt = await SendAsync(_factory, "POST", $"/api/channels/{Channel}/wishes/adopt", """{"slotId":"s1"}""");
@@ -453,7 +456,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     public async Task Commands_ForwardTheChannelTheIdAndTheActor()
     {
         var userId = Guid.NewGuid().ToString("N");
-        _factory.Wishes.CloseAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.CloseAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<AuditActor>(), Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Wish: Wish()));
 
         await SendAsync(_factory, "POST", $"/api/channels/{Channel}/wishes/7/close", userId: userId);
@@ -471,7 +474,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     public async Task CompleteRemoval_ForwardsTheReportedEntryVerbatim_AndAnswers200()
     {
         _factory.Wishes.CompleteRemovalAsync(
-                Arg.Any<string>(), Arg.Any<long>(), Arg.Any<CompleteWishRemovalRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<string>(), Arg.Any<long>(), Arg.Any<CompleteWishRemovalRequest>(), Arg.Any<AuditActor>(), Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Wish: Wish()));
 
         var response = await SendAsync(_factory, "POST", $"/api/channels/{Channel}/wishes/7/complete-removal", RemovalBody);
@@ -505,7 +508,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     public async Task CompleteRemoval_WithAPartialBody_ForwardsTheGaps_AndTheRefusalIs400()
     {
         _factory.Wishes.CompleteRemovalAsync(
-                Arg.Any<string>(), Arg.Any<long>(), Arg.Any<CompleteWishRemovalRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<string>(), Arg.Any<long>(), Arg.Any<CompleteWishRemovalRequest>(), Arg.Any<AuditActor>(), Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>())
             .Returns(WishCommandResult.Of(WishOutcome.RequestInvalid));
 
         var response = await SendAsync(_factory, "POST", $"/api/channels/{Channel}/wishes/7/complete-removal", """{"slotId":"slot-1"}""");
@@ -513,13 +516,13 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ApiErrorCodes.InvalidRequestBody, await ReadErrorCodeAsync(response));
         await _factory.Wishes.Received(1).CompleteRemovalAsync(
-            Channel, 7, new CompleteWishRemovalRequest("slot-1", null, null, null), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Channel, 7, new CompleteWishRemovalRequest("slot-1", null, null, null), Arg.Any<AuditActor>(), Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task Adopt_ForwardsTheExpectedAliasAndDate_AndAnAbsentAliasAsNull()
     {
-        _factory.Wishes.AdoptAsync(Arg.Any<string>(), Arg.Any<AdoptWishRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.AdoptAsync(Arg.Any<string>(), Arg.Any<AdoptWishRequest>(), Arg.Any<AuditActor>(), Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Wish: Wish()), WishCommandResult.Of(WishOutcome.RequestInvalid));
         var path = $"/api/channels/{Channel}/wishes/adopt";
 
@@ -567,7 +570,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Get_SerializesWishDtoFlatInCamelCase_WithZTimesAndNoRequesterTwitchId()
     {
-        _factory.Wishes.GetAsync(Channel, 7, Arg.Any<CancellationToken>()).Returns(new WishDetailDto(Wish(), UsageDto()));
+        _factory.Wishes.GetAsync(Channel, 7, Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>()).Returns(new WishDetailDto(Wish(), UsageDto()));
 
         var response = await SendAsync(_factory, "GET", $"/api/channels/{Channel}/wishes/7");
 
@@ -579,7 +582,9 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
             ["id", "sevenTvEmoteId", "emoteName", "alias", "source", "status", "statusReason", "requesterLogin", "durationDays",
                 "createdAtUtc", "approvedAtUtc", "startsAtUtc", "startsAtAuthoritative", "probationStartsAtUtc", "expiresAtUtc",
                 "endedAtUtc", "slotId", "slotAddedAtUtc", "imageUrl", "linkOrigin", "extensionCount", "permanent", "botOwned", "botWritePending",
-                "botNextAttemptAtUtc", "removalQueuedAtUtc", "mode", "usage"];
+                "botNextAttemptAtUtc", "removalQueuedAtUtc", "mode",
+                // K6 (plan #486 2.6): the redeemer fields, null unless the caller is confirmed on the channel's id.
+                "requestText", "requestedName", "matchKind", "rewardLabel", "mergedIntoWishId", "usage"];
         Assert.True(expected.ToHashSet().SetEquals(root.EnumerateObject().Select(p => p.Name)));
         Assert.False(root.TryGetProperty("requesterTwitchUserId", out _));
         Assert.Equal("2026-11-01T10:00:00Z", root.GetProperty("createdAtUtc").GetString());
@@ -606,7 +611,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Get_WithoutAStart_SerializesUsageAsNull_NotOmitted()
     {
-        _factory.Wishes.GetAsync(Channel, 7, Arg.Any<CancellationToken>()).Returns(new WishDetailDto(Wish(), null));
+        _factory.Wishes.GetAsync(Channel, 7, Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>()).Returns(new WishDetailDto(Wish(), null));
 
         var response = await SendAsync(_factory, "GET", $"/api/channels/{Channel}/wishes/7");
 
@@ -617,7 +622,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Get_UnknownWish_Answers404WishNotFound()
     {
-        _factory.Wishes.GetAsync(Channel, 7, Arg.Any<CancellationToken>()).Returns((WishDetailDto?)null);
+        _factory.Wishes.GetAsync(Channel, 7, Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>()).Returns((WishDetailDto?)null);
 
         var response = await SendAsync(_factory, "GET", $"/api/channels/{Channel}/wishes/7");
 
@@ -628,7 +633,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task List_SerializesTheListWithoutUsage()
     {
-        _factory.Wishes.ListAsync(Channel, WishListView.Running, 2, 10, Arg.Any<CancellationToken>())
+        _factory.Wishes.ListAsync(Channel, WishListView.Running, 2, 10, Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>())
             .Returns(new PagedResult<WishDto>([Wish()], 2, 10, 11));
 
         var response = await SendAsync(_factory, "GET", $"/api/channels/{Channel}/wishes?view=running&page=2&pageSize=10");

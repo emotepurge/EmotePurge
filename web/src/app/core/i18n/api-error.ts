@@ -106,6 +106,8 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'wish_settings_restricted',
   'wish_slot_not_found',
   'wish_slot_already_linked',
+  'wish_emote_required',
+  'wish_running_not_extendable',
 ]);
 
 /**

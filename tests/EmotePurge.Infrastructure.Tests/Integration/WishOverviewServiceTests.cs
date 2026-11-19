@@ -273,6 +273,56 @@ public class WishOverviewServiceTests(PostgresFixture fixture, RedisFixture redi
         Assert.Null(rows[bare]);
     }
 
+    // K6 (plan #486 2.4a): /mine gives out the redeemer data of a captured wish only for a channel where the caller is
+    // confirmed on the row's Twitch id, asked next to the manager check; an answer about another row (renamed in
+    // between) or an unconfirmed one leaves the fields empty. A manual wish keeps its requester login.
+    [Fact]
+    public async Task Mine_GivesOutRedeemerDataOnlyForChannelsConfirmedOnTheirId()
+    {
+        var suffix = Guid.NewGuid().ToString("N")[..8];
+        var (confirmed, unconfirmed, renamed) = ($"conf_{suffix}", $"unconf_{suffix}", $"renamed_{suffix}");
+        var confirmedId = await SeedChannelAsync(confirmed);
+        var unconfirmedId = await SeedChannelAsync(unconfirmed);
+        var renamedId = await SeedChannelAsync(renamed);
+        var inConfirmed = await SeedCapturedWishAsync(confirmedId);
+        var inUnconfirmed = await SeedCapturedWishAsync(unconfirmedId);
+        var inRenamed = await SeedCapturedWishAsync(renamedId);
+        var manual = await SeedWishAsync(unconfirmedId, WishStatus.Approved);
+        await using (var db = CreateDb())
+        {
+            await db.Wishes.Where(w => w.Id == manual).ExecuteUpdateAsync(u => u.SetProperty(w => w.RequesterLogin, "handviewer"));
+        }
+
+        var access = AccessAllowing(confirmed, unconfirmed, renamed);
+        var answers = new Dictionary<string, WishCaptureAccess?>(StringComparer.Ordinal);
+        await using (var db = CreateDb())
+        {
+            foreach (var row in await db.Channels.AsNoTracking().Where(c => c.Id == confirmedId || c.Id == unconfirmedId || c.Id == renamedId).ToListAsync())
+            {
+                answers[row.ChannelName] = row.Id == unconfirmedId
+                    ? new WishCaptureAccess(row.Id, row.TwitchChannelId, IdConfirmed: false)
+                    : row.Id == renamedId
+                        ? new WishCaptureAccess("another-row", row.TwitchChannelId, IdConfirmed: true)
+                        : new WishCaptureAccess(row.Id, row.TwitchChannelId, IdConfirmed: true);
+            }
+        }
+
+        access.ResolveWishCaptureAccessAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns<Task<WishCaptureAccess?>>(call => Task.FromResult(answers.GetValueOrDefault((string)call[1])));
+
+        var rows = (await Sut(access).ListMineAsync(Principal($"u-{suffix}"))).ToDictionary(r => r.Wish.Id);
+
+        Assert.Equal(("please", "peepoHey", "viewer"), (rows[inConfirmed].Wish.RequestText, rows[inConfirmed].Wish.RequestedName, rows[inConfirmed].Wish.RequesterLogin));
+        foreach (var hidden in new[] { inUnconfirmed, inRenamed })
+        {
+            Assert.Equal(((string?)null, (string?)null, (string?)null), (rows[hidden].Wish.RequestText, rows[hidden].Wish.RequestedName, rows[hidden].Wish.RequesterLogin));
+        }
+
+        Assert.Equal("handviewer", rows[manual].Wish.RequesterLogin);
+        // The counter carries numbers only and asks nothing about the id.
+        Assert.Equal(4, await Sut(access).CountActionAsync(Principal($"u-{suffix}")));
+    }
+
     // ------------------------------------------------------------------------------------ helpers
 
     private AppDbContext CreateDb() => fixture.CreateDbContext(DatabaseName);
@@ -352,6 +402,28 @@ public class WishOverviewServiceTests(PostgresFixture fixture, RedisFixture redi
             StartsAtUtc = startsAt,
             ExpiresAtUtc = expiresAt,
             EndedAtUtc = endedAt
+        };
+        db.Wishes.Add(wish);
+        await db.SaveChangesAsync();
+        return wish.Id;
+    }
+
+    private async Task<long> SeedCapturedWishAsync(string channelId)
+    {
+        await using var db = CreateDb();
+        var wish = new Wish
+        {
+            ChannelId = channelId,
+            SevenTvEmoteId = string.Empty,
+            Source = WishSource.Irc,
+            Status = WishStatus.Pending,
+            MatchKind = WishMatchKind.Name,
+            RequestedName = "peepoHey",
+            RequestText = "please",
+            RequesterTwitchUserId = "777",
+            RequesterLogin = "viewer",
+            StatusChangedAtUtc = Now,
+            CreatedAtUtc = Now
         };
         db.Wishes.Add(wish);
         await db.SaveChangesAsync();

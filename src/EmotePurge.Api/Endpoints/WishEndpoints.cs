@@ -42,7 +42,7 @@ public static class WishEndpoints
             }
 
             var (effectivePage, effectivePageSize) = PagingQuery.Clamp(page, pageSize);
-            var result = await wishService.ListAsync(channelName, parsedView, effectivePage, effectivePageSize, ct);
+            var result = await wishService.ListAsync(channelName, parsedView, effectivePage, effectivePageSize, cancellationToken: ct);
             return result is null
                 ? Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound })
                 : Results.Ok(result);
@@ -141,7 +141,7 @@ public static class WishEndpoints
                 return WishesDisabled();
             }
 
-            var detail = await wishService.GetAsync(channelName, id, ct);
+            var detail = await wishService.GetAsync(channelName, id, cancellationToken: ct);
             return detail is null
                 ? Results.NotFound(new { errorCode = ApiErrorCodes.WishNotFound })
                 : Results.Ok(detail);
@@ -194,7 +194,7 @@ public static class WishEndpoints
             var actor = httpContext.User.TryBuildAuditActor();
             return actor is null
                 ? Results.Unauthorized()
-                : MapResult(await wishService.AdoptAsync(channelName, request, actor, ct), StatusCodes.Status201Created);
+                : MapResult(await wishService.AdoptAsync(channelName, request, actor, cancellationToken: ct), StatusCodes.Status201Created);
         })
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
@@ -220,7 +220,7 @@ public static class WishEndpoints
             var actor = httpContext.User.TryBuildAuditActor();
             return actor is null
                 ? Results.Unauthorized()
-                : MapResult(await wishService.UpdateAsync(channelName, id, request, actor, ct), StatusCodes.Status200OK);
+                : MapResult(await wishService.UpdateAsync(channelName, id, request, actor, cancellationToken: ct), StatusCodes.Status200OK);
         })
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
@@ -246,14 +246,14 @@ public static class WishEndpoints
             var actor = httpContext.User.TryBuildAuditActor();
             return actor is null
                 ? Results.Unauthorized()
-                : MapResult(await wishService.ReAddAsync(channelName, id, request, actor, ct), StatusCodes.Status200OK);
+                : MapResult(await wishService.ReAddAsync(channelName, id, request, actor, cancellationToken: ct), StatusCodes.Status200OK);
         })
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
-        MapTransition(group, "/{id:long}/extend", (s, c, id, a, ct) => s.ExtendAsync(c, id, a, ct));
-        MapTransition(group, "/{id:long}/keep", (s, c, id, a, ct) => s.KeepAsync(c, id, a, ct));
-        MapTransition(group, "/{id:long}/close", (s, c, id, a, ct) => s.CloseAsync(c, id, a, ct));
-        MapTransition(group, "/{id:long}/retry", (s, c, id, a, ct) => s.RetryAsync(c, id, a, ct));
+        MapTransition(group, "/{id:long}/extend", (s, c, id, a, ct) => s.ExtendAsync(c, id, a, cancellationToken: ct));
+        MapTransition(group, "/{id:long}/keep", (s, c, id, a, ct) => s.KeepAsync(c, id, a, cancellationToken: ct));
+        MapTransition(group, "/{id:long}/close", (s, c, id, a, ct) => s.CloseAsync(c, id, a, cancellationToken: ct));
+        MapTransition(group, "/{id:long}/retry", (s, c, id, a, ct) => s.RetryAsync(c, id, a, cancellationToken: ct));
         // Plan #485 2.1a: the report names slot, generation and set, so it has a body and a handler of its own.
         group.MapPost("/{id:long}/complete-removal", async (
             string channelName,
@@ -277,7 +277,7 @@ public static class WishEndpoints
             var actor = httpContext.User.TryBuildAuditActor();
             return actor is null
                 ? Results.Unauthorized()
-                : MapResult(await wishService.CompleteRemovalAsync(channelName, id, request, actor, ct), StatusCodes.Status200OK);
+                : MapResult(await wishService.CompleteRemovalAsync(channelName, id, request, actor, cancellationToken: ct), StatusCodes.Status200OK);
         })
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
@@ -329,7 +329,8 @@ public static class WishEndpoints
     /// <see cref="WishOutcome"/> through it. Outcomes without a code of their own reuse existing ones:
     /// <see cref="WishOutcome.EmoteIdInvalid"/> is <c>emote_ids_invalid</c>, and <see cref="WishOutcome.StartsAtInvalid"/>,
     /// <see cref="WishOutcome.ModeInvalid"/> and <see cref="WishOutcome.RequestInvalid"/> are <c>invalid_request_body</c>.
-    /// The three conflicts that concern another wish name it as <c>wishId</c> (plan #485 2.1a; null when
+    /// The conflicts that concern another wish name it as <c>wishId</c> (plan #485 2.1a, and K6's
+    /// <c>wish_running_not_extendable</c>; null when
     /// <c>wish_emote_already_in_set</c> has no running wish).
     /// </summary>
     internal static IResult MapResult(WishCommandResult result, int successStatus)
@@ -385,6 +386,10 @@ public static class WishEndpoints
                 return Results.Conflict(new { errorCode = ApiErrorCodes.WishSlotAlreadyLinked, wishId = result.ConflictingWishId });
             case WishOutcome.StateConflict:
                 return Results.Conflict(new { errorCode = ApiErrorCodes.WishStateConflict });
+            case WishOutcome.EmoteRequired:
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.WishEmoteRequired });
+            case WishOutcome.RunningNotExtendable:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.WishRunningNotExtendable, wishId = result.ConflictingWishId });
             default:
                 throw new UnreachableException($"Unexpected {nameof(WishOutcome)} value: {result.Outcome}.");
         }
