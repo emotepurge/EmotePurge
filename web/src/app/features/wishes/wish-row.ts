@@ -117,18 +117,21 @@ const DESTRUCTIVE_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>(['remov
             <p class="text-xs text-fg-secondary">{{ 'wishes.row.sevenTvHint' | transloco }}</p>
           }
           <!-- The row's own 7TV operation (plan 2.5a). The sr-only region stays mounted so a change is
-               announced (§4.5); the visible twin is aria-hidden so it is not read twice. -->
+               announced (§4.5); the visible twin is aria-hidden so it is not read twice. A line the page
+               speaks itself (spokenByPage) stays out of the region and its text stays readable. -->
           <p role="status" class="sr-only">
             @if (operation(); as op) {
-              @if (op.leadKey) {
-                {{ op.leadKey | transloco }}
+              @if (!op.spokenByPage) {
+                @if (op.leadKey) {
+                  {{ op.leadKey | transloco }}
+                }
+                {{ op.key | transloco: op.params }}
               }
-              {{ op.key | transloco: op.params }}
             }
           </p>
           @if (operation(); as op) {
             <p
-              aria-hidden="true"
+              [attr.aria-hidden]="op.spokenByPage ? null : 'true'"
               class="text-sm"
               [class.text-danger-fg]="op.tone === 'problem'"
               [class.text-fg-secondary]="op.tone !== 'problem'"

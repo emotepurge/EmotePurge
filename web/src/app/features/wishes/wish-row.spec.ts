@@ -209,6 +209,25 @@ describe('WishRow', () => {
     });
   });
 
+  it('leaves a line the page speaks out of its own status region but keeps its text readable', () => {
+    render(wish({ status: 'approved', slotId: null, expiresAtUtc: null }));
+    fixture.componentRef.setInput('operation', {
+      tone: 'problem',
+      leadKey: null,
+      key: 'wishes.remove.notBooked',
+      spokenByPage: true,
+    } satisfies WishOperationView);
+    fixture.detectChanges();
+
+    const region = fixture.nativeElement.querySelector('[role="status"]') as HTMLElement;
+    expect(region.textContent?.trim()).toBe('');
+    const line = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('p')).find(
+      (p) => p.textContent?.includes(de.wishes.remove.notBooked),
+    );
+    expect(line).toBeDefined();
+    expect(line?.getAttribute('aria-hidden')).toBeNull();
+  });
+
   it('offers the add only beside an approved wish and only on a fine pointer', () => {
     const approved = wish({ status: 'approved', slotId: null, expiresAtUtc: null });
     render(approved);

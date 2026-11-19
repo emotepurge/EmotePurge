@@ -21,6 +21,9 @@ export interface WishOperationView {
   /** Label of the one follow-up the line offers ("Erneut melden" for an owed removal report);
    *  the row emits `retryOperation` for it. Absent: no button. */
   readonly retryKey?: string;
+  /** The page's own live region speaks this line; the row keeps the text visible and readable but
+   *  does not announce it a second time. */
+  readonly spokenByPage?: boolean;
 }
 
 /** The row line of an add; `null` shows nothing. */
@@ -113,7 +116,12 @@ export function wishRemovalOperationView(state: WishRemovalState | null): WishOp
     case 'booked':
       return { tone: 'done', leadKey: null, key: 'wishes.remove.booked' };
     case 'notBooked':
-      return { tone: 'problem', leadKey: null, key: 'wishes.remove.notBooked' };
+      return {
+        tone: 'problem',
+        leadKey: null,
+        key: 'wishes.remove.notBooked',
+        spokenByPage: true,
+      };
     case 'reportPending':
       return {
         tone: 'problem',
