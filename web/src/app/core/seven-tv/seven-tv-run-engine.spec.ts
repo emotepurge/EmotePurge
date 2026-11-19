@@ -385,6 +385,61 @@ describe('SevenTvRunEngine', () => {
     );
   });
 
+  describe('what a finished run leaves behind (#485, plan 2.5)', () => {
+    /** The engine's hold on the run's closures — a wish run's confirmed token lives in them. */
+    function held(): { operation: unknown; onComplete: unknown } {
+      const internals = engine as unknown as { operation: unknown; onComplete: unknown };
+      return { operation: internals.operation, onComplete: internals.onComplete };
+    }
+
+    const gated: RunOperation = {
+      ...TEST_OPERATION,
+      beforeStep: () => of<StepGate>({ kind: 'proceed' }),
+    };
+
+    it('holds neither the operation nor the completion callback once the run has ended', () => {
+      start([EMOTES[0]], gated);
+      expect(held().operation).not.toBeNull();
+
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(results).toHaveLength(1);
+      expect(held()).toEqual({ operation: null, onComplete: null });
+    });
+
+    it('lets go of them after a cancel too', () => {
+      start(EMOTES, gated);
+      httpMock.expectOne(GQL_ENDPOINT);
+      engine.cancel();
+
+      expect(results).toHaveLength(1);
+      expect(held()).toEqual({ operation: null, onComplete: null });
+    });
+
+    it('keeps the next run intact when the completion callback starts it', () => {
+      const second: RunResult[] = [];
+      engine.start('set-1', [EMOTES[0]], TEST_OPERATION, () =>
+        engine.start('set-2', [EMOTES[1]], gated, (result) => second.push(result)),
+      );
+      httpMock.expectOne(GQL_ENDPOINT).flush(CONFIRMED);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(engine.isRunning()).toBe(true);
+      expect(held().operation).toBe(gated);
+      const next = httpMock.expectOne(GQL_ENDPOINT);
+      expect(next.request.body.variables).toEqual({
+        setId: 'set-2',
+        emoteId: EMOTES[1].sevenTvEmoteId,
+      });
+      next.flush(CONFIRMED);
+      vi.advanceTimersByTime(RUN_DELAY_MS);
+
+      expect(second.map((result) => result.doneKeys)).toEqual([[EMOTES[1].key]]);
+      expect(held()).toEqual({ operation: null, onComplete: null });
+    });
+  });
+
   describe('abortOn', () => {
     it('aborts synchronously when the hook returns true, cancelling the rest without waiting', () => {
       const emotes: RunQueueEmote[] = [
