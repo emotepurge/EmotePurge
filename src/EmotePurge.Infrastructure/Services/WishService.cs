@@ -307,7 +307,7 @@ public sealed class WishService(
         if (slot is null
             || !string.Equals(slot.Name, request.ExpectedAlias, StringComparison.Ordinal)
             || !SameInstant(slot.AddedAt, request.ExpectedAddedAtUtc)
-            || (wish is not null && wish.SevenTvEmoteId.Length > 0
+            || (wish is not null && wish.HasEmote
                 && !string.Equals(wish.SevenTvEmoteId, slot.Emote.SevenTvEmoteId, StringComparison.Ordinal)))
         {
             return WishCommandResult.Of(WishOutcome.SlotNotFound);
@@ -371,7 +371,8 @@ public sealed class WishService(
             wish.RemovalQueuedVersion = null;
         }
 
-        if (wish.SevenTvEmoteId.Length == 0)
+        // An open wish without an emote (K6 placeholder) takes the slot's emote; the CHECK wants all three filled.
+        if (!wish.HasEmote)
         {
             wish.SevenTvEmoteId = slot.Emote.SevenTvEmoteId;
         }
@@ -973,6 +974,12 @@ public sealed class WishService(
 
     private Task<long?> FindRunningWishIdAsync(string channelId, string sevenTvEmoteId, CancellationToken cancellationToken)
     {
+        // The empty K6 placeholder is no emote: nothing runs "for" it (the CHECK keeps it out of every running state).
+        if (sevenTvEmoteId.Length == 0)
+        {
+            return Task.FromResult<long?>(null);
+        }
+
         var running = WishStatus.Running.ToArray();
         return db.Wishes
             .Where(w => w.ChannelId == channelId && w.SevenTvEmoteId == sevenTvEmoteId && running.Contains(w.Status))

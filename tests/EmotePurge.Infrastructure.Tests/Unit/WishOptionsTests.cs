@@ -112,6 +112,96 @@ public class WishOptionsTests
             ]);
     }
 
+    // ------------------------------------------------------------------ chat capture (K6, plan #486 2.8)
+
+    [Fact]
+    public void Capture_DefaultsToOff_WithThreeOpenWishesPerViewer()
+    {
+        var options = new WishOptions();
+
+        options.Validate();
+
+        Assert.False(options.Capture.Enabled);
+        Assert.Equal(3, options.Capture.MaxPendingPerRequester);
+        Assert.False(options.CaptureActive);
+    }
+
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, true)]
+    public void CaptureActive_NeedsBothSwitches(bool enabled, bool captureEnabled, bool expected)
+    {
+        var options = new WishOptions { Enabled = enabled };
+        options.Capture.Enabled = captureEnabled;
+
+        Assert.Equal(expected, options.CaptureActive);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(51)]
+    [InlineData(-1)]
+    public void MaxPendingPerRequester_OutsideOneToFiftyThrows_NamingTheKey(int value)
+    {
+        var options = new WishOptions();
+        options.Capture.MaxPendingPerRequester = value;
+
+        var ex = Assert.Throws<InvalidOperationException>(options.Validate);
+        Assert.Contains("Wishes:Capture:MaxPendingPerRequester", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(50)]
+    public void MaxPendingPerRequester_AtTheBoundsIsValid(int value)
+    {
+        var options = new WishOptions();
+        options.Capture.MaxPendingPerRequester = value;
+
+        options.Validate();
+    }
+
+    // The way ServiceCollectionExtensions binds (Bind into an instance), from the keys the compose files set
+    // (Wishes__Capture__Enabled is Wishes:Capture:Enabled once the environment provider has read it).
+    [Fact]
+    public void Capture_BindsFromTheNestedSection()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Wishes:Enabled"] = "true",
+                ["Wishes:Capture:Enabled"] = "true",
+                ["Wishes:Capture:MaxPendingPerRequester"] = "7",
+            })
+            .Build();
+
+        var options = new WishOptions();
+        configuration.GetSection(WishOptions.SectionName).Bind(options);
+        options.Validate();
+
+        Assert.True(options.CaptureActive);
+        Assert.Equal(7, options.Capture.MaxPendingPerRequester);
+    }
+
+    [Fact]
+    public void CaptureLimits_HoldThePlannedValues()
+    {
+        Assert.Equal((10, 200), (WishLimits.MaxRewardsPerChannel, WishLimits.MaxPendingPerChannel));
+        Assert.Equal((1, 50, 3), (WishLimits.MaxPendingPerRequesterMin, WishLimits.MaxPendingPerRequesterMax, WishLimits.DefaultMaxPendingPerRequester));
+        Assert.Equal((1, 90, 14), (WishLimits.PendingExpiryDaysMin, WishLimits.PendingExpiryDaysMax, WishLimits.DefaultPendingExpiryDays));
+        Assert.Equal((50, 500, 100, 64, 64), (
+            WishLimits.RewardLabelMaxLength, WishLimits.RequestTextMaxLength, WishLimits.RequestedNameMaxLength,
+            WishLimits.RewardIdMaxLength, WishLimits.IrcMessageIdMaxLength));
+        Assert.Equal(TimeSpan.FromMinutes(10), WishLimits.LearningWindow);
+        Assert.Equal(TimeSpan.FromDays(7), WishLimits.CaptureReceiptRetention);
+        Assert.Equal(TimeSpan.FromDays(14), WishLimits.CaptureGapDisplayWindow);
+        Assert.Equal(TimeSpan.FromSeconds(60), WishLimits.MinCaptureGap);
+        Assert.Equal(["link", "name", "none"], WishMatchKind.All);
+        Assert.Equal(["disconnect", "worker_restart", "not_joined"], WishCaptureGapReason.All);
+    }
+
     [Fact]
     public void WishChanged_IsAChannelEventOnly()
     {

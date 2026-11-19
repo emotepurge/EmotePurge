@@ -390,6 +390,12 @@ public sealed class WishReconcileService(
 
         private SlotRow? Match(Wish wish, string ruleStatus, DateTime? approvedAtUtc)
         {
+            // A match by emote id needs an emote: the K6 placeholder of an open wish matches no slot this way.
+            if (!wish.HasEmote)
+            {
+                return null;
+            }
+
             var linked = LinkedSlotIdsExcept(wish);
             var candidates = slots
                 .Where(s => string.Equals(s.SevenTvEmoteId, wish.SevenTvEmoteId, StringComparison.Ordinal)

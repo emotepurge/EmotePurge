@@ -120,6 +120,8 @@ services:
       - ChatLogArchive__BaseUrl=${CHAT_LOG_ARCHIVE_BASE_URL:-https://logs.cyex.app/}
       # Wish emotes (docs/Operations.md "Wish emotes"): off by default. Same value on api AND worker.
       - Wishes__Enabled=${WISHES_ENABLED:-false}
+      # Chat capture of wish emotes (#486): effective only with WISHES_ENABLED; same value on api AND worker.
+      - Wishes__Capture__Enabled=${WISHES_CAPTURE_ENABLED:-false}
       # Read only by images built before #379 part B: keeps a rollback to such an image on the slot flag.
       # Current images ignore it; remove with the Portainer variable after the rollback window (docs/Operations.md).
       - SevenTv__SlotReconcile__Enabled=${SEVENTV_SLOT_RECONCILE_ENABLED:-true}
@@ -201,6 +203,8 @@ services:
       - Wishes__Enabled=${WISHES_ENABLED:-false}
       # Minutes between two runs of the wish expiry worker (1 to 1440); read by the worker only.
       - Wishes__ExpiryIntervalMinutes=${WISHES_EXPIRY_INTERVAL_MINUTES:-15}
+      # Chat capture of wish emotes (#486): the worker's value decides whether redemptions are stored.
+      - Wishes__Capture__Enabled=${WISHES_CAPTURE_ENABLED:-false}
     networks:
       - emotepurge-network
     depends_on:
