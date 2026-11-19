@@ -4,7 +4,24 @@ Branch `nacht/485-wish-ui`, Start bei `350727d6` (T9).
 
 ## Was ist passiert
 
-_(wird am Ende ausgefüllt)_
+**Erledigt:** T10 bis T15 sind gebaut und auf `nacht/485-wish-ui` committet, strikt nacheinander, jeder Task als eigener
+Subagent. T12 lief auf Opus, alle übrigen auf Sonnet. Die Schluss-Gates sind grün: `dotnet test`, Vitest (5680), lint,
+format, E2E (409 passed, 1 bewusst `fixme`) und Coverage (91,2 %). Das Skript endet trotzdem mit Exit 1, weil drei reine
+Typdateien keine Messdaten haben (Details unter „Gates am Ende“). Nichts ist gepusht, kein PR, kein Codex-Review.
+
+**Nicht erledigt / offen:**
+- **T16 (Live-Verifikation, Stufen A und B, Handy) ist offen**, wie vereinbart, nicht gescheitert. Ohne T16 gibt es laut
+  Plan §8.7 keinen PR.
+- **Kopfzeile bei 360 px (AK44):** Stufe 2 ist gebaut, besteht aber die Fit-Prüfung in de nicht, solange ein Status-Badge
+  steht. Der passende Audit-Fall ist rot, der E2E-Fall ist `test.fixme`. Das ist Betreiberfrage 1.
+- **Audit-Harness:** Neben dem T12-Fall sind 66 weitere Fälle rot, in `admin-logs*` und `tags-page*`/`tag-*`. Lesend
+  sieht das nach Bestand aus, bewiesen ist es nicht, weil `git worktree add` gesperrt war. Die Befehle zum Nachholen
+  stehen unter „Gates am Ende“. Neue `smallTargetsUnder24` im Übernehmen-Dialog sind Betreiberfrage 2.
+- Codex-Review (Sol), Opus-Review, Push, PR: morgen.
+
+Commits seit dem Start (`350727d6`): T10 `f81c87c1`. T11 `6a5d59ad`, `78a03926`. T12 `00cacef8`. T13 `10188e5a`. T14
+`11f3c92a`, `57660434`, `a5551a6e`, `c95dfa39`, `9a917266`. T15 `bf5b2279`, `3bad0dcc`. Danach `1b7a499a` (Korrektur
+in `CLAUDE.md`) und `5b761297` (Spec `wish-operation`). Dazwischen liegen die Commits dieser Notizdatei.
 
 ## Annahmen und Strittiges
 
@@ -12,7 +29,19 @@ _(wird am Ende ausgefüllt)_
   (Auftrag), sondern melden sie zurück; der Orchestrator hängt sie unten unter „Übergaben“ an. Folgende Subagenten lesen
   beide Dateien.
 - T12: Falls Stufe 2 die Messung nicht besteht, bleibt es heute Nacht bei Stufe 2 (Voreinstellung des Plans), Stufe 3 wird
-  nicht gebaut; die Frage steht dann unter „Offene Betreiberfragen“.
+  nicht gebaut; die Frage steht dann unter „Offene Betreiberfragen“. Das ist so eingetreten.
+- Orchestrator-Eingriff in T11: Die doppelte Abbildung von Status, Grund und Restzeit habe ich herausziehen lassen
+  (`wish-labels.ts`), siehe T11.
+- Orchestrator-Korrektur `1b7a499a`: Die `CLAUDE.md`-Zeile „Wunsch-Emotes“ führte K1 und K2 noch als Branch. Sie sind
+  aber gemergt (`ab4882ea` PR #492, `135eae07` PR #493). T15 hatte diesen alten Stand als „alle drei nicht gemergt“
+  übernommen.
+- Berechtigungsregeln, die heute Nacht griffen und nicht umgangen wurden: Bash-Ketten, `git -C`, `flock`,
+  `.bin/playwright` direkt, `git worktree add`. Das Grep-Tool fehlt, `grep` per Bash geht. Ohne `flock` liefen die
+  Playwright-Läufe ohne Serialisierung, das war unkritisch, weil die Tasks nacheinander liefen.
+- Flake: `touch-mobile.e2e.spec.ts:88` (Drilldown-Sheet) fiel im vollen T14-Lauf einmal aus. Einmal einzeln wiederholt,
+  danach grün. In meinem Schlusslauf war er grün.
+- T13 hat seinen eigenen Commit per Amend umgeschrieben, damit `Co-Authored-By` als letzte Zeile steht. Nur der eigene,
+  noch ungepushte Commit war betroffen.
 
 ## Offene Betreiberfragen
 
@@ -150,6 +179,34 @@ _(wird am Ende ausgefüllt)_
 - Nach T16 und nach der Kopfzeilen-Entscheidung nachzuziehen: DECISIONS (z)/(ad), Spec AK44/AK45, die Statuszeilen.
 
 ## Gates am Ende
+
+Selbst gefahren, im Vordergrund, am Stand nach `5b761297`, 2026-11-19 gegen 01:00–01:15 Uhr. Vor dem E2E-Lauf war
+`:5151` frei (`ss -ltn`).
+
+| Gate | Ergebnis | Exit |
+|---|---|---|
+| `dotnet test EmotePurge.slnx` | Worker 595/595, Api 996/996, Infrastructure 3820 passed + 2 skipped (die beiden Performance-Gates, wie im Bestand) | 0 |
+| `npm --prefix web test -- --watch=false` | 231 Dateien, 5680 Tests passed | 0 |
+| `npm --prefix web run lint` | sauber, `check-color-tokens` sauber | 0 |
+| `npm --prefix web run format:check` | sauber | 0 |
+| `npm --prefix web run e2e` | **409 passed, 1 skipped** (der `test.fixme` zur Kopfzeile, Betreiberfrage 1), 3,1 min, ohne Flake | 0 |
+| `node scripts/coverage-local.mjs` | **91,2 %** über 60 gemessene Dateien (Zeilen 7590/8208, Zweige 3883/4374) | 1 |
+
+- Zu Exit 1 bei der Coverage: Das Skript meldet „verdict incomplete“, weil drei Dateien ohne Messdaten sind:
+  `audit.model.ts`, `channel.model.ts` und `wish.model.ts`. Alle drei enthalten nur Typen und keinen Laufzeitcode. Die
+  80-%-Schwelle ist erreicht.
+- Dateien, die die Zahl drücken: `channel-settings-page.ts` (0/13), `my-wishes-page.ts` (0/59, ohne Spec, so sieht
+  es Plan §5 vor) und `app-shell.ts` (0/42, Shell-Vorlage, laut Plan §5 ohne Spec), außerdem
+  `wish-removal-confirm-dialog.ts` (10 %, Darstellung) und `app.routes.ts`. Bei allen fünf deckt E2E das Verhalten.
+  Sonar misst zeilengenau, die Shell- und Routen-Zeilen können dort deshalb anders zählen.
+- Nachgezogen habe ich `wish-operation.ts`: Die Datei stand bei 26 % und enthält reine Abbildungslogik mit 29 Zweigen.
+  Nach Regel 12 hat sie in `5b761297` einen Spec mit 20 Fällen bekommen und liegt jetzt bei 100 %. Der Spec ist kein
+  Test nur für die Zahl.
+- Nicht gefahren, weil es nicht im Auftrag stand und K3 heute Nacht kein Backend berührt hat: aus Plan §8.1 der Build mit
+  `dotnet build --no-incremental` (Prüfung auf Warnungen) und `dotnet format --verify-no-changes`.
+- Den Audit-Harness hat T14 komplett gefahren (Zahlen oben bei T14), ich habe ihn nicht noch einmal laufen lassen.
+- Beobachtung aus T11: Der `ng build` warnt beim Initial-Bundle-Budget (512,57 kB gegen 500 kB). Gegen die Basis habe ich
+  das nicht verglichen. Ein Gate ist es nicht.
 
 ### Basis-Vergleich der übrigen roten Audit-Fälle (nicht bewiesen)
 
