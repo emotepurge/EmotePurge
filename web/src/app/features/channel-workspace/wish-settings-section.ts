@@ -113,6 +113,7 @@ type LoadMode = 'initial' | 'quiet' | 'discard';
             class="app-input max-w-40"
             [value]="duration()"
             [disabled]="readOnly()"
+            [readOnly]="saving()"
             [attr.aria-invalid]="durationError() ? 'true' : null"
             [attr.aria-describedby]="describedBy('duration')"
             (input)="setDuration($any($event.target).value)"
@@ -140,6 +141,7 @@ type LoadMode = 'initial' | 'quiet' | 'discard';
             class="app-input max-w-40"
             [value]="lead()"
             [disabled]="readOnly()"
+            [readOnly]="saving()"
             [attr.aria-invalid]="leadError() ? 'true' : null"
             [attr.aria-describedby]="describedBy('lead')"
             (input)="setLead($any($event.target).value)"
@@ -242,6 +244,8 @@ export class WishSettingsSection {
   );
 
   private loadSubscription: Subscription | null = null;
+  /** Number of the latest settings read; a save bumps it too, so no older answer counts. */
+  private loadSeq = 0;
   private feedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
@@ -263,12 +267,19 @@ export class WishSettingsSection {
   }
 
   protected setDuration(value: string): void {
+    // Read-only while a save is out (the field is `readonly` then; this covers a script's input).
+    if (this.saving()) {
+      return;
+    }
     this.duration.set(value);
     this.durationTouched.set(true);
     this.saveErrorKey.set(null);
   }
 
   protected setLead(value: string): void {
+    if (this.saving()) {
+      return;
+    }
     this.lead.set(value);
     this.leadTouched.set(true);
     this.saveErrorKey.set(null);
@@ -292,6 +303,9 @@ export class WishSettingsSection {
     if (!this.canSave() || body === null || current === null) {
       return;
     }
+    // A read still on the way was issued before this write and would undo it once the form is clean
+    // again: it is dropped. Reads only start again after the answer (`onWishChanged` waits).
+    this.cancelLoad();
     this.saving.set(true);
     this.saveErrorKey.set(null);
     const channel = this.channelName();
@@ -336,9 +350,14 @@ export class WishSettingsSection {
   }
 
   private load(channel: string, mode: LoadMode): void {
-    this.loadSubscription?.unsubscribe();
+    this.cancelLoad();
+    const seq = ++this.loadSeq;
     this.loadSubscription = this.wishService.getSettings(channel).subscribe({
       next: (read) => {
+        // Only the youngest read counts, and none issued before a save (`cancelLoad`).
+        if (seq !== this.loadSeq) {
+          return;
+        }
         // A quiet read must not replace what the manager is typing, however late it lands.
         if (mode === 'quiet' && this.dirty()) {
           this.changedUpstream.set(true);
@@ -351,11 +370,18 @@ export class WishSettingsSection {
       },
       error: () => {
         // A failed background read keeps what is on screen; only a section without data says so.
-        if (this.baseline() === null) {
+        if (seq === this.loadSeq && this.baseline() === null) {
           this.loadError.set(true);
         }
       },
     });
+  }
+
+  /** Drops the read on the way, if any: unsubscribed, and its answer outdated by the number. */
+  private cancelLoad(): void {
+    this.loadSeq++;
+    this.loadSubscription?.unsubscribe();
+    this.loadSubscription = null;
   }
 
   private fill(read: WishSettingsRead): void {

@@ -1,7 +1,7 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoTestingModule } from '@jsverse/transloco';
-import { Observable, of, throwError } from 'rxjs';
+import { Observable, of, Subject, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EVENT_SOURCE_FACTORY } from '../../core/live/event-source.factory';
@@ -230,6 +230,46 @@ describe('WishSettingsSection', () => {
     saveButton(fixture)!.click();
 
     expect(updateSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds both fields read-only while the save is out, and editable again after its answer', async () => {
+    const answer = new Subject<WishSettings>();
+    updateSettings.mockReturnValue(answer);
+    const fixture = await create();
+
+    type(fixture, 'duration', '30');
+    saveButton(fixture)!.click();
+    fixture.detectChanges();
+    expect(input(fixture, 'duration').readOnly).toBe(true);
+    expect(input(fixture, 'lead').readOnly).toBe(true);
+
+    answer.next({ ...read(), defaultDurationDays: 30 });
+    fixture.detectChanges();
+    expect(input(fixture, 'duration').readOnly).toBe(false);
+    expect(input(fixture, 'lead').readOnly).toBe(false);
+    expect(input(fixture, 'duration').value).toBe('30');
+  });
+
+  it('lets no read issued before a save undo the saved values', async () => {
+    const fixture = await create();
+    // A live nudge while the form is clean sends a read that stays on the way …
+    const staleRead = new Subject<WishSettingsRead>();
+    getSettings.mockReturnValue(staleRead);
+    await nudge(fixture);
+    expect(getSettings).toHaveBeenCalledTimes(2);
+
+    // … the manager edits and saves; the save answers first …
+    type(fixture, 'duration', '30');
+    saveButton(fixture)!.click();
+    fixture.detectChanges();
+    expect(input(fixture, 'duration').value).toBe('30');
+
+    // … and the old read lands last: the saved value stays.
+    staleRead.next(read({ defaultDurationDays: 14 }));
+    fixture.detectChanges();
+    expect(input(fixture, 'duration').value).toBe('30');
+    expect(saveButton(fixture)!.disabled).toBe(true);
+    expect(el(fixture).querySelector('[role="status"]')?.textContent).toContain('Settings saved');
   });
 
   it('is read-only with an explanation when the server says the caller cannot edit', async () => {
