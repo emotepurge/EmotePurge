@@ -244,6 +244,12 @@ export class WishSettingsSection {
   );
 
   private loadSubscription: Subscription | null = null;
+  /** The mode of the read in `loadSubscription`. */
+  private loadMode: LoadMode = 'initial';
+  /** Something may have changed upstream while a save was out (a read dropped for it, or a live
+   *  event during it); a failed save turns that into `changedUpstream`, a successful one into the
+   *  server's answer. */
+  private missedUpstream = false;
   /** Number of the latest settings read; a save bumps it too, so no older answer counts. */
   private loadSeq = 0;
   private feedbackTimer: ReturnType<typeof setTimeout> | null = null;
@@ -305,6 +311,8 @@ export class WishSettingsSection {
     }
     // A read still on the way was issued before this write and would undo it once the form is clean
     // again: it is dropped. Reads only start again after the answer (`onWishChanged` waits).
+    this.missedUpstream =
+      this.loadSubscription !== null && !this.loadSubscription.closed && this.loadMode === 'quiet';
     this.cancelLoad();
     this.saving.set(true);
     this.saveErrorKey.set(null);
@@ -315,6 +323,7 @@ export class WishSettingsSection {
           return;
         }
         this.saving.set(false);
+        this.missedUpstream = false;
         this.fill({ ...saved, canEdit: current.canEdit });
         this.changedUpstream.set(false);
         this.showSavedFeedback();
@@ -324,6 +333,11 @@ export class WishSettingsSection {
           return;
         }
         this.saving.set(false);
+        if (this.missedUpstream) {
+          // The draft stays; the manager is told the settings may have moved under it.
+          this.missedUpstream = false;
+          this.changedUpstream.set(true);
+        }
         this.onSaveError(error);
       },
     });
@@ -339,7 +353,11 @@ export class WishSettingsSection {
   }
 
   private onWishChanged(): void {
-    if (this.baseline() === null || this.saving()) {
+    if (this.baseline() === null) {
+      return;
+    }
+    if (this.saving()) {
+      this.missedUpstream = true;
       return;
     }
     if (this.dirty()) {
@@ -352,6 +370,7 @@ export class WishSettingsSection {
   private load(channel: string, mode: LoadMode): void {
     this.cancelLoad();
     const seq = ++this.loadSeq;
+    this.loadMode = mode;
     this.loadSubscription = this.wishService.getSettings(channel).subscribe({
       next: (read) => {
         // Only the youngest read counts, and none issued before a save (`cancelLoad`).

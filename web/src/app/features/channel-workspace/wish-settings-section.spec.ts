@@ -272,6 +272,56 @@ describe('WishSettingsSection', () => {
     expect(el(fixture).querySelector('[role="status"]')?.textContent).toContain('Settings saved');
   });
 
+  it('keeps the settings-changed offer when a save fails after it dropped a live read, draft untouched', async () => {
+    const fixture = await create();
+    const staleRead = new Subject<WishSettingsRead>();
+    getSettings.mockReturnValue(staleRead);
+    await nudge(fixture);
+
+    updateSettings.mockReturnValue(throwError(() => httpError(500)));
+    type(fixture, 'duration', '30');
+    saveButton(fixture)!.click();
+    fixture.detectChanges();
+
+    expect(input(fixture, 'duration').value).toBe('30');
+    expect(el(fixture).querySelector('[role="status"]')?.textContent).toContain(
+      'changed in the meantime',
+    );
+  });
+
+  it('keeps the offer for a live event that arrived while a failing save was out', async () => {
+    const answer = new Subject<WishSettings>();
+    updateSettings.mockReturnValue(answer);
+    const fixture = await create();
+    type(fixture, 'duration', '30');
+    saveButton(fixture)!.click();
+    fixture.detectChanges();
+    await nudge(fixture);
+    expect(getSettings).toHaveBeenCalledTimes(1);
+
+    answer.error(httpError(500));
+    fixture.detectChanges();
+
+    expect(input(fixture, 'duration').value).toBe('30');
+    expect(el(fixture).querySelector('[role="status"]')?.textContent).toContain(
+      'changed in the meantime',
+    );
+  });
+
+  it('takes the server answer of a successful save, with no offer, although a read was dropped', async () => {
+    const fixture = await create();
+    const staleRead = new Subject<WishSettingsRead>();
+    getSettings.mockReturnValue(staleRead);
+    await nudge(fixture);
+
+    type(fixture, 'duration', '30');
+    saveButton(fixture)!.click();
+    fixture.detectChanges();
+
+    expect(input(fixture, 'duration').value).toBe('30');
+    expect(el(fixture).textContent).not.toContain('changed in the meantime');
+  });
+
   it('is read-only with an explanation when the server says the caller cannot edit', async () => {
     getSettings.mockReturnValue(of(read({ canEdit: false })));
     const fixture = await create();
