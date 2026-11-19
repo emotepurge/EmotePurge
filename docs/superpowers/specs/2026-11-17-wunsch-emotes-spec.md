@@ -185,7 +185,7 @@ Zeile, antwortet die Api 409 `wish_state_conflict`):
 | `presented` | `removed` | Entfernen | manuell über die Browser-Engine; bei `protected`, `coverage_gap` und `bot_unavailable` zusätzlich „Bot entfernen lassen“, wenn das Eigentum noch besteht: Der Wunsch bleibt `presented` mit gesetztem `RemovalQueuedAtUtc`, bis der Bot entfernt hat (K4) |
 | `presented` | `closed` | Schließen | nur wenn kein Slot verknüpft ist |
 | `removed_externally` | `active` oder `presented` | Abgleich binnen 6 h | genau ein neuer, unverknüpfter Slot derselben Emote-ID; Frist bleibt, kein Eigentum |
-| `removed_externally` | `removed` | Meldung der Browser-Engine binnen 6 h | löst den Wettlauf zwischen Sync und Erfolgsmeldung auf |
+| `removed_externally` | `removed` | Meldung der Browser-Engine binnen 6 h | löst den Wettlauf zwischen Sync und Erfolgsmeldung auf; `EndedAtUtc` bleibt dabei erhalten (Stand K3, Fußnote F7) |
 | `removed`, `removed_externally` | `approved` | Wieder hinzufügen | mit neuer Laufzeit, oder `Permanent = true`: dann führt der Abgleich nach `kept` statt nach `active` |
 
 `presented` hat **keinen Timeout** und keinen automatischen Ausgang (R3-12): Im manuellen Modus
@@ -493,7 +493,7 @@ In Baureihenfolge:
 |---|---|---|---|---|---|
 | K1 | Backend-Kern: Datenmodell, Lebenszyklus, Zuordnungsregel, Verwalter-API, Slot-Abgleich, Live-Event, Retention, Schalter | P1 | 4,5 Tage | offen | keine |
 | K2 | Ablauf-Lauf im Worker: Fälligkeit, Schutz, Lückenregel | P1 | 2 Tage | offen | K1 |
-| K3 | Frontend manueller Modus: Tab je Kanal als Arbeitsliste, Abschnitt im Settings-Tab, kanalübergreifende Seite, Zähler in der Kopfzeile | P1 | 4,5 Tage | offen | K1 (Vertrag), K2 (nur Live-Probe) |
+| K3 | Frontend manueller Modus: Tab je Kanal als Arbeitsliste, Abschnitt im Settings-Tab, kanalübergreifende Seite, Zähler in der Kopfzeile | P1 | 4,5 Tage | auf Branch `nacht/485-wish-ui`, nicht gemergt; Live-Probe (AK45) und AK44 offen | K1 (Vertrag), K2 (nur Live-Probe) |
 | K6 | Chat-Erfassung und Belohnung anlernen: IRC-Tag, Anlernen, offene Wünsche mit Zuordnung, Freigeben, Ablehnen, Verfall, Lückenanzeige, samt Oberfläche | P1 | 7 Tage | offen | K1, K3 |
 | K4 | Bot-Backend: Token-Ablage und Admin-Seite, Schreib-Client, Warteschlange, Editor-Prüfung, Eigentum, Notaus, Doku | P2 | 6 Tage | offen | K1, K2 |
 | K5 | Bot-Frontend: Aktivierungsdialog mit Editor-Mutation (D7), Abschalten, Bot-Zustände auf den Karten | P2 | 2,5 Tage | offen | K3, K4, Probe „Editor-Mutation“ |
@@ -665,6 +665,7 @@ Abschnitt 7 Punkt 8; nichts geht verloren, alles Offene steht als Handlungsbedar
 | RR11 | Die Erfassung ist „nach bestem Wissen“, kein lückenloses Einlöse-Register | Lückenanzeige in K6; Nachtragen von Hand |
 | RR12 | Ein Treffer über den Namen kann ein anderes Emote gleichen Namens treffen, das zufällig im Fenster hinzugefügt wurde | nur eindeutige Treffer; Karte zeigt Bild und Einlösetext; „Zuordnung lösen“ in K6 |
 | RR13 | Der eingelöste Text ist Freitext eines Zuschauers und kann Personenbezug oder Anstößiges enthalten | nur für Verwalter sichtbar, nie im Audit-Log, Löschung nach 6.5 |
+| RR14 | K3, hingenommene Lücke: Zwischen der letzten Beobachtung eines Eintrags (höchstens 5 s alt) und 7TVs unbedingtem `removeEmote` liegen bis zu 5 s plus die Antwortzeit der Mutation; ein Set-Wechsel direkt nach der Set-Prüfung bleibt unsichtbar. Dazu: `complete-removal` sieht einen Ersatz, den noch kein Sync geschrieben hat, nicht (R15); der Set-Wechsel steht vor der Inventursperre im Protokoll (R19); ein Read, der den Eintrag weg findet, bucht ihn als Entfernen des Verwalters auch dann, wenn ein anderer Editor ihn entfernt hat (R20, `evidence = absent` markiert es) | clientseitig nicht schließbar; jede Abweichung ist ein Überspringen ohne Anfrage; `complete-removal` lehnt mit 409 ab, wenn ein Ersatz sichtbar ist |
 
 ## 17. Entschieden (Betreiber, 2026-11-17)
 
@@ -1161,6 +1162,67 @@ Anlernen und die Lückenanzeige ergänzt K6.
   Löschen eines Eintrags), §4.3, §6.2 (leerer Zustand je Bereich), §7, §8.1, §8.5, §11. Keine
   Layout-Sprünge zwischen den Tabs.
 
+### Stand der Umsetzung (Branch `nacht/485-wish-ui`, Plan `docs/plans/Plan-485-Wunsch-Emotes-Verwalter-UI.md`)
+
+K3 liegt auf dem Branch, ist **nicht gemergt und nicht deployt**; die Live-Verifikation (AK45, Plan T16)
+steht aus. Die obigen Implementation Details sind der Entwurf; wo der Bau abweicht, gilt dieser Block.
+
+**Dateipfade.** Seiten: `web/src/app/features/wishes/channel-wishes-page.ts` mit `wish-row.ts`,
+`wish-image.ts`, `wish-usage.ts`, `wish-labels.ts`, `wish-operation.ts`, den Dialogen `wish-entry-dialog.ts`,
+`wish-adopt-dialog.ts`, `wish-edit-dialog.ts`, `wish-readd-dialog.ts`, `wish-removal-confirm-dialog.ts` und
+`wish-removal-flow.ts`; `web/src/app/features/my-wishes/my-wishes-page.ts`;
+`web/src/app/features/channel-workspace/wish-settings-section.ts`. Core: `web/src/app/core/wishes/`
+(`wish.model.ts`, `wish.service.ts`, `wish-view.ts`, `wish-input.ts`, `wish-error.ts`, `wish-run-start.ts`,
+`wish-add.service.ts`, `wish-removal.ts`, `wish-removal-tracker.ts`, `wish-summary.service.ts`); die Guards
+liegen unter `core/channels/` (`channel-wishes.guard.ts`, `channel-settings.guard.ts`), nicht unter
+`core/guards/`; `web/src/app/core/seven-tv/seven-tv-emote-lookup.ts` (der einzelne 7TV-Read der Formulare),
+`seven-tv-add-emote.ts` (die eine AddEmote-Konstante).
+
+**Fußnoten aus Plan §9 (Spec ↔ gemergter K1-Stand).**
+
+- F1: `errors.api.wish_*` und `api-error.ts` lieferte schon K1; K3 hat nur gegengeprobt (92 Konstanten in
+  `ApiErrorCodes.cs`, 92 in `KNOWN_API_ERROR_CODES`, 92 `errors.api.*` je Locale).
+- F2: Es gibt elf Audit-Aktionen (`wish.update` und `wish.due` zusätzlich zu den neun), alle übersetzt.
+- F3: Drei Ausgänge haben keinen eigenen Code (`emote_ids_invalid`, zweimal `invalid_request_body`); der
+  Text ist kontextabhängig (`wishErrorKey`).
+- F4: 409 `wish_emote_already_in_set` und `wish_slot_already_linked` nennen die `wishId` des Halters bzw. eines
+  laufenden Wunsches; „im Set“ gewinnt vor „läuft schon“.
+- F5: Handeintrag ohne Alias und ohne Namen ist 400 `wish_alias_invalid`; der Dialog erzeugt den Fall nicht.
+- F6: `emoteName` bleibt nach `adopt` der Slot-Name; die Oberfläche zeigt nur den `alias`.
+- F7: `complete-removal` hat einen Rumpf (`slotId`, `slotAddedAtUtc`, `emoteSetId`, optional `evidence`) und prüft
+  unter der Kanalsperre Set, Generation und Inventur; ein bereits gebuchter Wunsch antwortet 200 ohne Schreiben.
+  `EndedAtUtc` bleibt beim Übergang `removed_externally` → `removed` erhalten.
+- F8: `WishDto` trägt `slotAddedAtUtc` (Generation des Slots) und `imageUrl`; `usage.daily` ist die auf acht Tage
+  begrenzte, nullgefüllte Tagesreihe aus derselben Abfrage wie `total`. Die Sparkline liest nur diese Reihe.
+- F9: `GET …/wishes/settings` liefert `canEdit`; `PUT …/wishes/settings` mit nicht gesendeter Schwelle lässt sie
+  unverändert (`null` schaltet den Schutz ab); die Schwelle zeigt K3 nicht.
+- F10: `adopt` verlangt `expectedAlias` und `expectedAddedAtUtc` (verbatim aus `GET …/wishes/slots`); abweichend: 404
+  `wish_slot_not_found`.
+- F11: `GET …/wishes/slots` listet die Einträge, die `adopt` annähme, samt Halter und laufendem Wunsch.
+- F12: `recheck` antwortet bis K4 immer 409 und wird nicht angeboten.
+- F13: `mine` ist eine flache Liste; die Gruppierung (Handlungsbedarf, Probezeit) macht der Client.
+- F14: 201 trägt `setFull` nur, wenn es wahr ist; das Feld ist optional.
+- F15: Der Settings-Link hängt an `canManage && (chatLogBackfillEnabled || wishesEnabled)` (E19, AK41), nicht mehr
+  nur an `canManage`.
+- F16: Es gibt keine Entprellung im Zähler-Dienst (ein Poll hat nichts zu entprellen); getestet sind Takt,
+  Sichtbarkeit und Abschalten.
+- F17: Die Audit-Ansicht zeigt nur den Aktionsnamen; die Api liefert `detail: null` für alle `wish.*`.
+- F18: siehe AK38.
+- F19: Auf grobem Zeiger gibt es keine 7TV-Schreibaktion (§2.5 der Designsprache); dort stehen die Aktionen, die nur
+  in Emote Purge buchen, und der Link zum Emote auf 7TV.
+- F20: „Karte“ ist eine linierte Zeile (`wish-row`), keine Kartenklasse (Designsprache §2.1).
+- F21: „Bestand übernehmen“ mit dem Start = `AddedAt` machte einen alten Eintrag sofort überfällig; der Dialog zeigt
+  die Vorschau und wählt „ab jetzt“ vor, wenn der Ablauf sonst schon verstrichen wäre.
+- F22: Die Schutzschwelle wirkt im manuellen Modus nicht; K3 zeigt und sendet sie nicht.
+- F23: Behaltene Wünsche halten ihren Slot; Eintragsliste und 409 nennen den Halter.
+- F24: Die Kennzahlen rechnen über alle Slots des Emotes im Fenster der Zahlen, nicht je Slot ab Start.
+- F25: Das aktive Set kommt vor jedem 7TV-Schreiben aus einem autoritativen Read (`…/emote-sets?refresh=true`,
+  7TVs `style.activeEmoteSetId`), nicht aus dem Postgres-Stand von `…/emotes/active-set`. Der Postgres-Stand dient
+  nur dem Vergleich: weicht er ab, startet nichts.
+
+**Kopfzeile.** Gebaut ist Stufe 2 (AK44, offen). Beim Zähler gilt der Poll aus W6; `GET /api/wishes/summary` wird nur
+bei eingeloggtem Nutzer abgefragt.
+
 ## Akzeptanzkriterien
 32. **AK32** Tab und Route: Verwalter mit `wishesEnabled` sieht den Tab; ohne `canManage` oder ohne
     Schalter fehlt er und `/channels/x/wishes` leitet um wie ein abgelehnter Verwalter-Guard.
@@ -1177,8 +1239,12 @@ Anlernen und die Lückenanzeige ergänzt K6.
 37. **AK37** Entfernen aus der Karte: Der Lauf bindet über Alias und `addedAt`; weicht der frische
     Read ab, wird nichts gesendet und die Karte meldet es. Nach Erfolg geht genau ein
     `complete-removal` an die Api.
-38. **AK38** Während ein anderer 7TV-Lauf aktiv ist, sind Hinzufügen und Entfernen auf allen Karten
-    gesperrt und nennen den Grund (`aria-disabled` plus zugänglicher Name).
+38. **AK38** Während ein anderer 7TV-Lauf aktiv ist, sind Hinzufügen und Entfernen auf allen Zeilen
+    gesperrt (`aria-disabled`) und nennen den Grund. *Stand K3 (F18):* Der Grund steht nicht am
+    Knopf, sondern in einer Seitenzeile (`wishes-run-lock`), auf die jeder gesperrte 7TV-Knopf per
+    `aria-describedby` zeigt; UI-Designsprache §4.2 sieht für Sperren ohne Hinweistext vor, die Zeile
+    ist die dort beschriebene Beschreibung. Die Zeile spricht nur, solange die Seite eine 7TV-Aktion
+    anbietet.
 39. **AK39** `wish.changed` auf dem Kanal-Stream lädt den Wünsche-Tab ohne Reload neu. Der Zähler
     lädt beim Seitenaufruf und danach alle 5 Minuten (mit `page.clock`: nach 15 Minuten genau drei
     weitere `summary`-Anfragen), öffnet keinen eigenen Stream und fragt `/api/channels/mine` nicht
@@ -1195,7 +1261,17 @@ Anlernen und die Lückenanzeige ergänzt K6.
     jeden Code aus `ApiErrorCodes.cs` (von Hand gegengeprüft, im PR benannt).
 44. **AK44** Bei 360 px Breite hat die Kopfzeile mit Zähler und einem aktiven Status-Badge keinen
     horizontalen Überlauf und kein abgeschnittenes Element (Audit-Harness, `smallTargets`
-    mitgeprüft).
+    mitgeprüft). **Stand 2026-11-19: offen, nicht erfüllt.** Gebaut ist Stufe 2 (Link mit Zähler als
+    Chip, unter `sm` nur die Zahl). Die Fit-Prüfung (`assertHeaderFits`, Szenario
+    `shell-wishes-count-badge`) besteht ab 480 px in beiden Sprachen; bei 360 px in en nur knapp
+    (Wortmarke bei 0 px, Logo bei 1 px, neuer `smallTargetsUnder24`-Eintrag „Emote Purge 1×28“); bei
+    360 px in de **nicht**: „Abstimmungen“ überdeckt das Badge um 33 px (Worker-Warnung, Zahl 12),
+    26 px (Worker-Warnung, Zahl 3) bzw. 22 px (Live-Quota-Badge, Zahl 3). Die üblichen
+    Dokumentmetriken (Überlauf, Kontrast, kleine Ziele) bleiben dabei sauber, das ist die vom Plan
+    benannte Messlücke. Der Betreiber entscheidet (Optionen: Stufe 3 ohne Kopfzeilenelement unter
+    `sm`, nur Menüeintrag mit Zahl, eine Abweichung von diesem AK; Vorrang des Badges vor dem Zähler
+    unter `sm`; engere Abstände, geschätzt höchstens 28 px gegen 33 px nötige, ungemessen). Bis dahin
+    ist der Audit-Fall `shell-wishes-count-badge` bei `mobile`/de erwartet rot.
 45. **AK45** Live-Probe im Browser gegen den lokalen Stack mit dem Testkonto: Handeintrag,
     Hinzufügen aus der Karte mit eigenem Token, Karte wird nach dem Sync `aktiv`; übernommener,
     abgelaufener Eintrag erscheint in Kopfzeile und Übersicht; Entfernen aus der Karte endet in
@@ -1231,7 +1307,7 @@ E2E nur ohne laufende Api auf `:5151`; Import aus `web/e2e/support/test.ts`.
 | `web/src/app/core/i18n/api-error.ts` | Codes |
 | `web/public/i18n/de.json`, `en.json` | Schlüsselbereiche |
 | `web/e2e/wishes.e2e.spec.ts`, `web/e2e/support/mocks.ts` | neu, Mocks |
-| `docs/UI-Designsprache.md`, `DESIGN.md` | nur falls ein neues Muster entsteht (Ist-Stand, englisch) |
+| `docs/UI-Designsprache.md`, `DESIGN.md` | `UI-Designsprache.md` §2.5, §4.2, §8.7 (Ist-Stand, englisch); `DESIGN.md` unberührt, weil weder ein Token noch eine benannte Regel betroffen ist |
 
 ## Abhängigkeiten
 

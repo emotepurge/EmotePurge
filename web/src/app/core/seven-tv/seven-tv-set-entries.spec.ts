@@ -2,7 +2,7 @@ import { HttpClient, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SevenTvSetReadError, loadSevenTvSetEntries } from './seven-tv-set-entries';
 import {
@@ -339,6 +339,60 @@ describe('loadSevenTvSetEntries', () => {
 
   // Plan-378 4.1 [E2]: the add date is read only when asked for, so every other reader (import,
   // undo, the id-row delete run) keeps today's query and result.
+  // #485, plan 2.6 point 4: when each entry was last observed, for a wish removal's age check.
+  describe('with observation times on request', () => {
+    const DATE_1 = '2026-10-13T08:00:14.902Z';
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(10_000);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('stamps the last page from the main pass and a verified page from its verification', async () => {
+      const result$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt: true, withObservedAt: true }),
+      );
+      // Page 1 and, right after its answer, page 2 go out at 10 000.
+      httpMock
+        .expectOne(GQL_ENDPOINT)
+        .flush(page([{ id: '7tv-1', alias: 'A', addedAt: DATE_1 }], 2, 2));
+      vi.advanceTimersByTime(1000);
+      // Page 2 answers at 11 000; the verification re-read of page 1 goes out then.
+      httpMock
+        .expectOne(GQL_ENDPOINT)
+        .flush(page([{ id: '7tv-2', alias: 'B', addedAt: DATE_1 }], 2, 2));
+      const verification = httpMock.expectOne(GQL_ENDPOINT);
+      vi.advanceTimersByTime(4000);
+      verification.flush(page([{ id: '7tv-1', alias: 'A', addedAt: DATE_1 }], 2, 2));
+
+      const result = await result$;
+      expect(result.complete).toBe(true);
+      expect(result.entriesById?.get('7tv-1')).toEqual([
+        { alias: 'A', addedAt: DATE_1, observedAt: 11_000 },
+      ]);
+      expect(result.entriesById?.get('7tv-2')).toEqual([
+        { alias: 'B', addedAt: DATE_1, observedAt: 10_000 },
+      ]);
+    });
+
+    it('sends the same requests and stamps nothing without the option', async () => {
+      const result$ = firstValueFrom(
+        loadSevenTvSetEntries(httpClient, 'set-1', { withAddedAt: true }),
+      );
+      const request = httpMock.expectOne(GQL_ENDPOINT);
+      request.flush(page([{ id: '7tv-1', alias: 'A', addedAt: DATE_1 }]));
+
+      expect(request.request.body.variables).toEqual({ id: 'set-1', page: 1, perPage: 500 });
+      const entry = (await result$).entriesById?.get('7tv-1')?.[0];
+      expect(entry).toEqual({ alias: 'A', addedAt: DATE_1 });
+      expect(entry).not.toHaveProperty('observedAt');
+    });
+  });
+
   describe('with the add date on request', () => {
     const DATE_1 = '2026-10-13T08:00:14.902Z';
     const DATE_2 = '2026-10-13T09:30:00Z';

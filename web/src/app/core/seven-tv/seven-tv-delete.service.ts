@@ -5,11 +5,14 @@ import {
   MonoTypeOperatorFunction,
   Observable,
   catchError,
+  concatMap,
+  defaultIfEmpty,
   defer,
   map,
   of,
   retry,
   switchMap,
+  take,
   throwError,
   timeout,
   timer,
@@ -134,6 +137,12 @@ export const ENTRY_BINDING_READ_TIMEOUT_MS = 20_000;
  *  of them passes `MAX_RATE_LIMIT_RETRIES`. */
 export const MAX_CONSECUTIVE_ENTRY_READ_FAILURES = 3;
 
+/** The oldest observation of its entry a wish-bound entry row's removal may go out on (#485, plan
+ *  2.6 point 4, Sol-R3): measured from the start of the request that delivered the page with the
+ *  entry to the moment the removal is let through. An older one is read once more; is that one too
+ *  old as well, the row is skipped (`wishes.remove.tooSlow`). */
+export const WISH_OBSERVATION_MAX_AGE_MS = 5000;
+
 const PROCEED: StepGate = { kind: 'proceed' };
 
 /** v4 dropped the `action` enum in favour of one field per operation; the emote travels inside the
@@ -238,6 +247,8 @@ interface EntryRunContext {
    *  wait; every further one counts as an `unavailable` read failure, so a bucket that stays closed
    *  ends the run's entry rows through the three-strike rule instead of waiting per row (#454). */
   rateLimitedReadsInARow: number;
+  /** Row key → the wish binding of that entry row (#485); empty for a run without one. */
+  readonly wishBindings: ReadonlyMap<string, WishEntryBinding>;
 }
 
 /** What one binding read yields for the gate (#454): a usable read, a failure already counted, or
@@ -252,6 +263,64 @@ export interface DeleteStartOptions {
   /** The flow's pre-start read of the set, when it was a gap read. Seeds `idRowGap`: an id row of
    *  this run is skipped from its first attempt on. */
   preRunRead?: Pick<SevenTvSetEntries, 'readState' | 'omittedCount'>;
+  /**
+   * The run's one completion report (#485, plan 2.6, Sol-P2-7): called exactly once for a started
+   * run, with the final outcome of its rows — after the re-read has cleared up `unknown` rows, in
+   * the same step that publishes the settled `result` — whether or not the run is still shown and
+   * whether or not the page that started it still lives. Never called for a refused start, and
+   * never synchronously inside `startDelete`. A callback that throws is logged, not passed on.
+   */
+  onSettled?(settlement: DeleteRunSettlement): void;
+}
+
+/** How a `done` row came to be `done` (#485, plan R20): 7TV confirmed its `REMOVE`
+ *  (`acknowledged`), or only the re-read after the run found its entry gone (`absent`) — after a
+ *  lost answer or a cancel with the request in flight, when someone else may have removed it. */
+export type DeleteRowEvidence = 'acknowledged' | 'absent';
+
+/** The completion report of one run — see {@link DeleteStartOptions.onSettled}. */
+export interface DeleteRunSettlement {
+  readonly runId: string;
+  /** The settled outcome — the very object the run's record carries as `result`. */
+  readonly result: RunResult;
+  /** One entry per `done` row key. */
+  readonly evidence: ReadonlyMap<string, DeleteRowEvidence>;
+}
+
+/** What `startDeleteRun` answers: the run's id when it started, nothing when it was refused
+ *  (already running, empty list, no token). */
+export type DeleteStartResult = { started: true; runId: string } | { started: false };
+
+/** Why the check of a wish binding stops a removal: the token is gone or another one, the
+ *  authoritative active set is another one, or it could not be read (throttled, failed). */
+export type WishBindingSkipReason = 'tokenChanged' | 'setChanged' | 'setUnverified';
+
+/**
+ * The "wish binding" of an entry row (#485, plan 2.6, Sol-R2-P1-1, Sol-R3): the row removes the entry
+ * a wish holds, so before **every** attempt — the first and each one after a rate-limit pause — the
+ * run checks, in this order, and skips the row without a request at the first deviation:
+ *
+ * 1. the stored 7TV token is still `token`;
+ * 2. the run's set is `activeEmoteSetId`, and `verifySetAndToken` (the caller's authoritative read
+ *    of the channel's active set, past the Api's cache) still shows it — a throttled or failed read
+ *    skips too;
+ * 3. a fresh read of the set (never a held one) shows the row's entry under its alias at exactly
+ *    its add date;
+ * 4. that observation is at most {@link WISH_OBSERVATION_MAX_AGE_MS} old when the removal is let
+ *    through; otherwise the set is read once more and point 3 checked again, and is that observation
+ *    too old as well, the row is skipped. This holds for every page, the last one of a multi-page
+ *    read included, whose observation no verification re-read refreshes.
+ *
+ * The token is a comparison value only: it lives in the run's memory, never in a row, the record or
+ * the protocol. The other rules of the binding (three read failures in a row, a gap read, 7TV's rate
+ * limit on the read as a pause) apply unchanged.
+ */
+export interface WishEntryBinding {
+  readonly activeEmoteSetId: string;
+  readonly token: string;
+  /** Never errors by contract; an error, an empty completion or a hang the caller gives no deadline
+   *  are each treated as `setUnverified` (the first two) or left to the caller (the last). */
+  verifySetAndToken(): Observable<WishBindingSkipReason | null>;
 }
 
 /** How an entry row's live entries at its add date decide its attempt (Plan-378 4.4 step 4). */
@@ -277,6 +346,9 @@ export interface DeleteQueueEmote {
   /** Set on an entry row: removes exactly this one set entry (see `SevenTvEntryTarget`), keyed
    *  `${sevenTvEmoteId}#${entry.cardKey}`. Absent: an id row, one per 7TV id, as always. */
   entry?: SevenTvEntryTarget;
+  /** Only beside `entry`: the row removes a wish's entry, with the checks of
+   *  {@link WishEntryBinding} before every attempt. Ignored on an id row. */
+  wishBinding?: WishEntryBinding;
 }
 /** Historical aliases — the panel and both host pages import these names. */
 export type DeleteItemStatus = RunItemStatus;
@@ -354,12 +426,13 @@ export class SevenTvDeleteService {
   private readonly emoteTagService = inject(EmoteTagService);
   private readonly httpClient = inject(HttpClient);
   private readonly translocoService = inject(TranslocoService);
+  private readonly tokenService = inject(SevenTvTokenService);
 
   /** Own engine instance (not a shared singleton), so `isRunning` can never mean "the *other*
    *  service is busy". All pacing/backoff/token mechanics live there — see SevenTvRunEngine. */
   private readonly engine = new SevenTvRunEngine(
     this.httpClient,
-    inject(SevenTvTokenService),
+    this.tokenService,
     inject(TranslocoService),
   );
 
@@ -551,7 +624,8 @@ export class SevenTvDeleteService {
    *  the run shown before it goes on to close on its own record (#256). `tag` is only for a tag
    *  removal (#201 T-C, `tag-removal-flow.ts`): frozen onto the record, it makes the settled run
    *  send the removal report as a second report beside `sync-deleted`. `options.preRunRead` is the
-   *  delete flow's pre-start read when it was a gap read (#454) — see {@link DeleteStartOptions}. */
+   *  delete flow's pre-start read when it was a gap read (#454) — see {@link DeleteStartOptions}.
+   *  A caller that follows its run uses {@link startDeleteRun}, which is this same start. */
   startDelete(
     setId: string,
     channelName: string,
@@ -561,6 +635,30 @@ export class SevenTvDeleteService {
     tag?: DeleteTagContext,
     options: DeleteStartOptions = {},
   ): void {
+    this.startDeleteRun(
+      setId,
+      channelName,
+      emotes,
+      expectedChannelName,
+      targetOwnerTwitchId,
+      tag,
+      options,
+    );
+  }
+
+  /** {@link startDelete} for a caller that follows its run (#485, plan 2.6): answers whether the
+   *  run started and under which id; `options.onSettled` then reports that run's final outcome
+   *  exactly once. A sibling rather than a new return type of `startDelete`, so the existing
+   *  callers and the specs that stand in for it stay exactly as they are. */
+  startDeleteRun(
+    setId: string,
+    channelName: string,
+    emotes: DeleteQueueEmote[],
+    expectedChannelName: string | null,
+    targetOwnerTwitchId: string | null,
+    tag?: DeleteTagContext,
+    options: DeleteStartOptions = {},
+  ): DeleteStartResult {
     const previousShown = this.lifecycle.shown();
     const runId = this.lifecycle.createRunId();
     const started: DeleteRunInfo = {
@@ -590,18 +688,21 @@ export class SevenTvDeleteService {
     const context = createEntryRunContext(
       queue,
       preRunRead?.readState === 'gap' ? preRunRead.omittedCount : null,
+      wishBindingsOf(emotes, queue),
     );
     const engineStarted = this.engine.start(
       setId,
       queue,
       context === null ? REMOVE_OPERATION : this.createEntryOperation(context),
-      (result) => this.onRunComplete(runId, result, context),
+      (result) => this.onRunComplete(runId, result, context, options.onSettled),
     );
     if (!engineStarted) {
       // Refused (already running, empty list, no token) — take the just-opened record back and
       // restore whatever was shown before it, which may be another run still settling its report.
       this.lifecycle.discardUnstarted(runId, previousShown);
+      return { started: false };
     }
+    return { started: true, runId };
   }
 
   /** Stops the run. A `REMOVE` still in flight ends its row `unknown` (`REMOVE_OPERATION`), and
@@ -699,6 +800,10 @@ export class SevenTvDeleteService {
     return {
       ...REMOVE_OPERATION,
       beforeStep: (setId, emote) => {
+        const binding = context.wishBindings.get(emote.key);
+        if (emote.entry && binding !== undefined) {
+          return this.bindWishBeforeRemove(context, setId, emote, emote.entry, binding);
+        }
         if (emote.entry) {
           return this.bindBeforeRemove(context, setId, emote, emote.entry);
         }
@@ -766,12 +871,17 @@ export class SevenTvDeleteService {
    *  (a GraphQL rate-limit answer or an HTTP 429) answers `rateLimited` without touching the count
    *  or the held read, up to `MAX_RATE_LIMIT_RETRIES` in a row across the run; beyond that it
    *  counts as an `unavailable` failure. */
-  private readForBinding(context: EntryRunContext, setId: string): Observable<BindingRead> {
+  private readForBinding(
+    context: EntryRunContext,
+    setId: string,
+    observe = false,
+  ): Observable<BindingRead> {
     return defer(() => {
       const startedAt = Date.now();
       return loadSevenTvSetEntries(this.httpClient, setId, {
         withAddedAt: true,
         detectGap: true,
+        ...(observe ? { withObservedAt: true } : {}),
       }).pipe(
         timeout(ENTRY_BINDING_READ_TIMEOUT_MS),
         map((read): BindingRead => {
@@ -813,6 +923,92 @@ export class SevenTvDeleteService {
         }),
       );
     });
+  }
+
+  /**
+   * The gate in front of one attempt of a wish-bound entry row (#485, plan 2.6) — the four points of
+   * {@link WishEntryBinding}, in their order; never throws and never errors, every deviation is a
+   * skip with its reason. The three-strike rule of the binding reads applies first, as for every
+   * entry row. 7TV's rate limit on the set read is a pause like elsewhere: the engine asks this gate
+   * again afterwards, and the whole sequence runs again, the token and set checks included.
+   */
+  private bindWishBeforeRemove(
+    context: EntryRunContext,
+    setId: string,
+    emote: RunQueueEmote,
+    entry: SevenTvEntryGeneration,
+    binding: WishEntryBinding,
+  ): Observable<StepGate> {
+    if (context.consecutiveReadFailures >= MAX_CONSECUTIVE_ENTRY_READ_FAILURES) {
+      return of(this.skipEntry(context, emote, readFailureKey(context.lastReadFailure), {}));
+    }
+    if (this.tokenService.getToken() !== binding.token) {
+      return of(this.skipWish(context, emote, 'tokenChanged'));
+    }
+    if (setId !== binding.activeEmoteSetId) {
+      return of(this.skipWish(context, emote, 'setChanged'));
+    }
+    return defer(() => binding.verifySetAndToken()).pipe(
+      take(1),
+      defaultIfEmpty<WishBindingSkipReason | null, WishBindingSkipReason>('setUnverified'),
+      catchError(() => of<WishBindingSkipReason>('setUnverified')),
+      concatMap((reason) =>
+        reason === null
+          ? this.readAndGateWish(context, setId, emote, entry, binding, false)
+          : of(this.skipWish(context, emote, reason)),
+      ),
+    );
+  }
+
+  /**
+   * Points 3 and 4 of a wish binding: a fresh read, the generation, the age of the observation.
+   * The age is taken when the read has shown the entry at its add date — right before the removal
+   * would be let through, which then goes out in the same step. An observation older than
+   * `WISH_OBSERVATION_MAX_AGE_MS` costs one more read (`reread`), a second one too old skips the row.
+   * Last, the token once more: a logout during the reads must not send.
+   */
+  private readAndGateWish(
+    context: EntryRunContext,
+    setId: string,
+    emote: RunQueueEmote,
+    entry: SevenTvEntryGeneration,
+    binding: WishEntryBinding,
+    reread: boolean,
+  ): Observable<StepGate> {
+    return this.readForBinding(context, setId, true).pipe(
+      concatMap((outcome): Observable<StepGate> => {
+        switch (outcome.kind) {
+          case 'failed':
+            return of(this.skipEntry(context, emote, readFailureKey(context.lastReadFailure), {}));
+          case 'rateLimited':
+            context.attempted.delete(emote.key);
+            return of({ kind: 'rateLimited', info: outcome.info });
+          case 'read':
+            break;
+        }
+        const live = outcome.read.entriesById?.get(emote.sevenTvEmoteId) ?? [];
+        if (bindEntry(entry, live).kind === 'proceed') {
+          const observedAt = observationOf(entry, live);
+          if (observedAt === null || Date.now() - observedAt > WISH_OBSERVATION_MAX_AGE_MS) {
+            return reread
+              ? of(this.skipWish(context, emote, 'tooSlow'))
+              : this.readAndGateWish(context, setId, emote, entry, binding, true);
+          }
+          if (this.tokenService.getToken() !== binding.token) {
+            return of(this.skipWish(context, emote, 'tokenChanged'));
+          }
+        }
+        return of(this.gateEntry(context, emote, entry, outcome.read));
+      }),
+    );
+  }
+
+  private skipWish(
+    context: EntryRunContext,
+    emote: RunQueueEmote,
+    reason: WishBindingSkipReason | 'tooSlow',
+  ): StepGate {
+    return this.skipEntry(context, emote, WISH_BINDING_SKIP_KEY[reason], {});
   }
 
   /** Classifies the row against `read` (4.4 step 4) and answers the engine. A row let through is
@@ -894,7 +1090,12 @@ export class SevenTvDeleteService {
    * `finish()` builds this very result from it; nothing shows that queue any more, so it is
    * cleared here.
    */
-  private onRunComplete(runId: string, result: RunResult, context: EntryRunContext | null): void {
+  private onRunComplete(
+    runId: string,
+    result: RunResult,
+    context: EntryRunContext | null,
+    onSettled: DeleteStartOptions['onSettled'],
+  ): void {
     const afterCancel = this.cancelInProgress;
     const needsRead =
       unknownCount(result.items) > 0 ||
@@ -907,7 +1108,7 @@ export class SevenTvDeleteService {
     }
 
     if (!needsRead) {
-      this.settleRun(runId, result, null, context);
+      this.settleRun(runId, result, null, context, onSettled);
       return;
     }
     if (settling === null) {
@@ -924,7 +1125,7 @@ export class SevenTvDeleteService {
       catchError(() => of(null)),
     );
     (afterCancel ? timer(CANCEL_SETTLE_GRACE_MS).pipe(switchMap(() => read)) : read).subscribe(
-      (entries) => this.settleRun(runId, result, entries, context),
+      (entries) => this.settleRun(runId, result, entries, context, onSettled),
     );
   }
 
@@ -944,12 +1145,17 @@ export class SevenTvDeleteService {
    * that heals the row; should the report fail for good, the N1 fallback resync stands in for it.
    * Without a report, `fallbackResync` asks for that resync directly, for `expectedChannelName`
    * only.
+   *
+   * Last, the run's completion report (`onSettled`, #485): the settled result and, per `done` row,
+   * whether 7TV confirmed it or the re-read did. Every way out of `onRunComplete` ends here exactly
+   * once, so the report goes out exactly once per started run.
    */
   private settleRun(
     runId: string,
     snapshot: RunResult,
     entries: SevenTvSetEntries | null,
     context: EntryRunContext | null,
+    onSettled: DeleteStartOptions['onSettled'],
   ): void {
     const entrySettlement = context === null ? null : settleEntryRun(snapshot, entries, context);
     const result = entrySettlement?.result ?? settleDeleteResult(snapshot, entries);
@@ -986,6 +1192,18 @@ export class SevenTvDeleteService {
     // and which emotes this tag put there — and either can fail without the other.
     if (settled.tag !== undefined) {
       this.reportTagRemoval(runId);
+    }
+    if (onSettled !== undefined) {
+      const settlement: DeleteRunSettlement = {
+        runId,
+        result,
+        evidence: evidenceOf(snapshot, result),
+      };
+      try {
+        onSettled(settlement);
+      } catch (error) {
+        console.error('[EmotePurge] 7TV delete completion callback threw', error);
+      }
     }
   }
 
@@ -1282,6 +1500,19 @@ function deletedReportOf(result: RunResult): DeletedReport {
   return entries.length > 0 ? { sevenTvEmoteIds, entries } : { sevenTvEmoteIds };
 }
 
+/** Per `done` row of `settled`: `acknowledged` when the engine's own snapshot already had it
+ *  `done` (7TV answered the `REMOVE` with its result), `absent` when it was `unknown` there and only
+ *  the re-read turned it `done`. */
+function evidenceOf(snapshot: RunResult, settled: RunResult): Map<string, DeleteRowEvidence> {
+  const before = new Map(snapshot.items.map((item) => [item.key, item.status]));
+  return new Map(
+    settled.doneKeys.map((key): [string, DeleteRowEvidence] => [
+      key,
+      before.get(key) === 'done' ? 'acknowledged' : 'absent',
+    ]),
+  );
+}
+
 /** The `doneKeys` of id rows only — a 7TV id each. A tag removal runs id rows only, so for it this
  *  is its `doneKeys` unchanged; an entry row's key would never be a 7TV id. */
 function doneIdRowKeys(result: RunResult): string[] {
@@ -1296,6 +1527,7 @@ function doneIdRowKeys(result: RunResult): string[] {
 function createEntryRunContext(
   queue: readonly RunQueueEmote[],
   idRowGap: number | null,
+  wishBindings: ReadonlyMap<string, WishEntryBinding>,
 ): EntryRunContext | null {
   const entryEmoteIds = new Set(
     queue.filter((row) => row.entry !== undefined).map((row) => row.sevenTvEmoteId),
@@ -1314,7 +1546,41 @@ function createEntryRunContext(
     lastReadFailure: 'unavailable',
     idRowGap,
     rateLimitedReadsInARow: 0,
+    wishBindings,
   };
+}
+
+/** The wish binding of every entry row that carries one and made it into the queue as an entry row
+ *  (an entry whose id also has an id row went up in that one and loses its binding with it — a wish
+ *  removal never builds that), by row key. */
+function wishBindingsOf(
+  emotes: readonly DeleteQueueEmote[],
+  queue: readonly RunQueueEmote[],
+): Map<string, WishEntryBinding> {
+  const entryKeys = new Set(queue.filter((row) => row.entry).map((row) => row.key));
+  const bindings = new Map<string, WishEntryBinding>();
+  for (const emote of emotes) {
+    if (emote.entry && emote.wishBinding) {
+      const key = `${emote.sevenTvEmoteId}#${emote.entry.cardKey}`;
+      if (entryKeys.has(key) && !bindings.has(key)) {
+        bindings.set(key, emote.wishBinding);
+      }
+    }
+  }
+  return bindings;
+}
+
+/** When the entry of `entry` — at its add date, under its alias — was last observed in `live`;
+ *  `null` when the read carried no observation for it. */
+function observationOf(
+  entry: SevenTvEntryGeneration,
+  live: readonly SevenTvSetEntry[],
+): number | null {
+  const timeKey = entryTimeKey(entry.addedAt);
+  const match = live.find(
+    (candidate) => candidate.alias === entry.alias && entryTimeKey(candidate.addedAt) === timeKey,
+  );
+  return match?.observedAt ?? null;
 }
 
 /**
@@ -1416,6 +1682,14 @@ function rateLimitOfRead(error: unknown): RateLimitInfo | null {
   }
   return null;
 }
+
+/** The sentence of each wish-binding skip — the start contract's own, plus "7TV answers too slowly". */
+const WISH_BINDING_SKIP_KEY: Record<WishBindingSkipReason | 'tooSlow', SkipReasonKey> = {
+  tokenChanged: 'wishes.start.tokenChanged',
+  setChanged: 'wishes.start.setChanged',
+  setUnverified: 'wishes.start.setUnverified',
+  tooSlow: 'wishes.remove.tooSlow',
+};
 
 function readFailureKey(reason: 'unavailable' | 'truncated'): SkipReasonKey {
   return reason === 'unavailable'

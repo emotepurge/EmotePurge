@@ -56,8 +56,13 @@ public interface IForeignEmoteSetService
     /// service.
     /// </summary>
     /// <param name="channelName">A Twitch login, in any casing — normalized inside.</param>
+    /// <param name="refresh">
+    /// <c>true</c> skips a held answer of the list service's 60 s cache, so the active set is 7TV's current
+    /// one (plan #485, T0a: the wish flow reads it right before it writes). Held failures, the breaker and the
+    /// provider budget still apply, as for <see cref="GetForeignEmoteSetAsync"/>'s refresh.
+    /// </param>
     Task<ForeignEmoteSetListLookupResult> GetForeignEmoteSetListAsync(
-        string channelName, CancellationToken cancellationToken = default);
+        string channelName, bool refresh = false, CancellationToken cancellationToken = default);
 }
 
 /// <summary>

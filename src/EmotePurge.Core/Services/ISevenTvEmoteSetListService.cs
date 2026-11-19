@@ -157,6 +157,15 @@ public interface ISevenTvEmoteSetListService
     /// on ids so that it never touches 7TV's shared search bucket.
     /// </param>
     Task<EmoteSetListResult> ListByTwitchIdAsync(string twitchChannelId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The same list, with <paramref name="refresh"/> = <c>true</c> skipping a held <b>answer</b> (a list or
+    /// <c>NoSevenTvAccount</c>) so 7TV is asked again — the wish flow reads the active set this way right before
+    /// it writes (plan #485 2.5). A held <b>failure</b> (rate limit, outage, refused budget) still answers, and the
+    /// breaker and the provider budget still apply: a refresh is a way around the answer cache only, never around
+    /// a guard. <c>false</c> is exactly <see cref="ListByTwitchIdAsync(string, CancellationToken)"/>.
+    /// </summary>
+    Task<EmoteSetListResult> ListByTwitchIdAsync(string twitchChannelId, bool refresh, CancellationToken cancellationToken = default);
 }
 
 /// <summary>

@@ -13,6 +13,8 @@ import {
   mockBackfillStatus,
   mockChannelEmoteSetList,
   mockChannelPermissions,
+  mockVoteSessionList,
+  mockWishBackend,
   mockWorkerHealth,
 } from './support/mocks';
 
@@ -537,5 +539,152 @@ test.describe('channel settings tab (imported data removal)', () => {
     await expect(page.getByRole('heading', { name: 'Backfill aus dem Chat-Archiv' })).toBeVisible();
     await expect(importedSection(page)).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'Importierte Daten' })).toHaveCount(0);
+  });
+});
+
+test.describe('channel settings tab (wish settings and the two switches, #485 E19)', () => {
+  const backfillHeading = (page: Page) =>
+    page.getByRole('heading', { name: 'Backfill aus dem Chat-Archiv' });
+  const wishHeading = (page: Page) => page.getByRole('heading', { name: 'Wünsche' });
+
+  test.beforeEach(async ({ page }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page, 'connected');
+    await installLiveStub(page);
+    await mockChannelEmoteSetList(page, 'sensitron', SETS);
+    await mockVoteSessionList(page, 'sensitron', []);
+  });
+
+  test('only the backfill switch: the tab holds the backfill alone and asks nothing about wishes', async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron', {
+      chatLogBackfillEnabled: true,
+      wishesEnabled: false,
+    });
+    await mockBackfillStatus(page, 'sensitron');
+    const wishes = await mockWishBackend(page, 'sensitron');
+
+    await page.goto('/channels/sensitron/vote-sessions');
+    await page.getByRole('link', { name: 'Einstellungen' }).click();
+
+    await expect(backfillHeading(page)).toBeVisible();
+    await expect(wishHeading(page)).toHaveCount(0);
+    expect(wishes.calls).toHaveLength(0);
+  });
+
+  test('only the wish switch: the tab holds "Wünsche" alone and asks nothing about the backfill', async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron', {
+      chatLogBackfillEnabled: false,
+      wishesEnabled: true,
+    });
+    const status = await mockBackfillStatus(page, 'sensitron');
+    await mockWishBackend(page, 'sensitron');
+
+    await page.goto('/channels/sensitron/vote-sessions');
+    await page.getByRole('link', { name: 'Einstellungen' }).click();
+
+    await expect(wishHeading(page)).toBeVisible();
+    await expect(page.getByLabel('Standardlaufzeit in Tagen')).toHaveValue('14');
+    await expect(backfillHeading(page)).toHaveCount(0);
+    expect(status.requests()).toBe(0);
+  });
+
+  test('both switches: both sections, "Wünsche" above the backfill', async ({ page }) => {
+    await mockChannelPermissions(page, 'sensitron', {
+      chatLogBackfillEnabled: true,
+      wishesEnabled: true,
+    });
+    await mockBackfillStatus(page, 'sensitron');
+    await mockWishBackend(page, 'sensitron');
+
+    await page.goto('/channels/sensitron/settings');
+
+    await expect(wishHeading(page)).toBeVisible();
+    await expect(backfillHeading(page)).toBeVisible();
+    const wishBox = await wishHeading(page).boundingBox();
+    const backfillBox = await backfillHeading(page).boundingBox();
+    expect(wishBox!.y).toBeLessThan(backfillBox!.y);
+  });
+
+  test('both switches off: no tab, the guard redirects, and neither status is asked', async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron', {
+      chatLogBackfillEnabled: false,
+      wishesEnabled: false,
+    });
+    const status = await mockBackfillStatus(page, 'sensitron');
+    const wishes = await mockWishBackend(page, 'sensitron');
+
+    await page.goto('/channels/sensitron/vote-sessions');
+    await expect(page.getByRole('link', { name: 'Aktivität' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Einstellungen' })).toHaveCount(0);
+
+    await page.goto('/channels/sensitron/settings');
+    await expect(page).toHaveURL(/\/channels\/sensitron\/vote-sessions$/);
+    expect(status.requests()).toBe(0);
+    expect(wishes.calls).toHaveLength(0);
+  });
+
+  test('a lead of 31 is not sent and shows its field error; saving sends no protection threshold (AK41, Sol-P2-4)', async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron', {
+      chatLogBackfillEnabled: false,
+      wishesEnabled: true,
+    });
+    // A stored threshold the page never shows: an absent key must leave it alone.
+    const wishes = await mockWishBackend(page, 'sensitron', {
+      settings: { protectionThresholdPerDay: 5 },
+    });
+
+    await page.goto('/channels/sensitron/settings');
+    const lead = page.getByLabel('Vorlauf der Probezeit in Tagen');
+    const save = page.getByRole('button', { name: 'Speichern' });
+    await expect(lead).toHaveValue('3');
+
+    await lead.fill('31');
+    await lead.blur();
+    await expect(page.locator('#wish-settings-lead-error')).toHaveText(
+      'Der Vorlauf liegt zwischen 1 und 30 Tagen.',
+    );
+    await expect(lead).toHaveAttribute('aria-invalid', 'true');
+    await expect(save).toBeDisabled();
+    expect(wishes.of('settings-write')).toHaveLength(0);
+
+    await lead.fill('4');
+    await page.getByLabel('Standardlaufzeit in Tagen').fill('20');
+    await save.click();
+
+    await expect.poll(() => wishes.of('settings-write').length).toBe(1);
+    expect(wishes.of('settings-write')[0].body).toEqual({
+      defaultDurationDays: 20,
+      probationLeadDays: 4,
+    });
+    expect(wishes.of('settings-write')[0].body).not.toHaveProperty('protectionThresholdPerDay');
+    await expect(page.getByText('Einstellungen gespeichert.').first()).toBeVisible();
+  });
+
+  test('without the right to write the section is read-only and says why', async ({ page }) => {
+    await mockChannelPermissions(page, 'sensitron', {
+      chatLogBackfillEnabled: false,
+      wishesEnabled: true,
+    });
+    await mockWishBackend(page, 'sensitron', { settings: { canEdit: false } });
+
+    await page.goto('/channels/sensitron/settings');
+
+    await expect(page.locator('#wish-settings-read-only')).toContainText(
+      'Du kannst diese Einstellungen ansehen, aber nicht ändern.',
+    );
+    await expect(page.getByLabel('Standardlaufzeit in Tagen')).toBeDisabled();
+    await expect(page.getByLabel('Vorlauf der Probezeit in Tagen')).toBeDisabled();
+    await expect(page.getByLabel('Standardlaufzeit in Tagen')).toHaveAccessibleDescription(
+      /Du kannst diese Einstellungen ansehen/,
+    );
+    await expect(page.getByRole('button', { name: 'Speichern' })).toHaveCount(0);
   });
 });

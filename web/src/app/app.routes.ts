@@ -5,6 +5,7 @@ import { authGuard } from './core/auth/auth.guard';
 import { homeGuard } from './core/auth/home.guard';
 import { channelManageGuard } from './core/channels/channel-manage.guard';
 import { channelSettingsGuard } from './core/channels/channel-settings.guard';
+import { channelWishesGuard } from './core/channels/channel-wishes.guard';
 import { usageStatsAccessGuard } from './core/channels/usage-stats-access.guard';
 import { voteSessionAccessGuard } from './core/voting/vote-session-access.guard';
 import { LoginPage } from './features/login/login-page';
@@ -52,6 +53,14 @@ export const routes: Routes = [
         path: 'my-votings',
         loadComponent: () =>
           import('./features/my-votings/my-votings-page').then((m) => m.MyVotingsPage),
+        canActivate: [authGuard],
+      },
+      {
+        // Cross-channel as well: wishes needing a decision or in probation over every managed
+        // channel. A 404 `wishes_disabled` is answered by the page itself (back to the overview).
+        path: 'my-wishes',
+        loadComponent: () =>
+          import('./features/my-wishes/my-wishes-page').then((m) => m.MyWishesPage),
         canActivate: [authGuard],
       },
       {
@@ -154,6 +163,14 @@ export const routes: Routes = [
                 (m) => m.ChannelSettingsPage,
               ),
             canActivate: [channelSettingsGuard],
+          },
+          {
+            // canManage AND the operator's wish switch (#485, spec E19): with the switch off the
+            // page does not exist, and a direct visit lands on the vote sessions.
+            path: 'wishes',
+            loadComponent: () =>
+              import('./features/wishes/channel-wishes-page').then((m) => m.ChannelWishesPage),
+            canActivate: [channelWishesGuard],
           },
           {
             // Requires login AND being part of this specific session's target audience

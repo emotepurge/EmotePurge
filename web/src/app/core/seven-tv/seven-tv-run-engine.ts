@@ -152,7 +152,12 @@ export type SkipReasonKey =
   | 'usageStats.delete.noAlias'
   | 'usageStats.delete.departedSinceLoad'
   | 'usageStats.delete.gapHidden'
-  | 'usageStats.delete.gapIdRow';
+  | 'usageStats.delete.gapIdRow'
+  // A wish-bound entry row's checks before its removal (#485, plan 2.6).
+  | 'wishes.start.tokenChanged'
+  | 'wishes.start.setChanged'
+  | 'wishes.start.setUnverified'
+  | 'wishes.remove.tooSlow';
 
 export interface SkipReason {
   key: SkipReasonKey;
@@ -1008,6 +1013,11 @@ export class SevenTvRunEngine {
     );
   }
 
+  /** Ends the run and hands its result over. The operation and the completion callback are let go
+   *  *before* the callback runs: both may close over what only the run needed — a wish run's
+   *  confirmed 7TV token among it (#485, plan 2.5) — which must not outlive the run on an engine its
+   *  service keeps for the app's lifetime. Before, not after: the callback may start the next run,
+   *  whose own operation must stay. */
   private finish(): void {
     this.isRunning.set(false);
     this.runSubscription = null;
@@ -1022,6 +1032,10 @@ export class SevenTvRunEngine {
       startedAt: this.runStartedAt,
       finishedAt: Date.now(),
     };
-    this.onComplete?.(result);
+    const onComplete = this.onComplete;
+    this.operation = null;
+    this.onComplete = null;
+    this.inFlight = null;
+    onComplete?.(result);
   }
 }

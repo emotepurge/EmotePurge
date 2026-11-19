@@ -2,7 +2,7 @@ import { HttpRequest, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
-import { firstValueFrom } from 'rxjs';
+import { Subject, firstValueFrom } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -10,10 +10,13 @@ import {
   DELETE_DELAY_MS,
   DeleteQueueEmote,
   DeleteRunInfo,
+  DeleteRunSettlement,
   ENTRY_BINDING_READ_TIMEOUT_MS,
   MAX_CONSECUTIVE_ENTRY_READ_FAILURES,
   REPORT_TIMEOUT_MS,
   SevenTvDeleteService,
+  WISH_OBSERVATION_MAX_AGE_MS,
+  WishBindingSkipReason,
 } from './seven-tv-delete.service';
 import { TagRemovalResult } from '../tags/emote-tag.model';
 import { SyncDeletedInSetResponse } from './seven-tv-emote-set.model';
@@ -3255,6 +3258,430 @@ describe('SevenTvDeleteService', () => {
       for (const body of bodies.slice(1)) {
         expect(body).toEqual(bodies[0]);
       }
+    });
+  });
+
+  // #485, plan 2.6 (Sol-P2-7): one completion report per run, independent of the dock.
+  describe('the completion report of a run', () => {
+    function settledSpy() {
+      return vi.fn<(settlement: DeleteRunSettlement) => void>();
+    }
+
+    it('answers a started run with its id and a refused one without', () => {
+      const first = service.startDeleteRun('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null);
+      const busy = service.startDeleteRun('set-1', 'sensitron', [EMOTES[1]], 'sensitron', null);
+
+      expect(first).toEqual({ started: true, runId: service.run()?.runId });
+      expect(busy).toEqual({ started: false });
+      flushApplied(httpMock.expectOne(isRemove));
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('never reports a refused start', () => {
+      const onSettled = settledSpy();
+      tokenService.clearToken();
+
+      expect(
+        service.startDeleteRun('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null, undefined, {
+          onSettled,
+        }),
+      ).toEqual({ started: false });
+      expect(service.startDeleteRun('set-1', 'sensitron', [], 'sensitron', null)).toEqual({
+        started: false,
+      });
+      vi.advanceTimersByTime(60_000);
+      expect(onSettled).not.toHaveBeenCalled();
+    });
+
+    it('reports once with the settled rows, the REMOVE 7TV confirmed as acknowledged', () => {
+      const onSettled = settledSpy();
+      const start = service.startDeleteRun(
+        'set-1',
+        'sensitron',
+        [EMOTES[0]],
+        'sensitron',
+        null,
+        undefined,
+        { onSettled },
+      );
+      flushApplied(httpMock.expectOne(isRemove));
+      // Not inside the engine's step: the report comes with the settled result, after the pacing.
+      expect(onSettled).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      expect(onSettled).toHaveBeenCalledOnce();
+      const settlement = onSettled.mock.calls[0][0];
+      expect(settlement.runId).toBe(start.started ? start.runId : null);
+      expect(settlement.result).toBe(service.run()?.result);
+      expect(settlement.result.doneKeys).toEqual(['7tv-1']);
+      expect([...settlement.evidence]).toEqual([['7tv-1', 'acknowledged']]);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(onSettled).toHaveBeenCalledOnce();
+    });
+
+    it('reports a run that settles while another run is shown, each run once with its own rows', () => {
+      const first = settledSpy();
+      const second = settledSpy();
+      service.startDeleteRun('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null, undefined, {
+        onSettled: first,
+      });
+      // A lost answer: the run settles through a re-read.
+      httpMock.expectOne(isRemove).flush(null, { status: 502, statusText: 'Bad Gateway' });
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      const firstRead = httpMock.expectOne(isSetRead);
+      service.reset();
+      service.startDeleteRun('set-1', 'sensitron', [EMOTES[1]], 'sensitron', null, undefined, {
+        onSettled: second,
+      });
+      const shownRunId = service.run()?.runId;
+
+      firstRead.flush(setEntriesPage([{ id: '7tv-2', alias: 'KEKW' }]));
+
+      expect(service.run()?.runId).toBe(shownRunId);
+      expect(first).toHaveBeenCalledOnce();
+      expect(first.mock.calls[0][0].result.doneKeys).toEqual(['7tv-1']);
+      expect([...first.mock.calls[0][0].evidence]).toEqual([['7tv-1', 'absent']]);
+      expect(second).not.toHaveBeenCalled();
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+
+      flushApplied(httpMock.expectOne(isRemove));
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+      expect(second).toHaveBeenCalledOnce();
+      expect(second.mock.calls[0][0].result.doneKeys).toEqual(['7tv-2']);
+      expect(second.mock.calls[0][0].runId).toBe(shownRunId);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(first).toHaveBeenCalledOnce();
+    });
+
+    it('reports a cancel with the REMOVE in flight as done once the re-read confirms the removal', () => {
+      const onSettled = settledSpy();
+      service.startDeleteRun('set-1', 'sensitron', [A], 'sensitron', null, undefined, {
+        onSettled,
+      });
+      answerRead([{ id: '7tv-x', alias: 'aaa', addedAt: T1 }]);
+      const remove = httpMock.expectOne(isRemove);
+      service.cancel();
+      expect(remove.cancelled).toBe(true);
+      expect(onSettled).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS);
+      answerRead([]);
+
+      expect(onSettled).toHaveBeenCalledOnce();
+      const settlement = onSettled.mock.calls[0][0];
+      expect(settlement.result.items[0]).toMatchObject({ key: '7tv-x#slot-aaa', status: 'done' });
+      expect([...settlement.evidence]).toEqual([['7tv-x#slot-aaa', 'absent']]);
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('reports a cancel with the REMOVE in flight as not done when the re-read still shows the entry', () => {
+      const onSettled = settledSpy();
+      service.startDeleteRun('set-1', 'sensitron', [A], 'sensitron', null, undefined, {
+        onSettled,
+      });
+      answerRead([{ id: '7tv-x', alias: 'aaa', addedAt: T1 }]);
+      httpMock.expectOne(isRemove);
+      service.cancel();
+
+      vi.advanceTimersByTime(CANCEL_SETTLE_GRACE_MS);
+      answerRead([{ id: '7tv-x', alias: 'aaa', addedAt: T1 }]);
+
+      expect(onSettled).toHaveBeenCalledOnce();
+      const settlement = onSettled.mock.calls[0][0];
+      expect(settlement.result.items[0].status).toBe('unknown');
+      expect(settlement.result.doneKeys).toEqual([]);
+      expect(settlement.evidence.size).toBe(0);
+      httpMock
+        .expectOne('/api/channels/sensitron/resync')
+        .flush(null, { status: 202, statusText: 'Accepted' });
+    });
+
+    it('keeps the run going when the completion callback throws', () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      service.startDeleteRun('set-1', 'sensitron', [EMOTES[0]], 'sensitron', null, undefined, {
+        onSettled: () => {
+          throw new Error('broken');
+        },
+      });
+      flushApplied(httpMock.expectOne(isRemove));
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      expect(error).toHaveBeenCalled();
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(service.run()?.phase).toBe('closed');
+    });
+  });
+
+  // #485, plan 2.6 (Sol-R2-P1-1, Sol-R3): a wish's entry row checks token, active set, generation
+  // and the age of its observation before every attempt.
+  describe('the wish binding of an entry row', () => {
+    let verifications: Subject<WishBindingSkipReason | null>[];
+
+    beforeEach(() => {
+      verifications = [];
+    });
+
+    function wishRow(addedAt = T1): DeleteQueueEmote {
+      return {
+        ...entryRow('7tv-x', 'aaa', addedAt),
+        wishBinding: {
+          activeEmoteSetId: 'set-1',
+          token: 'write-token',
+          verifySetAndToken: () => {
+            const verdict = new Subject<WishBindingSkipReason | null>();
+            verifications.push(verdict);
+            return verdict;
+          },
+        },
+      };
+    }
+
+    function startWish(row = wishRow(), setId = 'set-1') {
+      return service.startDeleteRun(setId, 'sensitron', [row], 'sensitron', null);
+    }
+
+    /** Answers the oldest open check of active set and token. */
+    function verify(verdict: WishBindingSkipReason | null) {
+      const pending = verifications.shift();
+      expect(pending).toBeDefined();
+      pending!.next(verdict);
+      pending!.complete();
+    }
+
+    /** One page of a multi-page dated read. */
+    function datedPage(entries: readonly LiveEntry[], totalCount: number, pageCount: number) {
+      const single = datedSetPage(entries, totalCount);
+      single.data.emoteSets.emoteSet.emotes.pageCount = pageCount;
+      return single;
+    }
+
+    function answerRateLimited() {
+      httpMock.expectOne(isRemove).flush(rateLimitResponse(1));
+    }
+
+    const LIVE_A: LiveEntry = { id: '7tv-x', alias: 'aaa', addedAt: T1 };
+
+    it('checks the token and the active set first, then reads the set, then removes the entry', () => {
+      startWish();
+
+      httpMock.expectNone(isSetRead);
+      expect(verifications).toHaveLength(1);
+      verify(null);
+      httpMock.expectNone(isRemove);
+      answerRead([LIVE_A]);
+
+      expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+      expect(rowOf('7tv-x#slot-aaa')?.status).toBe('done');
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+    });
+
+    it('reads the set again for a second attempt within five seconds, never reusing the first read', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerRateLimited();
+
+      vi.advanceTimersByTime(1500);
+      verify(null);
+      answerRead([LIVE_A]);
+
+      expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+      httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      expect(verifications).toHaveLength(0);
+    });
+
+    it('sends no second REMOVE when the read after a 429 shows the alias under a new generation', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerRateLimited();
+
+      vi.advanceTimersByTime(1500);
+      verify(null);
+      answerRead([{ id: '7tv-x', alias: 'aaa', addedAt: T2 }]);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
+        status: 'cancelled',
+        skipReason: { key: 'usageStats.delete.departedSinceLoad' },
+      });
+    });
+
+    it('sends no second REMOVE when the active set changed during the 429 pause, without reading the set', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerRateLimited();
+
+      vi.advanceTimersByTime(1500);
+      verify('setChanged');
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isSetRead);
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
+        status: 'cancelled',
+        skipReason: { key: 'wishes.start.setChanged' },
+      });
+    });
+
+    it('sends no second REMOVE when the token was removed during the 429 pause', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerRateLimited();
+      tokenService.clearToken();
+
+      vi.advanceTimersByTime(1500);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      expect(verifications).toHaveLength(0);
+      httpMock.expectNone(isSetRead);
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe('wishes.start.tokenChanged');
+    });
+
+    it('sends no second REMOVE when another token was stored during the 429 pause', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerRateLimited();
+      tokenService.setToken('another-token');
+
+      vi.advanceTimersByTime(1500 + DELETE_DELAY_MS);
+
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe('wishes.start.tokenChanged');
+    });
+
+    it('sends nothing when the token is swapped while the set is being read', () => {
+      startWish();
+      verify(null);
+      tokenService.setToken('another-token');
+      answerRead([LIVE_A]);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe('wishes.start.tokenChanged');
+    });
+
+    it.each([
+      [
+        'throttled or failed',
+        (pending: Subject<WishBindingSkipReason | null>) => pending.next('setUnverified'),
+      ],
+      [
+        'erroring',
+        (pending: Subject<WishBindingSkipReason | null>) => pending.error(new Error('x')),
+      ],
+      ['empty', (pending: Subject<WishBindingSkipReason | null>) => pending.complete()],
+    ])('sends nothing when the check of the active set is %s', (_label, answer) => {
+      startWish();
+      answer(verifications.shift()!);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isSetRead);
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
+        status: 'cancelled',
+        skipReason: { key: 'wishes.start.setUnverified' },
+      });
+    });
+
+    it('sends nothing when the run is not against the frozen active set', () => {
+      startWish(wishRow(), 'set-2');
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      expect(verifications).toHaveLength(0);
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe('wishes.start.setChanged');
+    });
+
+    describe('an observation older than five seconds', () => {
+      const OTHER: LiveEntry = { id: '7tv-o', alias: 'ooo', addedAt: T3 };
+
+      /** A two-page read: page 1 holds OTHER, page 2 `last`; the verification re-read of page 1
+       *  answers after `verifyMs`. */
+      function answerTwoPageRead(last: LiveEntry, verifyMs: number) {
+        httpMock.expectOne(isSetRead).flush(datedPage([OTHER], 2, 2));
+        httpMock.expectOne(isSetRead).flush(datedPage([last], 2, 2));
+        const verification = httpMock.expectOne(isSetRead);
+        expect(verification.request.body.variables.page).toBe(1);
+        vi.advanceTimersByTime(verifyMs);
+        verification.flush(datedPage([OTHER], 2, 2));
+      }
+
+      it('reads exactly once more when the target sits on the last page of a slow read, then sends', () => {
+        startWish();
+        verify(null);
+        answerTwoPageRead(LIVE_A, WISH_OBSERVATION_MAX_AGE_MS + 1000);
+        httpMock.expectNone(isRemove);
+
+        answerTwoPageRead(LIVE_A, 100);
+
+        expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+        expect(verifications).toHaveLength(0);
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+
+      it('sends nothing when the second read shows the entry replaced by a new generation', () => {
+        startWish();
+        verify(null);
+        answerTwoPageRead(LIVE_A, WISH_OBSERVATION_MAX_AGE_MS + 1000);
+
+        answerTwoPageRead({ id: '7tv-x', alias: 'aaa', addedAt: T2 }, 100);
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+        httpMock.expectNone(isSetRead);
+        httpMock.expectNone(isRemove);
+        expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe(
+          'usageStats.delete.departedSinceLoad',
+        );
+      });
+
+      it('skips the row when the second read is too slow as well', () => {
+        startWish();
+        verify(null);
+        answerTwoPageRead(LIVE_A, WISH_OBSERVATION_MAX_AGE_MS + 1000);
+
+        answerTwoPageRead(LIVE_A, WISH_OBSERVATION_MAX_AGE_MS + 1000);
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+        httpMock.expectNone(isSetRead);
+        httpMock.expectNone(isRemove);
+        expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
+          status: 'cancelled',
+          skipReason: { key: 'wishes.remove.tooSlow' },
+        });
+      });
+
+      it('counts an entry on a verified page from its verification, not from the first pass', () => {
+        startWish();
+        verify(null);
+        // The target on page 1: the slow verification re-read observes it again.
+        httpMock.expectOne(isSetRead).flush(datedPage([LIVE_A], 2, 2));
+        vi.advanceTimersByTime(WISH_OBSERVATION_MAX_AGE_MS + 1000);
+        httpMock.expectOne(isSetRead).flush(datedPage([OTHER], 2, 2));
+        httpMock.expectOne(isSetRead).flush(datedPage([LIVE_A], 2, 2));
+
+        expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+    });
+
+    it('keeps the token out of the row, the record and the report', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerRemove();
+      const report = httpMock.expectOne(SYNC_ENDPOINT);
+
+      expect(JSON.stringify(service.queue())).not.toContain('write-token');
+      expect(JSON.stringify(service.run())).not.toContain('write-token');
+      expect(JSON.stringify(report.request.body)).not.toContain('write-token');
+      report.flush(deletedAnswer());
     });
   });
 });

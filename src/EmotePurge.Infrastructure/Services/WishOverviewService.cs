@@ -38,6 +38,9 @@ public sealed class WishOverviewService(
         var rows = await db.Wishes.AsNoTracking()
             .Where(w => ids.Contains(w.Id) && channelIds.Contains(w.ChannelId))
             .ToListAsync(cancellationToken);
+        // One image read for the whole answer, over the channels and emote ids that occur in it.
+        var images = await db.ReadWishImageUrlsAsync(
+            rows.Select(w => w.ChannelId).ToList(), rows.Select(w => w.SevenTvEmoteId).ToList(), cancellationToken);
         return rows
             .OrderBy(w => w.ExpiresAtUtc is null)
             .ThenBy(w => w.ExpiresAtUtc)
@@ -46,7 +49,7 @@ public sealed class WishOverviewService(
             .Select(w =>
             {
                 var channel = manageable[w.ChannelId];
-                return new WishOverviewItemDto(channel.Name, WishService.ToDto(w, channel.Settings));
+                return new WishOverviewItemDto(channel.Name, WishService.ToDto(w, channel.Settings, images.GetValueOrDefault((w.ChannelId, w.SevenTvEmoteId))));
             })
             .ToList();
     }

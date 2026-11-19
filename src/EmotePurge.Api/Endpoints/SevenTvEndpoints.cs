@@ -70,9 +70,12 @@ public static class SevenTvEndpoints
         app.MapGet("/api/seventv/channels/{channelName}/emote-sets", async (
             string channelName,
             IForeignEmoteSetService foreignEmoteSetService,
-            CancellationToken ct) =>
+            CancellationToken ct,
+            bool refresh = false) =>
         {
-            var result = await foreignEmoteSetService.GetForeignEmoteSetListAsync(channelName, ct);
+            // refresh=true (plan #485, T0a) skips the list service's held answer, like the sibling route's
+            // refresh; held failures, breaker, budget and this route's rate-limit policy still apply.
+            var result = await foreignEmoteSetService.GetForeignEmoteSetListAsync(channelName, refresh, ct);
 
             // Mirrors the state table this route shares with GET …/emotes above (spec 6.3: "Zustände
             // wie GET …/emotes") — including NoSevenTvAccount answering 404 here, not the 200-with-

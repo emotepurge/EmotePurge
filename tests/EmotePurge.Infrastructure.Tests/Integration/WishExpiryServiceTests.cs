@@ -463,7 +463,7 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
 
     // The manager commands on their own publisher, so the expiry run's events stay countable.
     private WishService Commands() =>
-        new(CreateDb(), new WishChangedPublisher(_otherPublisher, NullLogger<WishChangedPublisher>.Instance), _clock);
+        new(CreateDb(), new WishChangedPublisher(_otherPublisher, NullLogger<WishChangedPublisher>.Instance), _clock, NullLogger<WishService>.Instance);
 
     // The real reconcile in a scope of its own per call, also on its own publisher (it announces its own changes).
     private WishReconcileService RealReconcile()

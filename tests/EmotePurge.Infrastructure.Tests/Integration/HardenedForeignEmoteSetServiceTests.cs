@@ -550,7 +550,7 @@ public class HardenedForeignEmoteSetServiceTests(RedisFixture fixture)
         var channel = NewChannel();
         var calls = 0;
         var inner = Substitute.For<IForeignEmoteSetService>();
-        inner.GetForeignEmoteSetListAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        inner.GetForeignEmoteSetListAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
                 Interlocked.Increment(ref calls);
@@ -564,7 +564,11 @@ public class HardenedForeignEmoteSetServiceTests(RedisFixture fixture)
         Assert.Equal(ForeignEmoteSetListLookupStatus.Ok, first.Status);
         Assert.Equal(ForeignEmoteSetListLookupStatus.Ok, second.Status);
         Assert.Equal(2, calls);
-        await inner.Received(2).GetForeignEmoteSetListAsync(channel, Arg.Any<CancellationToken>());
+        await inner.Received(2).GetForeignEmoteSetListAsync(channel, false, Arg.Any<CancellationToken>());
+
+        // Plan #485, T0a: a refresh is forwarded as well; the list service behind inner decides what it skips.
+        await service.GetForeignEmoteSetListAsync(channel, refresh: true);
+        await inner.Received(1).GetForeignEmoteSetListAsync(channel, true, Arg.Any<CancellationToken>());
     }
 
     private HardenedForeignEmoteSetService CreateService(IForeignEmoteSetService inner) => new(

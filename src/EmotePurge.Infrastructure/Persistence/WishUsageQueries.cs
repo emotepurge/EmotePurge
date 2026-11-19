@@ -6,6 +6,8 @@ namespace EmotePurge.Infrastructure.Persistence;
 /// <summary>
 /// What the wish usage window reads of one emote in one channel: the window, the sum and mean over all slots
 /// of the emote, and the coverage-gap flag. <see cref="OwnSlotIds"/> is handed back for the caller's rank.
+/// <see cref="Daily"/> is the sum per UTC day of the window, every day from the window's first to the evaluation
+/// day in order, zero-filled; <see cref="Total"/> is its sum (plan #485 2.1a).
 /// </summary>
 public sealed record WishUsageRead(
     DateTime WindowStartUtc,
@@ -13,7 +15,8 @@ public sealed record WishUsageRead(
     long Total,
     decimal MeanPerDay,
     bool HasCoverageGap,
-    IReadOnlyList<string> OwnSlotIds);
+    IReadOnlyList<string> OwnSlotIds,
+    IReadOnlyList<WishUsageDayDto> Daily);
 
 /// <summary>
 /// The one read behind the wish usage numbers, shared by the detail response and the expiry run (plan 2.2, T2).
@@ -50,16 +53,27 @@ public static class WishUsageQueries
             .Where(s => !s.SeedUnsettled && s.Emote.ChannelId == channelId && s.Emote.SevenTvEmoteId == sevenTvEmoteId)
             .Select(s => s.Id)
             .ToListAsync(cancellationToken);
-        var total = ownSlotIds.Count == 0
-            ? 0L
+        // One grouped read per window (at most eight days); the total is the sum of the series, so the two
+        // can never disagree.
+        var perDay = ownSlotIds.Count == 0
+            ? new Dictionary<DateOnly, long>()
             : await db.UsageStats.AsNoTracking()
                 .Where(u => ownSlotIds.Contains(u.SlotId) && u.Date >= from && u.Date <= to)
-                .SumAsync(u => (long)u.UseCount, cancellationToken);
+                .GroupBy(u => u.Date)
+                .Select(g => new { Date = g.Key, UseCount = g.Sum(u => (long)u.UseCount) })
+                .ToDictionaryAsync(d => d.Date, d => d.UseCount, cancellationToken);
+        var daily = new List<WishUsageDayDto>(to.DayNumber - from.DayNumber + 1);
+        for (var day = from; day <= to; day = day.AddDays(1))
+        {
+            daily.Add(new WishUsageDayDto(day, perDay.GetValueOrDefault(day)));
+        }
+
+        var total = daily.Sum(d => d.UseCount);
 
         var facts = new WishCoverageFacts(
             TrackingCoverage.TrackedSince(channel.TrackingResumedAt, channel.CreatedAt), channel.DeactivatedAtUtc, channel.IsBotActive);
         var mean = WishUsageWindow.MeanPerDay(total, WishUsageWindow.LengthInDays(windowStart, evaluatedAtUtc));
         return new WishUsageRead(
-            windowStart, evaluatedAtUtc, total, mean, WishUsageWindow.HasCoverageGap(facts, windowStart, evaluatedAtUtc), ownSlotIds);
+            windowStart, evaluatedAtUtc, total, mean, WishUsageWindow.HasCoverageGap(facts, windowStart, evaluatedAtUtc), ownSlotIds, daily);
     }
 }

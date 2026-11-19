@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EVENT_SOURCE_FACTORY } from './event-source.factory';
 import { LIVE_EVENT_TYPES, LiveEvent } from './live-event.model';
-import { liveEvents, liveReload } from './live-reload';
+import { liveEvents, liveReload, liveReopened } from './live-reload';
 
 const READY_STATE_OPEN = 1;
 const READY_STATE_CLOSED = 2;
@@ -221,6 +221,46 @@ describe('liveEvents / liveReload', () => {
       );
 
       expect(FakeEventSource.instances).toHaveLength(1);
+    });
+  });
+
+  describe('liveReopened (#485)', () => {
+    it('fires when the subscribed stream of its url opens again, not on the first open', () => {
+      let reopened = 0;
+      runInInjectionContext(injector, () => {
+        track(liveEvents('/api/channels/x/live', []).subscribe());
+        track(liveReopened('/api/channels/x/live').subscribe(() => reopened++));
+      });
+      const source = only();
+
+      source.onopen?.();
+      expect(reopened).toBe(0);
+
+      source.readyState = 0;
+      source.onerror?.();
+      source.onopen?.();
+      expect(reopened).toBe(1);
+    });
+
+    it('follows a url signal and ignores the stream it left', () => {
+      const url = signal('/api/channels/x/live');
+      let reopened = 0;
+      runInInjectionContext(injector, () => {
+        track(liveEvents(url, []).subscribe());
+        track(liveReopened(url).subscribe(() => reopened++));
+      });
+      TestBed.tick();
+      url.set('/api/channels/y/live');
+      TestBed.tick();
+      const [left, current] = FakeEventSource.instances;
+      expect(current.url).toBe('/api/channels/y/live');
+
+      current.onopen?.();
+      current.onopen?.();
+      left.onopen?.();
+      left.onopen?.();
+
+      expect(reopened).toBe(1);
     });
   });
 });

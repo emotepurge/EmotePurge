@@ -40,6 +40,11 @@
     "admin": "Admin",
     "myVotings": "Meine Abstimmungen",
     "votings": "Abstimmungen",
+    "wishes": "Wünsche",
+    "wishesCount": {
+      "one": "Wünsche, {{count}} mit Handlungsbedarf",
+      "other": "Wünsche, {{count}} mit Handlungsbedarf"
+    },
     "logout": "Logout",
     "login": "Login"
   },
@@ -269,6 +274,7 @@
       "tags": "Tags",
       "voting": "Votings",
       "activity": "Aktivität",
+      "wishes": "Wünsche",
       "settings": "Einstellungen"
     },
     "activity": {
@@ -1031,6 +1037,17 @@
       "backfillRequest": "Backfill angefordert",
       "backfillCancel": "Backfill abgebrochen",
       "backfillRemoveImported": "Importierte Daten entfernt",
+      "wishCreate": "Wunsch nachgetragen",
+      "wishAdopt": "Bestand als Wunsch übernommen",
+      "wishExtend": "Wunsch verlängert",
+      "wishKeep": "Wunsch-Emote behalten",
+      "wishRemove": "Wunsch-Emote entfernt",
+      "wishClose": "Wunsch geschlossen",
+      "wishRetry": "Wunsch erneut versucht",
+      "wishReAdd": "Wunsch wieder aufgenommen",
+      "wishSettings": "Wunsch-Einstellungen geändert",
+      "wishDue": "Wunsch fällig geworden",
+      "wishUpdate": "Wunsch bearbeitet",
       "userRevokeSessions": "User-Sessions widerrufen",
       "userInvalidateRoleCache": "Rollen-Cache geleert",
       "userDelete": "Account gelöscht"
@@ -1428,6 +1445,15 @@
         "forbidden": "Du darfst in dieser Abstimmung nicht mitvoten (falsche Rolle für diese Session)."
       }
     }
+  },
+  "myWishes": {
+    "title": "Meine Wünsche",
+    "actionNeeded": "Handlungsbedarf",
+    "probation": "Probezeit",
+    "empty": "Nichts zu tun.",
+    "emptyHint": "Es wartet kein Wunsch auf eine Entscheidung, und keiner ist in der Probezeit.",
+    "loadFailed": "Die Wünsche konnten nicht geladen werden.",
+    "retry": "Erneut laden"
   },
   "myVotings": {
     "noSessions": "Du hast noch in keiner Abstimmung mitgemacht.",
@@ -2211,7 +2237,8 @@
       "delete": "der Löschlauf",
       "restore": "die Wiederherstellung",
       "import": "die Übertragung",
-      "undo": "die Rücknahme der Ersetzungen"
+      "undo": "die Rücknahme der Ersetzungen",
+      "wish": "das Hinzufügen eines Wunsch-Emotes"
     },
     "tagReport": {
       "pending": "Wird beim Tag vermerkt …",
@@ -2650,6 +2677,341 @@
         "other": "Importierte Daten entfernt: {{ count }} Tage."
       },
       "announceNothingLeft": "Die importierten Daten waren bereits entfernt."
+    }
+  },
+  "wishes": {
+    "errors": {
+      "emote_ids_invalid": "Das ist kein gültiger 7TV-Link und keine gültige Emote-ID.",
+      "adopt_start_invalid": "Das Startdatum liegt in der Zukunft oder vor dem Hinzufügen des Eintrags zum Set."
+    },
+    "status": {
+      "pending": "Offen",
+      "approved": "Freigegeben",
+      "unconfirmed": "Unbestätigt",
+      "failed": "Fehlgeschlagen",
+      "active": "Aktiv",
+      "presented": "Vorgelegt",
+      "rejected": "Abgelehnt",
+      "expired": "Verfallen",
+      "removed": "Entfernt",
+      "removed_externally": "Extern entfernt",
+      "kept": "Behalten",
+      "closed": "Geschlossen",
+      "merged": "Zusammengeführt",
+      "unknown": "Unbekannter Zustand"
+    },
+    "reason": {
+      "expired": "Die Laufzeit ist um. Entscheide, ob das Emote bleibt.",
+      "unconfirmed_start": "Wann das Emote ins Set kam, hat 7TV noch nicht bestätigt. Deshalb entscheidet hier ein Mensch.",
+      "other": "Hier ist eine Entscheidung nötig."
+    },
+    "source": {
+      "irc": "Aus dem Chat",
+      "manual": "Nachgetragen",
+      "adopted": "Aus dem Bestand übernommen"
+    },
+    "actions": {
+      "add7tv": "In 7TV hinzufügen",
+      "adopt": "Mit Eintrag verknüpfen",
+      "edit": "Bearbeiten",
+      "close": "Schließen",
+      "retry": "Erneut versuchen",
+      "extend": "Verlängern",
+      "keep": "Behalten",
+      "remove": "Entfernen",
+      "reAdd": "Wieder hinzufügen"
+    },
+    "row": {
+      "probation": "Probezeit",
+      "remaining": {
+        "days": {
+          "one": "noch {{ count }} Tag",
+          "other": "noch {{ count }} Tage"
+        },
+        "hours": {
+          "one": "noch {{ count }} Stunde",
+          "other": "noch {{ count }} Stunden"
+        },
+        "expiredDays": {
+          "one": "seit {{ count }} Tag abgelaufen",
+          "other": "seit {{ count }} Tagen abgelaufen"
+        },
+        "expiredToday": "heute abgelaufen"
+      },
+      "requester": "gewünscht von {{ login }}",
+      "duration": {
+        "one": "{{ count }} Tag Laufzeit",
+        "other": "{{ count }} Tage Laufzeit"
+      },
+      "initialDuration": {
+        "one": "Ausgangslaufzeit {{ count }} Tag",
+        "other": "Ausgangslaufzeit {{ count }} Tage"
+      },
+      "permanent": "dauerhaft",
+      "inSetSince": "im Set seit {{ date }}",
+      "inSetSinceProvisional": "im Set seit {{ date }} (vorläufig)",
+      "extensions": {
+        "one": "{{ count }}-mal verlängert",
+        "other": "{{ count }}-mal verlängert"
+      },
+      "ended": "beendet am {{ date }}",
+      "sevenTvHint": "Fügst du das Emote direkt in 7TV hinzu oder entfernst es dort, erkennt EmotePurge das beim nächsten Sync.",
+      "openOnSevenTv": "Auf 7TV ansehen"
+    },
+    "page": {
+      "reload": "Erneut laden",
+      "pinned": {
+        "title": "Gesuchter Wunsch",
+        "gone": "Diesen Wunsch gibt es nicht mehr."
+      },
+      "open": {
+        "title": "Handlungsbedarf",
+        "empty": "Gerade ist nichts zu entscheiden",
+        "emptyHint": "Vorgelegte und freigegebene Wünsche erscheinen hier, sobald jemand etwas tun muss."
+      },
+      "running": {
+        "title": "Laufend",
+        "empty": "Gerade läuft kein Wunsch",
+        "emptyHint": "Sobald ein gewünschtes Emote im Set ist, läuft hier seine Frist."
+      },
+      "ended": {
+        "title": "Beendet",
+        "empty": "Noch kein Wunsch beendet",
+        "emptyHint": "Entfernte, behaltene und geschlossene Wünsche stehen hier."
+      },
+      "header": {
+        "entry": "Nachtragen",
+        "adopt": "Bestand übernehmen"
+      },
+      "setFull": "Der Wunsch ist angelegt, aber das Set ist voll. Bevor das Emote hinein kann, muss ein Platz frei werden."
+    },
+    "confirm": {
+      "keep": "„{{ name }}“ dauerhaft behalten? Das Emote bleibt im Set, der Wunsch ist damit abgeschlossen.",
+      "close": "Wunsch „{{ name }}“ schließen? Er endet, ohne dass in 7TV etwas geändert wird."
+    },
+    "lock": {
+      "running": "In 7TV läuft gerade {{ kind }}. Bis dahin sind die 7TV-Aktionen hier gesperrt.",
+      "settling": "In 7TV wird gerade {{ kind }} abgeschlossen. Bis dahin sind die 7TV-Aktionen hier gesperrt.",
+      "starting": "Ein 7TV-Vorgang wird gerade gestartet. Bis dahin sind die 7TV-Aktionen hier gesperrt."
+    },
+    "usage": {
+      "total": {
+        "one": "{{ count }} Nutzung",
+        "other": "{{ count }} Nutzungen"
+      },
+      "mean": "Ø {{ mean }} pro Tag",
+      "rank": "Rang {{ rank }} von {{ of }}",
+      "window": {
+        "sinceStart": "seit dem Start",
+        "lastDays": {
+          "one": "letzter Tag",
+          "other": "letzte {{ count }} Tage"
+        }
+      },
+      "gap": "Die Zählung deckt dieses Fenster nicht ganz ab.",
+      "limited": "Die Nutzung ist gerade nicht abrufbar, später erneut versuchen.",
+      "sparkline": "Nutzung pro Tag,"
+    },
+    "settings": {
+      "title": "Wünsche",
+      "intro": "Diese Vorgaben gelten für neue Wünsche dieses Kanals.",
+      "botActive": "Der Bot-Modus ist aktiv.",
+      "readOnly": "Du kannst diese Einstellungen ansehen, aber nicht ändern. Das dürfen nur der Broadcaster, wer den Bot aktiviert hat, und Admins.",
+      "duration": {
+        "label": "Standardlaufzeit in Tagen",
+        "hint": "So lange läuft ein neuer Wunsch, wenn nichts anderes angegeben ist."
+      },
+      "lead": {
+        "label": "Vorlauf der Probezeit in Tagen",
+        "hint": "So viele Tage vor dem Ablauf beginnt die Probezeit, in der ein Wunsch noch läuft, aber schon zur Entscheidung ansteht."
+      },
+      "leadInvalid": {
+        "empty": "Gib einen Vorlauf an.",
+        "not_integer": "Der Vorlauf ist eine ganze Zahl von Tagen.",
+        "out_of_range": "Der Vorlauf liegt zwischen 1 und {{ max }} Tagen."
+      },
+      "save": "Speichern",
+      "saved": "Einstellungen gespeichert.",
+      "changed": "Die Einstellungen wurden inzwischen geändert. Deine Eingaben sind noch nicht gespeichert.",
+      "reload": "Neu laden",
+      "loadFailed": "Die Einstellungen konnten nicht geladen werden.",
+      "retry": "Erneut versuchen"
+    },
+    "dialog": {
+      "toWish": "Zum Wunsch",
+      "duration": "Laufzeit in Tagen",
+      "durationInvalid": {
+        "empty": "Gib eine Laufzeit an.",
+        "not_integer": "Die Laufzeit ist eine ganze Zahl von Tagen.",
+        "out_of_range": "Die Laufzeit liegt zwischen 1 und {{ max }} Tagen."
+      },
+      "blocked": {
+        "disabled": "Wunsch-Emotes sind gerade nicht verfügbar.",
+        "duration": "Die Laufzeit fehlt oder passt nicht."
+      }
+    },
+    "adopt": {
+      "title": "Bestand übernehmen",
+      "titleLink": "Mit Eintrag verknüpfen",
+      "intro": "Wähle einen Eintrag, der schon im Set ist. Er bekommt eine Frist wie ein Wunsch.",
+      "introLink": "Wähle den Eintrag im Set, zu dem der Wunsch „{{ name }}“ gehört.",
+      "loadFailed": "Die Einträge des Sets konnten nicht geladen werden.",
+      "search": "Eintrag suchen",
+      "noMatch": "Kein Eintrag passt zur Suche.",
+      "empty": "Im Set ist gerade kein Eintrag, der sich übernehmen lässt.",
+      "entriesLegend": "Eintrag im Set",
+      "addedOn": "im Set seit {{ date }}",
+      "addedUnknown": "Datum unbekannt",
+      "linkNote": "Wird mit dem laufenden Wunsch für dieses Emote verknüpft.",
+      "missing": "Dieser Eintrag ist nicht mehr im Set.",
+      "moreHidden": {
+        "one": "{{ count }} weiterer Eintrag, die Suche grenzt ein.",
+        "other": "{{ count }} weitere Einträge, die Suche grenzt ein."
+      },
+      "locked": {
+        "held": "Gehört schon zu einem Wunsch.",
+        "heldRunning": "Gehört zu einem laufenden Wunsch.",
+        "kept": "Ist als behaltener Wunsch geführt.",
+        "runningElsewhere": "Für dieses Emote läuft schon ein Wunsch an einem anderen Eintrag.",
+        "otherWish": "Für dieses Emote läuft ein anderer Wunsch."
+      },
+      "start": {
+        "legend": "Beginn der Frist",
+        "added": "Ab dem Hinzufügedatum",
+        "now": "Ab jetzt",
+        "undatedHint": "Wann der Eintrag ins Set kam, ist unbekannt. Die Frist beginnt deshalb jetzt.",
+        "expiredHint": "Ab dem Hinzufügedatum wäre die Frist schon um, deshalb ist „Ab jetzt“ vorgewählt.",
+        "expires": "Läuft ab am {{ date }}"
+      },
+      "submit": "Übernehmen",
+      "submitLink": "Verknüpfen",
+      "blocked": {
+        "loading": "Die Einträge werden noch geladen.",
+        "loadFailed": "Ohne die Einträge des Sets geht es nicht weiter.",
+        "noSelection": "Wähle einen Eintrag.",
+        "linkLoading": "Der laufende Wunsch wird noch geladen."
+      },
+      "stale": {
+        "wish_slot_not_found": "Der Eintrag hat sich inzwischen geändert.",
+        "wish_slot_already_linked": "Der Eintrag gehört inzwischen zu einem Wunsch.",
+        "wish_slot_already_linked_kept": "Der Eintrag ist inzwischen als behaltener Wunsch geführt.",
+        "wish_already_running": "Für dieses Emote läuft inzwischen ein Wunsch.",
+        "wish_state_conflict": "Der Wunsch hat sich inzwischen geändert.",
+        "wish_not_found": "Den Wunsch gibt es nicht mehr.",
+        "reselect": "Die Einträge sind neu geladen, wähle erneut."
+      }
+    },
+    "entry": {
+      "title": "Wunsch nachtragen",
+      "intro": "Für einen Wunsch, der nicht aus dem Chat kam. Füg den 7TV-Link des Emotes ein oder seine ID.",
+      "emote": {
+        "label": "7TV-Link oder Emote-ID",
+        "empty": "Gib einen 7TV-Link oder eine Emote-ID ein."
+      },
+      "read": {
+        "running": "Wird bei 7TV nachgeschlagen …",
+        "found": "Gefunden: {{ name }}",
+        "unknown": "Dieses Emote gibt es bei 7TV nicht (mehr).",
+        "unreachable": "7TV ist gerade nicht erreichbar. Trag den Alias selbst ein.",
+        "throttled": "7TV bremst gerade die Anfragen. Trag den Alias selbst ein."
+      },
+      "alias": {
+        "label": "Alias im Set",
+        "empty": "Gib einen Alias an.",
+        "too_long": "Der Alias hat höchstens {{ max }} Zeichen.",
+        "forbidden_char": "Der Alias darf keine Leer- oder Steuerzeichen enthalten."
+      },
+      "login": {
+        "label": "Gewünscht von (Twitch-Login, freiwillig)",
+        "invalid": "Das ist kein gültiger Twitch-Login."
+      },
+      "conflict": {
+        "adopt": "Das Emote ist schon im Set. Übernimm den Eintrag, statt einen neuen Wunsch anzulegen.",
+        "running": "Für dieses Emote läuft bereits ein Wunsch.",
+        "kept": "Dieses Emote ist bereits als behaltener Wunsch geführt.",
+        "other": "Für dieses Emote gibt es schon einen Wunsch.",
+        "takeOver": "Bestand übernehmen"
+      },
+      "blocked": {
+        "emoteEmpty": "Es fehlt der 7TV-Link oder die Emote-ID.",
+        "emoteInvalid": "Der 7TV-Link oder die Emote-ID passt nicht.",
+        "reading": "Das Emote wird noch bei 7TV nachgeschlagen.",
+        "unknown": "Dieses Emote gibt es bei 7TV nicht.",
+        "alias": "Der Alias fehlt oder passt nicht.",
+        "login": "Der Twitch-Login passt nicht."
+      },
+      "submit": "Nachtragen"
+    },
+    "edit": {
+      "title": "Wunsch bearbeiten",
+      "intro": "Ändere Alias oder Laufzeit von „{{ name }}“. Gesendet wird nur, was du änderst.",
+      "submit": "Speichern",
+      "blocked": {
+        "unchanged": "Alias und Laufzeit sind unverändert."
+      }
+    },
+    "readd": {
+      "title": "Wunsch wieder hinzufügen",
+      "intro": "„{{ name }}“ noch einmal in das Set aufnehmen.",
+      "submit": "Wieder hinzufügen",
+      "mode": {
+        "legend": "Wie lange soll das Emote bleiben?",
+        "timed": "Befristet",
+        "permanent": "Dauerhaft"
+      },
+      "permanentHint": "Das Emote wird nach dem Hinzufügen als behalten geführt, es läuft keine Frist.",
+      "running": "Für dieses Emote läuft bereits ein Wunsch."
+    },
+    "start": {
+      "nothingChanged": "Es wurde nichts geändert.",
+      "pageLeft": "Die Seite wurde verlassen, bevor der Vorgang starten konnte.",
+      "busy": "Ein anderer 7TV-Vorgang läuft.",
+      "tokenChanged": "Das 7TV-Token wurde entfernt oder gewechselt.",
+      "setChanged": "Das aktive Set hat gewechselt.",
+      "setSwitched": "Das Set hat in 7TV gewechselt. Nach dem nächsten Sync erneut versuchen.",
+      "setUnverified": "Das aktive Set ließ sich gerade nicht bei 7TV prüfen. Bitte später erneut versuchen.",
+      "noActiveSet": "Der Kanal hat in 7TV kein aktives Set.",
+      "wishChanged": "Der Wunsch hat sich inzwischen geändert.",
+      "wishUnverified": "Der Wunsch ließ sich gerade nicht neu laden."
+    },
+    "add": {
+      "starting": "Hinzufügen wird vorbereitet …",
+      "running": "Wird in 7TV hinzugefügt …",
+      "paused": "7TV bremst gerade. Nächster Versuch in {{ seconds }} s.",
+      "added": "In 7TV hinzugefügt. Der nächste Sync übernimmt den Wunsch.",
+      "unknown": "Die Antwort von 7TV ging verloren. Der nächste Sync zeigt, ob das Emote im Set ist.",
+      "nameTaken": "7TV hat abgelehnt: Der Name ist im Set schon vergeben.",
+      "tokenInvalid": "7TV hat das Token nicht angenommen. Bitte ein neues 7TV-Token eintragen und erneut versuchen.",
+      "rejected": "7TV hat abgelehnt: {{ message }}"
+    },
+    "remove": {
+      "tooSlow": "7TV antwortet zu langsam, um den Eintrag sicher zu prüfen. Es wurde nichts entfernt.",
+      "confirm": {
+        "title": "Wunsch-Emote aus 7TV entfernen?",
+        "alias": "Name im Set",
+        "addedAt": "Hinzugefügt am",
+        "set": "Set",
+        "intro": "Entfernt wird genau dieser Eintrag aus dem aktiven Set. Der Wunsch ist danach beendet; ein Wiederherstellen aus dem Lauf holt nur das Emote zurück.",
+        "submit": "Entfernen"
+      },
+      "blocked": {
+        "noEntry": "Der Eintrag dieses Wunsches ist noch nicht bekannt. Entfernen ist nach dem nächsten Sync möglich.",
+        "provisional": "Das Hinzufügedatum ist noch nicht von 7TV bestätigt. Entfernen ist nach dem nächsten Sync möglich.",
+        "invalid": "Das Hinzufügedatum dieses Eintrags lässt sich nicht verwenden. Nach dem nächsten Sync erneut versuchen.",
+        "pending": "Dieser Eintrag ist schon aus 7TV entfernt; seine Meldung an Emote Purge steht noch aus."
+      },
+      "starting": "Entfernen wird vorbereitet …",
+      "running": "Wird aus 7TV entfernt …",
+      "paused": "7TV bremst gerade. Nächster Versuch in {{ seconds }} s.",
+      "nothingRemoved": "Es wurde nichts entfernt.",
+      "failed": "7TV hat abgelehnt: {{ message }}",
+      "cancelled": "Abgebrochen. Es wurde nichts entfernt.",
+      "unknown": "Die Antwort von 7TV ging verloren. Der nächste Sync zeigt, ob der Eintrag noch im Set ist.",
+      "reporting": "Aus 7TV entfernt. Wird gebucht …",
+      "booked": "Aus 7TV entfernt.",
+      "notBooked": "Entfernt in 7TV. Der Wunsch wurde inzwischen anders gebucht.",
+      "reportPending": "Aus 7TV entfernt, aber die Meldung an Emote Purge ist nicht angekommen.",
+      "retryReport": "Erneut melden"
     }
   }
 }

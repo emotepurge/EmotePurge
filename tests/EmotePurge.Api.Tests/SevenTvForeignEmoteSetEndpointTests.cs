@@ -248,7 +248,7 @@ public class SevenTvForeignEmoteSetEndpointTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task EmoteSets_Ok_ReturnsSetsSortedActiveFirstThenOrdinalByName()
     {
-        _factory.ForeignEmoteSet.GetForeignEmoteSetListAsync(Channel, Arg.Any<CancellationToken>())
+        _factory.ForeignEmoteSet.GetForeignEmoteSetListAsync(Channel, Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(ForeignEmoteSetListLookupResult.Ok(new EmoteSetList(
                 "set-b",
                 [
@@ -279,7 +279,7 @@ public class SevenTvForeignEmoteSetEndpointTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task EmoteSets_NullSevenTvActiveEmoteSetId_MapsToEmptyStringOnTheWire_NotNull()
     {
-        _factory.ForeignEmoteSet.GetForeignEmoteSetListAsync(Channel, Arg.Any<CancellationToken>())
+        _factory.ForeignEmoteSet.GetForeignEmoteSetListAsync(Channel, Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(ForeignEmoteSetListLookupResult.Ok(new EmoteSetList(
                 null, [new EmoteSetSummary("set-a", "Alpha", 1000, "NORMAL", false, "Owner")], "7tv-owner-1")));
 
@@ -306,7 +306,7 @@ public class SevenTvForeignEmoteSetEndpointTests : IClassFixture<ApiFactory>
     public async Task EmoteSets_EveryFailureStatus_MapsToItsDocumentedResponse(
         ForeignEmoteSetListLookupStatus status, HttpStatusCode expectedStatusCode, string expectedErrorCode)
     {
-        _factory.ForeignEmoteSet.GetForeignEmoteSetListAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+        _factory.ForeignEmoteSet.GetForeignEmoteSetListAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(ForeignEmoteSetListLookupResult.Failed(status));
 
         var response = await SendSetsAsync(Channel, NewUserId());
@@ -315,14 +315,30 @@ public class SevenTvForeignEmoteSetEndpointTests : IClassFixture<ApiFactory>
         Assert.Equal(expectedErrorCode, await ReadErrorCodeAsync(response));
     }
 
-    private async Task<HttpResponseMessage> SendSetsAsync(string channelName, string? userId)
+    // Plan #485, T0a: the set list's refresh, after the sibling route's.
+    [Theory]
+    [InlineData("?refresh=true", true)]
+    [InlineData("?refresh=false", false)]
+    [InlineData("", false)]
+    public async Task EmoteSets_RefreshQueryParam_IsPassedThroughToTheService(string query, bool expected)
+    {
+        _factory.ForeignEmoteSet.GetForeignEmoteSetListAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(ForeignEmoteSetListLookupResult.Failed(ForeignEmoteSetListLookupStatus.NoSevenTvAccount));
+
+        var response = await SendSetsAsync(Channel, NewUserId(), query);
+
+        Assert.NotEqual(HttpStatusCode.BadRequest, response.StatusCode);
+        await _factory.ForeignEmoteSet.Received(1).GetForeignEmoteSetListAsync(Channel, expected, Arg.Any<CancellationToken>());
+    }
+
+    private async Task<HttpResponseMessage> SendSetsAsync(string channelName, string? userId, string query = "")
     {
         var client = _factory.CreateClient(new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
         {
             AllowAutoRedirect = false
         });
 
-        var request = new HttpRequestMessage(HttpMethod.Get, $"/api/seventv/channels/{channelName}/emote-sets");
+        var request = new HttpRequestMessage(HttpMethod.Get, $"/api/seventv/channels/{channelName}/emote-sets{query}");
         if (userId is not null)
         {
             request.Headers.Add(TestAuthHandler.UserIdHeader, userId);

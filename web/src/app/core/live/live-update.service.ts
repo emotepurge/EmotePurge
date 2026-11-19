@@ -1,6 +1,6 @@
 import { DOCUMENT } from '@angular/common';
 import { Injectable, inject, signal } from '@angular/core';
-import { Observable, share } from 'rxjs';
+import { Observable, Subject, filter, map, share } from 'rxjs';
 
 import { EVENT_SOURCE_FACTORY } from './event-source.factory';
 import { LIVE_CONNECTION_RELEASE_FACTORY } from './live-connection-release.factory';
@@ -108,6 +108,9 @@ export class LiveUpdateService {
    */
   private readonly openConnectionIds = new Set<string>();
 
+  /** The url of every connection that just opened again after an earlier open; see {@link reopened}. */
+  private readonly reopenedUrls = new Subject<string>();
+
   constructor() {
     // Registered once, for the service's own lifetime — not per `connect()` closure, since the
     // point is "the tab is going away", not "this one stream is going away". Reading `defaultView`
@@ -151,6 +154,24 @@ export class LiveUpdateService {
     const created = this.connect(url).pipe(share({ resetOnRefCountZero: true }));
     this.sharedStreams.set(url, created);
     return created;
+  }
+
+  /**
+   * Emits each time the connection of `url` opens **again** after it had been open before — the
+   * browser's own transient reconnect as well as this service's rebuild after a fatal close. The
+   * first open of a connection emits nothing, and neither does a fresh connection after the last
+   * subscriber had left (whoever subscribes anew loads anyway).
+   *
+   * Per url on purpose (#485, plan 2.4): `status` is service-wide and the last writer wins, so a
+   * page cannot tell from it whether *its* stream was the one that dropped. A page uses this to catch
+   * up on what a gap may have swallowed; it says nothing about the stream unless someone holds a
+   * {@link stream} subscription to the same url, because only then is there a connection to reopen.
+   */
+  reopened(url: string): Observable<void> {
+    return this.reopenedUrls.pipe(
+      filter((reopenedUrl) => reopenedUrl === url),
+      map(() => undefined),
+    );
   }
 
   /**
@@ -200,6 +221,9 @@ export class LiveUpdateService {
       // reconnectDue} is ever true, which is what keeps this a single reconnect path per URL rather
       // than two racing ones.
       let reconnectDue = false;
+      // Whether this closure's connection has been open before: the next `open` is then a reopen
+      // (see `reopened`). Per closure, so it survives our own rebuild with a new EventSource.
+      let openedBefore = false;
 
       const open = (): void => {
         this.statusSignal.set('connecting');
@@ -215,6 +239,10 @@ export class LiveUpdateService {
           // that is the one condition allowed to lift it, and why it is fine to lift it globally
           // rather than just for this one connection.
           this.reconnectSuspended = false;
+          if (openedBefore) {
+            this.reopenedUrls.next(url);
+          }
+          openedBefore = true;
         };
 
         opened.onmessage = (event: MessageEvent) => {

@@ -391,10 +391,21 @@ export class SevenTvEmoteSetService {
   }
 
   /** 6.3 — the set list of a *foreign* channel (K3's source-set picker). `isActive` in the response
-   *  is 7TV's own `style.activeEmoteSetId` (E21) — this path never resolves a `Channel` row. */
-  listForeignChannelEmoteSets(channelName: string): Observable<EmoteSetListResponse> {
+   *  is 7TV's own `style.activeEmoteSetId` (E21) — this path never resolves a `Channel` row.
+   *  `refresh: true` (#485, T0a) bypasses the Api's 60 s cache of the list: the wish runs read the
+   *  active set with it, as the authoritative answer before they start and before every send. */
+  listForeignChannelEmoteSets(
+    channelName: string,
+    options: { refresh?: boolean } = {},
+  ): Observable<EmoteSetListResponse> {
     const normalized = normalizeChannelName(channelName);
-    return this.http.get<EmoteSetListResponse>(`/api/seventv/channels/${normalized}/emote-sets`);
+    let params = new HttpParams();
+    if (options.refresh) {
+      params = params.set('refresh', 'true');
+    }
+    return this.http.get<EmoteSetListResponse>(`/api/seventv/channels/${normalized}/emote-sets`, {
+      params,
+    });
   }
 
   /**

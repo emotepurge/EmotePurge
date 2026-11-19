@@ -164,17 +164,19 @@ public partial class WishServiceTests(PostgresFixture fixture)
         await using var holder = fixture.CreateTaggedDbContext("wish-slotindex-holder");
         await using var holderTransaction = await holder.Database.BeginTransactionAsync();
         // Another emote id keeps the running index out of the way; only the slot key is contended.
-        holder.Wishes.Add(NewWish(channel.Id, EmoteId(), WishStatus.Active, slot));
+        var winner = NewWish(channel.Id, EmoteId(), WishStatus.Active, slot);
+        holder.Wishes.Add(winner);
         await holder.SaveChangesAsync();
 
         await using var contender = fixture.CreateTaggedDbContext("wish-slotindex-contender");
-        var waiting = Sut(contender).AdoptAsync(channel.Name, new AdoptWishRequest(slot, null, null, null), Actor);
+        var waiting = Sut(contender).AdoptAsync(channel.Name, await WishAdoptRequests.ForCurrentAsync(fixture, slot, null, null, null), Actor);
         await fixture.WaitUntilBlockedOnLockAsync("wish-slotindex-contender", waiting);
 
         await holderTransaction.CommitAsync();
         var result = await waiting;
 
-        Assert.Equal(WishOutcome.SlotAlreadyLinked, result.Outcome);
+        // Plan #485 2.1a: the conflict names the holder, also when the index (not the check) caught it.
+        Assert.Equal((WishOutcome.SlotAlreadyLinked, (long?)winner.Id), (result.Outcome, result.ConflictingWishId));
         await using var db = fixture.CreateDbContext();
         Assert.Equal(1, await db.Wishes.CountAsync(w => w.ChannelId == channel.Id));
         Assert.False(await db.AuditLogEntries.AnyAsync(a => a.ChannelName == channel.Name));
@@ -230,10 +232,12 @@ public partial class WishServiceTests(PostgresFixture fixture)
         var conflict = await CreateAsync(channel, emote.SevenTvEmoteId, "Kappa");
         Assert.Equal(WishOutcome.EmoteAlreadyInSet, conflict.Outcome);
         Assert.Equal([slot], conflict.SlotIds);
+        // No wish of the emote runs: the conflict names none (plan #485 2.1a).
+        Assert.Null(conflict.ConflictingWishId);
         await AssertNothingWrittenAsync(channel);
         _ = _publisher.DidNotReceiveWithAnyArgs().PublishAsync(default!, default!, default);
 
-        var adopted = await Sut().AdoptAsync(channel.Name, new AdoptWishRequest(slot, null, null, null), Actor);
+        var adopted = await Sut().AdoptAsync(channel.Name, await WishAdoptRequests.ForCurrentAsync(fixture, slot, null, null, null), Actor);
 
         Assert.Equal(WishOutcome.Success, adopted.Outcome);
         var dto = adopted.Wish!;
@@ -259,11 +263,12 @@ public partial class WishServiceTests(PostgresFixture fixture)
         var channel = await SeedChannelAsync();
         var emote = await SeedEmoteAsync(channel);
         await SeedSlotAsync(emote, "Kappa", Now.AddDays(-1));
-        await SeedWishAsync(channel, emote.SevenTvEmoteId, WishStatus.Approved);
+        var running = await SeedWishAsync(channel, emote.SevenTvEmoteId, WishStatus.Approved);
 
         var result = await CreateAsync(channel, emote.SevenTvEmoteId, "Kappa");
 
-        Assert.Equal(WishOutcome.EmoteAlreadyInSet, result.Outcome);
+        // The set comes first, and the conflict still names the running wish (plan #485 2.1a, Sol-P2-5).
+        Assert.Equal((WishOutcome.EmoteAlreadyInSet, (long?)running), (result.Outcome, result.ConflictingWishId));
     }
 
     [Fact]
@@ -776,7 +781,7 @@ public partial class WishServiceTests(PostgresFixture fixture)
         await holder.LockWishesByIdsAsync([wishId], CancellationToken.None);
 
         await using var contender = fixture.CreateTaggedDbContext("wish-adopt-contender");
-        var waiting = Sut(contender).AdoptAsync(channel.Name, new AdoptWishRequest(slot, wishId, null, null), Actor);
+        var waiting = Sut(contender).AdoptAsync(channel.Name, await WishAdoptRequests.ForCurrentAsync(fixture, slot, wishId, null, null), Actor);
         await fixture.WaitUntilBlockedOnLockAsync("wish-adopt-contender", waiting);
 
         Assert.Contains("\"Wishes\"", await fixture.WaitingQueryAsync("wish-adopt-contender"));
@@ -829,14 +834,14 @@ public partial class WishServiceTests(PostgresFixture fixture)
     // ------------------------------------------------------------------------------------ helpers
 
     private WishService Sut(AppDbContext? db = null) =>
-        new(db ?? fixture.CreateDbContext(), new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance), _clock);
+        new(db ?? fixture.CreateDbContext(), new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance), _clock, NullLogger<WishService>.Instance);
 
     private Task<WishCommandResult> CreateAsync(Seeded channel, string emoteId, string alias, int? durationDays = null) =>
         Sut().CreateAsync(channel.Name, new CreateWishRequest(emoteId, "Emote", alias, durationDays, null), Actor);
 
-    private Task<WishCommandResult> AdoptAsync(
+    private async Task<WishCommandResult> AdoptAsync(
         Seeded channel, string slotId, long? wishId = null, int? durationDays = null, DateTime? startsAt = null) =>
-        Sut().AdoptAsync(channel.Name, new AdoptWishRequest(slotId, wishId, durationDays, startsAt), Actor);
+        await Sut().AdoptAsync(channel.Name, await WishAdoptRequests.ForCurrentAsync(fixture, slotId, wishId, durationDays, startsAt), Actor);
 
     private async Task<PagedResult<WishDto>> ListAsync(Seeded channel, WishListView view, int pageNumber = 1, int pageSize = 50) =>
         (await Sut().ListAsync(channel.Name, view, pageNumber, pageSize))!;
@@ -868,7 +873,8 @@ public partial class WishServiceTests(PostgresFixture fixture)
         {
             ChannelName = name,
             TwitchChannelId = twitchId ?? Guid.NewGuid().ToString("N")[..12],
-            ActiveEmoteSetCapacity = capacity
+            ActiveEmoteSetCapacity = capacity,
+            ActiveEmoteSetId = ActiveSet
         };
         db.Channels.Add(channel);
         await db.SaveChangesAsync();

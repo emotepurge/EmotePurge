@@ -40,6 +40,11 @@
     "admin": "Admin",
     "myVotings": "My votes",
     "votings": "Votes",
+    "wishes": "Wishes",
+    "wishesCount": {
+      "one": "Wishes, {{count}} needs action",
+      "other": "Wishes, {{count}} need action"
+    },
     "logout": "Logout",
     "login": "Login"
   },
@@ -269,6 +274,7 @@
       "tags": "Tags",
       "voting": "Voting",
       "activity": "Activity",
+      "wishes": "Wishes",
       "settings": "Settings"
     },
     "activity": {
@@ -1031,6 +1037,17 @@
       "backfillRequest": "Backfill requested",
       "backfillCancel": "Backfill cancelled",
       "backfillRemoveImported": "Imported data removed",
+      "wishCreate": "Wish added",
+      "wishAdopt": "Set entry taken over as wish",
+      "wishExtend": "Wish extended",
+      "wishKeep": "Wish emote kept",
+      "wishRemove": "Wish emote removed",
+      "wishClose": "Wish closed",
+      "wishRetry": "Wish retried",
+      "wishReAdd": "Wish re-added",
+      "wishSettings": "Wish settings changed",
+      "wishDue": "Wish came due",
+      "wishUpdate": "Wish edited",
       "userRevokeSessions": "User sessions revoked",
       "userInvalidateRoleCache": "Role cache cleared",
       "userDelete": "Account deleted"
@@ -1428,6 +1445,15 @@
         "forbidden": "You're not allowed to vote in this session (wrong role)."
       }
     }
+  },
+  "myWishes": {
+    "title": "My wishes",
+    "actionNeeded": "Needs action",
+    "probation": "Probation",
+    "empty": "Nothing to do.",
+    "emptyHint": "No wish is waiting for a decision, and none is in its probation period.",
+    "loadFailed": "The wishes could not be loaded.",
+    "retry": "Reload"
   },
   "myVotings": {
     "noSessions": "You haven't voted in any session yet.",
@@ -2211,7 +2237,8 @@
       "delete": "the deletion run",
       "restore": "the restore",
       "import": "the transfer",
-      "undo": "the replace undo"
+      "undo": "the replace undo",
+      "wish": "adding a wished emote"
     },
     "tagReport": {
       "pending": "Recording on the tag …",
@@ -2650,6 +2677,341 @@
         "other": "Imported data removed: {{ count }} days."
       },
       "announceNothingLeft": "The imported data had already been removed."
+    }
+  },
+  "wishes": {
+    "errors": {
+      "emote_ids_invalid": "This is not a valid 7TV emote link or emote ID.",
+      "adopt_start_invalid": "The start date lies in the future or before the entry was added to the set."
+    },
+    "status": {
+      "pending": "Open",
+      "approved": "Approved",
+      "unconfirmed": "Unconfirmed",
+      "failed": "Failed",
+      "active": "Active",
+      "presented": "Presented",
+      "rejected": "Rejected",
+      "expired": "Lapsed",
+      "removed": "Removed",
+      "removed_externally": "Removed elsewhere",
+      "kept": "Kept",
+      "closed": "Closed",
+      "merged": "Merged",
+      "unknown": "Unknown state"
+    },
+    "reason": {
+      "expired": "Its time is up. Decide whether the emote stays.",
+      "unconfirmed_start": "7TV has not yet confirmed when the emote entered the set, so a person decides here.",
+      "other": "This one needs a decision."
+    },
+    "source": {
+      "irc": "From chat",
+      "manual": "Entered by hand",
+      "adopted": "Taken over from the set"
+    },
+    "actions": {
+      "add7tv": "Add in 7TV",
+      "adopt": "Link to an entry",
+      "edit": "Edit",
+      "close": "Close",
+      "retry": "Try again",
+      "extend": "Extend",
+      "keep": "Keep",
+      "remove": "Remove",
+      "reAdd": "Add again"
+    },
+    "row": {
+      "probation": "Probation",
+      "remaining": {
+        "days": {
+          "one": "{{ count }} day left",
+          "other": "{{ count }} days left"
+        },
+        "hours": {
+          "one": "{{ count }} hour left",
+          "other": "{{ count }} hours left"
+        },
+        "expiredDays": {
+          "one": "expired {{ count }} day ago",
+          "other": "expired {{ count }} days ago"
+        },
+        "expiredToday": "expired today"
+      },
+      "requester": "wished by {{ login }}",
+      "duration": {
+        "one": "runs {{ count }} day",
+        "other": "runs {{ count }} days"
+      },
+      "initialDuration": {
+        "one": "initial run time {{ count }} day",
+        "other": "initial run time {{ count }} days"
+      },
+      "permanent": "permanent",
+      "inSetSince": "in the set since {{ date }}",
+      "inSetSinceProvisional": "in the set since {{ date }} (provisional)",
+      "extensions": {
+        "one": "extended once",
+        "other": "extended {{ count }} times"
+      },
+      "ended": "ended on {{ date }}",
+      "sevenTvHint": "If you add or remove the emote directly in 7TV, EmotePurge picks it up with the next sync.",
+      "openOnSevenTv": "View on 7TV"
+    },
+    "page": {
+      "reload": "Load again",
+      "pinned": {
+        "title": "Wish you were looking for",
+        "gone": "This wish no longer exists."
+      },
+      "open": {
+        "title": "Needs action",
+        "empty": "Nothing to decide right now",
+        "emptyHint": "Presented and approved wishes show up here as soon as someone has to act."
+      },
+      "running": {
+        "title": "Running",
+        "empty": "No wish is running right now",
+        "emptyHint": "Once a wished emote is in the set, its time runs here."
+      },
+      "ended": {
+        "title": "Ended",
+        "empty": "No wish has ended yet",
+        "emptyHint": "Removed, kept and closed wishes are listed here."
+      },
+      "header": {
+        "entry": "Add by hand",
+        "adopt": "Take over from the set"
+      },
+      "setFull": "The wish is filed, but the set is full. A slot has to be freed before the emote can go in."
+    },
+    "confirm": {
+      "keep": "Keep “{{ name }}” for good? The emote stays in the set and the wish is done.",
+      "close": "Close the wish “{{ name }}”? It ends without any change in 7TV."
+    },
+    "lock": {
+      "running": "Busy in 7TV: {{ kind }} is still running. Until it is done, the 7TV actions here are locked.",
+      "settling": "Busy in 7TV: {{ kind }} is still being finished. Until it is done, the 7TV actions here are locked.",
+      "starting": "A 7TV run is starting. Until then, the 7TV actions here are locked."
+    },
+    "usage": {
+      "total": {
+        "one": "{{ count }} use",
+        "other": "{{ count }} uses"
+      },
+      "mean": "avg. {{ mean }} per day",
+      "rank": "rank {{ rank }} of {{ of }}",
+      "window": {
+        "sinceStart": "since the start",
+        "lastDays": {
+          "one": "last day",
+          "other": "last {{ count }} days"
+        }
+      },
+      "gap": "Counting does not fully cover this window.",
+      "limited": "Usage is not available right now, try again later.",
+      "sparkline": "Usage per day,"
+    },
+    "settings": {
+      "title": "Wishes",
+      "intro": "These defaults apply to new wishes of this channel.",
+      "botActive": "Bot mode is active.",
+      "readOnly": "You can view these settings but not change them. Only the broadcaster, whoever activated the bot, and admins can.",
+      "duration": {
+        "label": "Default duration in days",
+        "hint": "How long a new wish runs when nothing else is given."
+      },
+      "lead": {
+        "label": "Probation lead in days",
+        "hint": "How many days before it expires a wish enters probation: it still runs, but is up for a decision."
+      },
+      "leadInvalid": {
+        "empty": "Enter a lead.",
+        "not_integer": "The lead is a whole number of days.",
+        "out_of_range": "The lead is between 1 and {{ max }} days."
+      },
+      "save": "Save",
+      "saved": "Settings saved.",
+      "changed": "The settings have changed in the meantime. Your entries are not saved yet.",
+      "reload": "Reload",
+      "loadFailed": "The settings could not be loaded.",
+      "retry": "Try again"
+    },
+    "dialog": {
+      "toWish": "Go to wish",
+      "duration": "Duration in days",
+      "durationInvalid": {
+        "empty": "Enter a duration.",
+        "not_integer": "The duration is a whole number of days.",
+        "out_of_range": "The duration is between 1 and {{ max }} days."
+      },
+      "blocked": {
+        "disabled": "Wish emotes are not available right now.",
+        "duration": "The duration is missing or does not fit."
+      }
+    },
+    "adopt": {
+      "title": "Take over from the set",
+      "titleLink": "Link to an entry",
+      "intro": "Pick an entry that is already in the set. It gets a deadline like a wish.",
+      "introLink": "Pick the entry in the set that the wish “{{ name }}” belongs to.",
+      "loadFailed": "The entries of the set could not be loaded.",
+      "search": "Search entries",
+      "noMatch": "No entry matches the search.",
+      "empty": "The set has no entry that can be taken over right now.",
+      "entriesLegend": "Entry in the set",
+      "addedOn": "in the set since {{ date }}",
+      "addedUnknown": "date unknown",
+      "linkNote": "Will be linked with the running wish for this emote.",
+      "missing": "This entry is no longer in the set.",
+      "moreHidden": {
+        "one": "{{ count }} more entry, the search narrows it down.",
+        "other": "{{ count }} more entries, the search narrows them down."
+      },
+      "locked": {
+        "held": "Already belongs to a wish.",
+        "heldRunning": "Belongs to a running wish.",
+        "kept": "Is listed as a kept wish.",
+        "runningElsewhere": "A wish for this emote already runs on another entry.",
+        "otherWish": "Another wish runs for this emote."
+      },
+      "start": {
+        "legend": "Deadline starts",
+        "added": "From the date it was added",
+        "now": "From now",
+        "undatedHint": "When the entry came into the set is unknown, so the deadline starts now.",
+        "expiredHint": "From the date it was added the deadline would already be over, so “From now” is preselected.",
+        "expires": "Expires on {{ date }}"
+      },
+      "submit": "Take over",
+      "submitLink": "Link",
+      "blocked": {
+        "loading": "The entries are still loading.",
+        "loadFailed": "This cannot go on without the entries of the set.",
+        "noSelection": "Pick an entry.",
+        "linkLoading": "The running wish is still loading."
+      },
+      "stale": {
+        "wish_slot_not_found": "The entry has changed in the meantime.",
+        "wish_slot_already_linked": "The entry now belongs to a wish.",
+        "wish_slot_already_linked_kept": "The entry is now listed as a kept wish.",
+        "wish_already_running": "A wish for this emote is running now.",
+        "wish_state_conflict": "The wish has changed in the meantime.",
+        "wish_not_found": "The wish no longer exists.",
+        "reselect": "The entries are reloaded, pick again."
+      }
+    },
+    "entry": {
+      "title": "Add a wish by hand",
+      "intro": "For a wish that did not come from chat. Paste the emote's 7TV link or its id.",
+      "emote": {
+        "label": "7TV link or emote id",
+        "empty": "Enter a 7TV link or an emote id."
+      },
+      "read": {
+        "running": "Looking it up on 7TV…",
+        "found": "Found: {{ name }}",
+        "unknown": "This emote does not exist on 7TV (any more).",
+        "unreachable": "7TV cannot be reached right now. Type the alias yourself.",
+        "throttled": "7TV is slowing down requests right now. Type the alias yourself."
+      },
+      "alias": {
+        "label": "Alias in the set",
+        "empty": "Enter an alias.",
+        "too_long": "The alias has at most {{ max }} characters.",
+        "forbidden_char": "The alias must not contain spaces or control characters."
+      },
+      "login": {
+        "label": "Wished by (Twitch login, optional)",
+        "invalid": "This is not a valid Twitch login."
+      },
+      "conflict": {
+        "adopt": "The emote is already in the set. Take the entry over instead of filing a new wish.",
+        "running": "A wish for this emote is already running.",
+        "kept": "This emote is already listed as a kept wish.",
+        "other": "There already is a wish for this emote.",
+        "takeOver": "Take over from the set"
+      },
+      "blocked": {
+        "emoteEmpty": "The 7TV link or emote id is missing.",
+        "emoteInvalid": "The 7TV link or emote id does not fit.",
+        "reading": "The emote is still being looked up on 7TV.",
+        "unknown": "This emote does not exist on 7TV.",
+        "alias": "The alias is missing or does not fit.",
+        "login": "The Twitch login does not fit."
+      },
+      "submit": "Add wish"
+    },
+    "edit": {
+      "title": "Edit wish",
+      "intro": "Change the alias or the duration of “{{ name }}”. Only what you change is sent.",
+      "submit": "Save",
+      "blocked": {
+        "unchanged": "Alias and duration are unchanged."
+      }
+    },
+    "readd": {
+      "title": "Add wish again",
+      "intro": "Put “{{ name }}” into the set once more.",
+      "submit": "Add again",
+      "mode": {
+        "legend": "How long should the emote stay?",
+        "timed": "Timed",
+        "permanent": "Permanent"
+      },
+      "permanentHint": "After it is added the emote is carried as kept; no deadline runs.",
+      "running": "A wish for this emote is already running."
+    },
+    "start": {
+      "nothingChanged": "Nothing was changed.",
+      "pageLeft": "The page was left before the run could start.",
+      "busy": "Another 7TV run is in progress.",
+      "tokenChanged": "The 7TV token was removed or replaced.",
+      "setChanged": "The active set has changed.",
+      "setSwitched": "The set was switched in 7TV. Try again after the next sync.",
+      "setUnverified": "The active set could not be checked with 7TV just now. Please try again later.",
+      "noActiveSet": "The channel has no active set in 7TV.",
+      "wishChanged": "The wish has changed in the meantime.",
+      "wishUnverified": "The wish could not be reloaded just now."
+    },
+    "add": {
+      "starting": "Preparing to add …",
+      "running": "Adding in 7TV …",
+      "paused": "7TV is throttling right now. Next attempt in {{ seconds }} s.",
+      "added": "Added in 7TV. The next sync takes the wish over.",
+      "unknown": "7TV’s answer got lost. The next sync shows whether the emote is in the set.",
+      "nameTaken": "7TV refused: the name is already taken in the set.",
+      "tokenInvalid": "7TV did not accept the token. Please enter a new 7TV token and try again.",
+      "rejected": "7TV refused: {{ message }}"
+    },
+    "remove": {
+      "tooSlow": "7TV answers too slowly to check the entry safely. Nothing was removed.",
+      "confirm": {
+        "title": "Remove the wished emote from 7TV?",
+        "alias": "Name in the set",
+        "addedAt": "Added on",
+        "set": "Set",
+        "intro": "Exactly this entry leaves the active set. The wish ends with it; restoring from the run brings back only the emote.",
+        "submit": "Remove"
+      },
+      "blocked": {
+        "noEntry": "This wish’s entry is not known yet. Removing is possible after the next sync.",
+        "provisional": "7TV has not confirmed the add date yet. Removing is possible after the next sync.",
+        "invalid": "This entry’s add date cannot be used. Try again after the next sync.",
+        "pending": "This entry is already removed from 7TV; its report to Emote Purge is still owed."
+      },
+      "starting": "Preparing the removal …",
+      "running": "Removing from 7TV …",
+      "paused": "7TV is slowing down. Next attempt in {{ seconds }} s.",
+      "nothingRemoved": "Nothing was removed.",
+      "failed": "7TV refused: {{ message }}",
+      "cancelled": "Cancelled. Nothing was removed.",
+      "unknown": "7TV’s answer got lost. The next sync shows whether the entry is still in the set.",
+      "reporting": "Removed from 7TV. Booking …",
+      "booked": "Removed from 7TV.",
+      "notBooked": "Removed in 7TV. The wish has been booked differently in the meantime.",
+      "reportPending": "Removed from 7TV, but the report to Emote Purge did not get through.",
+      "retryReport": "Report again"
     }
   }
 }

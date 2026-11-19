@@ -8,6 +8,7 @@ import { LIVE_CONNECTION_RELEASE_FACTORY } from './live-connection-release.facto
 import { LiveEvent } from './live-event.model';
 import { LiveUpdateService } from './live-update.service';
 
+const READY_STATE_CONNECTING = 0;
 const READY_STATE_OPEN = 1;
 const READY_STATE_CLOSED = 2;
 
@@ -303,6 +304,108 @@ describe('LiveUpdateService', () => {
     expect(FakeEventSource.instances).toHaveLength(2);
     expect(FakeEventSource.instances[1].url).toBe(url);
     again.unsubscribe();
+  });
+
+  describe('reopened, per stream url (#485, plan 2.4)', () => {
+    function reopenCount(url: string): { count: () => number; subscription: Subscription } {
+      let count = 0;
+      const subscription = service.reopened(url).subscribe(() => count++);
+      return { count: () => count, subscription };
+    }
+
+    it('says nothing on the first open of a connection', () => {
+      const url = '/api/channels/a/live';
+      const reopened = reopenCount(url);
+      const { source, subscription } = subscribe(url);
+
+      source.onopen?.();
+
+      expect(reopened.count()).toBe(0);
+      subscription.unsubscribe();
+      reopened.subscription.unsubscribe();
+    });
+
+    it('reports each reopen of the browser’s own reconnect once', () => {
+      const url = '/api/channels/a/live';
+      const reopened = reopenCount(url);
+      const { source, subscription } = subscribe(url);
+      source.onopen?.();
+
+      source.fail(READY_STATE_CONNECTING);
+      source.onopen?.();
+      expect(reopened.count()).toBe(1);
+
+      source.fail(READY_STATE_CONNECTING);
+      source.onopen?.();
+      expect(reopened.count()).toBe(2);
+      subscription.unsubscribe();
+      reopened.subscription.unsubscribe();
+    });
+
+    it('reports the rebuild after a fatal close as a reopen too', () => {
+      const url = '/api/channels/a/live';
+      const reopened = reopenCount(url);
+      const { source, subscription } = subscribe(url);
+      source.onopen?.();
+
+      source.fail(READY_STATE_CLOSED);
+      vi.advanceTimersByTime(10_000);
+      expect(reopened.count()).toBe(0);
+      FakeEventSource.instances[1].onopen?.();
+
+      expect(reopened.count()).toBe(1);
+      subscription.unsubscribe();
+      reopened.subscription.unsubscribe();
+    });
+
+    it('reports only for the url whose connection reopened', () => {
+      const reopenedA = reopenCount('/api/channels/a/live');
+      const reopenedB = reopenCount('/api/channels/b/live');
+      const a = service.stream('/api/channels/a/live').subscribe();
+      const b = service.stream('/api/channels/b/live').subscribe();
+      const [sourceA, sourceB] = FakeEventSource.instances;
+      sourceA.onopen?.();
+      sourceB.onopen?.();
+
+      sourceA.fail(READY_STATE_CONNECTING);
+      sourceA.onopen?.();
+
+      expect(reopenedA.count()).toBe(1);
+      expect(reopenedB.count()).toBe(0);
+      a.unsubscribe();
+      b.unsubscribe();
+      reopenedA.subscription.unsubscribe();
+      reopenedB.subscription.unsubscribe();
+    });
+
+    it('treats a fresh connection after the last subscriber left as a first open', () => {
+      const url = '/api/channels/a/live';
+      const reopened = reopenCount(url);
+      const first = subscribe(url);
+      first.source.onopen?.();
+      first.subscription.unsubscribe();
+
+      const again = service.stream(url).subscribe();
+      FakeEventSource.instances[1].onopen?.();
+
+      expect(reopened.count()).toBe(0);
+      again.unsubscribe();
+      reopened.subscription.unsubscribe();
+    });
+
+    it('leaves the service-wide status and the delivered events as they were', () => {
+      const url = '/api/channels/a/live';
+      const { events, source, subscription } = subscribe(url);
+      source.onopen?.();
+      source.fail(READY_STATE_CONNECTING);
+      source.onopen?.();
+
+      source.emit(JSON.stringify({ type: 'wish.changed', channel: 'a' }));
+
+      expect(service.status()).toBe('open');
+      expect(events).toEqual([{ type: 'wish.changed', channel: 'a' }]);
+      subscription.unsubscribe();
+    });
   });
 
   describe('reconnect after a fatal close (issue #128)', () => {

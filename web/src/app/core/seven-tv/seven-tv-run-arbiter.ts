@@ -10,8 +10,9 @@ import {
 } from '@angular/core';
 
 /** The 7TV-writing runs, one engine instance each — see the class doc. A new run service adds its
- *  name here and registers itself; nothing else in this file changes (#256, contract P4). */
-export type SevenTvRunKind = 'delete' | 'restore' | 'import' | 'undo';
+ *  name here and registers itself; nothing else in this file changes (#256, contract P4). `wish` is
+ *  the one-row add of a wished emote from its row on the channel's wish page (#485). */
+export type SevenTvRunKind = 'delete' | 'restore' | 'import' | 'undo' | 'wish';
 
 /** Why the arbiter is busy: a run is `running` (its engine works a queue) or `settling` (the engine
  *  is done, but a re-read or a report of that run has no end state yet). */
@@ -44,8 +45,9 @@ export interface SevenTvRunParticipant {
   destructiveOpen: Signal<boolean>;
   /** A confirmed start of the service is still waiting for its last live read before the run
    *  exists (#280): the delete's live alias read, the restore's confirm-time duplicate check, the
-   *  import's pre-check and re-check, the undo's freshness read. All four run services register
-   *  one; optional so a participant without such a window (a spec stub) can leave it out. */
+   *  import's pre-check and re-check, the undo's freshness read, the wish add's start phases
+   *  (#485, plan 2.5). Every run service registers one; optional so a participant without such a
+   *  window (a spec stub) can leave it out. */
   startCheckPending?: Signal<boolean>;
 }
 
@@ -55,7 +57,7 @@ export const REFUSED_START_FEEDBACK_MS = 4000;
 
 /**
  * Answers one question for every 7TV-writing start point: may a run start right now, and if not,
- * why? It exists because delete, restore, import and undo each run over their *own*
+ * why? It exists because delete, restore, import, undo and the wish add each run over their *own*
  * `SevenTvRunEngine` instance, so no single engine's `isRunning` can speak for all of them.
  *
  * **Registration, not a service list (#256, contract P4).** Each run service registers itself in
@@ -186,6 +188,20 @@ export class SevenTvRunArbiter {
     untracked(() => this.participants.update((current) => [...current, participant]));
   }
 
+  /** Whether a participant of another kind than `ownKind` is checking a confirmed start right now
+   *  (#485, plan 2.5 step 3b iii). `startPending` cannot answer that for a start that holds its own
+   *  `startCheckPending` while it decides: it would always see itself. A confirmed start of another
+   *  kind that is making its own last read goes first, so the asking start gives way. Read
+   *  untracked: it is asked once, inside one synchronous decision, never bound to a template. */
+  foreignStartPending(ownKind: SevenTvRunKind): boolean {
+    return untracked(() =>
+      this.participants().some(
+        (participant) =>
+          participant.kind !== ownKind && (participant.startCheckPending?.() ?? false),
+      ),
+    );
+  }
+
   /** A start point refused to start `attempted` because the arbiter is busy. Sets `refusedStart`
    *  to what was attempted and what blocked it, for `REFUSED_START_FEEDBACK_MS`; a second call
    *  inside the window starts a fresh one. On a free arbiter nothing blocked anything, so nothing is
@@ -217,6 +233,7 @@ export const SEVEN_TV_RUN_KIND_LABEL_KEY: Record<SevenTvRunKind, string> = {
   restore: 'sevenTvRun.kind.restore',
   import: 'sevenTvRun.kind.import',
   undo: 'sevenTvRun.kind.undo',
+  wish: 'sevenTvRun.kind.wish',
 };
 
 /** The transient status message for a refused start (contract P2, `docs/UI-Designsprache.md` §4.5)

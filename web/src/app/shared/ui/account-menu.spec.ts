@@ -1,7 +1,7 @@
 import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Dialog } from '@angular/cdk/dialog';
-import { Component } from '@angular/core';
+import { Component, WritableSignal, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthUser } from '../../core/auth/auth.model';
 import { AuthService } from '../../core/auth/auth.service';
+import { WishSummaryService } from '../../core/wishes/wish-summary.service';
 import { AccountMenu } from './account-menu';
 
 // Only the keys this panel and its embedded display-preferences translate — the real German and
@@ -44,6 +45,7 @@ const DE_TRANSLATIONS = {
   shell: {
     admin: 'Admin',
     logout: 'Logout',
+    wishes: 'Wünsche',
   },
   theme: {
     label: 'Darstellung',
@@ -131,9 +133,11 @@ describe('AccountMenu', () => {
   // document.documentElement.lang. Captured before this test touches anything, so afterEach can put
   // it back rather than leaking 'en' into whichever spec file runs next.
   let originalDocumentLang: string;
+  let wishesAvailable: WritableSignal<boolean>;
 
   beforeEach(async () => {
     originalDocumentLang = document.documentElement.lang;
+    wishesAvailable = signal(false);
 
     // LanguageService.resolveInitialLang() reads localStorage first and navigator.language next —
     // both must be pinned, or a leftover stored value (or this environment's default 'en-US') would
@@ -149,7 +153,15 @@ describe('AccountMenu', () => {
           translocoConfig: { availableLangs: ['de', 'en'], defaultLang: 'de' },
         }),
       ],
-      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        // The wishes entry is followed in one case; the route only has to exist.
+        provideRouter([{ path: 'my-wishes', children: [] }]),
+        // The real one would ask /api/wishes/summary as soon as a user resolves; the menu only reads
+        // whether the count is available.
+        { provide: WishSummaryService, useValue: { available: wishesAvailable } },
+      ],
     }).compileComponents();
 
     await firstValueFrom(TestBed.inject(TranslocoService).load('de'));
@@ -387,6 +399,39 @@ describe('AccountMenu', () => {
       expect(menu.trigger().getAttribute('aria-label')).toBe('Account menu for Sensitron');
       // Passed straight through to app-popover's own [ariaLabel] — same computed, same value.
       expect(menu.panel()!.getAttribute('aria-label')).toBe('Account menu for Sensitron');
+    });
+  });
+
+  describe('wishes entry', () => {
+    function wishesLink(menu: Harness): HTMLAnchorElement | undefined {
+      return Array.from(
+        menu.fixture.nativeElement.querySelectorAll('a') as NodeListOf<HTMLAnchorElement>,
+      ).find((anchor) => anchor.getAttribute('href') === '/my-wishes');
+    }
+
+    it('offers the wishes page only while the header count is available', () => {
+      const menu = render();
+      menu.resolve(USER);
+      menu.trigger().click();
+      menu.detect();
+      expect(wishesLink(menu)).toBeUndefined();
+
+      wishesAvailable.set(true);
+      menu.detect();
+      expect(wishesLink(menu)?.textContent?.trim()).toBe('Wünsche');
+    });
+
+    it('closes the panel when the entry is followed', () => {
+      wishesAvailable.set(true);
+      const menu = render();
+      menu.resolve(USER);
+      menu.trigger().click();
+      menu.detect();
+
+      wishesLink(menu)!.click();
+      menu.detect();
+
+      expect(menu.panel()).toBeNull();
     });
   });
 

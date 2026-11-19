@@ -109,6 +109,7 @@ const PERMISSIONS: ChannelPermissions = {
   tagRunsEnabled: false,
   canPurgeAsBroadcaster: false,
   chatLogBackfillEnabled: false,
+  wishesEnabled: false,
 };
 
 const DE_TRANSLATIONS = {

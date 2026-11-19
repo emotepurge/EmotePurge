@@ -22,6 +22,8 @@ export const LIVE_EVENT_TYPES = {
   workerRoster: 'worker.roster',
   /** Chat-log backfill run changed (enqueue, claim, block, pause, end, cancel); refetch the status. */
   backfillProgress: 'backfill.progress',
+  /** A wish or the wish settings of the channel changed (at most one per commit); no payload, refetch. */
+  wishChanged: 'wish.changed',
   /** Admin stream only: a process stored new log entries (at most one per 2 s and process). Carries no
    *  channel and no payload; it is a reconcile trigger, not data. */
   logsAppended: 'logs.appended',

@@ -29,6 +29,7 @@ import {
   timeoutReportAttempt,
 } from './seven-tv-delete.service';
 import { SyncDeletedInSetResponse, SyncRestoredInSetResponse } from './seven-tv-emote-set.model';
+import { ADD_EMOTE_MUTATION } from './seven-tv-add-emote';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import { ResyncTriggerState } from './seven-tv-restore.service';
 import {
@@ -68,24 +69,10 @@ import {
   sameClassification,
 } from './undo-plan';
 
-/** The ADD every undo step after the REMOVE sends — the same mutation the restore and the import
- *  use (copied, not shared, like theirs). The undo **always** sets `$alias` (spec E21): an entry the
- *  file names without an alias goes back under the file's `defaultName`, never under whatever 7TV's
- *  default name is today. */
-const ADD_EMOTE_MUTATION: SevenTvMutation = {
-  query: `
-  mutation AddEmote($setId: Id!, $emoteId: Id!, $alias: String) {
-    emoteSets {
-      emoteSet(id: $setId) {
-        addEmote(id: { emoteId: $emoteId, alias: $alias }) {
-          id
-        }
-      }
-    }
-  }
-`,
-  resultPath: ['emoteSets', 'emoteSet', 'addEmote'],
-};
+// Every undo step after the REMOVE sends the shared `ADD_EMOTE_MUTATION` (`seven-tv-add-emote.ts`),
+// the same mutation the restore and the import use. The undo **always** sets `$alias` (spec E21):
+// an entry the file names without an alias goes back under the file's `defaultName`, never under
+// whatever 7TV's default name is today.
 
 /** Time budget of the read before one REMOVE attempt (spec E19). `loadSevenTvSetEntries` has no
  *  deadline of its own and the engine gives a `beforeStep` hook none either — the same 20 s as the

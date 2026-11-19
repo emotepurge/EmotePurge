@@ -173,6 +173,16 @@ describe('SevenTvEmoteSetService', () => {
 
       expect(result).toEqual(payload);
     });
+
+    it('asks past the Api cache with refresh=true only when told to (#485)', () => {
+      service.listForeignChannelEmoteSets('HandOfBlood', { refresh: true }).subscribe();
+
+      const req = httpMock.expectOne(
+        (r) => r.url === '/api/seventv/channels/handofblood/emote-sets',
+      );
+      expect(req.request.params.get('refresh')).toBe('true');
+      req.flush(listResponse());
+    });
   });
 
   describe('loadEmoteSetPreview — 6.4 set-ID mode', () => {

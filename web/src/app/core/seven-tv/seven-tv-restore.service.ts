@@ -16,6 +16,7 @@ import {
   SyncInSetEntry,
   SyncRestoredInSetResponse,
 } from './seven-tv-emote-set.model';
+import { ADD_EMOTE_MUTATION } from './seven-tv-add-emote';
 import { SevenTvEmoteSetService } from './seven-tv-emote-set.service';
 import {
   RunOperation,
@@ -44,27 +45,10 @@ import {
   isChannelMismatch,
 } from './sync-report-outcome';
 
-/** Same shape as the delete's REMOVE, with `addEmote` and the alias to restore under. `alias`
- *  restores the chat alias the emote had at delete time — without it 7TV falls back to the emote's
- *  default name, which for renamed emotes would not be the one the chat knows. `null` is that
- *  fallback on purpose: it is how an entry that had no alias comes back as one. It travels *inside*
- *  the `EmoteSetEmoteId` input object, not as a sibling argument — v4's `addEmote` field replaces
- *  v3's single `emotes(action: ADD, name:)` mutation with one field per operation (see
- *  docs/DECISIONS.md, #149). */
-const ADD_EMOTE_MUTATION: SevenTvMutation = {
-  query: `
-  mutation AddEmote($setId: Id!, $emoteId: Id!, $alias: String) {
-    emoteSets {
-      emoteSet(id: $setId) {
-        addEmote(id: { emoteId: $emoteId, alias: $alias }) {
-          id
-        }
-      }
-    }
-  }
-`,
-  resultPath: ['emoteSets', 'emoteSet', 'addEmote'],
-};
+// The restore sends the shared `ADD_EMOTE_MUTATION` (`seven-tv-add-emote.ts`) with the alias to
+// restore under: the chat alias the emote had at delete time — without it 7TV falls back to the
+// emote's default name, which for renamed emotes would not be the one the chat knows. `null` is
+// that fallback on purpose: it is how an entry that had no alias comes back as one.
 
 /** The `ADD` of one restore run. The alias each queue row sends is looked up by its key in
  *  `aliasByKey` (built together with the queue by `toRestoreQueue`, so every key is in it) rather

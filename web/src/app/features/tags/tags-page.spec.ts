@@ -91,6 +91,7 @@ const MANAGER: ChannelPermissions = {
   tagRunsEnabled: false,
   canPurgeAsBroadcaster: false,
   chatLogBackfillEnabled: false,
+  wishesEnabled: false,
 };
 
 function setStatus(activeEmoteSetId: string): EmoteSetStatus {
@@ -1094,10 +1095,10 @@ describe('TagsPage', () => {
         expect(buttonByName(harness, 'Ins aktive Set holen')).toBeNull();
       });
 
-      it('explains a lock held by an undo — whose dock this page does not show', async () => {
+      it('explains a lock held by an undo or a wish add — whose docks this page does not show', async () => {
         const { harness } = await openTag(tag(1, 'Stronghold'));
 
-        expect(runActions(harness)!.unshownRunKinds()).toEqual(['undo']);
+        expect(runActions(harness)!.unshownRunKinds()).toEqual(['undo', 'wish']);
       });
     });
 

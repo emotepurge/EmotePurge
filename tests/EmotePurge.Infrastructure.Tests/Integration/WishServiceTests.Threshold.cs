@@ -126,6 +126,48 @@ public partial class WishServiceTests
         Assert.Equal(0, hook.Count(c => c.Contains("UPDATE \"Wishes\"", StringComparison.Ordinal)));
     }
 
+    // Plan #485 T0b (Sol-P2-4): a write that does not send the threshold keeps the stored one and is no decision:
+    // no wish is locked, versioned or unqueued, whatever else the write changes. Also without a settings row.
+    [Theory]
+    [InlineData("2.5")]
+    [InlineData("off-without-row")]
+    public async Task SettingsWithoutAThreshold_KeepTheStoredOne_AndSupersedeNothing(string from)
+    {
+        var channel = await SeedChannelAsync();
+        if (from != "off-without-row")
+        {
+            Assert.True((await Sut().UpdateSettingsAsync(channel.Name, new UpdateWishSettingsRequest(30, 7, decimal.Parse(from)), Actor)).IsSuccess);
+        }
+
+        var wishId = await SeedDecidedWishAsync(channel, WishStatus.Active, queued: true);
+        var before = await WishStateAsync(wishId);
+        var hook = new CommandHook(_ => false, _ => Task.CompletedTask);
+
+        await using var tracked = fixture.CreateTaggedDbContext("wish-threshold-kept", [hook]);
+        var result = await Sut(tracked).UpdateSettingsAsync(
+            channel.Name, new UpdateWishSettingsRequest(12, 4, null, KeepProtectionThreshold: true), Actor);
+
+        Assert.True(result.IsSuccess);
+        decimal? expected = from == "off-without-row" ? null : decimal.Parse(from);
+        Assert.Equal((12, 4, expected), (result.Settings!.DefaultDurationDays, result.Settings.ProbationLeadDays, result.Settings.ProtectionThresholdPerDay));
+        Assert.Equal(before, await WishStateAsync(wishId));
+        Assert.Equal(0, hook.Count(c => c.Contains("FROM \"Wishes\"", StringComparison.Ordinal) && c.Contains("FOR UPDATE", StringComparison.Ordinal)));
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(expected, (await db.ChannelWishSettings.SingleAsync(s => s.ChannelId == channel.Id)).ProtectionThresholdPerDay);
+    }
+
+    // Keeping the threshold ignores whatever the request carries in its place (the route sends null then).
+    [Fact]
+    public async Task SettingsWithoutAThreshold_IgnoreTheValueField()
+    {
+        var channel = await SeedChannelAsync();
+        Assert.True((await Sut().UpdateSettingsAsync(channel.Name, new UpdateWishSettingsRequest(30, 7, 2m), Actor)).IsSuccess);
+
+        var result = await Sut().UpdateSettingsAsync(channel.Name, new UpdateWishSettingsRequest(30, 7, -1m, KeepProtectionThreshold: true), Actor);
+
+        Assert.Equal((WishOutcome.Success, (decimal?)2m), (result.Outcome, result.Settings!.ProtectionThresholdPerDay));
+    }
+
     // A channel without an active wish: the change goes through as before, without a single wish lock.
     [Fact]
     public async Task ThresholdChange_WithoutActiveWishes_TakesNoWishLock()

@@ -100,6 +100,10 @@ export interface SevenTvSetEntry {
   /** The add date as the wire carried it, `null` when 7TV sent none. Compare in milliseconds via
    *  `Date.parse`, never as a string: the wire paths print a different number of fraction digits. */
   addedAt: string | null;
+  /** Only with {@link SevenTvSetEntriesOptions.withObservedAt}: when the latest request that showed
+   *  this entry was sent (`Date.now()` at the request's start) — the main pass's page, or for pages
+   *  1..n-1 of a multi-page read the verification re-read that found the page unchanged. */
+  observedAt?: number;
 }
 
 export interface SevenTvSetEntriesOptions {
@@ -112,6 +116,11 @@ export interface SevenTvSetEntriesOptions {
    *  without the verification re-read, as `'inconsistent'`. Only the slot delete's two reads opt in
    *  (the pre-start read in `delete-flow.ts` and the binding read in `seven-tv-delete.service.ts`). */
   detectGap?: boolean;
+  /** Also stamp each entry with when it was last observed (`SevenTvSetEntry.observedAt`; needs
+   *  `withAddedAt`). Off (the default), the result is exactly what it was before the option existed;
+   *  the requests are the same either way. Only a wish-bound entry row of the slot delete opts in
+   *  (#485, plan 2.6): its removal goes out only on an observation at most 5 s old. */
+  withObservedAt?: boolean;
 }
 
 /** Why a read is or is not a faithful snapshot of the set (#454) — see
@@ -263,6 +272,7 @@ export function loadSevenTvSetEntries(
 ): Observable<SevenTvSetEntries> {
   const withAddedAt = options.withAddedAt === true;
   const detectGap = options.detectGap === true;
+  const withObservedAt = withAddedAt && options.withObservedAt === true;
   // Deferred so every subscription accumulates into its own state.
   return defer(() => {
     const aliasesById = new Map<string, string[]>();
@@ -277,9 +287,16 @@ export function loadSevenTvSetEntries(
     const pageMembers: string[][] = [];
     const seenMembers = new Set<string>();
     let repeatedAcrossPages = false;
+    // `withObservedAt` only: when the request now being answered was sent (the pages go one after
+    // the other), and the entries each main-pass page delivered.
+    let requestedAt = 0;
+    const pageEntries: SevenTvSetEntry[][] = [];
 
     function readPage(page: number): Observable<NonNullable<EmotesPayload>> {
-      return fetchEmoteSetEntriesPage(httpClient, setId, page, withAddedAt).pipe(
+      return defer(() => {
+        requestedAt = Date.now();
+        return fetchEmoteSetEntriesPage(httpClient, setId, page, withAddedAt);
+      }).pipe(
         switchMap((response) => {
           const emotes = response.data?.emoteSets?.emoteSet?.emotes;
           if ((response.errors?.length ?? 0) > 0 || !emotes) {
@@ -303,12 +320,16 @@ export function loadSevenTvSetEntries(
           if (again.length !== first.length || again.some((key, index) => key !== first[index])) {
             return of(false);
           }
+          if (withObservedAt) {
+            // The same members again: every entry of this page was there when this request went out.
+            pageEntries[page - 1].forEach((entry) => (entry.observedAt = requestedAt));
+          }
           return page + 1 < lastPage ? verifyPage(page + 1, lastPage) : of(true);
         }),
       );
     }
 
-    function collectItem(item: SetEntryItem): void {
+    function collectItem(item: SetEntryItem, delivered: SevenTvSetEntry[]): void {
       const aliases = aliasesById.get(item.emote.id) ?? [];
       if (item.alias) {
         if (!aliases.includes(item.alias)) {
@@ -322,10 +343,13 @@ export function loadSevenTvSetEntries(
       animatedById.set(item.emote.id, item.emote.flags?.animated ?? false);
       if (withAddedAt) {
         const entries = entriesById.get(item.emote.id) ?? [];
-        entries.push({
+        const entry: SevenTvSetEntry = {
           alias: item.alias ?? null,
           addedAt: typeof item.addedAt === 'string' ? item.addedAt : null,
-        });
+          ...(withObservedAt ? { observedAt: requestedAt } : {}),
+        };
+        entries.push(entry);
+        delivered.push(entry);
         entriesById.set(item.emote.id, entries);
       }
     }
@@ -340,7 +364,9 @@ export function loadSevenTvSetEntries(
             repeatedAcrossPages = true;
           }
           members.forEach((key) => seenMembers.add(key));
-          emotes.items.forEach(collectItem);
+          const delivered: SevenTvSetEntry[] = [];
+          emotes.items.forEach((item) => collectItem(item, delivered));
+          pageEntries.push(delivered);
           collected += emotes.items.length;
           const result = (readState: SevenTvSetReadState): SevenTvSetEntries => ({
             aliasesById,

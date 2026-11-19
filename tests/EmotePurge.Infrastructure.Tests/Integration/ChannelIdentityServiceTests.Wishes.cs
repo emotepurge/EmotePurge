@@ -341,7 +341,8 @@ public partial class ChannelIdentityServiceTests
         var service = new WishService(
             writeDb,
             new WishChangedPublisher(Substitute.For<IRedisPublisher>(), NullLogger<WishChangedPublisher>.Instance),
-            new HandWoundTimeProvider());
+            new HandWoundTimeProvider(),
+            NullLogger<WishService>.Instance);
         var harness = CreateHarness(mergeDb, [pair.Identity]);
 
         Task<WishCommandResult> writeTask;

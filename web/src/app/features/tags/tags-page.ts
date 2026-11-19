@@ -95,8 +95,9 @@ const SPRITE_CLASS = 'h-full w-full object-contain p-1';
 const TAG_NOT_FOUND_KEY = 'errors.api.tag_not_found';
 
 /** The run kinds whose dock section this page does not mount: a lock by one of them is explained
- *  beside the tag buttons (plan 3.8). The undo is started on the usage page only. */
-const UNSHOWN_RUN_KINDS: readonly SevenTvRunKind[] = ['undo'];
+ *  beside the tag buttons (plan 3.8). The undo is started on the usage page only, the wish add on
+ *  the channel's wish page only (#485). */
+const UNSHOWN_RUN_KINDS: readonly SevenTvRunKind[] = ['undo', 'wish'];
 
 type GridRow = AtlasRow<EmoteTagEntry, never>;
 

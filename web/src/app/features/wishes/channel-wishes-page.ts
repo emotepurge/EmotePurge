@@ -1,0 +1,1275 @@
+import { Dialog } from '@angular/cdk/dialog';
+import { NgTemplateOutlet } from '@angular/common';
+import { HttpErrorResponse } from '@angular/common/http';
+import {
+  afterNextRender,
+  Component,
+  computed,
+  DestroyRef,
+  effect,
+  ElementRef,
+  inject,
+  Injector,
+  input,
+  signal,
+  untracked,
+  viewChild,
+  WritableSignal,
+} from '@angular/core';
+import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router } from '@angular/router';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
+import { EMPTY, filter, interval, map, Observable, pairwise, switchMap } from 'rxjs';
+
+import { normalizeChannelName } from '../../core/channels/channel-name';
+import { EmoteAdminService } from '../../core/emotes/emote-admin.service';
+import {
+  apiErrorCode,
+  apiErrorTranslationKey,
+  GENERIC_ERROR_TRANSLATION_KEY,
+} from '../../core/i18n/api-error';
+import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
+import { CHANNEL_RELOAD_DEBOUNCE_MS, liveReload, liveReopened } from '../../core/live/live-reload';
+import { DockClearanceService } from '../../core/layout/dock-clearance.service';
+import { PagedResult } from '../../core/models/paged-result.model';
+import { pageVisible } from '../../core/page-visibility/page-visibility';
+import { PointerModeService } from '../../core/pointer/pointer-mode.service';
+import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
+import { SevenTvEmoteLookup } from '../../core/seven-tv/seven-tv-emote-lookup';
+import { SevenTvEmoteSetService } from '../../core/seven-tv/seven-tv-emote-set.service';
+import { SevenTvRestoreService } from '../../core/seven-tv/seven-tv-restore.service';
+import {
+  SEVEN_TV_RUN_KIND_LABEL_KEY,
+  SevenTvRunArbiter,
+} from '../../core/seven-tv/seven-tv-run-arbiter';
+import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
+import { WishAddService, WishAddState } from '../../core/wishes/wish-add.service';
+import { wishRemovalBlockKey } from '../../core/wishes/wish-removal';
+import { WishRemovalTracker } from '../../core/wishes/wish-removal-tracker';
+import { wishErrorKey } from '../../core/wishes/wish-error';
+import type { Wish, WishListView } from '../../core/wishes/wish.model';
+import { WishService } from '../../core/wishes/wish.service';
+import { WishSummaryService } from '../../core/wishes/wish-summary.service';
+import { isConfirmedAction, isSevenTvAction, WishAction } from '../../core/wishes/wish-view';
+import { Pager } from '../../shared/pagination/pager';
+import { DeleteAbortNotice } from '../../shared/seven-tv/delete-flow';
+import { DeleteProgressSection } from '../../shared/seven-tv/delete-progress-section';
+import { DockOutcomeAnnouncer } from '../../shared/seven-tv/dock-outcome-announcer';
+import { RestoreProgressSection } from '../../shared/seven-tv/restore-progress-section';
+import { openSevenTvTokenPromptDialog } from '../../shared/seven-tv/seven-tv-token-prompt-dialog';
+import { Button } from '../../shared/ui/button';
+import { openConfirmDialog } from '../../shared/ui/confirm-dialog';
+import { EmptyState } from '../../shared/ui/empty-state';
+import { NoticeBanner } from '../../shared/ui/notice-banner';
+import { SkeletonRows } from '../../shared/ui/skeleton-rows';
+import {
+  openWishAdoptDialog,
+  WishAdoptDialogData,
+  WishAdoptDialogResult,
+} from './wish-adopt-dialog';
+import { openWishEditDialog } from './wish-edit-dialog';
+import { openWishEntryDialog, WishEntryDialogResult } from './wish-entry-dialog';
+import {
+  wishAddOperationView,
+  wishRemovalOperationView,
+  WishOperationView,
+} from './wish-operation';
+import { openWishReAddDialog } from './wish-readd-dialog';
+import { openWishRemovalConfirmDialog } from './wish-removal-confirm-dialog';
+import { startWishRemovalFlow, WishRemovalFlowDeps } from './wish-removal-flow';
+import { WishRow } from './wish-row';
+import { WishUsageStore } from './wish-usage';
+
+const PAGE_SIZE = 20;
+
+/** Safety net (plan 2.4 e): a missed event is caught up at the latest after this long. */
+export const WISH_SAFETY_RELOAD_MS = 5 * 60_000;
+
+/** The "now" every row reads moves on once a minute (plan 2.2; no clock in a template). */
+const CLOCK_TICK_MS = 60_000;
+
+/**
+ * The actions this page carries out — since T9 every one of the action table. `adopt`, `edit` and
+ * `reAdd` open a dialog instead of sending a command (T6, T7); `add7tv` starts the wish add (T8),
+ * `remove` the removal (T9).
+ */
+const OFFERED_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
+  'add7tv',
+  'remove',
+  'extend',
+  'retry',
+  'keep',
+  'close',
+  'adopt',
+  'edit',
+  'reAdd',
+]);
+
+/** Id of the page's one status line that names a blocking 7TV run (plan 2.7). */
+export const WISH_RUN_LOCK_ID = 'wishes-run-lock';
+
+type SectionId = WishListView | 'pinned';
+
+/** One of the three lists: its page, its last accepted answer and its two kinds of error. */
+interface ListSection {
+  readonly view: WishListView;
+  readonly page: WritableSignal<number>;
+  readonly result: WritableSignal<PagedResult<Wish> | null>;
+  readonly loadError: WritableSignal<string | null>;
+  readonly actionError: WritableSignal<string | null>;
+  /** Number of the latest request of this view, given out when the request is issued. */
+  seq: number;
+}
+
+/** The wish named by `?wish=` while no loaded list holds it. */
+type PinnedState =
+  | { id: number; kind: 'loading' }
+  | { id: number; kind: 'found'; wish: Wish }
+  | { id: number; kind: 'gone' }
+  | { id: number; kind: 'error'; key: string };
+
+/**
+ * The wish work list of a channel (#485, plan T4): "Handlungsbedarf", "Laufend" and "Beendet", each
+ * its own paged list, plus the wish a link points to (`?wish=`).
+ *
+ * **Which answer counts (plan 2.4, Sol-P2-8).** Every list request belongs to its channel, its view
+ * and its page, and gets a number per view when it is issued. An answer is taken only while the
+ * channel is still the page's, the view still shows that page and no younger request of the view
+ * has been issued; a dropped answer changes neither the rows nor the error. Requests are not
+ * cancelled: the check is the contract, not the timing.
+ *
+ * **When the lists reload:** `wish.changed` and `channel.synced` (one debounced burst, one request
+ * per loaded view; the reconcile runs after every sync, so a lost `wish.changed` is caught up there),
+ * a reopen of *this channel's* stream (Sol-R2-P2-6: per stream, not the service-wide status), the
+ * tab becoming visible again, a safety tick every five minutes while visible, and right after an
+ * action of the page itself. Nothing is re-sorted optimistically.
+ */
+@Component({
+  selector: 'app-channel-wishes-page',
+  imports: [
+    Button,
+    DeleteProgressSection,
+    DockOutcomeAnnouncer,
+    EmptyState,
+    NgTemplateOutlet,
+    NoticeBanner,
+    Pager,
+    RestoreProgressSection,
+    SkeletonRows,
+    TranslocoPipe,
+    WishRow,
+  ],
+  template: `
+    <!-- The bottom padding follows the run dock's measured height, so the last row is never under
+         the fixed bar; nothing while there is no dock. -->
+    <div
+      class="flex flex-col gap-8"
+      [style.paddingBottom.px]="dockHeightPx() > 0 ? dockHeightPx() : null"
+    >
+      <!-- The two side ways of filing a wish (plan T6). Both only book in EmotePurge, so they stand
+           on a coarse pointer too. -->
+      <div class="flex flex-col gap-3">
+        <div class="flex flex-wrap gap-2">
+          <button type="button" appButton="primary" (click)="openEntry()">
+            {{ 'wishes.page.header.entry' | transloco }}
+          </button>
+          <button type="button" appButton="neutral" (click)="openAdopt({})">
+            {{ 'wishes.page.header.adopt' | transloco }}
+          </button>
+        </div>
+        <!-- The set-full hint arrives after the dialog closed: the permanently mounted region speaks
+             it (§4.4), the visible banner is aria-hidden so it is not read twice. -->
+        <p role="status" class="sr-only">
+          @if (setFullNotice()) {
+            {{ 'wishes.page.setFull' | transloco }}
+          }
+        </p>
+        @if (setFullNotice()) {
+          <app-notice-banner variant="warning" aria-hidden="true">{{
+            'wishes.page.setFull' | transloco
+          }}</app-notice-banner>
+        }
+        <!-- A removal whose booking was refused: said here as well as at its row, which the reload
+             may move out of sight (plan 2.6). Same pair of regions as the set-full hint. -->
+        <p role="status" class="sr-only">
+          @if (removalNotice()) {
+            {{ 'wishes.remove.notBooked' | transloco }}
+          }
+        </p>
+        @if (removalNotice()) {
+          <app-notice-banner variant="info" aria-hidden="true">{{
+            'wishes.remove.notBooked' | transloco
+          }}</app-notice-banner>
+        }
+      </div>
+
+      <!-- The one place that names a blocking 7TV run; the locked 7TV buttons point at the visible
+           line via aria-describedby (plan 2.7). The sr-only region stays mounted so the text is
+           announced when it appears (§4.5); the visible twin is aria-hidden so it is not read twice.
+           Both sit outside the flex flow while empty: an sr-only box is absolutely positioned. -->
+      <p role="status" class="sr-only">
+        @if (lockMessage(); as message) {
+          <ng-container
+            [ngTemplateOutlet]="lockText"
+            [ngTemplateOutletContext]="{ $implicit: message }"
+          />
+        }
+        @if (dockNotice(); as notice) {
+          {{ notice.leadKey | transloco }}
+          {{ notice.reasonKey | transloco: notice.reasonParams ?? {} }}
+        }
+      </p>
+      @if (lockMessage(); as message) {
+        <p [id]="lockId" aria-hidden="true" class="text-sm text-fg-secondary">
+          <ng-container
+            [ngTemplateOutlet]="lockText"
+            [ngTemplateOutletContext]="{ $implicit: message }"
+          />
+        </p>
+      }
+      <!-- What stopped the dock's "Wiederherstellen" entry; stays until a new run starts. -->
+      @if (dockNotice(); as notice) {
+        <p aria-hidden="true" class="text-sm text-fg-secondary">
+          {{ notice.leadKey | transloco }}
+          {{ notice.reasonKey | transloco: notice.reasonParams ?? {} }}
+        </p>
+      }
+
+      @if (pinnedView(); as pinned) {
+        <section class="flex flex-col gap-3" aria-labelledby="wishes-pinned-title">
+          <h2 id="wishes-pinned-title" class="text-lg font-semibold">
+            {{ 'wishes.page.pinned.title' | transloco }}
+          </h2>
+          @if (pinnedActionError(); as key) {
+            <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
+          }
+          @switch (pinned.kind) {
+            @case ('loading') {
+              <app-skeleton-rows [count]="1" />
+            }
+            @case ('found') {
+              @if (pinnedWish(); as wish) {
+                <ul class="-mx-3 divide-y divide-border border-y border-border">
+                  <ng-container
+                    [ngTemplateOutlet]="row"
+                    [ngTemplateOutletContext]="{ $implicit: wish, section: 'pinned' }"
+                  />
+                </ul>
+              }
+            }
+            @case ('gone') {
+              <app-notice-banner variant="info">{{
+                'wishes.page.pinned.gone' | transloco
+              }}</app-notice-banner>
+            }
+            @case ('error') {
+              @if (pinnedErrorKey(); as key) {
+                <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
+              }
+            }
+          }
+        </section>
+      }
+
+      @for (section of alwaysLoaded; track section.view) {
+        <section
+          class="flex flex-col gap-3"
+          [attr.aria-labelledby]="'wishes-' + section.view + '-title'"
+        >
+          <h2
+            #top
+            [id]="'wishes-' + section.view + '-title'"
+            tabindex="-1"
+            class="scroll-mt-24 text-lg font-semibold"
+          >
+            {{ 'wishes.page.' + section.view + '.title' | transloco }}
+            @if (section.result(); as result) {
+              <span class="ml-1 font-normal text-fg-muted">{{ result.totalCount }}</span>
+            }
+          </h2>
+          <ng-container
+            [ngTemplateOutlet]="listBody"
+            [ngTemplateOutletContext]="{ $implicit: section, top: top }"
+          />
+        </section>
+      }
+
+      <section class="flex flex-col gap-3" aria-labelledby="wishes-ended-title">
+        <h2
+          #endedTop
+          id="wishes-ended-title"
+          tabindex="-1"
+          class="scroll-mt-24 text-lg font-semibold"
+        >
+          <button
+            type="button"
+            class="inline-flex items-center gap-2"
+            [attr.aria-expanded]="endedOpen()"
+            aria-controls="wishes-ended-list"
+            (click)="toggleEnded()"
+          >
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 20 20"
+              class="size-4 shrink-0 text-fg-muted transition-transform motion-reduce:transition-none"
+              [class.rotate-90]="endedOpen()"
+            >
+              <path d="M7 4l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" />
+            </svg>
+            {{ 'wishes.page.ended.title' | transloco }}
+            @if (endedOpen() && ended.result(); as result) {
+              <span class="font-normal text-fg-muted">{{ result.totalCount }}</span>
+            }
+          </button>
+        </h2>
+        <div id="wishes-ended-list" class="flex flex-col gap-3" [hidden]="!endedOpen()">
+          @if (endedOpen()) {
+            <ng-container
+              [ngTemplateOutlet]="listBody"
+              [ngTemplateOutletContext]="{ $implicit: ended, top: endedTop }"
+            />
+          }
+        </div>
+      </section>
+    </div>
+
+    <!-- Permanently mounted (§4.5): speaks the end states of what the dock shows. -->
+    <app-dock-outcome-announcer />
+
+    <!-- The run dock (plan 2.6, the tags page's pattern): a removal is a delete run, its
+         "Wiederherstellen" a restore run. Only on a fine pointer, like every 7TV write surface. -->
+    @if (dockVisible() && !isCoarse()) {
+      <div class="app-dock" #dock>
+        <div class="mx-auto flex max-h-[70vh] max-w-7xl flex-col gap-2 overflow-y-auto px-4 py-3">
+          <app-delete-progress-section
+            [hostSelectedSetId]="dockSetId()"
+            (notice)="dockNotice.set($event)"
+          />
+          <app-restore-progress-section />
+        </div>
+      </div>
+    }
+
+    <ng-template #lockText let-message>
+      @if (message.kindKey) {
+        {{ message.key | transloco: { kind: message.kindKey | transloco } }}
+      } @else {
+        {{ message.key | transloco }}
+      }
+    </ng-template>
+
+    <ng-template #listBody let-section let-top="top">
+      @if (section.actionError(); as key) {
+        <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
+      }
+      @if (section.loadError(); as key) {
+        <app-notice-banner variant="error">
+          {{ key | transloco }}
+          <button notice-action type="button" appButton="outline" (click)="retryLoad(section)">
+            {{ 'wishes.page.reload' | transloco }}
+          </button>
+        </app-notice-banner>
+      }
+      @if (section.result(); as result) {
+        @if (result.items.length === 0) {
+          <app-empty-state
+            [title]="'wishes.page.' + section.view + '.empty' | transloco"
+            [description]="'wishes.page.' + section.view + '.emptyHint' | transloco"
+          />
+        } @else {
+          <ul class="-mx-3 divide-y divide-border border-y border-border">
+            @for (wish of result.items; track wish.id) {
+              <ng-container
+                [ngTemplateOutlet]="row"
+                [ngTemplateOutletContext]="{ $implicit: wish, section: section.view }"
+              />
+            }
+          </ul>
+          <app-pager
+            [page]="section.page()"
+            [totalPages]="result.totalPages"
+            [scrollTarget]="top"
+            (pageChange)="goToPage(section, $event)"
+          />
+        }
+      } @else if (!section.loadError()) {
+        <app-skeleton-rows [count]="3" />
+      }
+    </ng-template>
+
+    <ng-template #row let-wish let-section="section">
+      <!-- tabindex="-1": the jump target of ?wish= takes focus without becoming a tab stop. -->
+      <li class="px-3 py-3" tabindex="-1" [attr.data-wish-id]="wish.id">
+        <app-wish-row
+          [wish]="wish"
+          [now]="now()"
+          [offered]="offered"
+          [coarse]="isCoarse()"
+          [sevenTvLocked]="sevenTvLocked()"
+          [lockDescriptionId]="lockDescriptionId()"
+          [busy]="pendingIds().has(wish.id)"
+          [knownStill]="isKnownStill(wish.sevenTvEmoteId)"
+          [usage]="usageStore.blockFor(wish)"
+          [trackUsage]="section !== 'ended'"
+          [operation]="operationOf(wish)"
+          [removeBlockKey]="removeBlockOf(wish)"
+          (seen)="usageStore.setVisible(wish, $event)"
+          (action)="onAction(section, wish, $event)"
+          (retryOperation)="retryRemovalReport(wish)"
+        />
+      </li>
+    </ng-template>
+  `,
+})
+export class ChannelWishesPage {
+  readonly channelName = input.required<string>();
+  /** Query parameter `wish`: the id of the wish a link points to (plan 2.4, Sol-R2-P2-5). */
+  readonly wish = input<string>();
+
+  private readonly wishService = inject(WishService);
+  private readonly wishSummary = inject(WishSummaryService);
+  private readonly dialog = inject(Dialog);
+  private readonly transloco = inject(TranslocoService);
+  private readonly arbiter = inject(SevenTvRunArbiter);
+  private readonly injector = inject(Injector);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
+  private readonly lookup = inject(SevenTvEmoteLookup);
+  private readonly wishAdd = inject(WishAddService);
+  private readonly removals = inject(WishRemovalTracker);
+  private readonly deleteService = inject(SevenTvDeleteService);
+  private readonly restoreService = inject(SevenTvRestoreService);
+  private readonly dockClearance = inject(DockClearanceService);
+  private readonly emoteAdminService = inject(EmoteAdminService);
+  private readonly removalDeps: WishRemovalFlowDeps = {
+    emoteSetService: inject(SevenTvEmoteSetService),
+    emoteAdminService: this.emoteAdminService,
+    wishService: this.wishService,
+    tokenService: inject(SevenTvTokenService),
+    arbiter: this.arbiter,
+    deleteService: this.deleteService,
+    openConfirmation: (data) =>
+      openWishRemovalConfirmDialog(this.dialog, data).closed.pipe(map((done) => done === true)),
+  };
+
+  /** The rendered `.app-dock`, absent whenever the template's gate does not mount it. */
+  private readonly dockRef = viewChild<ElementRef<HTMLElement>>('dock');
+
+  protected readonly isCoarse = inject(PointerModeService).isCoarse;
+
+  protected readonly offered = OFFERED_ACTIONS;
+  protected readonly lockId = WISH_RUN_LOCK_ID;
+
+  private readonly channel = computed(() => normalizeChannelName(this.channelName()));
+  private readonly liveUrl = computed(() => channelLiveUrl(this.channel()));
+  private readonly visible = pageVisible();
+
+  protected readonly now = signal(new Date());
+
+  /** Usage of the visible open/running rows, one `GET /{id}` each, valid five minutes (T5). */
+  protected readonly usageStore = new WishUsageStore(
+    (id) => this.wishService.get(this.channel(), id),
+    () => Date.now(),
+    () => this.visible(),
+  );
+
+  private readonly open = createSection('open');
+  private readonly running = createSection('running');
+  protected readonly ended = createSection('ended');
+  protected readonly alwaysLoaded: readonly ListSection[] = [this.open, this.running];
+
+  protected readonly endedOpen = signal(false);
+
+  private readonly pinned = signal<PinnedState | null>(null);
+  private pinnedSeq = 0;
+  protected readonly pinnedActionError = signal<string | null>(null);
+
+  /** A wish filed by hand landed in a full set (`setFull`); stays until the next filing. */
+  protected readonly setFullNotice = signal(false);
+
+  /** A removal of this channel left 7TV but was not booked (`notBooked`, plan 2.6); stays until the
+   *  next removal starts or the channel changes. */
+  protected readonly removalNotice = signal(false);
+
+  /** Wishes whose action request is on the way; their row's buttons wait. */
+  protected readonly pendingIds = signal<ReadonlySet<number>>(new Set());
+
+  /** The target already focused once; a reload must not pull the focus back. */
+  private focusedTarget: number | null = null;
+
+  /** Set once the page is gone; a 7TV start that is still deciding then aborts (plan 2.5, 3b i). */
+  private destroyed = false;
+
+  private readonly targetId = computed(() => parseWishId(this.wish()));
+
+  /** The two lists loaded on entry have answered (with rows or an error). */
+  private readonly listsSettled = computed(() =>
+    this.alwaysLoaded.every((section) => section.result() !== null || section.loadError() !== null),
+  );
+
+  private readonly loadedIds = computed(() => {
+    const ids = new Set<number>();
+    const sections = this.endedOpen() ? [this.open, this.running, this.ended] : this.alwaysLoaded;
+    for (const section of sections) {
+      section.result()?.items.forEach((wish) => ids.add(wish.id));
+    }
+    return ids;
+  });
+
+  /** Every wish on screen: the loaded lists and the pinned row. */
+  private readonly shownWishes = computed<Wish[]>(() => [
+    ...this.usageRows(),
+    ...(this.endedOpen() ? (this.ended.result()?.items ?? []) : []),
+  ]);
+
+  /** The wishes on screen that may show usage: the two loaded lists and the pinned row. */
+  private readonly usageRows = computed<Wish[]>(() => [
+    ...(this.open.result()?.items ?? []),
+    ...(this.running.result()?.items ?? []),
+    ...(this.pinnedWish() ? [this.pinnedWish() as Wish] : []),
+  ]);
+
+  /** The pinned state for the current target, unless a loaded list holds the wish by now. */
+  protected readonly pinnedView = computed(() => {
+    const pinned = this.pinned();
+    const id = this.targetId();
+    return pinned !== null && pinned.id === id && !this.loadedIds().has(id) ? pinned : null;
+  });
+
+  protected readonly pinnedWish = computed(() => {
+    const pinned = this.pinnedView();
+    return pinned?.kind === 'found' ? pinned.wish : null;
+  });
+
+  protected readonly pinnedErrorKey = computed(() => {
+    const pinned = this.pinnedView();
+    return pinned?.kind === 'error' ? pinned.key : null;
+  });
+
+  protected readonly sevenTvLocked = this.arbiter.startLocked;
+
+  /**
+   * What the status line says while a 7TV run holds the start. Only while the page offers a 7TV
+   * action at all: without one there is no locked button for the line to explain.
+   */
+  protected readonly lockMessage = computed(() => {
+    if (![...this.offered].some(isSevenTvAction) || !this.arbiter.startLocked()) {
+      return null;
+    }
+    const claim = this.arbiter.activeClaim();
+    return claim
+      ? { key: `wishes.lock.${claim.phase}`, kindKey: SEVEN_TV_RUN_KIND_LABEL_KEY[claim.kind] }
+      : { key: 'wishes.lock.starting', kindKey: null };
+  });
+
+  protected readonly lockDescriptionId = computed(() =>
+    this.lockMessage() ? WISH_RUN_LOCK_ID : null,
+  );
+
+  /** The dock shows a delete or restore run of this app, or a restore's refusal notice. */
+  protected readonly dockVisible = computed(
+    () =>
+      this.deleteService.isRunning() ||
+      this.deleteService.queue().length > 0 ||
+      this.restoreService.isRunning() ||
+      this.restoreService.queue().length > 0 ||
+      this.restoreService.duplicateNoticePending(),
+  );
+
+  /**
+   * The set this page stands for in the dock's restore check (restore spec E21): the active set of
+   * the channel on screen, which is what the page lists — `null` while it is unknown. Never the shown
+   * run's own set: a run that started on another channel's page would otherwise compare its set with
+   * itself, and the restore would lose its "not the set on screen" warning.
+   */
+  protected readonly dockSetId = computed(() => {
+    const known = this.activeSet();
+    return known !== null && known.channel === this.channel() ? known.setId : null;
+  });
+
+  /** The channel's active set as the last sync stored it (`…/emotes/active-set`), per channel. */
+  private readonly activeSet = signal<{ channel: string; setId: string | null } | null>(null);
+  private activeSetSeq = 0;
+  /** A read of the active set is on its way; a list reload does not start a second one. */
+  private activeSetPending = false;
+
+  /** The dock's rendered height — the page's bottom padding and the shell's clearance. */
+  protected readonly dockHeightPx = signal(0);
+
+  /** What stopped the dock's restore entry (its `notice` output), until a new run starts. */
+  protected readonly dockNotice = signal<DeleteAbortNotice | null>(null);
+
+  constructor() {
+    // A channel switch reuses this component (same route): every list starts over, and every
+    // request still on the way for the old channel is outdated by the bumped numbers.
+    effect(() => {
+      const channel = this.channel();
+      untracked(() => this.startChannel(channel));
+    });
+
+    // The jump target: focus its row in a loaded list, or load it on its own and pin it above the
+    // sections. Decided only once the two lists loaded on entry have answered, so a wish on the
+    // first page never flashes up pinned first.
+    effect(() => {
+      const id = this.targetId();
+      const loaded = this.loadedIds();
+      const settled = this.listsSettled();
+      const pinned = this.pinned();
+      untracked(() => this.resolveTarget(id, loaded, settled, pinned));
+    });
+
+    // A row that scrolled into view gets its usage here, and a state change reaches it as a new key.
+    effect(() => {
+      const rows = this.usageRows();
+      untracked(() => this.usageStore.sync(rows));
+    });
+
+    // An add result says what it had to once its wish left `approved`; drop it then (plan 2.5a).
+    // A removal line likewise once its wish is neither running nor removed any more (plan 2.6).
+    effect(() => {
+      const channel = this.channel();
+      const shown = this.shownWishes();
+      untracked(() => {
+        this.wishAdd.prune(channel, shown);
+        this.removals.prune(channel, shown);
+      });
+    });
+
+    // The dock's real height, mirrored into the page padding and the shell's clearance (the tags
+    // page's measurement: a run with many rows grows the dock up to 70vh).
+    effect((onCleanup) => {
+      const element = this.dockRef()?.nativeElement;
+      if (!element) {
+        this.dockHeightPx.set(0);
+        this.dockClearance.release();
+        return;
+      }
+      const measure = () => {
+        const height = element.offsetHeight;
+        this.dockHeightPx.set(height);
+        this.dockClearance.reserve(height);
+      };
+      measure();
+      const observer = new ResizeObserver(measure);
+      observer.observe(element);
+      onCleanup(() => observer.disconnect());
+    });
+
+    // A run starting makes an old restore refusal stale.
+    effect(() => {
+      if (this.arbiter.activeRun() !== null) {
+        untracked(() => this.dockNotice.set(null));
+      }
+    });
+
+    inject(DestroyRef).onDestroy(() => {
+      this.destroyed = true;
+      // Give the clearance back at once — the next page may have no dock to release it.
+      this.dockClearance.release();
+    });
+
+    // A removal of this channel that ended: show the server's state (plan 2.5, 2.6) — after a
+    // stop "nothing was changed", after a booking or a refused booking the wish moved. A refused
+    // booking (`notBooked`) is said at the page as well: the reload may move the wish into a list
+    // that is not shown (a collapsed "Beendet"), and its row with it.
+    this.removals.ended.pipe(takeUntilDestroyed()).subscribe((end) => {
+      if (end.channelName === this.channel()) {
+        if (end.state.kind === 'notBooked') {
+          this.removalNotice.set(true);
+        }
+        this.reloadAfterChange();
+      }
+    });
+
+    interval(CLOCK_TICK_MS)
+      .pipe(takeUntilDestroyed())
+      .subscribe(() => {
+        this.now.set(new Date());
+        // Safety net for the five-minute value life: a visible row whose value ran out loads again.
+        this.usageStore.tick();
+      });
+
+    liveReload(this.liveUrl, {
+      accept: [LIVE_EVENT_TYPES.wishChanged, LIVE_EVENT_TYPES.channelSynced],
+      debounceMs: CHANNEL_RELOAD_DEBOUNCE_MS,
+    }).subscribe(() => this.reloadAfterChange());
+
+    // A set switch in 7TV reaches the stored active set with a sync: the dock's set follows it.
+    liveReload(this.liveUrl, {
+      accept: [LIVE_EVENT_TYPES.channelSynced],
+      debounceMs: CHANNEL_RELOAD_DEBOUNCE_MS,
+    }).subscribe(() => this.loadActiveSet());
+
+    // Reopened stream and a window that is visible again: counts may have moved unseen, so every
+    // held usage value runs out (plan 2.4 c, d) before the lists reload. A reopened stream may also
+    // have swallowed a `wish.changed`, so the header count asks again; a visible window it does not
+    // need to, the count asks by itself then.
+    liveReopened(this.liveUrl).subscribe(() => {
+      this.reloadAfterGap();
+      this.wishSummary.refresh();
+    });
+
+    const visible$ = toObservable(this.visible);
+    visible$
+      .pipe(
+        pairwise(),
+        filter(([was, is]) => !was && is),
+        takeUntilDestroyed(),
+      )
+      .subscribe(() => this.reloadAfterGap());
+    visible$
+      .pipe(
+        switchMap((isVisible) => (isVisible ? interval(WISH_SAFETY_RELOAD_MS) : EMPTY)),
+        takeUntilDestroyed(),
+      )
+      .subscribe(() => this.reloadAll());
+  }
+
+  protected toggleEnded(): void {
+    const opening = !this.endedOpen();
+    this.endedOpen.set(opening);
+    if (opening) {
+      this.load(this.ended);
+    }
+  }
+
+  protected goToPage(section: ListSection, page: number): void {
+    section.page.set(page);
+    section.result.set(null);
+    this.load(section);
+  }
+
+  protected retryLoad(section: ListSection): void {
+    this.load(section);
+  }
+
+  protected onAction(sectionId: SectionId, wish: Wish, action: WishAction): void {
+    if (!this.offered.has(action) || this.pendingIds().has(wish.id)) {
+      return;
+    }
+    if (action === 'adopt') {
+      this.openAdopt({ wish, sevenTvEmoteId: wish.sevenTvEmoteId });
+      return;
+    }
+    if (action === 'add7tv') {
+      this.startAdd(sectionId, wish);
+      return;
+    }
+    if (action === 'remove') {
+      this.startRemove(sectionId, wish);
+      return;
+    }
+    if (action === 'edit') {
+      this.openEdit(wish, sectionId);
+      return;
+    }
+    if (action === 'reAdd') {
+      this.openReAdd(wish, sectionId);
+      return;
+    }
+    if (!isConfirmedAction(action)) {
+      this.runAction(sectionId, wish, action);
+      return;
+    }
+    const name = wish.alias || wish.emoteName;
+    openConfirmDialog(this.dialog, {
+      message: this.transloco.translate(`wishes.confirm.${action}`, { name }),
+      confirmLabel: this.transloco.translate(`wishes.actions.${action}`),
+    }).closed.subscribe((confirmed) => {
+      if (confirmed) {
+        this.runAction(sectionId, wish, action);
+      }
+    });
+  }
+
+  /** The row's own 7TV operation — the removal (T9) or the add (T8), from the root services that
+   *  outlive this page. A wish has at most one of them: the add only while `approved`. */
+  protected operationOf(wish: Wish): WishOperationView | null {
+    return (
+      wishRemovalOperationView(this.removals.stateFor(this.channel(), wish)) ??
+      wishAddOperationView(this.wishAdd.stateFor(this.channel(), wish))
+    );
+  }
+
+  /** Why "Entfernen" is locked on this row: a removal of it whose booking is out or owed, or a
+   *  generation the removal cannot be bound to (plan 2.6). A removal under way holds the arbiter. */
+  protected removeBlockOf(wish: Wish): string | null {
+    return this.removals.owesReport(this.channel(), wish.id)
+      ? 'wishes.remove.blocked.pending'
+      : wishRemovalBlockKey(wish);
+  }
+
+  /** "Erneut melden" of an owed removal report: the identical body again. */
+  protected retryRemovalReport(wish: Wish): void {
+    this.removals.retry(this.channel(), wish.id);
+  }
+
+  protected isKnownStill(sevenTvEmoteId: string): boolean {
+    return this.lookup.isKnownStill(sevenTvEmoteId);
+  }
+
+  protected openEntry(): void {
+    const channel = this.channel();
+    this.setFullNotice.set(false);
+    openWishEntryDialog(this.dialog, { channelName: channel }).closed.subscribe((result) => {
+      if (channel === this.channel()) {
+        this.onEntryClosed(result);
+      }
+    });
+  }
+
+  /** The take-over dialog: from the header (all entries), a row (that wish) or the 409 of the entry. */
+  protected openAdopt(options: Omit<WishAdoptDialogData, 'channelName'>): void {
+    const channel = this.channel();
+    openWishAdoptDialog(this.dialog, { channelName: channel, ...options }).closed.subscribe(
+      (result) => {
+        if (channel === this.channel()) {
+          this.onAdoptClosed(result);
+        }
+      },
+    );
+  }
+
+  /** "Bearbeiten": from a row, or from the entry dialog when the running wish is `approved`/`failed`. */
+  protected openEdit(wish: Wish, sectionId: SectionId = 'open'): void {
+    const channel = this.channel();
+    openWishEditDialog(this.dialog, { channelName: channel, wish }).closed.subscribe((result) => {
+      if (channel !== this.channel()) {
+        return;
+      }
+      if (result?.kind === 'edited') {
+        this.reloadAfterChange();
+      } else if (result?.kind === 'stale') {
+        this.onStale(sectionId, result.errorKey);
+      }
+    });
+  }
+
+  protected openReAdd(wish: Wish, sectionId: SectionId = 'open'): void {
+    const channel = this.channel();
+    openWishReAddDialog(this.dialog, { channelName: channel, wish }).closed.subscribe((result) => {
+      if (channel !== this.channel()) {
+        return;
+      }
+      if (result?.kind === 'readded') {
+        this.reloadAfterChange();
+      } else if (result?.kind === 'jump') {
+        this.jumpTo(result.wishId);
+      } else if (result?.kind === 'stale') {
+        this.onStale(sectionId, result.errorKey);
+      }
+    });
+  }
+
+  /**
+   * "In 7TV hinzufügen" (plan 2.5a): the start contract runs in `WishAddService`; this page hands it
+   * the token prompt and tells it whether it still lives and which channel it shows (3b i). An
+   * abort or a skipped send says "nothing was changed" at the row and reloads the lists (plan 2.5);
+   * the outcome itself stays at the row, also after leaving and coming back.
+   */
+  private startAdd(sectionId: SectionId, wish: Wish): void {
+    const channel = this.channel();
+    this.actionErrorOf(sectionId).set(null);
+    this.wishAdd.start({
+      channelName: channel,
+      wish,
+      caller: { alive: () => !this.destroyed, channelName: () => this.channel() },
+      promptToken: () =>
+        openSevenTvTokenPromptDialog(this.dialog).closed.pipe(map((done) => done === true)),
+      onEnd: (state: WishAddState) => {
+        const stopped = state.kind === 'notStarted' || state.kind === 'skipped';
+        if (stopped && !this.destroyed && channel === this.channel()) {
+          this.reloadAll();
+        }
+      },
+    });
+  }
+
+  /**
+   * "Entfernen" (plan 2.6): the flow runs the start contract with its confirmation and starts the
+   * delete run with the frozen wish's entry; the tracker keeps the outcome and books it, also after
+   * leaving the page. The page hands over the token prompt and tells whether it still lives and which
+   * channel it shows (3b i).
+   */
+  private startRemove(sectionId: SectionId, wish: Wish): void {
+    const channel = this.channel();
+    if (this.removeBlockOf(wish) !== null) {
+      return;
+    }
+    this.actionErrorOf(sectionId).set(null);
+    this.removalNotice.set(false);
+    startWishRemovalFlow(this.removalDeps, {
+      channelName: channel,
+      wish,
+      caller: { alive: () => !this.destroyed, channelName: () => this.channel() },
+      promptToken: () =>
+        openSevenTvTokenPromptDialog(this.dialog).closed.pipe(map((done) => done === true)),
+      progress: this.removals.progressFor(channel, wish.id),
+    });
+  }
+
+  /** The row showed a state the server no longer has: say so at its section and show the current one. */
+  private onStale(sectionId: SectionId, errorKey: string): void {
+    this.actionErrorOf(sectionId).set(errorKey);
+    this.reloadAfterChange();
+  }
+
+  private onEntryClosed(result: WishEntryDialogResult | undefined): void {
+    switch (result?.kind) {
+      case 'created':
+        this.setFullNotice.set(result.setFull);
+        this.reloadAfterChange();
+        return;
+      case 'extended':
+        this.reloadAfterChange();
+        return;
+      case 'edit':
+        this.openEdit(result.wish);
+        return;
+      case 'jump':
+        this.jumpTo(result.wishId);
+        return;
+      case 'adopt':
+        this.openAdopt({
+          sevenTvEmoteId: result.sevenTvEmoteId,
+          slotIds: result.slotIds,
+          ...(result.wish ? { wish: result.wish } : {}),
+        });
+        return;
+      default:
+        return;
+    }
+  }
+
+  private onAdoptClosed(result: WishAdoptDialogResult | undefined): void {
+    if (result?.kind === 'adopted') {
+      this.reloadAfterChange();
+    } else if (result?.kind === 'jump') {
+      this.jumpTo(result.wishId);
+    }
+  }
+
+  /**
+   * "Zum Wunsch" from a dialog: the jump target of plan 2.4 (`?wish=`), which focuses a loaded row or
+   * pins the wish above the sections when no loaded list holds it. The same id again focuses again.
+   */
+  private jumpTo(id: number): void {
+    this.focusedTarget = null;
+    if (this.targetId() === id) {
+      this.resolveTarget(id, this.loadedIds(), this.listsSettled(), this.pinned());
+      return;
+    }
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { wish: id },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  private startChannel(channel: string): void {
+    for (const section of [this.open, this.running, this.ended]) {
+      section.seq++;
+      section.page.set(1);
+      section.result.set(null);
+      section.loadError.set(null);
+      section.actionError.set(null);
+    }
+    this.endedOpen.set(false);
+    this.pinnedSeq++;
+    this.pinned.set(null);
+    this.pinnedActionError.set(null);
+    this.setFullNotice.set(false);
+    this.focusedTarget = null;
+    this.usageStore.reset();
+    this.removalNotice.set(false);
+    if (channel) {
+      this.load(this.open);
+      this.load(this.running);
+    }
+    this.loadActiveSet();
+  }
+
+  /**
+   * The stored active set of the channel on screen. What was known is dropped first: while the read
+   * is out, and after a failed one (429, 5xx, network), the dock stands for "unknown" and the restore
+   * warns (E21) instead of comparing against a set a sync may have left. The next list reload asks
+   * again (`reloadAll`).
+   */
+  private loadActiveSet(): void {
+    const seq = ++this.activeSetSeq;
+    this.activeSet.set(null);
+    this.activeSetPending = false;
+    const channel = this.channel();
+    if (!channel) {
+      return;
+    }
+    this.activeSetPending = true;
+    this.emoteAdminService.getSetStatus(channel).subscribe({
+      next: (status) => {
+        if (seq === this.activeSetSeq && channel === this.channel()) {
+          this.activeSetPending = false;
+          this.activeSet.set({ channel, setId: status.activeEmoteSetId || null });
+        }
+      },
+      error: (error: unknown) => {
+        if (seq === this.activeSetSeq) {
+          this.activeSetPending = false;
+        }
+        // 404: the channel has no row (yet), so no set either.
+        if (
+          seq === this.activeSetSeq &&
+          channel === this.channel() &&
+          error instanceof HttpErrorResponse &&
+          error.status === 404
+        ) {
+          this.activeSet.set({ channel, setId: null });
+        }
+      },
+    });
+  }
+
+  private reloadAfterGap(): void {
+    this.usageStore.expireAll();
+    // A sync may have gone by unseen, and with it a set switch (first, so `reloadAll` sees it pending).
+    this.loadActiveSet();
+    this.reloadAll();
+  }
+
+  /**
+   * A wish changed — by a command here, a dialog, a finished removal or a live event: the lists
+   * reload, and the header count asks again (plan 2.4: one extra request, debounced in the service,
+   * so a command and its own `wish.changed` make one).
+   */
+  private reloadAfterChange(): void {
+    this.reloadAll();
+    this.wishSummary.refresh();
+  }
+
+  /** Every loaded view once, plus the pinned wish; the ended list only while it is open. */
+  private reloadAll(): void {
+    // The set read failed earlier: ask again with the lists (also on the five-minute safety tick).
+    if (this.activeSet() === null && !this.activeSetPending && this.channel()) {
+      this.loadActiveSet();
+    }
+    this.load(this.open);
+    this.load(this.running);
+    if (this.endedOpen()) {
+      this.load(this.ended);
+    }
+    // A pinned wish still loading is asked again as well: the new request supersedes the one on the
+    // way, which may have read the state before the change (plan 2.4: the same reload rules).
+    const pinned = this.pinnedView();
+    if (pinned !== null) {
+      this.loadPinned(pinned.id, false);
+    }
+  }
+
+  private load(section: ListSection): void {
+    const seq = ++section.seq;
+    const channel = this.channel();
+    const page = section.page();
+    const current = () =>
+      seq === section.seq && channel === this.channel() && page === section.page();
+
+    this.wishService.list(channel, section.view, page, PAGE_SIZE).subscribe({
+      next: (result) => {
+        if (!current()) {
+          return;
+        }
+        // The last page emptied under us (an action, another manager): go to the one that is left.
+        if (result.items.length === 0 && page > 1 && result.totalPages < page) {
+          section.page.set(Math.max(1, result.totalPages));
+          this.load(section);
+          return;
+        }
+        section.result.set(result);
+        section.loadError.set(null);
+      },
+      error: (error: unknown) => {
+        if (current()) {
+          section.loadError.set(errorKey(error));
+        }
+      },
+    });
+  }
+
+  private resolveTarget(
+    id: number | null,
+    loaded: ReadonlySet<number>,
+    settled: boolean,
+    pinned: PinnedState | null,
+  ): void {
+    if (id === null) {
+      this.focusedTarget = null;
+      if (pinned !== null) {
+        this.pinnedSeq++;
+        this.pinned.set(null);
+      }
+      return;
+    }
+    if (this.focusedTarget !== null && this.focusedTarget !== id) {
+      this.focusedTarget = null;
+    }
+    if (loaded.has(id)) {
+      // A pinned copy would go stale behind the list row; should the wish leave the loaded lists
+      // again, it is fetched afresh.
+      if (pinned !== null) {
+        this.pinnedSeq++;
+        this.pinned.set(null);
+      }
+      this.focusOnce(id);
+      return;
+    }
+    if (!settled) {
+      return;
+    }
+    if (pinned === null || pinned.id !== id) {
+      this.loadPinned(id, true);
+    } else if (pinned.kind === 'found') {
+      this.focusOnce(id);
+    }
+  }
+
+  /** `GET /{id}` for the jump target; `fresh` shows the skeleton, a reload keeps the row standing. */
+  private loadPinned(id: number, fresh: boolean): void {
+    const seq = ++this.pinnedSeq;
+    const channel = this.channel();
+    const current = () =>
+      seq === this.pinnedSeq && channel === this.channel() && id === this.targetId();
+    if (fresh) {
+      this.pinned.set({ id, kind: 'loading' });
+    }
+    this.wishService.get(channel, id).subscribe({
+      next: (wish) => {
+        if (current()) {
+          // The detail carries the usage of its window: the pinned row needs no second request.
+          this.usageStore.seed(wish, wish.usage);
+          this.pinned.set({ id, kind: 'found', wish });
+        }
+      },
+      error: (error: unknown) => {
+        if (!current()) {
+          return;
+        }
+        this.pinned.set(
+          error instanceof HttpErrorResponse && error.status === 404
+            ? { id, kind: 'gone' }
+            : { id, kind: 'error', key: errorKey(error) },
+        );
+      },
+    });
+  }
+
+  private focusOnce(id: number): void {
+    if (this.focusedTarget === id) {
+      return;
+    }
+    this.focusedTarget = id;
+    afterNextRender(
+      () => {
+        const row = this.host.nativeElement.querySelector<HTMLElement>(`[data-wish-id="${id}"]`);
+        row?.focus();
+      },
+      { injector: this.injector },
+    );
+  }
+
+  private runAction(sectionId: SectionId, wish: Wish, action: WishAction): void {
+    const channel = this.channel();
+    const actionError = this.actionErrorOf(sectionId);
+    actionError.set(null);
+    this.setPending(wish.id, true);
+    this.command(action, channel, wish.id).subscribe({
+      next: () => {
+        this.setPending(wish.id, false);
+        if (channel === this.channel()) {
+          this.reloadAfterChange();
+        }
+      },
+      error: (error: unknown) => {
+        this.setPending(wish.id, false);
+        if (channel !== this.channel()) {
+          return;
+        }
+        if (!(error instanceof HttpErrorResponse)) {
+          actionError.set(GENERIC_ERROR_TRANSLATION_KEY);
+          return;
+        }
+        actionError.set(wishErrorKey(error, 'action'));
+        // The row showed a state the server no longer has: show the current one.
+        const code = apiErrorCode(error);
+        if (code === 'wish_state_conflict' || code === 'wish_not_found') {
+          this.reloadAfterChange();
+        }
+      },
+    });
+  }
+
+  private command(action: WishAction, channel: string, id: number): Observable<Wish> {
+    switch (action) {
+      case 'extend':
+        return this.wishService.extend(channel, id);
+      case 'retry':
+        return this.wishService.retry(channel, id);
+      case 'keep':
+        return this.wishService.keep(channel, id);
+      case 'close':
+        return this.wishService.close(channel, id);
+      default:
+        // Unreachable: onAction lets through only what OFFERED_ACTIONS names.
+        throw new Error(`Wish action ${action} is not offered on this page.`);
+    }
+  }
+
+  private actionErrorOf(sectionId: SectionId): WritableSignal<string | null> {
+    switch (sectionId) {
+      case 'open':
+        return this.open.actionError;
+      case 'running':
+        return this.running.actionError;
+      case 'ended':
+        return this.ended.actionError;
+      default:
+        return this.pinnedActionError;
+    }
+  }
+
+  private setPending(id: number, pending: boolean): void {
+    this.pendingIds.update((ids) => {
+      const next = new Set(ids);
+      if (pending) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  }
+}
+
+function createSection(view: WishListView): ListSection {
+  return {
+    view,
+    page: signal(1),
+    result: signal<PagedResult<Wish> | null>(null),
+    loadError: signal<string | null>(null),
+    actionError: signal<string | null>(null),
+    seq: 0,
+  };
+}
+
+/** A positive whole number, or `null` for anything else (the parameter is user input). */
+function parseWishId(raw: string | undefined): number | null {
+  if (!raw || !/^\d+$/.test(raw)) {
+    return null;
+  }
+  const id = Number(raw);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+function errorKey(error: unknown): string {
+  return error instanceof HttpErrorResponse
+    ? apiErrorTranslationKey(error)
+    : GENERIC_ERROR_TRANSLATION_KEY;
+}

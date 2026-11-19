@@ -120,7 +120,8 @@ public partial class DataRetentionServiceTests
             var service = new WishService(
                 wishDb,
                 new WishChangedPublisher(Substitute.For<IRedisPublisher>(), NullLogger<WishChangedPublisher>.Instance),
-                new HandWoundTimeProvider(new DateTimeOffset(_now)));
+                new HandWoundTimeProvider(new DateTimeOffset(_now)),
+                NullLogger<WishService>.Instance);
             var readd = await service.ReAddAsync(
                 channel.ChannelName, wishId, new ReAddWishRequest(WishReAddMode.Timed, null), new AuditActor("wish-mod", "wishmod"));
             Assert.Equal(WishOutcome.Success, readd.Outcome);
@@ -139,6 +140,72 @@ public partial class DataRetentionServiceTests
         Assert.Equal((WishStatus.Approved, null, null), (wish.Status, wish.RequesterTwitchUserId, wish.RequesterLogin));
         Assert.Null(wish.ExpiresAtUtc);
         Assert.NotNull(wish.FirstActivatedAtUtc);
+    }
+
+    // Plan #485 T0b: a removal report after the reconcile's removed_externally keeps EndedAtUtc (the moment the
+    // entry left the set), so the reported wish falls due for both periods at the same instant as one nobody
+    // reported, not up to six hours later as when the report stamped its own time.
+    [Fact]
+    public async Task AReportedExternalRemoval_FallsDueAtTheSameInstantAsAnUnreportedOne()
+    {
+        const string set = "01RETENTIONSET0000000000AA";
+        var channel = await SeedChannelAsync("wishreported", isBotActive: true, deactivatedAtUtc: null);
+        var endedAt = _now.AddHours(-5);
+        string slotId;
+        await using (var db = CreateDbContext())
+        {
+            await db.Channels.Where(c => c.Id == channel.Id).ExecuteUpdateAsync(c => c.SetProperty(x => x.ActiveEmoteSetId, set));
+            var emote = new Emote { ChannelId = channel.Id, Name = "Kappa", SevenTvEmoteId = "01RETENTIONEMOTE00000000AA" };
+            db.Emotes.Add(emote);
+            await db.SaveChangesAsync();
+            var slot = new EmoteSlot
+            {
+                EmoteId = emote.Id,
+                Name = "Kappa",
+                AddedAt = endedAt.AddDays(-40),
+                AddedAtFromRest = true,
+                IsArchived = true,
+                ArchivedAt = endedAt
+            };
+            db.EmoteSlots.Add(slot);
+            await db.SaveChangesAsync();
+            slotId = slot.Id;
+        }
+
+        var reported = await SeedRetentionWishAsync(channel.Id, WishStatus.RemovedExternally, endedDaysAgo: 1, firstActivatedDaysAgo: 40);
+        var unreported = await SeedRetentionWishAsync(channel.Id, WishStatus.RemovedExternally, endedDaysAgo: 1, firstActivatedDaysAgo: 40);
+        await using (var db = CreateDbContext())
+        {
+            await db.Wishes.Where(w => w.Id == reported || w.Id == unreported).ExecuteUpdateAsync(w => w
+                .SetProperty(x => x.EndedAtUtc, endedAt)
+                .SetProperty(x => x.SlotAddedAtUtc, endedAt.AddDays(-40)));
+            await db.Wishes.Where(w => w.Id == reported).ExecuteUpdateAsync(w => w.SetProperty(x => x.SlotId, slotId));
+        }
+
+        await using (var wishDb = CreateDbContext())
+        {
+            var service = new WishService(
+                wishDb,
+                new WishChangedPublisher(Substitute.For<IRedisPublisher>(), NullLogger<WishChangedPublisher>.Instance),
+                new HandWoundTimeProvider(new DateTimeOffset(_now)),
+                NullLogger<WishService>.Instance);
+            var report = await service.CompleteRemovalAsync(
+                channel.ChannelName, reported, new CompleteWishRemovalRequest(slotId, endedAt.AddDays(-40), set), new AuditActor("wish-mod", "wishmod"));
+            Assert.Equal(WishOutcome.Success, report.Outcome);
+        }
+
+        var booked = await LoadWishAsync(reported);
+        Assert.Equal((WishStatus.Removed, (DateTime?)endedAt), (booked.Status, booked.EndedAtUtc));
+
+        var requesterDue = endedAt + RetentionPolicy.WishRequester;
+        Assert.Equal(0, (await RunAsync(enforce: true, at: requesterDue.AddMinutes(-1))).WishRequestersCleared);
+        Assert.Equal(2, (await RunAsync(enforce: true, at: requesterDue.AddMinutes(1))).WishRequestersCleared);
+
+        var deletionDue = endedAt + RetentionPolicy.EndedWish;
+        Assert.Equal(0, (await RunAsync(enforce: true, at: deletionDue.AddMinutes(-1))).EndedWishesDeleted);
+        Assert.Equal(2, (await RunAsync(enforce: true, at: deletionDue.AddMinutes(1))).EndedWishesDeleted);
+        await using var verify = CreateDbContext();
+        Assert.False(await verify.Wishes.AnyAsync(w => w.Id == reported || w.Id == unreported));
     }
 
     [Fact]

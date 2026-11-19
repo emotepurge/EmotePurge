@@ -43,7 +43,7 @@ export const TRANSFER_RUN_FORMAT_VERSION = 1;
 /** One entry a replace row's target id held — `{ alias: string | null }`, `null` for the one
  *  aliasless entry an id can carry alongside its named ones (K5, spec §37/§38). This is what tells a
  *  restore reader that entry came back without an alias (7TV falls back to the emote's own default
- *  name), the same rule `ADD_EMOTE_MUTATION`'s own comment in `seven-tv-import.service.ts` states. */
+ *  name), the same rule `ADD_EMOTE_MUTATION`'s own comment in `seven-tv-add-emote.ts` states. */
 export interface TransferRunRemovedTargetEntry {
   alias: string | null;
 }

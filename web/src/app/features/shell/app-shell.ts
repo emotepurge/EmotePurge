@@ -5,9 +5,12 @@ import { TranslocoPipe } from '@jsverse/transloco';
 
 import { AuthService } from '../../core/auth/auth.service';
 import { WorkerHealthService } from '../../core/health/worker-health.service';
+import { pluralKey } from '../../core/i18n/plural';
 import { DockClearanceService } from '../../core/layout/dock-clearance.service';
 import { LegalService } from '../../core/legal/legal.service';
 import { LiveQuotaService } from '../../core/live/live-quota.service';
+import { headerBadgeShown, wishesCountVisibleBelowSm } from './header-badge';
+import { WishSummaryService } from '../../core/wishes/wish-summary.service';
 import { LOGO_SRC } from '../../shared/branding/logo';
 import { AccountMenu } from '../../shared/ui/account-menu';
 import { Button } from '../../shared/ui/button';
@@ -194,6 +197,36 @@ import { Popover } from '../../shared/ui/popover';
                 class="px-1 py-2 text-sm whitespace-nowrap text-fg-muted transition hover:text-fg"
                 >{{ 'shell.votings' | transloco }}</a
               >
+              <!-- Wishes (#485, F4 step 2). Only while the summary answers (AK40): the switch off or
+                   no answer yet means no link at all. From sm on word and count; below sm only the
+                   count, and only when there is one — the 360px row has no room for a second word
+                   next to "Abstimmungen" and a header badge (DECISIONS, wish emotes child 3).
+                   Precedence (DECISIONS (z)): while a status badge stands below sm, the count
+                   gives way entirely, like the quota badge gives way to the worker badge. Below sm
+                   the page stays reachable through the account menu's own entry.
+                   The count is plain text on a quiet chip, not an app-status-badge: the header's
+                   "one badge at a time" stays about warnings. The accessible name carries both parts
+                   and starts with the visible word (WCAG 2.5.3); a changed count is not announced. -->
+              @if (wishCount(); as count) {
+                <a
+                  routerLink="/my-wishes"
+                  class="inline-flex min-h-6 min-w-6 items-center justify-center gap-1.5 px-1 py-2 text-sm whitespace-nowrap text-fg-muted transition hover:text-fg"
+                  [class.max-sm:hidden]="!wishesCountBelowSm()"
+                  [attr.aria-label]="wishesLabelKey(count) | transloco: { count: count }"
+                >
+                  <span class="hidden sm:inline">{{ 'shell.wishes' | transloco }}</span>
+                  <span
+                    class="rounded-full bg-surface-inset px-1.5 text-xs leading-5 font-semibold text-fg tabular-nums"
+                    >{{ count }}</span
+                  >
+                </a>
+              } @else if (wishesAvailable()) {
+                <a
+                  routerLink="/my-wishes"
+                  class="hidden px-1 py-2 text-sm whitespace-nowrap text-fg-muted transition hover:text-fg sm:inline"
+                  >{{ 'shell.wishes' | transloco }}</a
+                >
+              }
             } @else if (authResolved()) {
               <a routerLink="/login" appButton="primary">
                 {{ 'shell.login' | transloco }}
@@ -246,6 +279,7 @@ export class AppShell {
   private readonly legalService = inject(LegalService);
   private readonly liveQuotaService = inject(LiveQuotaService);
   private readonly router = inject(Router);
+  private readonly wishSummary = inject(WishSummaryService);
 
   protected readonly currentUser = this.authService.currentUser;
   protected readonly authResolved = this.authService.isResolved;
@@ -256,6 +290,17 @@ export class AppShell {
   protected readonly liveQuota = this.liveQuotaService.quota;
   protected readonly liveHintOpen = signal(false);
   protected readonly logoSrc = LOGO_SRC;
+  protected readonly wishesCountBelowSm = computed(() =>
+    wishesCountVisibleBelowSm(
+      headerBadgeShown(this.workerStale(), this.liveQuota()?.perSubscriberLimitReached === true),
+    ),
+  );
+  protected readonly wishesAvailable = this.wishSummary.available;
+  /** The count when there is one to show; 0 and "unknown" both show none. */
+  protected readonly wishCount = computed(() => {
+    const count = this.wishSummary.actionCount();
+    return count !== null && count > 0 ? count : null;
+  });
 
   constructor() {
     // AppShell is mounted for every route (overview, usage-stats, vote-sessions), unlike
@@ -287,5 +332,9 @@ export class AppShell {
         }
       }
     });
+  }
+
+  protected wishesLabelKey(count: number): string {
+    return pluralKey(count, 'shell.wishesCount');
   }
 }

@@ -62,6 +62,7 @@ const PERMISSIONS: ChannelPermissions = {
   tagRunsEnabled: false,
   canPurgeAsBroadcaster: false,
   chatLogBackfillEnabled: false,
+  wishesEnabled: false,
 };
 
 const DONE_RESULT: RunResult = {
@@ -272,7 +273,7 @@ describe('ChannelWorkspaceLayout — a carried-over run must not be dropped the 
  * the tags tab follows the usage tab's visibility, `canViewUsageStats`).
  */
 describe('ChannelWorkspaceLayout — tabs', () => {
-  function tabLabels(permissions: ChannelPermissions): string[] {
+  function tabLabels(permissions: ChannelPermissions | 'error'): string[] {
     TestBed.configureTestingModule({
       imports: [
         ChannelWorkspaceLayout,
@@ -285,6 +286,7 @@ describe('ChannelWorkspaceLayout — tabs', () => {
                   tags: 'Tags',
                   voting: 'Votings',
                   activity: 'Aktivität',
+                  wishes: 'Wünsche',
                   settings: 'Einstellungen',
                 },
               },
@@ -298,7 +300,15 @@ describe('ChannelWorkspaceLayout — tabs', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         { provide: Dialog, useValue: { open: vi.fn() } },
-        { provide: ChannelService, useValue: { getPermissions: () => of(permissions) } },
+        {
+          provide: ChannelService,
+          useValue: {
+            getPermissions: () =>
+              permissions === 'error'
+                ? throwError(() => new HttpErrorResponse({ status: 500 }))
+                : of(permissions),
+          },
+        },
         {
           provide: EVENT_SOURCE_FACTORY,
           useValue: () => new FakeEventSource() as unknown as EventSource,
@@ -337,6 +347,52 @@ describe('ChannelWorkspaceLayout — tabs', () => {
     expect(tabLabels({ ...PERMISSIONS, chatLogBackfillEnabled: false })).not.toContain(
       'Einstellungen',
     );
+  });
+
+  // #485, E19: the tab also carries the wish settings, so the wish switch alone opens it.
+  it('shows the settings tab for a manager while only the wishes switch is on', () => {
+    expect(tabLabels({ ...PERMISSIONS, wishesEnabled: true })).toContain('Einstellungen');
+  });
+
+  it('hides every privileged tab when the permissions call fails', () => {
+    expect(tabLabels('error')).toEqual(['Votings']);
+  });
+
+  it('hides the settings tab while both switches are off', () => {
+    expect(tabLabels(PERMISSIONS)).not.toContain('Einstellungen');
+  });
+
+  it('hides the settings tab from a non-manager while only the wishes switch is on', () => {
+    expect(tabLabels({ ...PERMISSIONS, canManage: false, wishesEnabled: true })).not.toContain(
+      'Einstellungen',
+    );
+  });
+
+  // #485, E19: the wishes tab needs the manager right and the switch, and sits between activity
+  // and settings.
+  it('shows the wishes tab after activity for a manager while the wishes switch is on', () => {
+    expect(tabLabels({ ...PERMISSIONS, wishesEnabled: true })).toEqual([
+      'Nutzung',
+      'Tags',
+      'Votings',
+      'Aktivität',
+      'Wünsche',
+      'Einstellungen',
+    ]);
+  });
+
+  it('hides the wishes tab while the wishes switch is off', () => {
+    expect(tabLabels({ ...PERMISSIONS, chatLogBackfillEnabled: true })).not.toContain('Wünsche');
+  });
+
+  it('hides the wishes tab from a non-manager even with the switch on', () => {
+    expect(tabLabels({ ...PERMISSIONS, canManage: false, wishesEnabled: true })).not.toContain(
+      'Wünsche',
+    );
+  });
+
+  it('hides the wishes tab when the permissions call fails', () => {
+    expect(tabLabels('error')).not.toContain('Wünsche');
   });
 
   it('hides the settings tab from a non-manager even with the switch on', () => {

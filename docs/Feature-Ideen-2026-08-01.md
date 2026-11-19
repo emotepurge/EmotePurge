@@ -37,7 +37,7 @@ Legende: ✅ umgesetzt · 🟡 teilweise · ⬜ offen
 | **A13**–**A15** | ⬜ | — |
 | **A16** Emote-Liste importieren (Nachtrag 2026-08-04) | ✅ 2026-09-06 | DECISIONS „Import-Lauf: dritter Arbiter-Zweig ohne DI-Zirkel, kein Kanal-Reset, Nachlauf ans Laufobjekt gebunden …" (#72, K3) |
 | **A17** Chat-Log-Backfill (Nachtrag 2026-10-08) | ✅ 2026-10-09 | DECISIONS „Chat-log backfill: imported rows are marked, one set owns an imported day, coverage is disclosed unconditionally, the flag ships off (#354)“ (Epic #346); Flag auf Prod bis zum Datenschutztext aus; Entfernen im UI (#384) |
-| **A18** Wunsch-Emotes (Nachtrag 2026-11-17) | 🟡 begonnen, K1 und K2 | K1 (Backend-Kern, #483) und K2 (Ablauf-Lauf, #484, `WishExpiryWorker`) auf Branch, nicht gemergt, nicht deployt, hinter `Wishes:Enabled`; DECISIONS „Wish emotes, child 1: backend core" und „child 2: expiry run"; Epic #481, Querverweis A15 |
+| **A18** Wunsch-Emotes (Nachtrag 2026-11-17) | 🟡 begonnen, K1 bis K3 | K1 (Backend-Kern, #483), K2 (Ablauf-Lauf, #484, `WishExpiryWorker`) und K3 (Verwalter-UI, #485, Branch `nacht/485-wish-ui`) auf Branch, nicht gemergt, nicht deployt, hinter `Wishes:Enabled`; K3 offen: Live-Verifikation und Betreiberentscheid zur Kopfzeile bei 360 px; DECISIONS „Wish emotes, child 1: backend core", „child 2: expiry run" und „child 3: manager UI"; Epic #481, Querverweis A15 |
 | **B1** Support-Drilldown | 🟡 2026-08-01 | Audit-Zeilen und Per-Channel-Flush fehlen |
 | **B2** Soll/Ist-Roster | ✅ 2026-08-02 | DECISIONS „Auslastungsbalken bekommen eine Schwellen-Leiter, das Roster-Badge nicht" |
 | **B3**–**B9** | ⬜ | — |
@@ -521,11 +521,14 @@ wo importierte Zahlen stehen.
 
 ### A18 — Wunsch-Emotes: ein Emote auf Zeit im Set haben, ohne es zu vergessen (Nachtrag 2026-11-17)
 
-**Status: 🟡 begonnen, K1 und K2** (Epic #481, Kinder #483 und #484; K2 ist der Ablauf-Lauf `WishExpiryWorker`, Plan: `docs/plans/Plan-484-Wunsch-Emotes-Ablauf-Lauf.md`) — der Backend-Kern (Wunsch- und Einstellungsmodell,
+**Status: 🟡 begonnen, K1 bis K3** (Epic #481, Kinder #483, #484 und #485; K2 ist der Ablauf-Lauf `WishExpiryWorker`, Plan: `docs/plans/Plan-484-Wunsch-Emotes-Ablauf-Lauf.md`; K3 die Verwalter-UI, Plan: `docs/plans/Plan-485-Wunsch-Emotes-Verwalter-UI.md`) — der Backend-Kern (Wunsch- und Einstellungsmodell,
 Zustandstabelle, Abgleich gegen die Slots, Aufbewahrungsfristen, Endpoints) liegt auf dem Branch
 `nacht/483-wish-core`, ist **nicht gemergt und nicht deployt** und hängt hinter `Wishes:Enabled` (auf Prod
-aus). Frontend, Bot-Modus und Freigabe folgen in den Kindern K2 bis K6. Details: DECISIONS „Wish emotes,
-child 1: backend core"; Spec: `docs/superpowers/specs/2026-11-17-wunsch-emotes-spec.md`; Plan:
+aus). K3 (Tab „Wünsche“ je Kanal, Abschnitt im Settings-Tab, Seite `my-wishes`, Zähler in der Kopfzeile, Nachtragen
+und Bestand übernehmen, Hinzufügen und Entfernen über die Browser-Engine) liegt auf `nacht/485-wish-ui`, ebenfalls
+nicht gemergt und nicht deployt; **offen** sind die Live-Verifikation (AK45) und die Betreiberentscheidung zur
+Kopfzeile bei 360 px (AK44). Bot-Modus, Chat-Erfassung und Freigabe folgen in K4 bis K6. Details: DECISIONS „Wish emotes,
+child 1: backend core" und „child 3: manager UI"; Spec: `docs/superpowers/specs/2026-11-17-wunsch-emotes-spec.md`; Plan:
 `docs/plans/Plan-483-Wunsch-Emotes-Backend-Kern.md`.
 
 Ein Wunsch ist die Bitte eines Kanals, ein bestimmtes 7TV-Emote für begrenzte Zeit im Set zu halten; der
