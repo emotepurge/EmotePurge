@@ -369,6 +369,56 @@ test.describe('wish emotes: the manager page (#485)', () => {
       await expect(section(page, 'running').locator('[data-wish-id="25"]')).toHaveCount(0);
     });
 
+    test('real mouse clicks reach every control of the adopt dialog: each entry row, the start radios and the duration field', async ({
+      page,
+    }) => {
+      // Regression: a stretched label overlay without a positioned row covered the whole dialog, so a
+      // click on an entry picked the last one and the start radios and the duration were unreachable.
+      // `check()` and `fill()` do not hit-test the way a mouse does, hence real clicks here.
+      await mockWishBackend(page, CHANNEL, {
+        slots: [
+          buildWishSlot('slot-a', { alias: 'EntryA' }),
+          buildWishSlot('slot-b', { alias: 'EntryB' }),
+          buildWishSlot('slot-c', { alias: 'EntryC' }),
+        ],
+      });
+      await page.goto(URL_WISHES);
+      await page.getByRole('button', { name: 'Bestand übernehmen' }).click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog.getByRole('radio', { name: 'EntryA' })).toBeVisible();
+
+      // A click on the second entry's alias picks exactly that entry, not the last one.
+      await dialog.getByText('EntryB', { exact: true }).click();
+      await expect(dialog.getByRole('radio', { name: 'EntryB' })).toBeChecked();
+      await expect(dialog.getByRole('radio', { name: 'EntryA' })).not.toBeChecked();
+      await expect(dialog.getByRole('radio', { name: 'EntryC' })).not.toBeChecked();
+
+      // Each start radio takes a mouse click.
+      const startNow = dialog.getByRole('radio', { name: 'Ab jetzt' });
+      const startAdded = dialog.getByRole('radio', { name: 'Ab dem Hinzufügedatum' });
+      const duration = dialog.getByLabel('Laufzeit in Tagen');
+      await startNow.click();
+      await expect(startNow).toBeChecked();
+      await startAdded.click();
+      await expect(startAdded).toBeChecked();
+      await startNow.click();
+      await expect(startNow).toBeChecked();
+
+      // The duration field takes focus by click.
+      await duration.click();
+      await expect(duration).toBeFocused();
+
+      // The point at the middle of each control belongs to the control itself.
+      for (const control of [startNow, startAdded, duration]) {
+        const hit = await control.evaluate((el) => {
+          const box = el.getBoundingClientRect();
+          const top = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+          return top === el;
+        });
+        expect(hit).toBe(true);
+      }
+    });
+
     test('a link target that became active before sending: 409, entries reload, the entry is locked, nothing is sent again (Sol-R2-P2-5 c)', async ({
       page,
     }) => {

@@ -277,7 +277,7 @@ interface StaleNotice {
               </legend>
               <ul class="-mx-6 divide-y divide-border border-y border-border">
                 @for (line of listed(); track line.key) {
-                  <li class="flex items-start gap-3 px-6 py-2">
+                  <li class="relative flex items-start gap-3 px-6 py-2">
                     @if (line.kind === 'entry') {
                       <input
                         type="radio"
