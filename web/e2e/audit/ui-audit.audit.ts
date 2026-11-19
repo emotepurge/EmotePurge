@@ -894,7 +894,8 @@ const SCENARIOS: Scenario[] = [
       await mockMyChannelsWithFlags(page, TYPICAL_CHANNELS);
     },
     afterLoad: async (page) => {
-      await page.locator('header a[href="/my-wishes"]').waitFor();
+      // Attached, not visible: below sm the link is in the DOM but yields to the badge.
+      await page.locator('header a[href="/my-wishes"]').waitFor({ state: 'attached' });
       await page.locator('header app-health-marker').waitFor();
       await assertHeaderFits(page, 'shell-wishes-count-badge', { badge: true });
     },
