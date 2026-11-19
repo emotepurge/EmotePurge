@@ -38,4 +38,33 @@ internal static class WishRewardLearningStatements
 
         return expired.ExecuteDeleteAsync(cancellationToken);
     }
+
+    /// <summary>
+    /// Sets the candidate of the channel's learning row, all five fields in this one statement (the row's CHECK
+    /// <c>CK_WishRewardLearnings_Candidate</c> allows all or none), only if the row is still the session
+    /// <paramref name="sessionId"/> the capture read behind the channel lock, has no candidate yet and has not expired
+    /// at <paramref name="nowUtc"/>. The first redemption wins; a set candidate is never changed, so a confirm that
+    /// names its candidate id confirms exactly what the manager saw. Returns the rows hit (0 or 1).
+    /// </summary>
+    public static Task<int> SetCandidateAsync(
+        this AppDbContext db,
+        string channelId,
+        Guid sessionId,
+        Guid candidateId,
+        string rewardTag,
+        string text,
+        string login,
+        DateTime seenAtUtc,
+        DateTime nowUtc,
+        CancellationToken cancellationToken) =>
+        db.WishRewardLearnings
+            .Where(l => l.ChannelId == channelId && l.SessionId == sessionId && l.CandidateId == null && l.ExpiresAtUtc > nowUtc)
+            .ExecuteUpdateAsync(
+                set => set
+                    .SetProperty(l => l.CandidateId, candidateId)
+                    .SetProperty(l => l.CandidateRewardId, rewardTag)
+                    .SetProperty(l => l.CandidateText, text)
+                    .SetProperty(l => l.CandidateLogin, login)
+                    .SetProperty(l => l.CandidateSeenAtUtc, seenAtUtc),
+                cancellationToken);
 }

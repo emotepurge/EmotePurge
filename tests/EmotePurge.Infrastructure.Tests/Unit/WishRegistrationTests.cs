@@ -37,6 +37,7 @@ public class WishRegistrationTests
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IWishChangedPublisher>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IWishOverviewService>());
         Assert.IsType<WishRewardService>(scope.ServiceProvider.GetRequiredService<IWishRewardService>());
+        Assert.IsType<WishCaptureService>(scope.ServiceProvider.GetRequiredService<IWishCaptureService>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IWishReconcileService>());
         Assert.Same(
             provider.GetRequiredService<IWishReconcileService>(), scope.ServiceProvider.GetRequiredService<IWishReconcileService>());
