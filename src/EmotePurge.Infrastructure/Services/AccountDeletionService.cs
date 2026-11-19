@@ -146,7 +146,26 @@ public class AccountDeletionService(
                 .ExecuteUpdateAsync(
                     setters => setters
                         .SetProperty(w => w.RequesterTwitchUserId, (string?)null)
-                        .SetProperty(w => w.RequesterLogin, (string?)null),
+                        .SetProperty(w => w.RequesterLogin, (string?)null)
+                        .SetProperty(w => w.RequestText, (string?)null)
+                        .SetProperty(w => w.RequestedName, (string?)null)
+                        .SetProperty(w => w.IrcMessageId, (string?)null),
+                    cancellationToken);
+            // A learning candidate holds the redeemer's login and text (at most ten minutes). It carries no id,
+            // so it is matched by the login the capture stored (lowercase); all five candidate fields go
+            // together (CK_WishRewardLearnings_Candidate), the session itself stays. The inhaltsfreien
+            // WishCaptureReceipts are deliberately left alone: they keep a buffered duplicate from creating the
+            // wish again and expire by themselves.
+            var candidateLogin = user.TwitchUsername.ToLowerInvariant();
+            await db.WishRewardLearnings
+                .Where(l => l.CandidateLogin == candidateLogin)
+                .ExecuteUpdateAsync(
+                    setters => setters
+                        .SetProperty(l => l.CandidateId, (Guid?)null)
+                        .SetProperty(l => l.CandidateRewardId, (string?)null)
+                        .SetProperty(l => l.CandidateText, (string?)null)
+                        .SetProperty(l => l.CandidateLogin, (string?)null)
+                        .SetProperty(l => l.CandidateSeenAtUtc, (DateTime?)null),
                     cancellationToken);
             await db.ChannelWishSettings
                 .Where(s => s.BotModeActivatedByTwitchUserId == twitchUserId)

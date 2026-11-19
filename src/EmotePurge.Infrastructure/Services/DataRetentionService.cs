@@ -12,7 +12,7 @@ namespace EmotePurge.Infrastructure.Services;
 /// One retention pass (data-retention plan, "Der Job") — see <see cref="IDataRetentionService"/> for
 /// the contract. The categories run in a fixed order, each in its own transaction(s), and never inside
 /// an outer one: tokens → accounts → ended vote sessions → audit log → chat-log backfill runs → ended wishes →
-/// wish requester data → channels → system load.
+/// wish requester data → wish capture gaps → channels → system load.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -112,6 +112,7 @@ public class DataRetentionService(
             NeverActive: now - RetentionPolicy.WishNeverActiveRequesterCap);
         var endedWishesDeleted = await RunEndedWishesAsync(enforce, wishCutoffs, cancellationToken);
         var wishRequestersCleared = await RunWishRequestersAsync(enforce, wishCutoffs, cancellationToken);
+        var wishCaptureGapsDeleted = await RunWishCaptureGapsAsync(enforce, now - RetentionPolicy.WishCaptureGap, cancellationToken);
         var channels = await RunChannelsAsync(
             enforce, now, now - RetentionPolicy.DeactivatedChannel, sessionCutoff, removedAccountIds, cancellationToken);
 
@@ -147,7 +148,8 @@ public class DataRetentionService(
             systemLoadRawDeleted, systemLoadRawWithoutHourly, systemLoadHourlyDeleted,
             systemLoadRawFailed, systemLoadHourlyFailed,
             EndedWishesDeleted: endedWishesDeleted,
-            WishRequestersCleared: wishRequestersCleared);
+            WishRequestersCleared: wishRequestersCleared,
+            WishCaptureGapsDeleted: wishCaptureGapsDeleted);
     }
 
     public async Task<LogRetentionSummary> ExpireLogsAsync(bool enforce, CancellationToken cancellationToken = default)
@@ -490,7 +492,8 @@ public class DataRetentionService(
     }
 
     /// <summary>
-    /// Category 4d: requester data (<c>RequesterTwitchUserId</c>, <c>RequesterLogin</c>) of wishes due under
+    /// Category 4d: requester data (<c>RequesterTwitchUserId</c>, <c>RequesterLogin</c>, <c>RequestText</c>,
+    /// <c>RequestedName</c>, <c>IrcMessageId</c>) of wishes due under
     /// <see cref="RequesterDue"/>, cleared in id batches with one conditional update each; the row stays.
     /// Leaves out the rows category 4c deletes (in an enforced pass they are gone already, in a dry run the
     /// exclusion is the exact correction). The update re-evaluates the predicate against the current row
@@ -523,12 +526,48 @@ public class DataRetentionService(
                     .ExecuteUpdateAsync(
                         setters => setters
                             .SetProperty(w => w.RequesterTwitchUserId, (string?)null)
-                            .SetProperty(w => w.RequesterLogin, (string?)null),
+                            .SetProperty(w => w.RequesterLogin, (string?)null)
+                            .SetProperty(w => w.RequestText, (string?)null)
+                            .SetProperty(w => w.RequestedName, (string?)null)
+                            .SetProperty(w => w.IrcMessageId, (string?)null),
                         cancellationToken)
                 : batch.Count;
         }
 
         return cleared;
+    }
+
+    /// <summary>
+    /// Category 4e: chat-capture gaps whose <c>ToUtc</c> is older than <see cref="RetentionPolicy.WishCaptureGap"/>,
+    /// in id batches. Holds no personal data; no audit entry. The inhaltsfreie capture receipts and the learning
+    /// candidates are not touched here: the capture housekeeping (7 days, 10 minutes) owns them.
+    /// </summary>
+    private async Task<int> RunWishCaptureGapsAsync(bool enforce, DateTime cutoffUtc, CancellationToken cancellationToken)
+    {
+        var deleted = 0;
+        var lastId = 0L;
+        while (true)
+        {
+            var batch = await db.WishCaptureGaps
+                .Where(g => g.ToUtc < cutoffUtc && g.Id > lastId)
+                .OrderBy(g => g.Id)
+                .Select(g => g.Id)
+                .Take(WishBatchSize)
+                .ToListAsync(cancellationToken);
+            if (batch.Count == 0)
+            {
+                break;
+            }
+
+            lastId = batch[^1];
+            deleted += enforce
+                ? await db.WishCaptureGaps
+                    .Where(g => batch.Contains(g.Id) && g.ToUtc < cutoffUtc)
+                    .ExecuteDeleteAsync(cancellationToken)
+                : batch.Count;
+        }
+
+        return deleted;
     }
 
     /// <summary>
@@ -744,7 +783,8 @@ public class DataRetentionService(
         w => WishEndedStates.Contains(w.Status) && w.EndedAtUtc < cutoffs.EndedWish;
 
     /// <summary>
-    /// Holds requester data and is due under one of four rules (spec 6.5, E14): ended at least 30 days ago;
+    /// Holds requester data (the requester's id and login, and since K6 the captured request text, requested
+    /// name and IRC message id, all from the viewer's message) and is due under one of four rules (spec 6.5, E14): ended at least 30 days ago;
     /// (a) without an end, not active, and expired at least 30 days ago; (b) without an end and without an
     /// expiry, in approved, unconfirmed, failed or presented, and unchanged in state for at least 30 days;
     /// (c) never active (<c>FirstActivatedAtUtc</c> null, deliberately not <c>StartsAtUtc</c>, which a re-add
@@ -752,7 +792,8 @@ public class DataRetentionService(
     /// wishes too.
     /// </summary>
     private static Expression<Func<Wish, bool>> RequesterDue(WishCutoffs cutoffs) =>
-        w => (w.RequesterTwitchUserId != null || w.RequesterLogin != null)
+        w => (w.RequesterTwitchUserId != null || w.RequesterLogin != null
+              || w.RequestText != null || w.RequestedName != null || w.IrcMessageId != null)
             && ((WishEndedStates.Contains(w.Status) && w.EndedAtUtc < cutoffs.Requester)
                 || (WishHangingStates.Contains(w.Status) && w.ExpiresAtUtc < cutoffs.Requester)
                 || (WishStatesWithoutExpiry.Contains(w.Status) && w.ExpiresAtUtc == null && w.StatusChangedAtUtc < cutoffs.Requester)

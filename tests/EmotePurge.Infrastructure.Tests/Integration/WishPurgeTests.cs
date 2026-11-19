@@ -26,7 +26,7 @@ public class WishPurgeTests(PostgresFixture fixture)
         var suffix = Guid.NewGuid().ToString("N")[..10];
         var name = $"wishpurge{suffix}";
         var twitchId = $"wp{suffix}";
-        var (channelId, bystanderId) = await SeedAsync(name, twitchId);
+        var (channelId, bystanderId, wishId) = await SeedAsync(name, twitchId);
 
         await using (var db = fixture.CreateDbContext())
         {
@@ -54,6 +54,16 @@ public class WishPurgeTests(PostgresFixture fixture)
             Assert.False(await verify.Channels.AnyAsync(c => c.Id == channelId));
             Assert.False(await verify.Wishes.AnyAsync(w => w.ChannelId == channelId));
             Assert.False(await verify.ChannelWishSettings.AnyAsync(s => s.ChannelId == channelId));
+            // K6: the six capture tables hang on the channel with CASCADE; the bystander's rows stay.
+            Assert.False(await verify.ChannelWishRewards.AnyAsync(r => r.ChannelId == channelId));
+            Assert.False(await verify.WishRewardLearnings.AnyAsync(l => l.ChannelId == channelId));
+            Assert.False(await verify.WishCaptureGaps.AnyAsync(g => g.ChannelId == channelId));
+            Assert.False(await verify.WishCaptureReceipts.AnyAsync(r => r.ChannelId == channelId));
+            Assert.False(await verify.WishSlotExclusions.AnyAsync(e => e.WishId == wishId));
+            Assert.True(await verify.ChannelWishRewards.AnyAsync(r => r.ChannelId == bystanderId));
+            Assert.True(await verify.WishRewardLearnings.AnyAsync(l => l.ChannelId == bystanderId));
+            Assert.True(await verify.WishCaptureGaps.AnyAsync(g => g.ChannelId == bystanderId));
+            Assert.True(await verify.WishCaptureReceipts.AnyAsync(r => r.ChannelId == bystanderId));
             // Another channel's wishes and settings are untouched.
             Assert.Equal(1, await verify.Wishes.CountAsync(w => w.ChannelId == bystanderId));
             Assert.True(await verify.ChannelWishSettings.AnyAsync(s => s.ChannelId == bystanderId));
@@ -66,7 +76,7 @@ public class WishPurgeTests(PostgresFixture fixture)
 
     // A left channel, due for the retention purge, with an emote and slot, three wishes (active on the slot,
     // one merged into it, one removed) and a settings row; and a bystander channel with one of each.
-    private async Task<(string ChannelId, string BystanderId)> SeedAsync(string name, string twitchId)
+    private async Task<(string ChannelId, string BystanderId, long WishId)> SeedAsync(string name, string twitchId)
     {
         await using var db = fixture.CreateDbContext();
         var deactivated = DateTime.UtcNow.AddDays(-200);
@@ -97,7 +107,31 @@ public class WishPurgeTests(PostgresFixture fixture)
             new ChannelWishSettings { ChannelId = channel.Id, DefaultDurationDays = 12 },
             new ChannelWishSettings { ChannelId = bystander.Id });
         await db.SaveChangesAsync();
-        return (channel.Id, bystander.Id);
+
+        // K6 rows on both channels: a reward, a learning row, a gap, a receipt, and a slot exclusion on a wish.
+        foreach (var id in new[] { channel.Id, bystander.Id })
+        {
+            db.ChannelWishRewards.Add(new ChannelWishReward { ChannelId = id, RewardId = "reward-purge", Label = "Reward", DefaultDurationDays = 7, CreatedAtUtc = DateTime.UtcNow });
+            db.WishRewardLearnings.Add(new WishRewardLearning
+            {
+                ChannelId = id,
+                SessionId = Guid.NewGuid(),
+                StartedAtUtc = DateTime.UtcNow,
+                ExpiresAtUtc = DateTime.UtcNow.AddMinutes(10)
+            });
+            db.WishCaptureGaps.Add(new WishCaptureGap
+            {
+                ChannelId = id,
+                FromUtc = DateTime.UtcNow.AddMinutes(-5),
+                ToUtc = DateTime.UtcNow,
+                Reason = WishCaptureGapReason.Disconnect
+            });
+            db.WishCaptureReceipts.Add(new WishCaptureReceipt { ChannelId = id, IrcMessageId = "receipt", SeenAtUtc = DateTime.UtcNow });
+        }
+
+        db.WishSlotExclusions.Add(new WishSlotExclusion { WishId = merged.Id, SlotId = slot.Id.ToString(), CreatedAtUtc = DateTime.UtcNow });
+        await db.SaveChangesAsync();
+        return (channel.Id, bystander.Id, merged.Id);
     }
 
     private static Wish NewWish(string channelId, string status, string? emoteId = null) => new()

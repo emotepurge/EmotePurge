@@ -83,7 +83,12 @@ public sealed record LogRetentionSummary(
 /// <param name="WishRequestersCleared">
 /// Wishes whose requester fields (<c>RequesterTwitchUserId</c>, <c>RequesterLogin</c>) were cleared under
 /// <see cref="RetentionPolicy.WishRequester"/> and E14 (a) to (c), not counting the wishes the deletion
-/// above removes in the same pass.
+/// above removes in the same pass. The same update clears the captured request data of the chat capture
+/// (<c>RequestText</c>, <c>RequestedName</c>, <c>IrcMessageId</c>, K6).
+/// </param>
+/// <param name="WishCaptureGapsDeleted">
+/// Chat-capture gaps deleted 30 days after they ended (<see cref="RetentionPolicy.WishCaptureGap"/>, K6).
+/// Runs after the requester clearing.
 /// </param>
 public sealed record RetentionRunSummary(
     bool Enforced,
@@ -100,7 +105,8 @@ public sealed record RetentionRunSummary(
     bool SystemLoadRawSamplesFailed = false,
     bool SystemLoadHourlyRowsFailed = false,
     int EndedWishesDeleted = 0,
-    int WishRequestersCleared = 0);
+    int WishRequestersCleared = 0,
+    int WishCaptureGapsDeleted = 0);
 
 /// <summary>The inactive-account category of a <see cref="RetentionRunSummary"/>.</summary>
 /// <param name="Deleted">Accounts deleted through <see cref="IAccountDeletionService"/>.</param>

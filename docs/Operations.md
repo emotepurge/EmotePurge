@@ -709,7 +709,8 @@ stand:
 | Audit log entry | deleted 365 days after it occurred | `OccurredAtUtc` |
 | Channel after "leave" | deleted with its whole history 180 days after it was deactivated | `DeactivatedAtUtc` |
 | Chat-log backfill run (the run row; its snapshot goes with it) | deleted 365 days after it finished | `FinishedAtUtc` |
-| Wish requester data (the requester's login and id on a wish) | cleared 30 days after the wish ended; a wish that was never active at the latest 120 days after creation (E14 rules); like every row here only with `Retention:Enforce=true` | `EndedAtUtc` (`RetentionPolicy.WishRequester`, `WishNeverActiveRequesterCap`) |
+| Wish requester data (the requester's login and id on a wish, and the captured request text, requested name and IRC message id) | cleared 30 days after the wish ended; a wish that was never active at the latest 120 days after creation (E14 rules); like every row here only with `Retention:Enforce=true` | `EndedAtUtc` (`RetentionPolicy.WishRequester`, `WishNeverActiveRequesterCap`) |
+| Wish capture gap (a stretch in which the chat capture was not listening) | deleted 30 days after it ended; only with `Retention:Enforce=true`; the capture receipts (7 days) and learning candidates (10 minutes) expire in the capture housekeeping, not here | `ToUtc` (`RetentionPolicy.WishCaptureGap`) |
 | Ended wish (the row itself) | deleted 365 days after it ended; only with `Retention:Enforce=true` | `EndedAtUtc` (`RetentionPolicy.EndedWish`) |
 | Raw system-load sample | deleted after 7 days, only after its own and its immediate successor's hourly rollups exist | sample hour and source match `SystemLoadHourly`; when a later sample exists for the same process identity and source, its hour must also match |
 | Hourly system-load row | deleted after 13 calendar months | `HourUtc` |

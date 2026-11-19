@@ -115,6 +115,7 @@ public partial class WishCaptureServiceTests
         Assert.Equal(WishCaptureOutcome.Duplicate, again);
         var wish = await SingleWishAsync(channel);
         Assert.Equal(((string?)null, (string?)null), (wish.RequesterTwitchUserId, wish.RequesterLogin));
+        Assert.Equal(((string?)null, (string?)null, (string?)null), (wish.RequestText, wish.RequestedName, wish.IrcMessageId));
         Assert.True(await ReceiptExistsAsync(channel, "msg-1"));
     }
 
@@ -133,6 +134,7 @@ public partial class WishCaptureServiceTests
 
         var wish = await SingleWishAsync(channel);
         Assert.Equal(((string?)null, (string?)null), (wish.RequesterTwitchUserId, wish.RequesterLogin));
+        Assert.Equal(((string?)null, (string?)null, (string?)null), (wish.RequestText, wish.RequestedName, wish.IrcMessageId));
         Assert.True(await ReceiptExistsAsync(channel, "msg-1"));
     }
 

@@ -33,7 +33,7 @@ public static class RetentionRunSummaryFormatter
             $"ballot entries deleted: {voteSessions.BallotEntriesDeleted}; " +
             $"audit log entries deleted: {summary.AuditEntriesDeleted}; " +
             $"backfill runs deleted: {summary.ChatLogBackfillRunsDeleted}; " +
-            $"ended wishes deleted: {summary.EndedWishesDeleted}, wish requesters cleared: {summary.WishRequestersCleared}; " +
+            $"ended wishes deleted: {summary.EndedWishesDeleted}, wish requesters cleared: {summary.WishRequestersCleared}, wish capture gaps deleted: {summary.WishCaptureGapsDeleted}; " +
             $"channels restamped: {channels.Restamped}, purged: {channels.Purged}, " +
             $"still active: {channels.StillActive}, not found: {channels.NotFound}, failed: {channels.Failed}, " +
             $"emotes deleted: {channels.EmotesDeleted}, usage rows deleted: {channels.UsageRowsDeleted}, " +
