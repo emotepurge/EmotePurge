@@ -191,6 +191,39 @@ describe('WishUsageStore', () => {
     expect(store.blockFor(w)).toBeNull();
   });
 
+  it('does not cache a detail that describes another stay than the row, and asks again after the next list load', () => {
+    const row = wish();
+    store.setVisible(row, true);
+    // Re-added between the list read and the detail read: another slot generation.
+    const readded = wish({ slotAddedAtUtc: '2026-11-05T10:00:00Z' });
+    answer(0, usage(40), readded);
+
+    expect(store.blockFor(row)).toBeNull();
+    expect(store.blockFor(readded)).toBeNull();
+    // No retry storm on the clock tick while the list still shows the old state …
+    now += WISH_USAGE_TTL_MS;
+    store.tick();
+    store.setVisible(row, true);
+    expect(fetches).toHaveLength(1);
+
+    // … but the next list load lets the row ask again, here with its new key.
+    store.sync([readded]);
+    expect(fetches).toHaveLength(2);
+    answer(1, usage(40), readded);
+    expect(store.blockFor(readded)?.usage?.total).toBe(40);
+  });
+
+  it.each([
+    ['status', { status: 'presented' as const }],
+    ['expiry', { expiresAtUtc: '2026-12-30T10:00:00Z' }],
+    ['slot', { slotId: 'slot-other' }],
+  ])('drops a detail whose %s differs from the row', (_label, change) => {
+    const row = wish();
+    store.setVisible(row, true);
+    answer(0, usage(40), wish(change));
+    expect(store.blockFor(row)).toBeNull();
+  });
+
   it('lets every held value run out on expireAll and reloads only the visible rows', () => {
     const seen = wish({ id: 1 });
     const unseen = wish({ id: 2, slotId: 'slot-2' });

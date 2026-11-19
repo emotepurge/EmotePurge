@@ -88,6 +88,9 @@ export class WishUsageStore {
   private readonly entries = signal<ReadonlyMap<number, UsageEntry>>(new Map());
   private readonly visible = new Map<number, Wish>();
   private readonly inflight = new Map<number, { key: string; seq: number }>();
+  /** Row id → the row key whose detail answered for another key (re-added or rebound meanwhile).
+   *  That row waits for the next list load (`sync`) instead of asking again on every tick. */
+  private readonly mismatched = new Map<number, string>();
   private seq = 0;
   private generation = 0;
 
@@ -120,6 +123,8 @@ export class WishUsageStore {
   /** The wishes now on screen: forget rows that are gone, hand the visible ones their newer state. */
   sync(displayed: readonly Wish[]): void {
     const byId = new Map(displayed.map((wish) => [wish.id, wish]));
+    // A list load is what a mismatched detail waits for: from here on the row may ask again.
+    this.mismatched.clear();
     for (const id of [...this.visible.keys()]) {
       const wish = byId.get(id);
       if (wish) {
@@ -163,6 +168,7 @@ export class WishUsageStore {
     this.generation++;
     this.visible.clear();
     this.inflight.clear();
+    this.mismatched.clear();
     this.entries.set(new Map());
   }
 
@@ -171,7 +177,7 @@ export class WishUsageStore {
       return;
     }
     const key = wishUsageKey(wish);
-    if (this.inflight.get(wish.id)?.key === key) {
+    if (this.inflight.get(wish.id)?.key === key || this.mismatched.get(wish.id) === key) {
       return;
     }
     if (usageIsDue(this.entries().get(wish.id), key, this.clock())) {
@@ -192,6 +198,13 @@ export class WishUsageStore {
           return;
         }
         this.inflight.delete(id);
+        // The detail may describe another stay than the row (plan 2.4: the value counts only for
+        // the key it was loaded with): re-added or rebound after the list was read. Not cached; the
+        // row asks again once the next list load hands it its current state.
+        if (wishUsageKey(detail) !== key) {
+          this.mismatched.set(id, key);
+          return;
+        }
         this.store(id, {
           key,
           usage: detail.usage,

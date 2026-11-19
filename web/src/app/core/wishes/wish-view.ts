@@ -100,12 +100,15 @@ export interface TimeInSet {
 /**
  * Since when the emote is in the set: `slotAddedAtUtc` when known (a deadline starting "from now"
  * has a `startsAtUtc` later than the entry's arrival), else `startsAtUtc`; `null` without either.
+ * Either date is provisional while `startsAtAuthoritative` is false: the flag also says whether 7TV
+ * confirmed the slot generation (DECISIONS 2026-11-18, #485 (b)), so an unconfirmed slot date is an
+ * estimate too.
  */
 export function timeInSet(
   wish: Pick<Wish, 'startsAtUtc' | 'startsAtAuthoritative'> & { slotAddedAtUtc?: string | null },
 ): TimeInSet | null {
   if (wish.slotAddedAtUtc) {
-    return { sinceUtc: wish.slotAddedAtUtc, provisional: false };
+    return { sinceUtc: wish.slotAddedAtUtc, provisional: !wish.startsAtAuthoritative };
   }
   return wish.startsAtUtc
     ? { sinceUtc: wish.startsAtUtc, provisional: !wish.startsAtAuthoritative }

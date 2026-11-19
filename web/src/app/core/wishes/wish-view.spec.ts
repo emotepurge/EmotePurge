@@ -352,11 +352,11 @@ describe('timeInSet and endedDate', () => {
     ).toBe(false);
   });
 
-  it('prefers the slot arrival over a later start, and keeps it non-provisional', () => {
+  it('prefers the slot arrival over a later start', () => {
     expect(
       timeInSet({
         startsAtUtc: '2026-11-10T00:00:00Z',
-        startsAtAuthoritative: false,
+        startsAtAuthoritative: true,
         slotAddedAtUtc: '2026-11-01T00:00:00Z',
       }),
     ).toEqual({ sinceUtc: '2026-11-01T00:00:00Z', provisional: false });
@@ -367,6 +367,16 @@ describe('timeInSet and endedDate', () => {
         slotAddedAtUtc: null,
       })?.sinceUtc,
     ).toBe('2026-11-10T00:00:00Z');
+  });
+
+  it('flags a slot arrival 7TV has not confirmed yet as provisional', () => {
+    expect(
+      timeInSet({
+        startsAtUtc: '2026-11-10T00:00:00Z',
+        startsAtAuthoritative: false,
+        slotAddedAtUtc: '2026-11-01T00:00:00Z',
+      }),
+    ).toEqual({ sinceUtc: '2026-11-01T00:00:00Z', provisional: true });
   });
 
   it('has no time in the set without a start', () => {
