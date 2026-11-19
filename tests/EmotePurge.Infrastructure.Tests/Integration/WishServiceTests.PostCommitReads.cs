@@ -41,6 +41,49 @@ public partial class WishServiceTests
         AssertPublishedOnce(channel);
     }
 
+    [Fact]
+    public async Task Create_StillSucceedsWithoutTheFullSetHint_WhenTheSlotCountAfterTheCommitFails()
+    {
+        // A known capacity, so the count is actually asked; the set is full, so a count that did run would say true.
+        var channel = await SeedChannelAsync(capacity: 1);
+        var emote = await SeedEmoteAsync(channel);
+        await SeedSlotAsync(emote, "A", Now.AddDays(-1));
+        var interceptor = new FailSlotCountInterceptor();
+        var sut = Sut(fixture.CreateDbContext([interceptor]));
+
+        var result = await sut.CreateAsync(channel.Name, new CreateWishRequest(EmoteId(), "Emote", "Alias", null, null), Actor);
+
+        Assert.Equal(WishOutcome.Success, result.Outcome);
+        Assert.False(result.SetFull);
+        Assert.True(interceptor.Failures >= 1);
+
+        await using var db = fixture.CreateDbContext();
+        Assert.Equal(1, await db.Wishes.CountAsync(w => w.ChannelId == channel.Id));
+        Assert.Equal(1, await db.AuditLogEntries.CountAsync(a => a.ChannelName == channel.Name && a.Action == AuditActions.WishCreate));
+        AssertPublishedOnce(channel);
+    }
+
+    // Fails the count over the set's slots, the only aggregate the service asks of them.
+    private sealed class FailSlotCountInterceptor : DbCommandInterceptor
+    {
+        private int _failures;
+
+        public int Failures => _failures;
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("count(", StringComparison.OrdinalIgnoreCase)
+                && command.CommandText.Contains("EmoteSlots", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref _failures);
+                throw new Npgsql.NpgsqlException("injected slot count failure", innerException: null);
+            }
+
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+    }
+
     // Fails the wish image query (the only read of Emotes without the slot join) once the command has run.
     private sealed class FailImageReadInterceptor : DbCommandInterceptor
     {
