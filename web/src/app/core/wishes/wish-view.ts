@@ -73,8 +73,8 @@ export type RemainingTime =
   | { kind: 'expired_today' };
 
 /**
- * Time to expiry: whole days from one day up, below that whole hours (at least 1); at or after expiry
- * the days since (`expired_today` within the first day). `null` without a usable expiry.
+ * Time to expiry: days from one day up with a begun day counted (a fresh 30-day deadline reads 30,
+ * not 29), below that whole hours (at least 1); at or after expiry the days since (`expired_today` within the first day). `null` without a usable expiry.
  */
 export function remainingTime(expiresAtUtc: string | null, now: Date): RemainingTime | null {
   const expires = parseUtc(expiresAtUtc);
@@ -83,9 +83,8 @@ export function remainingTime(expiresAtUtc: string | null, now: Date): Remaining
   }
   const diff = expires - now.getTime();
   if (diff > 0) {
-    const days = Math.floor(diff / DAY_MS);
-    return days >= 1
-      ? { kind: 'days', count: days }
+    return diff >= DAY_MS
+      ? { kind: 'days', count: Math.ceil(diff / DAY_MS) }
       : { kind: 'hours', count: Math.max(1, Math.floor(diff / HOUR_MS)) };
   }
   const daysAgo = Math.floor(-diff / DAY_MS);
@@ -98,10 +97,16 @@ export interface TimeInSet {
   provisional: boolean;
 }
 
-/** Since when the emote is in the set, from `startsAtUtc`; `null` without a start. */
+/**
+ * Since when the emote is in the set: `slotAddedAtUtc` when known (a deadline starting "from now"
+ * has a `startsAtUtc` later than the entry's arrival), else `startsAtUtc`; `null` without either.
+ */
 export function timeInSet(
-  wish: Pick<Wish, 'startsAtUtc' | 'startsAtAuthoritative'>,
+  wish: Pick<Wish, 'startsAtUtc' | 'startsAtAuthoritative'> & { slotAddedAtUtc?: string | null },
 ): TimeInSet | null {
+  if (wish.slotAddedAtUtc) {
+    return { sinceUtc: wish.slotAddedAtUtc, provisional: false };
+  }
   return wish.startsAtUtc
     ? { sinceUtc: wish.startsAtUtc, provisional: !wish.startsAtAuthoritative }
     : null;

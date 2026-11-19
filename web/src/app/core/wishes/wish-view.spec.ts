@@ -314,9 +314,11 @@ describe('remainingTime', () => {
     expect(remainingTime('garbage', NOW)).toBeNull();
   });
 
-  it('counts whole days from one day up', () => {
+  it('counts a begun day as a day from one day up', () => {
     expect(at('2026-11-19T12:00:00Z')).toEqual({ kind: 'days', count: 1 });
-    expect(at('2026-11-21T11:59:59Z')).toEqual({ kind: 'days', count: 2 });
+    expect(at('2026-11-19T12:00:01Z')).toEqual({ kind: 'days', count: 2 });
+    expect(at('2026-11-21T11:59:59Z')).toEqual({ kind: 'days', count: 3 });
+    expect(at('2026-12-18T11:59:59Z')).toEqual({ kind: 'days', count: 30 });
     expect(at('2026-12-18T12:00:00Z')).toEqual({ kind: 'days', count: 30 });
   });
 
@@ -348,6 +350,23 @@ describe('timeInSet and endedDate', () => {
     expect(
       timeInSet({ startsAtUtc: '2026-11-01T00:00:00Z', startsAtAuthoritative: true })?.provisional,
     ).toBe(false);
+  });
+
+  it('prefers the slot arrival over a later start, and keeps it non-provisional', () => {
+    expect(
+      timeInSet({
+        startsAtUtc: '2026-11-10T00:00:00Z',
+        startsAtAuthoritative: false,
+        slotAddedAtUtc: '2026-11-01T00:00:00Z',
+      }),
+    ).toEqual({ sinceUtc: '2026-11-01T00:00:00Z', provisional: false });
+    expect(
+      timeInSet({
+        startsAtUtc: '2026-11-10T00:00:00Z',
+        startsAtAuthoritative: true,
+        slotAddedAtUtc: null,
+      })?.sinceUtc,
+    ).toBe('2026-11-10T00:00:00Z');
   });
 
   it('has no time in the set without a start', () => {
