@@ -2729,7 +2729,11 @@
       "extend": "Extend",
       "keep": "Keep",
       "remove": "Remove",
-      "reAdd": "Add again"
+      "reAdd": "Add again",
+      "approve": "Approve",
+      "approveExtend": "Approve as extension",
+      "reject": "Reject",
+      "unlink": "Unlink"
     },
     "row": {
       "probation": "Probation",
@@ -2797,7 +2801,44 @@
     },
     "confirm": {
       "keep": "Keep “{{ name }}” for good? The emote stays in the set and the wish is done.",
-      "close": "Close the wish “{{ name }}”? It ends without any change in 7TV."
+      "close": "Close the wish “{{ name }}”? It ends without any change in 7TV.",
+      "reject": "Reject the wish “{{ name }}”? Nothing changes in 7TV.\nRefund the channel points in Twitch, in the redemption queue.",
+      "unlink": "Unlink “{{ name }}”? The wish is open again, and this set entry is not linked to it automatically again. Nothing changes in 7TV."
+    },
+    "pending": {
+      "title": "Open",
+      "others": "Other decisions",
+      "untitled": "Wish without text",
+      "textLabel": "Redeemed text:",
+      "reward": "via “{{ label }}”",
+      "age": {
+        "today": "redeemed today",
+        "days": {
+          "one": "redeemed {{ count }} day ago",
+          "other": "redeemed {{ count }} days ago"
+        }
+      },
+      "hint": {
+        "unparsed": "The text holds no 7TV link and no emote name. Name the emote when you approve.",
+        "ambiguous_match": "Several set entries match this name. Link the right one, or name the emote when you approve.",
+        "already_in_set": "The emote is already in the set. Link the entry to the wish.",
+        "already_running": "A wish for this emote is already running. Approving extends it."
+      }
+    },
+    "approve": {
+      "title": "Approve wish",
+      "titleExtend": "Approve as extension",
+      "intro": "Once approved, the wish is ready to be added. You then add it in 7TV from its row.",
+      "introExtend": "A wish for this emote is already running. Approving extends it by the duration, and this wish is merged into it.",
+      "blocked": {
+        "emoteMissing": "Without an emote the wish cannot be approved. The 7TV link or emote id is missing."
+      },
+      "conflict": {
+        "inSet": "The emote is already in the set. Take the entry over for this wish instead of approving it.",
+        "notExtendable": "The running wish for this emote is not in the set yet, so it cannot be extended. Approving works once it is there. This wish stays open."
+      },
+      "merged": "Booked as an extension. The running wish now runs until {{ date }}.",
+      "mergedNoDate": "Booked as an extension of the running wish."
     },
     "lock": {
       "running": "Busy in 7TV: {{ kind }} is still running. Until it is done, the 7TV actions here are locked.",
@@ -2957,8 +2998,10 @@
       "intro": "Change the alias or the duration of “{{ name }}”. Only what you change is sent.",
       "submit": "Save",
       "blocked": {
-        "unchanged": "Alias and duration are unchanged."
-      }
+        "unchanged": "Alias and duration are unchanged.",
+        "durationUnchanged": "The duration is unchanged."
+      },
+      "introDuration": "Change the duration of “{{ name }}”. The wish gets an alias once the emote is settled."
     },
     "readd": {
       "title": "Add wish again",

@@ -346,8 +346,19 @@ describe('wishTitle', () => {
       'a link, no emote',
     ],
     ['nothing when nothing is known', {}, ''],
+    ['the emote name when the alias is empty', { sevenTvEmoteId: 'e1', emoteName: 'kekw' }, 'kekw'],
   ])('%s', (_name, over, expected) => {
     expect(wishTitle({ ...base, ...over })).toBe(expected);
+  });
+
+  it('takes the 7TV default name for a link wish that has no alias or name yet', () => {
+    const link = { ...base, sevenTvEmoteId: 'e1', requestText: 'https://7tv.app/emotes/e1' };
+    expect(wishTitle(link, 'catJAM')).toBe('catJAM');
+    expect(wishTitle(link)).toBe('https://7tv.app/emotes/e1');
+  });
+
+  it('never takes a default name without an emote', () => {
+    expect(wishTitle({ ...base, requestText: 'pls' }, 'catJAM')).toBe('pls');
   });
 });
 

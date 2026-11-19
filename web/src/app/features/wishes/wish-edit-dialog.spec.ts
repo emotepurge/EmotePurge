@@ -233,3 +233,95 @@ describe('WishEditDialog', () => {
     expect(closed).toEqual([]);
   });
 });
+
+describe('WishEditDialog for an open wish (K6, Sol-P3-12)', () => {
+  let updates: { body: UpdateWishBody }[];
+  let fixture: ComponentFixture<WishEditDialog>;
+
+  function create(value: Wish): void {
+    updates = [];
+    TestBed.configureTestingModule({
+      imports: [
+        WishEditDialog,
+        TranslocoTestingModule.forRoot({
+          langs: { de },
+          translocoConfig: { availableLangs: ['de'], defaultLang: 'de' },
+        }),
+      ],
+      providers: [
+        { provide: DIALOG_DATA, useValue: { channelName: 'chan', wish: value } },
+        { provide: DialogRef, useValue: { close: vi.fn(), disableClose: false } },
+        {
+          provide: WishService,
+          useValue: {
+            update: vi.fn((_channel: string, _id: number, body: UpdateWishBody) => {
+              updates.push({ body });
+              return new Subject<Wish>();
+            }),
+          },
+        },
+      ],
+    });
+    fixture = TestBed.createComponent(WishEditDialog);
+    fixture.detectChanges();
+  }
+
+  afterEach(() => fixture.destroy());
+
+  function type(id: string, value: string): void {
+    const element = fixture.nativeElement.querySelector(`#${id}`) as HTMLInputElement;
+    element.value = value;
+    element.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+  }
+
+  function submit(): HTMLButtonElement {
+    return [...fixture.nativeElement.querySelectorAll('button')].find(
+      (button) => (button as HTMLButtonElement).textContent?.trim() === de.wishes.edit.submit,
+    ) as HTMLButtonElement;
+  }
+
+  const open = (overrides: Partial<Wish> = {}): Wish =>
+    wish({
+      status: 'pending',
+      source: 'irc',
+      sevenTvEmoteId: '',
+      emoteName: '',
+      alias: '',
+      requestedName: 'catJAM',
+      requestText: 'catJAM pls',
+      ...overrides,
+    });
+
+  it('has no alias field without an emote and sends exactly the duration', () => {
+    create(open());
+    expect(fixture.nativeElement.querySelector('#wish-edit-alias')).toBeNull();
+    expect(submit().disabled).toBe(true);
+    expect(fixture.nativeElement.querySelector('#wish-edit-blocked').textContent).toContain(
+      de.wishes.edit.blocked.durationUnchanged,
+    );
+
+    type('wish-edit-duration', '7');
+    expect(submit().disabled).toBe(false);
+    submit().click();
+    expect(updates).toEqual([{ body: { durationDays: 7 } }]);
+  });
+
+  it('keeps the alias field for an open wish that knows its emote, empty and unsent', () => {
+    create(open({ sevenTvEmoteId: '01F6MZGCNG000255K4X1K7NTHR', requestedName: null }));
+    expect(fixture.nativeElement.querySelector('#wish-edit-alias')).not.toBeNull();
+
+    type('wish-edit-duration', '7');
+    submit().click();
+    expect(updates).toEqual([{ body: { durationDays: 7 } }]);
+  });
+
+  it('still checks an alias typed into it', () => {
+    create(open({ sevenTvEmoteId: '01F6MZGCNG000255K4X1K7NTHR', requestedName: null }));
+    type('wish-edit-alias', 'a b');
+    expect(submit().disabled).toBe(true);
+    type('wish-edit-alias', 'catJAM');
+    submit().click();
+    expect(updates).toEqual([{ body: { alias: 'catJAM' } }]);
+  });
+});

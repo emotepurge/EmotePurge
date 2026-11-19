@@ -25,17 +25,19 @@ export function hasEmote(wish: Pick<Wish, 'sevenTvEmoteId'>): boolean {
 }
 
 /**
- * The name an open wish is shown under: its alias once it knows the emote, else the name the viewer
- * typed, else the redemption text (the last two are redeemer data and may be absent). `''` when nothing
- * is known; the caller decides what an empty title reads as.
+ * The name a wish is shown under. Once it knows the emote: its alias, else its emote name, else the
+ * default name a 7TV read of this session found (`previewName`; an open link wish carries neither of
+ * the first two yet). Without those, or without an emote: the name the viewer typed, else the
+ * redemption text (the last two are redeemer data and may be absent). `''` when nothing is known; the
+ * caller decides what an empty title reads as.
  */
 export function wishTitle(
-  wish: Pick<Wish, 'sevenTvEmoteId' | 'alias' | 'requestedName' | 'requestText'>,
+  wish: Pick<Wish, 'sevenTvEmoteId' | 'alias' | 'requestedName' | 'requestText'> &
+    Partial<Pick<Wish, 'emoteName'>>,
+  previewName: string | null = null,
 ): string {
-  if (hasEmote(wish)) {
-    return wish.alias;
-  }
-  return wish.requestedName || wish.requestText || '';
+  const known = hasEmote(wish) ? wish.alias || wish.emoteName || previewName : null;
+  return known || wish.requestedName || wish.requestText || '';
 }
 
 /** An automatic chat link the manager may take back: `active`, from chat, linked by the system. */

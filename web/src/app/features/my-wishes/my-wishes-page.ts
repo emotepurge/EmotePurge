@@ -10,7 +10,7 @@ import { apiErrorCode, apiErrorTranslationKey } from '../../core/i18n/api-error'
 import { pageVisible } from '../../core/page-visibility/page-visibility';
 import type { WishOverviewItem } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
-import { groupWishes, isProbation } from '../../core/wishes/wish-view';
+import { groupWishes, hasEmote, isProbation, wishTitle } from '../../core/wishes/wish-view';
 import { BackLink } from '../../shared/ui/back-link';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
@@ -111,18 +111,23 @@ const CLOCK_TICK_MS = 60_000;
       <li
         class="relative flex items-start gap-3 px-3 py-3 transition-colors hover:bg-surface-inset"
       >
-        <app-wish-image
-          [imageUrl]="item.wish.imageUrl"
-          [sevenTvEmoteId]="item.wish.sevenTvEmoteId"
-          [knownStill]="false"
-        />
+        @if (hasEmote(item)) {
+          <app-wish-image
+            [imageUrl]="item.wish.imageUrl"
+            [sevenTvEmoteId]="item.wish.sevenTvEmoteId"
+            [knownStill]="false"
+          />
+        } @else {
+          <!-- An open wish without an emote has no picture yet; the empty plate keeps the column. -->
+          <span class="flex size-10 shrink-0 bg-emote-canvas" aria-hidden="true"></span>
+        }
         <div class="flex min-w-0 flex-1 flex-col gap-1">
           <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
             <a
               [routerLink]="['/channels', item.channelName, 'wishes']"
               [queryParams]="{ wish: item.wish.id }"
               class="app-card-link max-w-full truncate font-medium hover:underline"
-              >{{ item.wish.alias || item.wish.emoteName }}</a
+              >{{ title(item) || ('wishes.pending.untitled' | transloco) }}</a
             >
             <app-status-badge [tone]="tone(item)">{{
               statusKey(item) | transloco
@@ -217,6 +222,15 @@ export class MyWishesPage {
 
   protected trackKey(item: WishOverviewItem): string {
     return `${item.channelName}#${item.wish.id}`;
+  }
+
+  protected hasEmote(item: WishOverviewItem): boolean {
+    return hasEmote(item.wish);
+  }
+
+  /** The alias, else the emote name; an open wish without an emote by what the viewer typed (K6). */
+  protected title(item: WishOverviewItem): string {
+    return wishTitle(item.wish);
   }
 
   protected statusKey(item: WishOverviewItem): string {

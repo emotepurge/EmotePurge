@@ -32,6 +32,7 @@ import { WishSummaryService } from '../../core/wishes/wish-summary.service';
 import { DeleteProgressSection } from '../../shared/seven-tv/delete-progress-section';
 import { ChannelWishesPage, WISH_RUN_LOCK_ID, WISH_SAFETY_RELOAD_MS } from './channel-wishes-page';
 import { WishAdoptDialog } from './wish-adopt-dialog';
+import { WishApproveDialog } from './wish-approve-dialog';
 import { WishEntryDialog } from './wish-entry-dialog';
 import { WishEditDialog } from './wish-edit-dialog';
 import { WishReAddDialog } from './wish-readd-dialog';
@@ -250,6 +251,8 @@ describe('ChannelWishesPage', () => {
             retry: action('retry'),
             keep: action('keep'),
             close: action('close'),
+            reject: action('reject'),
+            unlink: action('unlink'),
           },
         },
         { provide: Dialog, useValue: { open: openDialog } },
@@ -1472,6 +1475,200 @@ describe('ChannelWishesPage', () => {
       http.expectOne('/api/channels/c/emotes/active-set').flush(setStatus('set-c'));
       fixture.detectChanges();
       expect(dockSetId(fixture)).toBe('set-c');
+    });
+  });
+
+  describe('open wishes captured in chat (K6)', () => {
+    function pending(id: number, overrides: Partial<Wish> = {}): Wish {
+      return wish(id, {
+        status: 'pending',
+        source: 'irc',
+        linkOrigin: null,
+        sevenTvEmoteId: '',
+        emoteName: '',
+        alias: '',
+        approvedAtUtc: null,
+        startsAtUtc: null,
+        startsAtAuthoritative: false,
+        expiresAtUtc: null,
+        slotId: null,
+        slotAddedAtUtc: null,
+        requestText: `wish ${id} pls`,
+        requestedName: `wish${id}`,
+        matchKind: 'name',
+        ...overrides,
+      });
+    }
+
+    function openCall(index: number): { component: unknown; data: Record<string, unknown> } {
+      const [component, config] = openDialog.mock.calls[index] as [
+        unknown,
+        { data: Record<string, unknown> },
+      ];
+      return { component, data: config.data };
+    }
+
+    function closeWith(index: number, result: unknown): void {
+      (dialogs[index] as Subject<unknown>).next(result);
+      dialogs[index].complete();
+    }
+
+    /** The named groups of the "needs action" section: accessible name and the wish ids in it. */
+    function groups(fixture: ComponentFixture<ChannelWishesPage>): [string, number[]][] {
+      return Array.from(section(fixture, 'open').querySelectorAll('[role="group"]'))
+        .filter((group) => group.hasAttribute('aria-labelledby') && !group.closest('app-wish-row'))
+        .map((group) => [
+          fixture.nativeElement
+            .querySelector(`#${group.getAttribute('aria-labelledby')}`)
+            ?.textContent?.trim() ?? '',
+          Array.from(group.querySelectorAll('[data-wish-id]')).map((row) =>
+            Number(row.getAttribute('data-wish-id')),
+          ),
+        ]);
+    }
+
+    it('gives the open wishes of view=open their own group "Offen", the rest a second one', () => {
+      const fixture = create();
+      settle(fixture, [pending(1), pending(2), wish(3, { status: 'approved', slotId: null })]);
+
+      expect(groups(fixture)).toEqual([
+        [de.wishes.pending.title, [1, 2]],
+        [de.wishes.pending.others, [3]],
+      ]);
+    });
+
+    it('keeps the single list of K3 while no open wish is on the page', () => {
+      const fixture = create();
+      settle(fixture, [wish(3, { status: 'approved', slotId: null })]);
+
+      expect(groups(fixture)).toEqual([]);
+      expect(rowIds(fixture, 'open')).toEqual([3]);
+    });
+
+    it('moves an open wish to the running list on wish.changed, without a page reload', () => {
+      const fixture = create();
+      settle(fixture, [pending(1)]);
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      const linked = wish(1, { source: 'irc', linkOrigin: 'auto', status: 'active' });
+      settle(fixture, [], [linked]);
+
+      expect(groups(fixture)).toEqual([]);
+      expect(rowIds(fixture, 'running')).toEqual([1]);
+      expect(buttonIn(section(fixture, 'running'), de.wishes.actions.unlink)).toBeDefined();
+    });
+
+    it('opens the approve dialog for the row’s wish and reloads after an approve', () => {
+      const fixture = create('Chan');
+      const open = pending(1);
+      settle(fixture, [open]);
+
+      buttonIn(section(fixture, 'open'), de.wishes.actions.approve).click();
+      expect(openCall(0)).toEqual({
+        component: WishApproveDialog,
+        data: { channelName: 'chan', wish: open },
+      });
+      closeWith(0, { kind: 'approved', wish: { ...open, status: 'approved' } });
+      expect(calls('open')).toHaveLength(2);
+      expect(summaryRefresh).toHaveBeenCalledOnce();
+    });
+
+    it('says an approve booked as an extension with the new expiry and the way to that wish', () => {
+      const fixture = create();
+      settle(fixture, [pending(1, { statusReason: 'already_running', sevenTvEmoteId: 'e1' })]);
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+
+      buttonIn(section(fixture, 'open'), de.wishes.actions.approveExtend).click();
+      closeWith(0, {
+        kind: 'merged',
+        wish: pending(1, { status: 'merged' }),
+        runningWishId: 12,
+        extendedExpiresAtUtc: '2026-12-30T10:00:00Z',
+      });
+      fixture.detectChanges();
+
+      const spoken = Array.from(
+        fixture.nativeElement.querySelectorAll('p[role="status"]') as NodeListOf<HTMLElement>,
+      )
+        .map((region) => region.textContent?.trim() ?? '')
+        .join(' ');
+      expect(spoken).toContain('Als Verlängerung verbucht. Der laufende Wunsch läuft jetzt bis');
+      expect(spoken).toContain('2026');
+      expect(calls('open')).toHaveLength(2);
+
+      buttonIn(fixture.nativeElement, de.wishes.dialog.toWish).click();
+      expect(navigate).toHaveBeenCalledWith(
+        [],
+        expect.objectContaining({ queryParams: { wish: 12 } }),
+      );
+    });
+
+    it('opens the take-over dialog for this wish when the emote is already in the set', () => {
+      const fixture = create();
+      const open = pending(1, { sevenTvEmoteId: 'e1' });
+      settle(fixture, [open]);
+
+      buttonIn(section(fixture, 'open'), de.wishes.actions.approve).click();
+      closeWith(0, { kind: 'adopt', sevenTvEmoteId: 'e1', slotIds: ['s1'] });
+
+      expect(openCall(1)).toEqual({
+        component: WishAdoptDialog,
+        data: { channelName: 'chan', wish: open, sevenTvEmoteId: 'e1', slotIds: ['s1'] },
+      });
+    });
+
+    it('shows a stale approve at the section and reloads', () => {
+      const fixture = create();
+      settle(fixture, [pending(1)]);
+
+      buttonIn(section(fixture, 'open'), de.wishes.actions.approve).click();
+      closeWith(0, { kind: 'stale', errorKey: 'errors.api.wish_state_conflict' });
+      fixture.detectChanges();
+
+      expect(alerts(fixture, 'open')).toEqual([de.errors.api.wish_state_conflict]);
+      expect(calls('open')).toHaveLength(2);
+    });
+
+    it('links an open wish without an emote to any entry: no emote filter', () => {
+      const fixture = create();
+      const open = pending(1);
+      settle(fixture, [open]);
+
+      buttonIn(section(fixture, 'open'), de.wishes.actions.adopt).click();
+      expect(openCall(0)).toEqual({
+        component: WishAdoptDialog,
+        data: { channelName: 'chan', wish: open },
+      });
+    });
+
+    it('rejects only after a confirmation that names the refund in Twitch', () => {
+      const fixture = create();
+      settle(fixture, [pending(1)]);
+
+      buttonIn(section(fixture, 'open'), de.wishes.actions.reject).click();
+      const message = openCall(0).data['message'] as string;
+      expect(message).toContain('wish1');
+      expect(message).toContain('Warteschlange der Einlösungen');
+      expect(actions).toEqual([]);
+
+      close(dialogs[0], true);
+      expect(actions).toEqual([expect.objectContaining({ name: 'reject', id: 1 })]);
+      actions[0].answer.next(pending(1, { status: 'rejected' }));
+      expect(calls('open')).toHaveLength(2);
+    });
+
+    it('takes an automatic link back only after a confirmation', () => {
+      const fixture = create();
+      settle(fixture, [], [wish(4, { source: 'irc', linkOrigin: 'auto' })]);
+
+      buttonIn(section(fixture, 'running'), de.wishes.actions.unlink).click();
+      close(dialogs[0], false);
+      expect(actions).toEqual([]);
+
+      buttonIn(section(fixture, 'running'), de.wishes.actions.unlink).click();
+      close(dialogs[1], true);
+      expect(actions).toEqual([expect.objectContaining({ name: 'unlink', id: 4 })]);
     });
   });
 });

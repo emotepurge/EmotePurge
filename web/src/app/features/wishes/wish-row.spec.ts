@@ -87,6 +87,7 @@ describe('WishRow', () => {
       usage?: WishUsageBlock | null;
       operation?: WishOperationView | null;
       removeBlockKey?: string | null;
+      previewName?: string | null;
     } = {},
   ): void {
     fixture = TestBed.createComponent(WishRow);
@@ -100,6 +101,7 @@ describe('WishRow', () => {
     fixture.componentRef.setInput('usage', inputs.usage ?? null);
     fixture.componentRef.setInput('operation', inputs.operation ?? null);
     fixture.componentRef.setInput('removeBlockKey', inputs.removeBlockKey ?? null);
+    fixture.componentRef.setInput('previewName', inputs.previewName ?? null);
     emitted = [];
     retries = 0;
     fixture.componentInstance.action.subscribe((action) => emitted.push(action));
@@ -410,6 +412,162 @@ describe('WishRow', () => {
       button(de.wishes.remove.retryReport).click();
       expect(retries).toBe(1);
       expect(emitted).toEqual([]);
+    });
+  });
+
+  describe('an open wish captured in chat (K6)', () => {
+    const K6_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
+      ...ALL_ACTIONS,
+      'approve',
+      'reject',
+      'unlink',
+    ]);
+
+    function open(overrides: Partial<Wish> = {}): Wish {
+      return wish({
+        status: 'pending',
+        source: 'irc',
+        linkOrigin: null,
+        sevenTvEmoteId: '',
+        emoteName: '',
+        alias: '',
+        approvedAtUtc: null,
+        startsAtUtc: null,
+        startsAtAuthoritative: false,
+        probationStartsAtUtc: null,
+        expiresAtUtc: null,
+        slotId: null,
+        slotAddedAtUtc: null,
+        createdAtUtc: '2026-11-16T09:00:00Z',
+        requesterLogin: 'viewer1',
+        requestText: 'catJAM pls',
+        requestedName: 'catJAM',
+        matchKind: 'name',
+        rewardLabel: 'Emote wünschen',
+        ...overrides,
+      });
+    }
+
+    function group(): HTMLElement {
+      return fixture.nativeElement.querySelector('[role="group"]') as HTMLElement;
+    }
+
+    function groupName(): string {
+      const id = group().getAttribute('aria-labelledby') ?? '';
+      return fixture.nativeElement.querySelector(`#${id}`)?.textContent?.trim() ?? '';
+    }
+
+    it.each([
+      [null, [LABEL.approve, LABEL.adopt, LABEL.edit, LABEL.reject]],
+      ['unparsed', [LABEL.approve, LABEL.adopt, LABEL.reject]],
+      ['ambiguous_match', [LABEL.adopt, LABEL.approve, LABEL.reject]],
+      ['already_in_set', [LABEL.adopt, LABEL.reject]],
+      ['already_running', [LABEL.approveExtend, LABEL.reject]],
+      ['something_new', [LABEL.approve, LABEL.adopt, LABEL.edit, LABEL.reject]],
+    ])('offers, for the hint %s, the actions of the table', (hint, expected) => {
+      render(open({ statusReason: hint }), { offered: K6_ACTIONS });
+
+      expect(names()).toEqual(expected);
+    });
+
+    it('names the action group after what the viewer typed while no emote is known', () => {
+      render(open(), { offered: K6_ACTIONS });
+
+      expect(groupName()).toBe('catJAM');
+    });
+
+    it('names it after the redemption text without a typed name, and neutrally without either', () => {
+      render(open({ requestedName: null, matchKind: 'none', requestText: 'irgendwas lustiges' }), {
+        offered: K6_ACTIONS,
+      });
+      expect(groupName()).toBe('irgendwas lustiges');
+
+      render(open({ requestedName: null, requestText: null, requesterLogin: null }), {
+        offered: K6_ACTIONS,
+      });
+      expect(groupName()).toBe(de.wishes.pending.untitled);
+    });
+
+    it('takes the 7TV default name for a link wish without alias', () => {
+      const link = open({
+        sevenTvEmoteId: '01F6MZGCNG000255K4X1K7NTHR',
+        requestedName: null,
+        matchKind: 'link',
+        requestText: 'https://7tv.app/emotes/01F6MZGCNG000255K4X1K7NTHR',
+      });
+      render(link, { offered: K6_ACTIONS, previewName: 'catJAM' });
+
+      expect(groupName()).toBe('catJAM');
+    });
+
+    it('shows neither a picture nor a 7TV link without an emote', () => {
+      render(open(), { offered: K6_ACTIONS });
+
+      expect(fixture.nativeElement.querySelector('app-wish-image')).toBeNull();
+      expect(fixture.nativeElement.querySelector('a')).toBeNull();
+    });
+
+    it('keeps picture and 7TV link once the wish knows its emote', () => {
+      render(open({ sevenTvEmoteId: 'emote7', matchKind: 'link' }), { offered: K6_ACTIONS });
+
+      expect(fixture.nativeElement.querySelector('app-wish-image')).not.toBeNull();
+      expect(fixture.nativeElement.querySelector('a')?.getAttribute('href')).toContain('emote7');
+    });
+
+    it('renders the redemption text as plain text, an address or markup included', () => {
+      const text = '<b>hi</b> https://evil.example/x <script>alert(1)</script>';
+      render(open({ requestText: text }), { offered: K6_ACTIONS });
+
+      const line = fixture.nativeElement.querySelector('q') as HTMLElement;
+      expect(line.textContent).toBe(text);
+      expect(line.querySelector('b, script, a')).toBeNull();
+      expect(fixture.nativeElement.querySelector('a[href*="evil.example"]')).toBeNull();
+    });
+
+    it('keeps the full text of an overlong redemption in its tooltip', () => {
+      const text = 'x'.repeat(500);
+      render(open({ requestText: text }), { offered: K6_ACTIONS });
+
+      expect(fixture.nativeElement.querySelector('[title]')?.getAttribute('title')).toBe(text);
+    });
+
+    it('says the hint as a sentence', () => {
+      render(open({ statusReason: 'already_running' }), { offered: K6_ACTIONS });
+
+      expect(fixture.nativeElement.textContent).toContain(de.wishes.pending.hint.already_running);
+    });
+
+    it('names viewer, reward and age, and leaves the reward out once it was forgotten', () => {
+      render(open(), { offered: K6_ACTIONS });
+      const text = fixture.nativeElement.textContent as string;
+      expect(text).toContain('gewünscht von viewer1');
+      expect(text).toContain('über „Emote wünschen“');
+      expect(text).toContain('vor 2 Tagen eingelöst');
+
+      render(open({ rewardLabel: null }), { offered: K6_ACTIONS });
+      expect(fixture.nativeElement.textContent).not.toContain('über „');
+    });
+
+    it('offers "Zuordnung lösen" on an automatic chat link only', () => {
+      render(wish({ source: 'irc', linkOrigin: 'auto' }), { offered: K6_ACTIONS });
+      expect(names()).toContain(LABEL.unlink);
+
+      render(wish({ source: 'irc', linkOrigin: 'adopted' }), { offered: K6_ACTIONS });
+      expect(names()).not.toContain(LABEL.unlink);
+    });
+
+    it('keeps approve and reject on a coarse pointer: neither writes to 7TV', () => {
+      render(open(), { offered: K6_ACTIONS, coarse: true });
+
+      expect(names()).toEqual([LABEL.approve, LABEL.adopt, LABEL.edit, LABEL.reject]);
+    });
+
+    it('gives out the chosen action', () => {
+      render(open(), { offered: K6_ACTIONS });
+
+      button(LABEL.reject).click();
+      button(LABEL.approve).click();
+      expect(emitted).toEqual(['reject', 'approve']);
     });
   });
 });

@@ -46,9 +46,25 @@ export function wishStatusTone(wish: Pick<Wish, 'status'>): StatusBadgeTone {
   }
 }
 
-/** Key of the reason line; only `presented` and `failed` with a reason have one. */
+/** The hints of an open wish (K6, plan 2.5) that the row says as a sentence; another hint says nothing. */
+const PENDING_HINTS: ReadonlySet<string> = new Set([
+  'unparsed',
+  'ambiguous_match',
+  'already_in_set',
+  'already_running',
+]);
+
+/**
+ * Key of the reason line: `presented` and `failed` with a reason, and an open wish with one of its
+ * known hints (an unknown hint changes nothing, plan 2.10).
+ */
 export function wishReasonKey(wish: Pick<Wish, 'status' | 'statusReason'>): string | null {
   const { status, statusReason } = wish;
+  if (status === 'pending') {
+    return statusReason !== null && PENDING_HINTS.has(statusReason)
+      ? `wishes.pending.hint.${statusReason}`
+      : null;
+  }
   if ((status !== 'presented' && status !== 'failed') || statusReason === null) {
     return null;
   }
@@ -93,4 +109,27 @@ export function wishDurationPart(
   }
   const base = wish.extensionCount > 0 ? 'wishes.row.initialDuration' : 'wishes.row.duration';
   return { key: pluralKey(wish.durationDays, base), params: { count: wish.durationDays } };
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * How long an open wish has been waiting, counted from its redemption (`createdAtUtc`): "today" within
+ * the first day, then whole days. `null` for any other status or an unusable date.
+ */
+export function wishPendingAgePart(
+  wish: Pick<Wish, 'status' | 'createdAtUtc'>,
+  now: Date,
+): TextPart | null {
+  if (wish.status !== 'pending') {
+    return null;
+  }
+  const created = Date.parse(wish.createdAtUtc);
+  if (Number.isNaN(created)) {
+    return null;
+  }
+  const days = Math.floor(Math.max(0, now.getTime() - created) / DAY_MS);
+  return days === 0
+    ? { key: 'wishes.pending.age.today' }
+    : { key: pluralKey(days, 'wishes.pending.age.days'), params: { count: days } };
 }

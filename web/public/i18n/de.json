@@ -2729,7 +2729,11 @@
       "extend": "Verlängern",
       "keep": "Behalten",
       "remove": "Entfernen",
-      "reAdd": "Wieder hinzufügen"
+      "reAdd": "Wieder hinzufügen",
+      "approve": "Freigeben",
+      "approveExtend": "Als Verlängerung freigeben",
+      "reject": "Ablehnen",
+      "unlink": "Zuordnung lösen"
     },
     "row": {
       "probation": "Probezeit",
@@ -2797,7 +2801,44 @@
     },
     "confirm": {
       "keep": "„{{ name }}“ dauerhaft behalten? Das Emote bleibt im Set, der Wunsch ist damit abgeschlossen.",
-      "close": "Wunsch „{{ name }}“ schließen? Er endet, ohne dass in 7TV etwas geändert wird."
+      "close": "Wunsch „{{ name }}“ schließen? Er endet, ohne dass in 7TV etwas geändert wird.",
+      "reject": "Wunsch „{{ name }}“ ablehnen? In 7TV wird nichts geändert.\nDie Kanalpunkte erstattest du in Twitch, in der Warteschlange der Einlösungen.",
+      "unlink": "Zuordnung von „{{ name }}“ lösen? Der Wunsch ist danach wieder offen, und dieser Eintrag im Set wird ihm nicht noch einmal automatisch zugeordnet. In 7TV wird nichts geändert."
+    },
+    "pending": {
+      "title": "Offen",
+      "others": "Weitere Entscheidungen",
+      "untitled": "Wunsch ohne Text",
+      "textLabel": "Einlösetext:",
+      "reward": "über „{{ label }}“",
+      "age": {
+        "today": "heute eingelöst",
+        "days": {
+          "one": "vor {{ count }} Tag eingelöst",
+          "other": "vor {{ count }} Tagen eingelöst"
+        }
+      },
+      "hint": {
+        "unparsed": "Im Text war kein 7TV-Link und kein Emote-Name zu erkennen. Beim Freigeben gibst du das Emote an.",
+        "ambiguous_match": "Mehrere Einträge im Set passen zu diesem Namen. Verknüpfe den richtigen oder gib das Emote beim Freigeben an.",
+        "already_in_set": "Das Emote ist schon im Set. Verknüpfe den Eintrag mit dem Wunsch.",
+        "already_running": "Für dieses Emote läuft schon ein Wunsch. Freigeben verlängert ihn."
+      }
+    },
+    "approve": {
+      "title": "Wunsch freigeben",
+      "titleExtend": "Als Verlängerung freigeben",
+      "intro": "Freigegeben steht der Wunsch zum Hinzufügen bereit. In 7TV hinzufügen kannst du ihn danach an seiner Zeile.",
+      "introExtend": "Für dieses Emote läuft schon ein Wunsch. Freigeben verlängert ihn um die Laufzeit, dieser Wunsch wird mit ihm zusammengeführt.",
+      "blocked": {
+        "emoteMissing": "Ohne Emote lässt sich der Wunsch nicht freigeben. Es fehlt der 7TV-Link oder die Emote-ID."
+      },
+      "conflict": {
+        "inSet": "Das Emote ist schon im Set. Übernimm den Eintrag für diesen Wunsch, statt ihn freizugeben.",
+        "notExtendable": "Der laufende Wunsch für dieses Emote ist noch nicht im Set, deshalb lässt er sich nicht verlängern. Freigeben geht, sobald er dort ist. Dieser Wunsch bleibt offen."
+      },
+      "merged": "Als Verlängerung verbucht. Der laufende Wunsch läuft jetzt bis {{ date }}.",
+      "mergedNoDate": "Als Verlängerung des laufenden Wunsches verbucht."
     },
     "lock": {
       "running": "In 7TV läuft gerade {{ kind }}. Bis dahin sind die 7TV-Aktionen hier gesperrt.",
@@ -2957,8 +2998,10 @@
       "intro": "Ändere Alias oder Laufzeit von „{{ name }}“. Gesendet wird nur, was du änderst.",
       "submit": "Speichern",
       "blocked": {
-        "unchanged": "Alias und Laufzeit sind unverändert."
-      }
+        "unchanged": "Alias und Laufzeit sind unverändert.",
+        "durationUnchanged": "Die Laufzeit ist unverändert."
+      },
+      "introDuration": "Ändere die Laufzeit von „{{ name }}“. Einen Alias bekommt der Wunsch, sobald das Emote feststeht."
     },
     "readd": {
       "title": "Wunsch wieder hinzufügen",
