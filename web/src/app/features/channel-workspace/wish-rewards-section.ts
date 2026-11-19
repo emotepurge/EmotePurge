@@ -341,7 +341,7 @@ interface Feedback {
                 <h4 id="wish-gaps-heading" class="text-sm font-semibold">
                   <button
                     type="button"
-                    class="inline-flex items-center gap-2"
+                    class="inline-flex min-h-6 items-center gap-2"
                     [attr.aria-expanded]="gapsOpen()"
                     aria-controls="wish-gaps-list"
                     (click)="gapsOpen.set(!gapsOpen())"

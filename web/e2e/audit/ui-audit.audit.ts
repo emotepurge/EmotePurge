@@ -52,6 +52,7 @@ import {
   mockWishSummary,
   mockWorkerHealth,
   buildWish,
+  buildWishReward,
   buildWishSlot,
   buildWishUsage,
   trendBursts,
@@ -1008,6 +1009,129 @@ const SCENARIOS: Scenario[] = [
       await lead.fill('31');
       await lead.blur();
       await page.locator('#wish-settings-lead-error').waitFor();
+    },
+  },
+  {
+    // The work list of captured wishes (#486, plan T14): one open wish per hint, one without a hint,
+    // long redeemed texts (markup, a link, an unbroken word) and a long reward label, next to a
+    // running wish that came from the chat. The 360 px mouse viewport carries the 7TV buttons.
+    slug: 'wishes-pending',
+    path: '/channels/sensitron/wishes',
+    includeMouseAt360: true,
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, { wishesEnabled: true, wishCaptureEnabled: true });
+      const pending = (id: number, overrides: Record<string, unknown>) =>
+        buildWish(id, {
+          status: 'pending',
+          source: 'irc',
+          linkOrigin: null,
+          sevenTvEmoteId: '',
+          emoteName: '',
+          alias: '',
+          approvedAtUtc: null,
+          startsAtUtc: null,
+          probationStartsAtUtc: null,
+          expiresAtUtc: null,
+          slotId: null,
+          slotAddedAtUtc: null,
+          imageUrl: null,
+          requesterLogin: LONG_REQUESTER,
+          rewardLabel:
+            'Ein Wunsch-Emote für den Kanal, aber mit einem sehr langen Namen der Belohnung',
+          matchKind: 'name',
+          ...overrides,
+        });
+      await mockWishBackend(page, 'sensitron', {
+        open: [
+          pending(1, {
+            requestText: 'catJAM bitte!',
+            requestedName: 'catJAM',
+            createdAtUtc: wishInstant(-1),
+          }),
+          pending(2, {
+            statusReason: 'unparsed',
+            matchKind: 'none',
+            requestedName: null,
+            requestText:
+              `<b>das Emote</b> mit dem Frosch https://example.org/frosch ${LONG_WISH_ALIAS} `.repeat(
+                4,
+              ),
+            createdAtUtc: wishInstant(-5),
+          }),
+          pending(3, {
+            statusReason: 'ambiguous_match',
+            requestText: LONG_WISH_ALIAS,
+            requestedName: LONG_WISH_ALIAS,
+          }),
+          pending(4, {
+            statusReason: 'already_in_set',
+            requestText: 'peepoHappy',
+            requestedName: 'peepoHappy',
+          }),
+          pending(5, {
+            statusReason: 'already_running',
+            sevenTvEmoteId: wishUlid('R5'),
+            matchKind: 'link',
+            requestText: `7tv.app/emotes/${wishUlid('R5')} pls`,
+            requestedName: null,
+            createdAtUtc: wishInstant(-3),
+          }),
+          buildWish(6, {
+            status: 'presented',
+            statusReason: 'expired',
+            alias: 'Faellig',
+            expiresAtUtc: wishInstant(-2),
+            probationStartsAtUtc: wishInstant(-9),
+          }),
+        ],
+        running: [buildWish(7, { source: 'irc', linkOrigin: 'auto', alias: LONG_WISH_ALIAS })],
+      });
+    },
+  },
+  {
+    // The reward block of the settings tab while learning: a candidate with a long text and login,
+    // two learned rewards (one paused, one with a long label), the gaps list opened.
+    slug: 'wish-rewards-learning',
+    path: '/channels/sensitron/settings',
+    setup: async (page) => {
+      await authedShell(page);
+      await channelWorkspace(page, {
+        wishesEnabled: true,
+        wishCaptureEnabled: true,
+        chatLogBackfillEnabled: false,
+      });
+      await mockWishBackend(page, 'sensitron', {
+        rewards: {
+          rewards: [
+            buildWishReward(1, {
+              label:
+                'Ein Wunsch-Emote für den Kanal, aber mit einem sehr langen Namen der Belohnung',
+              lastRedemptionSeenAtUtc: wishInstant(-1),
+            }),
+            buildWishReward(2, { label: 'Pausiert', isActive: false }),
+          ],
+          learning: {
+            sessionId: 'session-a',
+            startedAtUtc: wishInstant(0),
+            expiresAtUtc: new Date(Date.now() + 8 * 60_000).toISOString(),
+            candidate: {
+              candidateId: 'candidate-1',
+              text: `https://7tv.app/emotes/${wishUlid('C1')} ${LONG_WISH_ALIAS} `.repeat(3),
+              login: LONG_REQUESTER,
+              seenAtUtc: wishInstant(0),
+            },
+          },
+          gaps: [
+            { fromUtc: wishInstant(-1), toUtc: wishInstant(-0.9), reason: 'disconnect' },
+            { fromUtc: wishInstant(-3), toUtc: wishInstant(-2.8), reason: 'worker_restart' },
+          ],
+        },
+      });
+    },
+    afterLoad: async (page) => {
+      await page.locator('app-wish-rewards-section').getByText('Pausiert').first().waitFor();
+      await page.getByRole('button', { name: /Erfassungslücken|Capture gaps/ }).click();
     },
   },
   {

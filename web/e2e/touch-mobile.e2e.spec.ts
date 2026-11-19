@@ -13,7 +13,10 @@ import {
   mockUsageTotals,
   mockVoteSessionList,
   mockVoteSessionResults,
+  mockWishBackend,
   mockWorkerHealth,
+  buildWish,
+  buildWishReward,
 } from './support/mocks';
 
 // The single emote the atlas needs to render a cell at data-atlas-index="0" — nothing here asserts
@@ -344,5 +347,64 @@ test.describe('touch: reading and voting only', () => {
     );
     await expect(createEntryHint).toHaveCount(1);
     await expect(createEntryHint).toBeHidden();
+  });
+});
+
+// #486: on a coarse pointer the capture's own commands stay (they write nothing to 7TV), the 7TV
+// writes of the wish list do not.
+test.describe('touch: wish capture', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page, 'connected');
+    await installLiveStub(page);
+    await mockChannelPermissions(page, 'sensitron', {
+      wishesEnabled: true,
+      wishCaptureEnabled: true,
+    });
+    await mockVoteSessionList(page, 'sensitron', []);
+  });
+
+  test('E11: approve, reject and learning are there, the 7TV write buttons are not', async ({
+    page,
+  }) => {
+    await mockWishBackend(page, 'sensitron', {
+      open: [
+        buildWish(1, {
+          status: 'pending',
+          source: 'irc',
+          sevenTvEmoteId: '',
+          emoteName: '',
+          alias: '',
+          slotId: null,
+          slotAddedAtUtc: null,
+          startsAtUtc: null,
+          probationStartsAtUtc: null,
+          expiresAtUtc: null,
+          imageUrl: null,
+          requestText: 'catJAM bitte!',
+          requestedName: 'catJAM',
+        }),
+        buildWish(2, {
+          status: 'approved',
+          alias: 'Genehmigt',
+          slotId: null,
+          slotAddedAtUtc: null,
+          startsAtUtc: null,
+          probationStartsAtUtc: null,
+          expiresAtUtc: null,
+        }),
+      ],
+      running: [buildWish(3, { alias: 'Laeuft' })],
+      rewards: { rewards: [buildWishReward(1, { label: 'Emote wünschen' })] },
+    });
+    await page.goto('/channels/sensitron/wishes');
+    const pending = page.locator('[data-wish-id="1"]');
+    await expect(pending.getByRole('button', { name: 'Freigeben', exact: true })).toBeVisible();
+    await expect(pending.getByRole('button', { name: 'Ablehnen' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'In 7TV hinzufügen' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Entfernen' })).toHaveCount(0);
+
+    await page.goto('/channels/sensitron/settings');
+    await expect(page.getByRole('button', { name: 'Belohnung anlernen' })).toBeVisible();
   });
 });

@@ -157,6 +157,47 @@ test.describe('recorded errors row', () => {
   });
 });
 
+test.describe('wish capture row (#486)', () => {
+  const wishRow = (page: Page) =>
+    page.locator('section', { has: page.getByRole('heading', { name: 'Wunsch-Erfassung' }) });
+
+  async function open(
+    page: Page,
+    health: { wishCaptureActive?: boolean | null; apiWishCaptureEnabled?: boolean },
+  ): Promise<void> {
+    await installLiveStub(page);
+    await mockAuthMe(page, ADMIN_USER);
+    await mockWorkerHealth(page, 'connected');
+    await mockAdminHealth(page, health);
+    await mockAdminRoster(page);
+    await mockAdminLogStatus(page);
+    await mockAdminDashboardLoad(page);
+    await mockAdminDashboardActivity(page);
+    await mockAdminRateLimits(page);
+    await mockAdminRateLimitsTrend(page);
+    await page.goto('/admin/monitoring');
+    await expect(page.getByRole('heading', { name: 'Batch-Flush' })).toBeVisible();
+  }
+
+  test('worker and Api agree: the row says "Aktiv"', async ({ page }) => {
+    await open(page, { wishCaptureActive: true, apiWishCaptureEnabled: true });
+    await expect(wishRow(page)).toContainText('Aktiv');
+  });
+
+  test('the Api shows the capture but the worker does not store: a mismatch with the way out', async ({
+    page,
+  }) => {
+    await open(page, { wishCaptureActive: false, apiWishCaptureEnabled: true });
+    await expect(wishRow(page)).toContainText('Abweichung');
+    await expect(wishRow(page)).toContainText('aber der Worker speichert keine Einlösungen');
+  });
+
+  test('both off: no row at all', async ({ page }) => {
+    await open(page, { wishCaptureActive: false, apiWishCaptureEnabled: false });
+    await expect(page.getByRole('heading', { name: 'Wunsch-Erfassung' })).toHaveCount(0);
+  });
+});
+
 test.describe('admin monitoring dashboard', () => {
   test.beforeEach(async ({ page }) => {
     await adminPage(page);
