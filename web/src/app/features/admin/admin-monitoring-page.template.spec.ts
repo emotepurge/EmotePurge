@@ -803,6 +803,48 @@ describe('AdminMonitoringPage — real template', () => {
     });
   });
 
+  describe('the wish capture row', () => {
+    const K = 'admin.monitoring.wishCapture.';
+
+    it('is absent while neither side has the capture on', () => {
+      const root = render({
+        health: of(health({ wishCaptureActive: false, apiWishCaptureEnabled: false })),
+      });
+      expect(root.textContent).not.toContain(K + 'title');
+    });
+
+    it('stays quiet while worker and Api agree', () => {
+      const root = render({
+        health: of(health({ wishCaptureActive: true, apiWishCaptureEnabled: true })),
+      });
+      expect(root.textContent).toContain(K + 'title');
+      expect(root.textContent).toContain(K + 'active');
+      expect(root.querySelector('app-status-badge')).toBeNull();
+    });
+
+    it('warns visibly, with the direction, when worker and Api disagree', () => {
+      const root = render({
+        health: of(health({ wishCaptureActive: true, apiWishCaptureEnabled: false })),
+      });
+      expect(root.querySelector('app-status-badge')?.textContent).toContain(K + 'mismatch');
+      expect(root.textContent).toContain(K + 'mismatchWorkerOnly');
+      fixture.destroy();
+
+      const reverse = render({
+        health: of(health({ wishCaptureActive: false, apiWishCaptureEnabled: true })),
+      });
+      expect(reverse.textContent).toContain(K + 'mismatchApiOnly');
+    });
+
+    it('calls an older worker unknown rather than off', () => {
+      const root = render({
+        health: of(health({ wishCaptureActive: null, apiWishCaptureEnabled: true })),
+      });
+      expect(root.textContent).toContain(K + 'workerUnknown');
+      expect(root.textContent).not.toContain(K + 'workerOff');
+    });
+  });
+
   describe('live stream badge', () => {
     it('reads "open" once the admin stream connected', () => {
       const root = render();

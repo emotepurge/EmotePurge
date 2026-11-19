@@ -420,17 +420,34 @@ describe('WishRewardsSection', () => {
   });
 
   describe('the learned rewards', () => {
-    it('pauses and resumes through a pressed toggle, sending only isActive', async () => {
+    it('pauses, then offers resuming by its text, sending only isActive', async () => {
       await create();
-      const pause = button(T.pause)!;
-      expect(pause.getAttribute('aria-pressed')).toBe('false');
 
-      pause.click();
+      button(T.pause)!.click();
       fixture.detectChanges();
 
       expect(updateReward).toHaveBeenCalledWith('sensitron', 1, { isActive: false });
-      expect(button(T.pause)!.getAttribute('aria-pressed')).toBe('true');
+      // The state is in the words: no pause button left, a resume button in its place.
+      expect(button(T.pause)).toBeUndefined();
+      expect(button(T.resume)!.hasAttribute('aria-pressed')).toBe(false);
       expect(el().textContent).toContain(T.paused);
+
+      updateReward.mockReturnValue(of(reward({ isActive: true })));
+      button(T.resume)!.click();
+      fixture.detectChanges();
+
+      expect(updateReward).toHaveBeenLastCalledWith('sensitron', 1, { isActive: true });
+      expect(button(T.pause)).toBeDefined();
+    });
+
+    it('names what to do when a write is refused without a body', async () => {
+      await create();
+      updateReward.mockReturnValue(throwError(() => new HttpErrorResponse({ status: 403 })));
+
+      button(T.pause)!.click();
+      fixture.detectChanges();
+
+      expect(el().querySelector('[role="alert"]')?.textContent).toContain(T.forbiddenWrite);
     });
 
     it('names its row in the action group', async () => {

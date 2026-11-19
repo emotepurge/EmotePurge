@@ -375,6 +375,22 @@
           "incomplete": "Capture of {{source}} incomplete since {{time}}",
           "retentionOverdue": "Log deletion overdue"
         }
+      },
+      "wishCapture": {
+        "title": "Wish capture",
+        "active": "Active",
+        "mismatch": "Mismatch",
+        "unknown": "Unknown",
+        "worker": "Worker",
+        "api": "Api",
+        "workerOn": "captures redemptions",
+        "workerOff": "does not capture",
+        "workerUnknown": "does not report its state",
+        "apiOn": "shows the interface",
+        "apiOff": "hides the interface",
+        "mismatchWorkerOnly": "The worker captures redemptions, but the Api hides rewards and learning. Set WISHES_CAPTURE_ENABLED the same for both and restart the Api.",
+        "mismatchApiOnly": "The Api shows the capture, but the worker stores no redemptions, so no wishes arise. Set WISHES_CAPTURE_ENABLED the same for both and restart the worker.",
+        "unknownHint": "The worker does not report whether it captures (older worker or no status). Check the worker start-up line."
       }
     },
     "rateLimits": {
@@ -1050,7 +1066,14 @@
       "wishUpdate": "Wish edited",
       "userRevokeSessions": "User sessions revoked",
       "userInvalidateRoleCache": "Role cache cleared",
-      "userDelete": "Account deleted"
+      "userDelete": "Account deleted",
+      "wishApprove": "Open wish approved",
+      "wishReject": "Open wish rejected",
+      "wishAutoLink": "Wish linked to a set entry automatically",
+      "wishUnlink": "Wish link removed",
+      "wishRewardAdd": "Wish reward learned",
+      "wishRewardChange": "Wish reward changed",
+      "wishRewardRemove": "Wish reward forgotten"
     },
     "details": {
       "emoteCount": {
@@ -2577,14 +2600,14 @@
       "wish_slot_already_linked": "This entry already belongs to another wish.",
       "wish_emote_required": "Choose the emote first: paste a 7TV link or an emote ID.",
       "wish_running_not_extendable": "The running wish for this emote is not in the set yet. You can approve this one once it is.",
-      "wish_capture_disabled": "Capturing wishes from chat is not available.",
-      "wish_channel_unbound": "This channel is not fully set up yet. Rewards can be learned after the next sync.",
-      "wish_learning_active": "Learning a reward is already in progress for this channel.",
+      "wish_capture_disabled": "Capturing wishes from chat is switched off on this server. You can still add wishes by hand.",
+      "wish_channel_unbound": "This channel is not fully set up yet. Try again in a few minutes, after the next sync.",
+      "wish_learning_active": "Learning a reward is already in progress for this channel. The page shows the current state: finish it or stop it.",
       "wish_learning_stale": "Someone has started learning again in the meantime. Reload to see the current state.",
       "wish_reward_no_candidate": "There is no recognised redemption to confirm. Start learning again.",
-      "wish_reward_already_known": "This reward has been learned already.",
+      "wish_reward_already_known": "This reward has been learned already. You will find it in the list and can edit it there.",
       "wish_reward_limit": "This channel already has the maximum number of rewards. Forget one first.",
-      "wish_reward_not_found": "This reward no longer exists."
+      "wish_reward_not_found": "This reward no longer exists. The list shows the current state."
     }
   },
   "backfill": {
@@ -2975,7 +2998,9 @@
             "label": "Enter a valid label.",
             "unchanged": "You have not changed anything."
           }
-        }
+        },
+        "forbiddenWrite": "Twitch does not currently confirm you as this channel's broadcaster or moderator, so nothing was changed. If you were made a moderator only recently, try again in about 10 minutes.",
+        "resume": "Resume"
       }
     },
     "dialog": {

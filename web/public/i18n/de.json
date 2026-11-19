@@ -375,6 +375,22 @@
           "incomplete": "Erfassung von {{source}} unvollständig seit {{time}}",
           "retentionOverdue": "Log-Löschung überfällig"
         }
+      },
+      "wishCapture": {
+        "title": "Wunsch-Erfassung",
+        "active": "Aktiv",
+        "mismatch": "Abweichung",
+        "unknown": "Unbekannt",
+        "worker": "Worker",
+        "api": "Api",
+        "workerOn": "erfasst Einlösungen",
+        "workerOff": "erfasst nicht",
+        "workerUnknown": "meldet den Stand nicht",
+        "apiOn": "zeigt die Oberfläche",
+        "apiOff": "blendet die Oberfläche aus",
+        "mismatchWorkerOnly": "Der Worker erfasst Einlösungen, aber die Api blendet Belohnungen und Anlernen aus. Setze WISHES_CAPTURE_ENABLED für beide gleich und starte die Api neu.",
+        "mismatchApiOnly": "Die Api zeigt die Erfassung, aber der Worker speichert keine Einlösungen. Es entstehen keine Wünsche. Setze WISHES_CAPTURE_ENABLED für beide gleich und starte den Worker neu.",
+        "unknownHint": "Der Worker meldet nicht, ob er erfasst (älterer Worker oder kein Status). Prüfe die Startzeile des Workers."
       }
     },
     "rateLimits": {
@@ -1050,7 +1066,14 @@
       "wishUpdate": "Wunsch bearbeitet",
       "userRevokeSessions": "User-Sessions widerrufen",
       "userInvalidateRoleCache": "Rollen-Cache geleert",
-      "userDelete": "Account gelöscht"
+      "userDelete": "Account gelöscht",
+      "wishApprove": "Offenen Wunsch freigegeben",
+      "wishReject": "Offenen Wunsch abgelehnt",
+      "wishAutoLink": "Wunsch automatisch mit Set-Eintrag verknüpft",
+      "wishUnlink": "Verknüpfung eines Wunsches gelöst",
+      "wishRewardAdd": "Belohnung für Wünsche angelernt",
+      "wishRewardChange": "Belohnung für Wünsche geändert",
+      "wishRewardRemove": "Belohnung für Wünsche vergessen"
     },
     "details": {
       "emoteCount": {
@@ -2577,14 +2600,14 @@
       "wish_slot_already_linked": "Dieser Eintrag gehört bereits zu einem anderen Wunsch.",
       "wish_emote_required": "Wähle zuerst das Emote: Füge einen 7TV-Link oder eine Emote-ID ein.",
       "wish_running_not_extendable": "Der laufende Wunsch für dieses Emote ist noch nicht im Set. Freigeben geht, sobald er es ist.",
-      "wish_capture_disabled": "Die Erfassung aus dem Chat ist nicht verfügbar.",
-      "wish_channel_unbound": "Dieser Kanal ist noch nicht vollständig eingerichtet. Belohnungen lassen sich nach dem nächsten Sync anlernen.",
-      "wish_learning_active": "Für diesen Kanal läuft bereits ein Anlernen.",
+      "wish_capture_disabled": "Die Erfassung aus dem Chat ist auf diesem Server ausgeschaltet. Wünsche kannst du weiter von Hand eintragen.",
+      "wish_channel_unbound": "Dieser Kanal ist noch nicht vollständig eingerichtet. Versuche es nach dem nächsten Sync in ein paar Minuten erneut.",
+      "wish_learning_active": "Für diesen Kanal läuft bereits ein Anlernen. Die Seite zeigt den aktuellen Stand: Schließe es ab oder brich es ab.",
       "wish_learning_stale": "Inzwischen hat jemand neu angelernt. Lade neu und sieh dir den aktuellen Stand an.",
       "wish_reward_no_candidate": "Es liegt keine erkannte Einlösung zum Bestätigen vor. Starte das Anlernen neu.",
-      "wish_reward_already_known": "Diese Belohnung ist bereits angelernt.",
+      "wish_reward_already_known": "Diese Belohnung ist bereits angelernt. Du findest sie in der Liste und kannst sie dort bearbeiten.",
       "wish_reward_limit": "Dieser Kanal hat schon die höchste Zahl an Belohnungen. Vergiss zuerst eine.",
-      "wish_reward_not_found": "Diese Belohnung gibt es nicht mehr."
+      "wish_reward_not_found": "Diese Belohnung gibt es nicht mehr. Die Liste zeigt den aktuellen Stand."
     }
   },
   "backfill": {
@@ -2975,7 +2998,9 @@
             "label": "Gib eine gültige Bezeichnung an.",
             "unchanged": "Du hast nichts geändert."
           }
-        }
+        },
+        "forbiddenWrite": "Twitch bestätigt dich für diesen Kanal gerade nicht als Broadcaster oder Moderator, darum wurde nichts geändert. Bist du erst kürzlich Moderator geworden, versuche es in etwa 10 Minuten erneut.",
+        "resume": "Fortsetzen"
       }
     },
     "dialog": {

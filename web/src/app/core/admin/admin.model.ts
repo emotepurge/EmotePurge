@@ -51,6 +51,13 @@ export interface AdminHealth {
   sevenTv: SevenTvHealth;
   flush: FlushHealth;
   worker: WorkerIdentity;
+  /**
+   * Whether the worker stores redemptions of the wish capture (K6). `null`: a worker that predates
+   * the field or no snapshot at all — unknown, not off. Absent from an older Api.
+   */
+  wishCaptureActive?: boolean | null;
+  /** The Api's own capture switch (routes and the settings section only); absent from an older Api. */
+  apiWishCaptureEnabled?: boolean;
 }
 
 /** Which worker process wrote the snapshot, and since when it has been running. Counters reset on

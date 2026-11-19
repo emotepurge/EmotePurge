@@ -207,12 +207,15 @@ interface Feedback {
                           <button
                             type="button"
                             appButton="outline"
-                            [buttonPressed]="!reward.isActive"
-                            [attr.aria-pressed]="!reward.isActive"
                             [disabled]="busy() !== null"
                             (click)="togglePaused(reward)"
                           >
-                            {{ 'wishes.settings.rewards.pause' | transloco }}
+                            {{
+                              (reward.isActive
+                                ? 'wishes.settings.rewards.pause'
+                                : 'wishes.settings.rewards.resume'
+                              ) | transloco
+                            }}
                           </button>
                           <!-- The gap before the destructive action is the §8.7 order rule. -->
                           <button
@@ -761,6 +764,16 @@ export class WishRewardsSection {
       case 'wish_capture_disabled':
       case 'wishes_disabled':
         this.loadState.set('unavailable');
+        return;
+      case undefined:
+        if (error.status === 403) {
+          // No body: the Twitch-ID check refused (T7). The generic 403 text talks about missing
+          // rights in general; here the manager can act on the actual reason.
+          this.noticeKey.set('wishes.settings.rewards.forbiddenWrite');
+          return;
+        }
+        this.noticeKey.set(wishErrorKey(error, 'action'));
+        this.reloadQuietly();
         return;
       case 'wish_channel_unbound':
         // The section explains the unbound state itself once the read says so.
