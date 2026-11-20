@@ -555,7 +555,13 @@ export class WishRewardsSection {
           return;
         }
         this.expiredSeen.set(false);
-        this.patch((current) => ({ ...current, learning }));
+        // A redemption may have come in while the answer was on its way, and a live read may already
+        // show it: the same session with its candidate is newer than the empty one the start returned.
+        this.patch((current) =>
+          current.learning?.sessionId === learning.sessionId && current.learning.candidate
+            ? current
+            : { ...current, learning },
+        );
       },
       error: (error: unknown) => {
         if (this.endWrite(channel)) {
@@ -800,14 +806,28 @@ export class WishRewardsSection {
     this.noticeKey.set(null);
   }
 
-  /** Ends the write; `false` when the channel changed meanwhile and the answer must be ignored. */
+  /**
+   * Ends the write; `false` when the channel changed meanwhile and the answer must be ignored. A read
+   * still on its way is dropped (it may predate the write), and read again once the caller has applied
+   * the answer: it was most likely a `wish.changed` reload (a candidate seen while starting, another
+   * manager's change), and no later event may come for it.
+   */
   private endWrite(channel: string): boolean {
     if (channel !== this.channelName()) {
       return false;
     }
     this.busy.set(null);
+    const dropped = this.readInFlight();
     // An older read must not undo what this write's answer says.
-    this.loadSeq++;
+    const seq = ++this.loadSeq;
+    if (dropped) {
+      // After the caller's synchronous patch, and only if nothing has read since (an error path reloads).
+      queueMicrotask(() => {
+        if (seq === this.loadSeq && channel === this.channelName()) {
+          this.reloadQuietly();
+        }
+      });
+    }
     return true;
   }
 

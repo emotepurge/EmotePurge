@@ -223,6 +223,51 @@ describe('WishRewardsSection', () => {
       expect(button(T.learning.confirm)).toBeDefined();
     });
 
+    it('keeps a candidate a live read showed before the start answered', async () => {
+      const started = new Subject<WishRewardLearning>();
+      startLearning.mockReturnValue(started);
+      await create();
+      button(T.learning.start)!.click();
+      fixture.detectChanges();
+
+      // The redemption comes in while the start's answer is still on its way.
+      getRewards.mockReturnValue(of(rewardsRead({ learning: session({ candidate: CANDIDATE }) })));
+      await nudge();
+      expect(status()).toBe(T.learning.candidate);
+
+      started.next(session());
+      started.complete();
+      await vi.advanceTimersByTimeAsync(0);
+      fixture.detectChanges();
+
+      expect(status()).toBe(T.learning.candidate);
+      expect(el().textContent).toContain(CANDIDATE.text);
+    });
+
+    it('reads again when a live read was still on its way as the start answered', async () => {
+      const started = new Subject<WishRewardLearning>();
+      startLearning.mockReturnValue(started);
+      await create();
+      button(T.learning.start)!.click();
+      fixture.detectChanges();
+
+      // The reload after the redemption is under way when the start answers; the server holds the
+      // candidate, and no further event will come.
+      const onItsWay = new Subject<WishRewardsRead>();
+      getRewards.mockReturnValueOnce(onItsWay);
+      getRewards.mockReturnValue(of(rewardsRead({ learning: session({ candidate: CANDIDATE }) })));
+      await nudge();
+
+      started.next(session());
+      started.complete();
+      await vi.advanceTimersByTimeAsync(0);
+      fixture.detectChanges();
+
+      expect(getRewards).toHaveBeenCalledTimes(3);
+      expect(status()).toBe(T.learning.candidate);
+      expect(el().textContent).toContain(CANDIDATE.text);
+    });
+
     it('opens the confirm dialog with the candidate as shown and the channel duration', async () => {
       const shown = session({ candidate: CANDIDATE });
       getRewards.mockReturnValue(of(rewardsRead({ learning: shown })));
