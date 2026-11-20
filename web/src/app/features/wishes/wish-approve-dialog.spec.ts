@@ -295,6 +295,27 @@ describe('WishApproveDialog', () => {
       });
     });
 
+    it('asks for an alias when nothing can fill it in (a manager the redeemer data is hidden from)', () => {
+      // A name wish as a manager not confirmed by Twitch ID sees it: the server leaves out what the
+      // viewer typed, so neither the wish nor a nameless 7TV read can fill in the alias.
+      create(open({ requestedName: null, requestText: null, matchKind: 'name' }));
+      type('wish-approve-emote', A);
+      vi.advanceTimersByTime(WISH_ENTRY_LOOKUP_DEBOUNCE_MS);
+      settleRead(0, { id: A, kind: 'found', name: '', animated: true });
+
+      expect(element<HTMLInputElement>('#wish-approve-alias')?.value).toBe('');
+      expect(blocked()).toBe(de.wishes.entry.blocked.alias);
+      expect(submit().disabled).toBe(true);
+      expect(submit().getAttribute('aria-describedby')).toBe('wish-approve-blocked');
+      submit().click();
+      expect(approves).toEqual([]);
+
+      type('wish-approve-alias', 'catJAM');
+      expect(blocked()).toBeNull();
+      submit().click();
+      expect(approves[0].body).toEqual({ sevenTvEmoteId: A, alias: 'catJAM', durationDays: 14 });
+    });
+
     it('drops the read name from the alias when the id changes, but keeps a typed alias', () => {
       create(open({ requestedName: null, matchKind: 'none' }));
       type('wish-approve-emote', A);
