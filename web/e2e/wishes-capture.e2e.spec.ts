@@ -148,6 +148,32 @@ test.describe('wish emotes: chat capture (#486)', () => {
       expect(backend.of('learning-confirm')).toHaveLength(0);
     });
 
+    test('E16: on a quiet channel a healthy worker never shows the capture warning while the tab stays open', async ({
+      page,
+    }) => {
+      // Before goto (zoneless change detection vs. fake timers); `runFor`, not `fastForward`, so the
+      // one-second clock of the section fires every time.
+      await page.clock.install();
+      const backend = await mockWishBackend(page, CHANNEL);
+      const browserNow = () => page.evaluate(() => Date.now());
+      backend.rewards.captureAliveAtUtc = new Date(await browserNow()).toISOString();
+      await page.goto(URL_SETTINGS);
+      await expect(rewards(page).getByRole('button', { name: 'Belohnung anlernen' })).toBeVisible();
+
+      // Ten quiet minutes: the worker stamps once a minute, and no `wish.changed` is sent.
+      for (let minute = 0; minute < 10; minute++) {
+        backend.rewards.captureAliveAtUtc = new Date(await browserNow()).toISOString();
+        await page.clock.runFor(60_000);
+        await expect(
+          rewards(page).getByText('Die Erfassung im Chat hat sich seit mehr als drei Minuten'),
+        ).toHaveCount(0);
+      }
+      // Read again for the stamp, but not every second.
+      const reads = backend.of('rewards-read').length;
+      expect(reads).toBeGreaterThan(1);
+      expect(reads).toBeLessThanOrEqual(11);
+    });
+
     test('E3: a second start while one runs (409) is named and the state is read again', async ({
       page,
     }) => {
