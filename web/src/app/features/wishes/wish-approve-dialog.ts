@@ -5,6 +5,7 @@ import { TranslocoPipe } from '@jsverse/transloco';
 import { Subscription } from 'rxjs';
 
 import { apiErrorCode, GENERIC_ERROR_TRANSLATION_KEY } from '../../core/i18n/api-error';
+import { pluralKey } from '../../core/i18n/plural';
 import {
   canonicalSevenTvEmoteId,
   SevenTvEmoteLookup,
@@ -86,7 +87,9 @@ type ApproveConflict =
  * arise from this dialog.
  *
  * **The alias** starts with the wish's own (a PATCH), else the name the viewer typed, else 7TV's
- * default name; the duration with the wish's.
+ * default name; the duration with the wish's. **An extension** (`already_running`) has no duration
+ * field: the server books the channel's default and ignores a sent one, so the dialog names that
+ * default (read from the settings) and sends no duration.
  *
  * **What the answer says.** 200 closes with `approved`, or with `merged` when the server booked an
  * extension of the running wish instead. 409 `wish_emote_already_in_set` offers "Bestand übernehmen"
@@ -198,27 +201,40 @@ type ApproveConflict =
         }
       </div>
 
-      <div class="flex flex-col gap-1">
-        <label for="wish-approve-duration" class="text-sm text-fg-secondary">
-          {{ 'wishes.dialog.duration' | transloco }}
-        </label>
-        <input
-          id="wish-approve-duration"
-          type="text"
-          inputmode="numeric"
-          class="app-input"
-          autocomplete="off"
-          [value]="duration()"
-          [attr.aria-invalid]="durationError() ? 'true' : null"
-          [attr.aria-describedby]="durationError() ? 'wish-approve-duration-error' : null"
-          (input)="setDuration($any($event.target).value)"
-        />
-        @if (durationError(); as key) {
-          <p id="wish-approve-duration-error" class="text-sm text-danger-fg">
-            {{ key | transloco: { max: durationMax } }}
+      @if (extendsRunning) {
+        <!-- The server books an extension by the channel's default and ignores a duration sent with
+             it (plan 2.6 (1)): no field that suggests otherwise, only what will be booked. -->
+        <div class="flex flex-col gap-1">
+          <p class="text-sm text-fg-secondary">
+            {{ 'wishes.approve.extension.label' | transloco }}
           </p>
-        }
-      </div>
+          <p id="wish-approve-extension" class="text-sm text-fg-body">
+            {{ extensionText().key | transloco: extensionText().params }}
+          </p>
+        </div>
+      } @else {
+        <div class="flex flex-col gap-1">
+          <label for="wish-approve-duration" class="text-sm text-fg-secondary">
+            {{ 'wishes.dialog.duration' | transloco }}
+          </label>
+          <input
+            id="wish-approve-duration"
+            type="text"
+            inputmode="numeric"
+            class="app-input"
+            autocomplete="off"
+            [value]="duration()"
+            [attr.aria-invalid]="durationError() ? 'true' : null"
+            [attr.aria-describedby]="durationError() ? 'wish-approve-duration-error' : null"
+            (input)="setDuration($any($event.target).value)"
+          />
+          @if (durationError(); as key) {
+            <p id="wish-approve-duration-error" class="text-sm text-danger-fg">
+              {{ key | transloco: { max: durationMax } }}
+            </p>
+          }
+        </div>
+      }
 
       <!-- The conflict notice arrives while the dialog stays open: the permanently mounted region
            speaks it (§4.4); the visible text is aria-hidden, its buttons are not. -->
@@ -313,7 +329,8 @@ export class WishApproveDialog {
     ? canonicalSevenTvEmoteId(this.data.wish.sevenTvEmoteId)
     : null;
 
-  private readonly extendsRunning = approveExtendsRunning(this.data.wish);
+  /** A wish of the emote already runs: approving books its extension (plan 2.6 (1)). */
+  protected readonly extendsRunning = approveExtendsRunning(this.data.wish);
   protected readonly titleKey = this.extendsRunning
     ? 'wishes.approve.titleExtend'
     : 'wishes.approve.title';
@@ -337,6 +354,9 @@ export class WishApproveDialog {
   private readonly aliasTyped = signal<string | null>(null);
   protected readonly aliasTouched = signal(false);
   protected readonly duration = signal(String(this.data.wish.durationDays));
+  /** The channel's default duration, which an extension books; `null` until read, or unreadable. */
+  private readonly extensionDays = signal<number | null>(null);
+  private settingsSubscription: Subscription | null = null;
 
   private readonly serverFieldError = signal<{
     field: 'emote' | 'alias' | 'duration';
@@ -450,10 +470,18 @@ export class WishApproveDialog {
     if (!this.aliasResult().ok) {
       return 'wishes.entry.blocked.alias';
     }
-    if (!this.durationResult().ok) {
+    if (!this.extendsRunning && !this.durationResult().ok) {
       return 'wishes.dialog.blocked.duration';
     }
     return null;
+  });
+
+  /** What an extension books: the channel's default in days, or the default unnamed while unknown. */
+  protected readonly extensionText = computed(() => {
+    const days = this.extensionDays();
+    return days === null
+      ? { key: 'wishes.approve.extension.unknown', params: {} }
+      : { key: pluralKey(days, 'wishes.approve.extension'), params: { count: days } };
   });
 
   protected readonly conflictKey = computed(() => {
@@ -464,6 +492,7 @@ export class WishApproveDialog {
   constructor() {
     inject(DestroyRef).onDestroy(() => {
       this.cancelRead();
+      this.settingsSubscription?.unsubscribe();
       // A closed dialog no longer waits for its emote; a row in view may still (per-consumer interest).
       if (this.fixedId !== null) {
         this.preview.withdraw(this.fixedId, this);
@@ -471,6 +500,13 @@ export class WishApproveDialog {
     });
     if (this.fixedId !== null) {
       this.preview.request(this.fixedId, this);
+    }
+    if (this.extendsRunning) {
+      this.settingsSubscription = this.wishService.getSettings(this.data.channelName).subscribe({
+        next: (settings) => this.extensionDays.set(settings.defaultDurationDays),
+        // Without the number the line still says what is booked: the channel's default.
+        error: () => undefined,
+      });
     }
   }
 
@@ -525,7 +561,7 @@ export class WishApproveDialog {
     const id = this.currentId();
     const alias = this.aliasResult();
     const duration = this.durationResult();
-    if (id === null || !alias.ok || !duration.ok) {
+    if (id === null || !alias.ok || (!this.extendsRunning && !duration.ok)) {
       return;
     }
     const name = this.found()?.name ?? '';
@@ -534,7 +570,9 @@ export class WishApproveDialog {
       // The name sent is always the one from the read of the id sent; the wish's own wins.
       ...(this.data.wish.emoteName === '' && name !== '' ? { emoteName: name } : {}),
       alias: alias.alias,
-      durationDays: duration.value,
+      // An extension books the channel's default; without a duration a plain approval (the running
+      // wish ended meanwhile) keeps the wish's own.
+      ...(!this.extendsRunning && duration.ok ? { durationDays: duration.value } : {}),
     };
     this.errorKey.set(null);
     this.conflict.set(null);

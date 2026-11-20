@@ -2852,7 +2852,13 @@
       "title": "Approve wish",
       "titleExtend": "Approve as extension",
       "intro": "Once approved, the wish is ready to be added. You then add it in 7TV from its row.",
-      "introExtend": "A wish for this emote is already running. Approving extends it by the duration, and this wish is merged into it.",
+      "introExtend": "A wish for this emote is already running. Approving extends it, and this wish is merged into it.",
+      "extension": {
+        "label": "Extension",
+        "one": "{{ count }} day, the channel's default duration",
+        "other": "{{ count }} days, the channel's default duration",
+        "unknown": "By the channel's default duration"
+      },
       "blocked": {
         "emoteMissing": "Without an emote the wish cannot be approved. The 7TV link or emote id is missing."
       },

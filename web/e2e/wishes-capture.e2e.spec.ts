@@ -409,6 +409,36 @@ test.describe('wish emotes: chat capture (#486)', () => {
       await expect(row(page, 1)).toHaveCount(0);
     });
 
+    test('E17: an extension names the channel default it books and offers no duration to edit', async ({
+      page,
+    }) => {
+      const id = wishUlid('A17');
+      const backend = await mockWishBackend(page, CHANNEL, {
+        open: [
+          pendingWish(1, {
+            statusReason: 'already_running',
+            sevenTvEmoteId: id,
+            matchKind: 'link',
+            requestedName: null,
+            durationDays: 7,
+          }),
+        ],
+        running: [buildWish(2, { sevenTvEmoteId: id, alias: 'catJAM', emoteName: 'catJAM' })],
+        settings: { defaultDurationDays: 30 },
+      });
+      await mockSevenTvEmoteReads(page, { [id]: { name: 'catJAM' } });
+      await page.goto(URL_WISHES);
+      await row(page, 1).getByRole('button', { name: 'Als Verlängerung freigeben' }).click();
+      const dialog = page.getByRole('dialog');
+
+      await expect(dialog).toContainText('30 Tage, die Standardlaufzeit des Kanals');
+      await expect(dialog.getByRole('textbox', { name: 'Laufzeit in Tagen' })).toHaveCount(0);
+      await dialog.getByRole('button', { name: 'Als Verlängerung freigeben' }).click();
+
+      await expect.poll(() => backend.of('approve', 1).length).toBe(1);
+      expect(backend.of('approve', 1)[0].body).not.toHaveProperty('durationDays');
+    });
+
     test('E14: no extension possible yet (409), then merged on the second try with the new expiry named', async ({
       page,
     }) => {

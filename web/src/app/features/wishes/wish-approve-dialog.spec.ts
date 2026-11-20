@@ -11,7 +11,12 @@ import {
   SevenTvEmoteLookupResult,
 } from '../../core/seven-tv/seven-tv-emote-lookup';
 import { WishEmotePreviewService } from '../../core/wishes/wish-emote-preview.service';
-import type { ApprovedWish, ApproveWishBody, Wish } from '../../core/wishes/wish.model';
+import type {
+  ApprovedWish,
+  ApproveWishBody,
+  Wish,
+  WishSettingsRead,
+} from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
 import { WishApproveDialog, WishApproveDialogResult } from './wish-approve-dialog';
 import { WISH_ENTRY_LOOKUP_DEBOUNCE_MS } from './wish-entry-dialog';
@@ -73,6 +78,7 @@ function apiError(status: number, body: Record<string, unknown>): HttpErrorRespo
 describe('WishApproveDialog', () => {
   let lookups: { id: string; answer: Subject<SevenTvEmoteLookupResult> }[];
   let approves: { id: number; body: ApproveWishBody; answer: Subject<ApprovedWish> }[];
+  let settingsReads: { channel: string; answer: Subject<WishSettingsRead> }[];
   let closed: (WishApproveDialogResult | undefined)[];
   let dialogRef: { close: ReturnType<typeof vi.fn>; disableClose: boolean };
   let fixture: ComponentFixture<WishApproveDialog>;
@@ -81,6 +87,7 @@ describe('WishApproveDialog', () => {
     vi.useFakeTimers();
     lookups = [];
     approves = [];
+    settingsReads = [];
     closed = [];
     dialogRef = {
       close: vi.fn((result?: WishApproveDialogResult) => closed.push(result)),
@@ -123,6 +130,11 @@ describe('WishApproveDialog', () => {
             approve: vi.fn((_channel: string, id: number, body: ApproveWishBody) => {
               const answer = new Subject<ApprovedWish>();
               approves.push({ id, body, answer });
+              return answer;
+            }),
+            getSettings: vi.fn((channel: string) => {
+              const answer = new Subject<WishSettingsRead>();
+              settingsReads.push({ channel, answer });
               return answer;
             }),
           },
@@ -259,6 +271,74 @@ describe('WishApproveDialog', () => {
       expect(fixture.nativeElement.textContent).toContain(de.wishes.approve.titleExtend);
       expect(buttonNamed(de.wishes.actions.approveExtend)).toBeDefined();
       expect(buttonNamed(de.wishes.actions.approve)).toBeUndefined();
+    });
+
+    describe('an extension', () => {
+      const SETTINGS: WishSettingsRead = {
+        defaultDurationDays: 30,
+        probationLeadDays: 3,
+        protectionThresholdPerDay: null,
+        botModeEnabled: false,
+        botSuspendedReason: null,
+        pendingExpiryDays: 14,
+        canEdit: true,
+      };
+
+      function extension(): string | null {
+        return element('#wish-approve-extension')?.textContent?.trim() ?? null;
+      }
+
+      it('names the channel default it books instead of offering a duration, and sends none', () => {
+        create(linkWish({ statusReason: 'already_running', alias: 'catJAM', durationDays: 7 }));
+        settleRead(0, { id: A, kind: 'found', name: 'catJAM', animated: true });
+
+        expect(element('#wish-approve-duration')).toBeNull();
+        expect(extension()).toBe(de.wishes.approve.extension.unknown);
+        expect(settingsReads.map((read) => read.channel)).toEqual(['chan']);
+
+        settingsReads[0].answer.next(SETTINGS);
+        fixture.detectChanges();
+        expect(extension()).toBe(de.wishes.approve.extension.other.replace('{{ count }}', '30'));
+
+        submit(de.wishes.actions.approveExtend).click();
+        expect(approves[0].body).toEqual({ emoteName: 'catJAM', alias: 'catJAM' });
+      });
+
+      it('still approves when the settings cannot be read, naming the default without a number', () => {
+        create(linkWish({ statusReason: 'already_running', alias: 'catJAM' }));
+        settleRead(0, { id: A, kind: 'found', name: 'catJAM', animated: true });
+        settingsReads[0].answer.error(apiError(500, {}));
+        fixture.detectChanges();
+
+        expect(extension()).toBe(de.wishes.approve.extension.unknown);
+        expect(submit(de.wishes.actions.approveExtend).disabled).toBe(false);
+      });
+
+      it("takes 7TV's name as alias for a name wish whose typed name this manager may not see", () => {
+        // Not confirmed on the Twitch id: the server sends neither text nor typed name (2.4a).
+        create(
+          linkWish({
+            statusReason: 'already_running',
+            matchKind: 'name',
+            requestText: null,
+            requestedName: null,
+            requesterLogin: null,
+          }),
+        );
+        settleRead(0, { id: A, kind: 'found', name: 'catJAM', animated: true });
+
+        expect(element<HTMLInputElement>('#wish-approve-alias')?.value).toBe('catJAM');
+        expect(blocked()).toBeNull();
+        submit(de.wishes.actions.approveExtend).click();
+        expect(approves[0].body).toEqual({ emoteName: 'catJAM', alias: 'catJAM' });
+      });
+
+      it('reads no settings for a plain approval', () => {
+        create(linkWish());
+
+        expect(settingsReads).toEqual([]);
+        expect(element('#wish-approve-duration')).not.toBeNull();
+      });
     });
   });
 
