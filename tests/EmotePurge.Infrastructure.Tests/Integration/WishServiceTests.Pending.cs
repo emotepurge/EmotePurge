@@ -41,20 +41,57 @@ public partial class WishServiceTests
         AssertPublishedOnce(channel);
     }
 
-    // Plan 2.8a: a name wish without an emote takes the body's id; the requested name pre-fills the alias, the emote
-    // name follows the alias, all three in the same update. The duration of the body wins.
+    // Plan 2.8a: a name wish without an emote takes the body's id; for a caller confirmed on the row's Twitch id the
+    // requested name pre-fills the alias, the emote name follows the alias, all three in the same update. The duration
+    // of the body wins.
     [Fact]
     public async Task Approve_ANameWishWithoutAnEmote_TakesTheBodysId_AndTheRequestedNameAsAlias()
     {
-        var channel = await SeedChannelAsync();
+        var twitchId = Guid.NewGuid().ToString("N")[..12];
+        var channel = await SeedChannelAsync(twitchId: twitchId);
         var wishId = await SeedCapturedAsync(channel, string.Empty, WishMatchKind.Name, w => w.RequestedName = "peepoHey");
         var emoteId = UlidId();
 
-        var result = await Sut().ApproveAsync(channel.Name, wishId, new ApproveWishRequest(emoteId, null, null, 12), Actor);
+        var result = await Sut().ApproveAsync(
+            channel.Name, wishId, new ApproveWishRequest(emoteId, null, null, 12), Actor, new WishCaptureAccess(channel.Id, twitchId, IdConfirmed: true));
 
         Assert.Equal(WishOutcome.Success, result.Outcome);
         var row = await LoadWishAsync(wishId);
         Assert.Equal((WishStatus.Approved, emoteId, "peepoHey", "peepoHey", 12), (row.Status, row.SevenTvEmoteId, row.Alias, row.EmoteName, row.DurationDays));
+    }
+
+    // Plan 2.4a: the requested name is redeemer data. Alias and emote name are shown to every manager, so a caller
+    // not confirmed on the row's Twitch id must not get it copied there: without a name in the body the approval is
+    // wish_alias_invalid and nothing changes; with one, the body's name is taken and the answer carries no redeemer data.
+    [Theory]
+    [InlineData("unconfirmed")]
+    [InlineData("other-id")]
+    [InlineData("none")]
+    public async Task Approve_ANameWish_ByACallerNotConfirmedOnTheId_NeverCopiesTheRequestedName(string access)
+    {
+        var twitchId = Guid.NewGuid().ToString("N")[..12];
+        var channel = await SeedChannelAsync(twitchId: twitchId);
+        var wishId = await SeedCapturedAsync(channel, string.Empty, WishMatchKind.Name, w => w.RequestedName = "peepoHey");
+        var emoteId = UlidId();
+        WishCaptureAccess? grant = access switch
+        {
+            "unconfirmed" => new WishCaptureAccess(channel.Id, twitchId, IdConfirmed: false),
+            "other-id" => new WishCaptureAccess(channel.Id, "other" + twitchId, IdConfirmed: true),
+            _ => null,
+        };
+        var before = await SnapshotAsync(wishId);
+
+        var refused = await Sut().ApproveAsync(channel.Name, wishId, new ApproveWishRequest(emoteId, null, null, null), Actor, grant);
+
+        Assert.Equal(WishOutcome.AliasInvalid, refused.Outcome);
+        await AssertUntouchedAsync(channel, wishId, before);
+
+        var named = await Sut().ApproveAsync(channel.Name, wishId, new ApproveWishRequest(emoteId, null, "catJAM", null), Actor, grant);
+
+        Assert.Equal(WishOutcome.Success, named.Outcome);
+        Assert.Equal(("catJAM", "catJAM", (string?)null, (string?)null), (named.Wish!.Alias, named.Wish.EmoteName, named.Wish.RequestedName, named.Wish.RequestText));
+        var row = await LoadWishAsync(wishId);
+        Assert.Equal((WishStatus.Approved, "catJAM", "catJAM"), (row.Status, row.Alias, row.EmoteName));
     }
 
     [Fact]

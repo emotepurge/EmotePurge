@@ -829,8 +829,11 @@ public sealed class WishService(
         }
 
         // (3) Approved. Alias: the body's, the wish's own (a PATCH), the requested name, the emote name; the emote name
-        // the body's, the wish's, the alias (plan 2.8a: every field filled in this same update).
-        var alias = bodyAlias ?? NullIfEmpty(wish.Alias) ?? NullIfEmpty(wish.RequestedName?.Trim()) ?? bodyName ?? NullIfEmpty(wish.EmoteName);
+        // the body's, the wish's, the alias (plan 2.8a: every field filled in this same update). The requested name is
+        // redeemer data (2.4a): only a caller confirmed on the row's Twitch id may have it copied into alias and emote
+        // name, which every manager sees; anyone else names the emote in the body or gets wish_alias_invalid.
+        var requestedName = scope.IncludeRequestData ? NullIfEmpty(wish.RequestedName?.Trim()) : null;
+        var alias = bodyAlias ?? NullIfEmpty(wish.Alias) ?? requestedName ?? bodyName ?? NullIfEmpty(wish.EmoteName);
         var emoteName = bodyName ?? NullIfEmpty(wish.EmoteName) ?? alias;
         if (alias is null || emoteName is null || !IsValidAlias(alias) || !IsValidEmoteName(emoteName))
         {
