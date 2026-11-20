@@ -1,4 +1,15 @@
-import { Component, computed, inject, input } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  ElementRef,
+  afterNextRender,
+  computed,
+  Injector,
+  effect,
+  inject,
+  input,
+  viewChild,
+} from '@angular/core';
 
 import { PointerModeService } from '../../core/pointer/pointer-mode.service';
 import { DIALOG_TITLE_ID } from './dialog';
@@ -72,6 +83,19 @@ import { SheetDrag } from './sheet-drag';
  * the scroll container instead of the hull (see `styles.css`). Sticky needs no height chain, only a
  * scrolling ancestor, which the pane already is.
  *
+ * `z-20` on both sticky layers is the z-ladder of the design language (§8.5: row actions `z-10` <
+ * sticky bars `z-20`), not decoration either. A row that follows the stretched-link contract lifts its
+ * own controls to `relative z-10` above the overlay, and a positioned box with a z-index paints above a
+ * sticky one without — so in a long list (the adopt dialog's entries) the radios and "Zum Wunsch"
+ * buttons slid over the action row and the handle while the text beside them went underneath.
+ *
+ * Sticky layers cover what lies beneath them, and the browser's focus scrolling knows nothing of
+ * that: a radio or button focused by keyboard can land inside the pane's scroll bounds yet entirely
+ * behind the row (or the handle), ring included — WCAG 2.4.11 Focus Not Obscured. The shell therefore
+ * measures the **rendered** height of both layers (the row wraps, so it varies) with a
+ * ResizeObserver and writes it onto the pane as `--dialog-clear-bottom`/`--dialog-clear-top`;
+ * `styles.css` turns those into `scroll-padding-*` on the pane, which focus scrolling honours.
+ *
  * `bg-surface` and `border-t border-border` are load-bearing, not decoration: without its own opaque
  * surface the sticky row would let scrolled-under content show through, and without the rule the
  * boundary between "still scrolling" and "always visible" would be invisible. `rounded-b-lg` only
@@ -79,6 +103,9 @@ import { SheetDrag } from './sheet-drag';
  * edge, `hullClasses` never rounds that corner there), so rounding the footer to match would round a
  * corner the hull itself does not have.
  */
+const CLEAR_TOP = '--dialog-clear-top';
+const CLEAR_BOTTOM = '--dialog-clear-bottom';
+
 @Component({
   selector: 'app-dialog-shell',
   imports: [SheetDrag],
@@ -86,8 +113,9 @@ import { SheetDrag } from './sheet-drag';
     <div [class]="hullClasses()" [appSheetDrag]="isSheet()">
       @if (isSheet()) {
         <div
+          #handle
           data-sheet-handle
-          class="sticky top-0 -mx-6 -mt-6 flex min-h-11 touch-none items-start justify-center rounded-t-2xl bg-surface py-3"
+          class="sticky top-0 z-20 -mx-6 -mt-6 flex min-h-11 touch-none items-start justify-center rounded-t-2xl bg-surface py-3"
           aria-hidden="true"
         >
           <span class="h-1 w-9 rounded-full bg-border-strong"></span>
@@ -110,7 +138,7 @@ import { SheetDrag } from './sheet-drag';
            navigation link leads the row, then the harmless control carries cdkFocusInitial. Sticky to
            the pane's bottom edge (#226) so the row stays reachable while the body scrolls — see the
            class doc comment above for why this is a sticky offset and not a height chain. -->
-      <div [class]="actionsClasses()">
+      <div #actions [class]="actionsClasses()">
         <ng-content select="[dialog-actions]" />
       </div>
     </div>
@@ -121,6 +149,11 @@ export class DialogShell {
   readonly dialogTitle = input<string>();
 
   private readonly pointerMode = inject(PointerModeService);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
+  private readonly destroyRef = inject(DestroyRef);
+  private readonly handle = viewChild<ElementRef<HTMLElement>>('handle');
+  private readonly actions = viewChild<ElementRef<HTMLElement>>('actions');
 
   protected readonly isSheet = this.pointerMode.isCoarse;
 
@@ -151,8 +184,43 @@ export class DialogShell {
   // instead).
   protected readonly actionsClasses = computed(
     () =>
-      'sticky bottom-0 -mx-6 -mb-6 flex flex-wrap items-center justify-end gap-2 border-t ' +
+      'sticky bottom-0 z-20 -mx-6 -mb-6 flex flex-wrap items-center justify-end gap-2 border-t ' +
       'border-border bg-surface px-6 pt-4 pb-6 ' +
       (this.isSheet() ? '' : 'rounded-b-lg'),
   );
+
+  constructor() {
+    afterNextRender(() => {
+      const pane = this.host.nativeElement.closest<HTMLElement>('.cdk-overlay-pane');
+      if (pane === null || typeof ResizeObserver === 'undefined') {
+        return;
+      }
+      const observer = new ResizeObserver(() => this.publishClearance(pane));
+      // Re-bind whenever the handle appears or goes (pointer mode is live); the row is always there.
+      effect(
+        () => {
+          observer.disconnect();
+          for (const layer of [this.handle(), this.actions()]) {
+            if (layer !== undefined) {
+              observer.observe(layer.nativeElement);
+            }
+          }
+          this.publishClearance(pane);
+        },
+        { injector: this.injector },
+      );
+      this.destroyRef.onDestroy(() => {
+        observer.disconnect();
+        pane.style.removeProperty(CLEAR_TOP);
+        pane.style.removeProperty(CLEAR_BOTTOM);
+      });
+    });
+  }
+
+  private publishClearance(pane: HTMLElement): void {
+    const top = this.handle()?.nativeElement.offsetHeight ?? 0;
+    const bottom = this.actions()?.nativeElement.offsetHeight ?? 0;
+    pane.style.setProperty(CLEAR_TOP, `${top}px`);
+    pane.style.setProperty(CLEAR_BOTTOM, `${bottom}px`);
+  }
 }

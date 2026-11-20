@@ -1,5 +1,6 @@
 import { expect, fulfillCdnStub, test } from './support/test';
 import type { Locator, Page } from './support/test';
+import { focusClearance } from './support/dialog-focus';
 
 import {
   AUTH_USER,
@@ -367,6 +368,108 @@ test.describe('wish emotes: the manager page (#485)', () => {
       await expect(page.getByRole('dialog')).toHaveCount(0);
       await expect(section(page, 'pinned').locator('[data-wish-id="25"]')).toBeVisible();
       await expect(section(page, 'running').locator('[data-wish-id="25"]')).toHaveCount(0);
+    });
+
+    test('a long entry list scrolls underneath the action row: no radio or "Zum Wunsch" paints over it, and the dialog fits the viewport', async ({
+      page,
+    }) => {
+      // Regression: the rows lift their radio and "Zum Wunsch" to z-10 above the stretched label, and
+      // the sticky action row had no z-index, so while the list scrolled those controls slid over
+      // "Abbrechen"/"Übernehmen" and the reason beside them while the alias and date went underneath.
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await mockWishBackend(page, CHANNEL, {
+        slots: Array.from({ length: 80 }, (_, i) =>
+          buildWishSlot(`slot-${String(i).padStart(2, '0')}`, {
+            alias: `Entry${i}`,
+            ...(i % 7 === 3 ? { heldByWishId: 100 + i } : {}),
+          }),
+        ),
+      });
+      await page.goto(URL_WISHES);
+      await page.getByRole('button', { name: 'Bestand übernehmen' }).click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog.getByRole('radio', { name: 'Entry0' })).toBeVisible();
+      const pane = page.locator('.cdk-overlay-pane.app-dialog-panel');
+
+      // The dialog never outgrows the viewport; its body scrolls inside it instead.
+      const paneBox = await pane.evaluate((el) => el.getBoundingClientRect().toJSON() as DOMRect);
+      expect(paneBox.top).toBeGreaterThanOrEqual(0);
+      expect(paneBox.bottom).toBeLessThanOrEqual(800);
+      // The premise: there is plenty to scroll, so rows really pass under the action row.
+      expect(await pane.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(1000);
+
+      const actionsRow = dialog.locator('[dialog-actions]').first().locator('xpath=..');
+      // One radio and one "Zum Wunsch" button, each scrolled by measured position until its centre
+      // lies under the row, and each hit-tested on its own — pooled, the radios alone satisfied it.
+      const radio = dialog.getByRole('radio', { name: 'Entry40', exact: true });
+      const wishButton = dialog.getByRole('button', { name: 'Zum Wunsch: Entry45' });
+      for (const control of [radio, wishButton]) {
+        await expect(control).toHaveCount(1);
+        const underRow = await control.evaluate(
+          (el, rowEl) => {
+            const pane = el.closest('.cdk-overlay-pane') as HTMLElement;
+            const row = (rowEl as unknown as HTMLElement).getBoundingClientRect();
+            const box = el.getBoundingClientRect();
+            pane.scrollTop += box.top + box.height / 2 - (row.top + row.height / 2);
+            const after = el.getBoundingClientRect();
+            const rowAfter = (rowEl as unknown as HTMLElement).getBoundingClientRect();
+            const x = after.left + after.width / 2;
+            const y = after.top + after.height / 2;
+            const hit = document.elementFromPoint(x, y);
+            return {
+              overlaps: after.bottom > rowAfter.top && after.top < rowAfter.bottom,
+              rowHit: hit !== null && (rowEl as unknown as HTMLElement).contains(hit),
+            };
+          },
+          await actionsRow.elementHandle(),
+        );
+        expect(underRow.overlaps).toBe(true);
+        expect(underRow.rowHit).toBe(true);
+      }
+    });
+
+    test('keyboard focus in a long entry list always lands clear of the sticky action row (WCAG 2.4.11)', async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await mockWishBackend(page, CHANNEL, {
+        slots: Array.from({ length: 80 }, (_, i) =>
+          buildWishSlot(`slot-${String(i).padStart(2, '0')}`, {
+            alias: `Entry${i}`,
+            ...(i % 7 === 3 ? { heldByWishId: 100 + i } : {}),
+          }),
+        ),
+      });
+      await page.goto(URL_WISHES);
+      await page.getByRole('button', { name: 'Bestand übernehmen' }).click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog.getByRole('radio', { name: 'Entry0' })).toBeVisible();
+
+      // Arrowing down through the radios: each newly focused one must end fully above the row.
+      await dialog.getByRole('radio', { name: 'Entry0', exact: true }).focus();
+      for (let step = 0; step < 40; step++) {
+        await page.keyboard.press('ArrowDown');
+        const clearance = await focusClearance(page);
+        expect(clearance, `radio step ${step}`).not.toBeNull();
+        expect(clearance!.controlBottom, `radio step ${step}`).toBeLessThanOrEqual(
+          clearance!.footerTop,
+        );
+      }
+
+      // Tabbing on to the "Zum Wunsch" buttons further down.
+      let tabbedButtons = 0;
+      for (let step = 0; step < 30; step++) {
+        await page.keyboard.press('Tab');
+        const clearance = await focusClearance(page);
+        if (clearance === null) {
+          continue;
+        }
+        tabbedButtons++;
+        expect(clearance.controlBottom, `tab step ${step}`).toBeLessThanOrEqual(
+          clearance.footerTop,
+        );
+      }
+      expect(tabbedButtons).toBeGreaterThan(0);
     });
 
     test('real mouse clicks reach every control of the adopt dialog: each entry row, the start radios and the duration field', async ({
