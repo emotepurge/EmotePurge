@@ -3,13 +3,14 @@
 Erstellt am 2026-11-20 im Worktree `EmotePurge-wt-487` (Branch `feat/487-wish-bot`, Basis `origin/main` @ `801e64a6`; K1
 (#492), K2 (#493), K3 (#494) und K6 (#495) gemergt, seit 2026-11-20 auf Prod live und eingeschaltet, Bot-Modus existiert noch
 nicht). Alle Codestellen dieses Plans sind an diesem Stand gelesen.
-**Status: Revision 5 (2026-11-20), Endstand des Nachtrags; Reviews: Fable, Sol, Astra über Rev. 3; Sol über Rev. 4 (3 × P1,
+**Status: Revision 5a (2026-11-20): Revision 5 mit neutralen Namen der kontoweiten Teile (Tabelle „Revision 5a“), Verträge
+unverändert. Revision 5 war der Endstand des Nachtrags; Reviews: Fable, Sol, Astra über Rev. 3; Sol über Rev. 4 (3 × P1,
 6 × P2, alle übernommen). Keine weitere Runde; Code-Review je PR.** Revision 2 war der Endstand für PR 1 und PR 2 (Sol
 adversarial zweimal: Runde 1: 4 × P1, 5 × P2, 1 × P3; Runde 2: 4 × P1, 5 × P2; Betreiber: acht voll, einer abgestuft).
 Revision 3 brachte die automatische Erneuerung (Spec 18) als PR 3; Revision 4 die Befunde der drei Reviews über Revision 3 und
 die Betreiberentscheidungen (Erneuerer auf dem NAS, schmale Maschinenroute, G0b vor T1); Revision 5 die neun Sol-Befunde über
 Revision 4 und die Betreiberentscheidungen vom Abend (Helfer statt Profilkopie, keine Vertretung, N2 hingenommen).
-Betreiberfragen F1 bis F6, FT1 bis FT4, N1 und N2 entschieden (Abschnitt 9). Plan committet als `8ae80d4d`, Revision 3 bis 5 nicht.
+Betreiberfragen F1 bis F6, FT1 bis FT4, N1 und N2 entschieden (Abschnitt 9). Plan committet als `8ae80d4d`, Revision 3 bis 5 als `40fb8685`, Revision 5a nicht.
 Quellen: [Spec](../superpowers/specs/2026-11-17-wunsch-emotes-spec.md) Abschnitte 5 bis 8, 6.4, 12 bis 14, 16, E7, E8, E11,
 E17, E24, E25, RR2, RR3, Tabellen W/X/S und „K4: Bot-Backend“ (AK71 bis AK96), **Nachtrag 18 (AK109 bis AK118)**; [Plan-483](Plan-483-Wunsch-Emotes-Backend-Kern.md)
 (1.2, Befund 8, R10), [Plan-484](Plan-484-Wunsch-Emotes-Ablauf-Lauf.md) (1.2, Befunde 1, 11, 13, 15, 20, 21),
@@ -136,6 +137,65 @@ dazu **Helfer** statt Profilkopie (Spec 18.2), **[N1]** keine Vertretung, **[N2]
 zusammen einundzwanzig Erneuerungs-Spalten. Neu: AK121 (Helfer), AK122 (Restore). Geändert: 2.8, 2.10, 2.13, T1, T5, T13,
 T16 bis T20, Abschnitte 4 bis 6, 8 bis 10. **PR-Schnitt und Reihenfolge bleiben**; der Helfer kommt mit T17 in PR 3.
 
+### Revision 5a (2026-11-20): Neutrale Benennung der kontoweiten Teile
+
+Anlass: Der Betreiber will das Bot-Konto später womöglich auch außerhalb der Wünsche nutzen (F11, Abschnitt 1.5); die Migration
+in T1 friert Tabellen- und Spaltennamen ein. **Nur Namen, kein Verhalten:** Verträge, Reihenfolgen, Tasks, PR-Schnitt und AKs
+bleiben. Kontoweite Teile heißen `BotAccount…` statt `WishBot…`, nicht bloß `Bot…`, weil „Bot“ im Repo schon belegt ist
+(`BotCommands` als Api→Worker-Protokoll, `BotChatterDetector`, `BotUseCount`, die `Bot*`-Spalten an `Wishes`). Die Tabellen
+„Revision 1“ bis „Revision 5“ oben und die Spec-Abschnitte 1 bis 17 außerhalb von K4 bleiben im Wortlaut; ein alter Name dort
+meint den neuen nach dieser Tabelle.
+
+| Alt | Neu |
+|---|---|
+| Tabelle `WishBotCredentials`, Entität `WishBotCredential` | `BotAccountCredentials`, `BotAccountCredential` |
+| Migration `AddWishBot` | `AddBotAccount` **[E]**: benennt das einzige neue Objekt, die kontoweite Tabelle; die Wunsch-Spalten (sieben an `Wishes`, eine an `ChannelWishSettings`) fahren mit, wie `AddWishCapture` auch Bestandstabellen erweitert. Ein späterer Nutzer braucht so für das Konto keine zweite Migration, und der Name im `__EFMigrationsHistory` behauptet nichts Falsches |
+| `IWishBotTokenSealer`, `IWishBotTokenOpener` (samt Implementierungen), `WishBotJwt` | `IBotAccountTokenSealer`, `IBotAccountTokenOpener`, `BotAccountJwt` |
+| AAD `emotepurge:wishbot:v1` | `emotepurge:bot-account-token:v1` |
+| Einstiege `AddWishBotTokenSealing`, `AddWishBot(configuration)` (Worker), `AddWishBotRenewer` | `AddBotAccountTokenSealing`, `AddBotAccountWriter` (nicht gleichnamig mit der Migration), `AddBotAccountRenewer` |
+| `Wishes:BotMode:Enabled`, `…:TokenPublicKey`, `…:TokenPrivateKey`, `…:WriteDelaySeconds`, `…:Renewal:*`; `WishOptions.BotMode` | `BotAccount:Enabled`, `BotAccount:TokenPublicKey`, `BotAccount:TokenPrivateKey`, `BotAccount:WriteDelaySeconds`, `BotAccount:Renewal:*`; eigene `BotAccountOptions` |
+| `WISHES_BOT_MODE_ENABLED`, `WISHES_BOT_TOKEN_PUBLIC_KEY`, `WISHES_BOT_TOKEN_PRIVATE_KEY`, `WISHES_BOT_RENEWAL_ENABLED` | `BOT_ACCOUNT_ENABLED`, `BOT_ACCOUNT_TOKEN_PUBLIC_KEY`, `BOT_ACCOUNT_TOKEN_PRIVATE_KEY`, `BOT_ACCOUNT_RENEWAL_ENABLED` |
+| `/api/admin/wish-bot`, Seite `admin/wish-bot` (`wish-bot-page.ts`) | `/api/admin/bot-account`, `admin/bot-account` (`bot-account-page.ts`); die Wunsch-Zahlen im Unterobjekt `wishes` (2.10) |
+| `/api/internal/wish-bot/renewal`, `/api/health/wish-bot`, Policy `PublicWishBotHealth` | `/api/internal/bot-account/renewal`, `/api/health/bot-account`, `PublicBotAccountHealth` |
+| Projekt `EmotePurge.WishBotRenewer` (samt `.Tests`), Image `emotepurge-wishbot-renewer`, `WishBotRenewerWorker`, `IWishBotCookieStore`, `WishTwitchCookieSet` | `EmotePurge.BotAccountRenewer`, `emotepurge-bot-account-renewer`, `BotAccountRenewerWorker`, `IBotAccountCookieStore`, `TwitchSessionCookieSet` |
+| `WishBotRenewalPolicy`, `IWishBotRenewalService`, `WishBotRenewerAuthorizationFilter`, `WishBotRenewerSecretHolder` | `BotAccountRenewalPolicy`, `IBotAccountRenewalService`, `BotAccountRenewerAuthorizationFilter`, `BotAccountRenewerSecretHolder` |
+| Audit `wishBot.*` (Token, Notaus, Token-Zustand, Erneuerung, Geheimnis); i18n `admin.wishBot.*`, `audit.actions.wishBot.*` | `botAccount.*`; `admin.botAccount.*`, `audit.actions.botAccount.*` |
+| Codes `wish_bot_disabled`, `wish_bot_token_malformed`, `wish_bot_token_expired`, `wish_bot_renewer_secret_malformed` | `bot_account_disabled`, `bot_account_token_malformed`, `bot_account_token_expired`, `bot_account_renewer_secret_malformed` |
+| `IWishBotService` (Admin-Teil) | `IBotAccountService`; der Kanal-Teil bleibt `IWishBotService` |
+| `WishBotWorker`, `IWishBotRunner`, `WishBotSignal`, `BotCommands.WishBotPrefix` (`WISHBOT:`), Lock-Schlüssel `emotepurge:wish-bot` | `BotAccountWorker`, `IBotAccountRunner` (Wunsch-Schritte in `IWishBotPass`, 2.5), `BotAccountSignal`, `BotCommands.BotAccountPrefix` (`BOTACCOUNT:`), `emotepurge:bot-account`; `RunnerEpoch` bleibt (schon neutral) |
+| — (neu, abgespalten) | `IBotAccountAvailability` (2.3), `BotAccountPreflight` (2.5), `IBotAccountEditorCheck` (2.5) |
+
+**Grauzonen [E]** (Faustregel: was ein Nicht-Wunsch-Nutzer unverändert mitbenutzen würde, wird neutral):
+
+- **`Wishes:BotMode:Enabled` → `BotAccount:Enabled`.** Er ist schon heute der harte kontoweite Schalter (Notaus Spec 7.6, Fail-Fast
+  der Schlüssel, Maschinenroute, Alarm-Endpunkt); ein zweiter Nutzer bräuchte genau ihn. Einen eigenen Wunsch-Schalter für den
+  Bot-Modus gibt es nicht; die Aktivierung je Kanal und die Pilot-Liste reichen. Braucht es ihn später, kommt er additiv.
+- **`Wishes:PilotChannelIds` bleibt.** Die Liste gibt den Bot-Modus **für Wünsche** frei (E8, beim Aktivieren und bei jedem
+  Wunsch-Schreiben). Ein späterer Nutzer braucht eine eigene Freigabe; die Wunsch-Liste mitzunutzen hieße, Wunsch-Pilotkanäle
+  stillschweigend für etwas anderes freizugeben.
+- **Die Bot-Spalten an `ChannelWishSettings` bleiben** (`BotModeEnabled`, `BotModeActivated*`, `BotActivation*`,
+  `BotSuspendedReason`, `BotEditorCheckedAtUtc` und die neue `BotEditorCheckedIdentityVersion`). Aktivierung, D7, Aussetzen und
+  Pilot-Deckung sind Wunsch-Regeln; die Spalten sind bis auf eine seit `AddWishes` auf Prod, Umbenennen wäre nicht additiv. Der
+  Editor-Nachweis ist fachlich kontoweit: neutral wird deshalb das **Lesen** (`IBotAccountEditorCheck`), die **Buchung** bleibt
+  bei ihren Geschwistern. Ein späterer Nutzer liest das Ergebnis selbst oder legt eine eigene Ablage additiv an.
+- **`WishBotWorker` → `BotAccountWorker`.** Der Dienst hält den Advisory-Lock und ist damit der einzige Schreiber für das Konto;
+  ein zweiter Nutzer muss in dieselbe Schleife, nicht in einen zweiten Dienst. Entsprechend `IBotAccountRunner` für Lock,
+  Epoche, Token-Haushalt, Schreibabstand und Budget, `IWishBotPass` für die Wunsch-Schritte.
+- **`IWishBotAvailability` (K2-Bestand) bleibt und delegiert.** Gelesen am Code: das Interface hat genau eine Methode
+  (`IsAvailableAsync`), eine Registrierung (`WishBotNeverAvailable`, `ServiceCollectionExtensions.cs:364`) und Nutzer nur im
+  Ablauf-Lauf (`WishExpiryService`, `WishExpiryPolicy`-Kommentar) und in zwei Testdateien. Es ist die Sicht der Wünsche
+  (`Wishes:Enabled` gehört dazu) und richtig benannt; Umbenennen kostete Bestandscode und Tests ohne Gewinn. Neu daneben
+  `IBotAccountAvailability` ohne `Wishes:Enabled`; die echte `WishBotAvailability` verknüpft beide (2.3).
+
+**Bleibt bewusst beim Wunsch:** Zustände und Übergänge, Eigentumsregel (der Bot entfernt nur selbst hinzugefügte
+Wunsch-Einträge), die Spalten an `Wishes`, die Kanal-Routen unter `…/wishes/bot…` samt `WishBotActivationAuthorizationFilter`,
+Audit `wish.bot*` und `wish.recheck`, `wishBotModeAvailable`, die Kanal-Codes `wish_bot_unavailable`,
+`wish_bot_channel_not_listed`, `wish_bot_activation_forbidden`, `wish_bot_already_active`, `wish_bot_set_changed`,
+`wish_not_bot_owned`, `wish_start_unconfirmed`, `WishBotChannelState`, `WishBotPreflight`, `WishBotAttemptGuard`,
+`WishBotConfirmSchedule`, `WishBotOwnership`, `IWishBotFallback`, `IWishBotService` (Kanal-Teil), `Wishes:Enabled` und
+`Wishes:PilotChannelIds`. Die Aufrufquelle `seventv-bot` und `ISevenTvWriteClient` sind schon neutral. Commit-Texte der
+kontoweiten Tasks sagen „bot account“, die der Wunsch-Tasks weiter „wish bot“.
+
 ---
 
 ## 0. Befund vor dem Plan
@@ -226,8 +286,8 @@ Alle Stellen am Stand `801e64a6`.
 
 ### 1.1 Drin
 
-Migration `AddWishBot` (6.4), Versiegeln und Öffnen, Admin-Api und Admin-Seite, Schreib-Client, echte Verfügbarkeit,
-`WishBotWorker` mit Token-Haushalt, Aktivierung, Aussetzen, Rückfall, Hinzufügen, Bestätigen, Entfernen, Reparatur,
+Migration `AddBotAccount` (6.4), Versiegeln und Öffnen, Admin-Api und Admin-Seite, Schreib-Client, echte Verfügbarkeit,
+`BotAccountWorker` mit Token-Haushalt, Aktivierung, Aussetzen, Rückfall, Hinzufügen, Bestätigen, Entfernen, Reparatur,
 Erkennungsgrenze samt gemeinsamem Vertrag für Schreibversuche (2.5a); Kanal-Api (`GET …/wishes/bot`, `activate`, `DELETE`, `bot-remove`, `recheck`), `wishBotModeAvailable`;
 die K1/K2-Nähte aus 2.1 und [W1] bis [W10]; Doku nach AK95 samt korrigierter `CLAUDE.md`-Zeile; frühe Live-Probe (T0) und AK93.
 **Revision 3/4:** automatische Erneuerung des Bot-JWT nach Spec 18 als PR 3: Api-Hälfte (Maschinenroute, Policy,
@@ -244,7 +304,7 @@ Tausch (T0b hält nur fest, ob es ginge); Betrieb, Deploy und Einrichtung des Er
 `GET …/wishes/bot` mit der Form der Spec, `activate` (202, asynchron bestätigt), `DELETE …/wishes/bot`, `bot-remove`,
 `recheck`, `wishBotModeAvailable`; DTO-Felder `botOwned`, `botWritePending` (nach [W9] präzisiert), `botNextAttemptAtUtc`,
 `removalQueuedAtUtc`, `mode` (nach [W1] effektiv); alle Fehlercodes samt `api-error.ts` und Locales (Regel 7); die
-Audit-Übersetzungen `wish.bot*` und `wishBot.*` ([W15]); der Hinweis, dass Wunsch-Befehle während eines offenen Schreibversuchs
+Audit-Übersetzungen `wish.bot*` und `botAccount.*` ([W15]); der Hinweis, dass Wunsch-Befehle während eines offenen Schreibversuchs
 409 `wish_state_conflict` antworten (2.5a (b)), und `recheck` bei Set-Wechsel 409 `wish_bot_set_changed`. Offen für K5: `wishes.bot.*`, `wishes.reason.*` der Bot-Gründe.
 
 ### 1.4 Verhältnis zum laufenden Betrieb
@@ -254,6 +314,28 @@ Der manuelle Modus läuft auf Prod für alle Kanäle; K4 wird parallel gebaut, d
 AK92). Einzige weiche Berührung: Die Fensterrechnung (2.1, Punkt 4) ließe sich mit echten Nutzungszahlen nachprüfen; sie ist
 aber nur bei gesetzter Schwelle im Bot-Modus wirksam und braucht keine Messung vor dem Merge. Folge des Live-Betriebs für den
 Bau: Befund 20 (Regressionsfälle bei ausgeschaltetem Bot) und eine additive Migration, die das laufende Image nicht stört.
+
+### 1.5 Spätere Nutzung des Bot-Kontos außerhalb der Wünsche (Revision 5a)
+
+**Ziel offenhalten, nicht bauen.** Denkbar ist etwa, dass der Bot auf der Nutzungsseite Emotes löscht, nachdem die Mods das
+freigegeben haben (F11, Spec Abschnitt 15 „Out of Scope“, und der Entwurf). K4 baut davon nichts: keine Route, kein Schalter, kein allgemeiner Mechanismus für weitere
+Nutzer, kein Platzhalter. K4 sorgt nur dafür, dass die Namen den Weg nicht verbauen (Tabelle „Revision 5a“).
+
+- **Kontoweit** (gehört dem Bot-Konto, ein späterer Nutzer teilt es unverändert): Tabelle `BotAccountCredentials` mit Token,
+  Versionen, Notaus, Pause, Runner-Epoche und Erneuerungszustand; Siegel und Öffner; Admin-Seite und -Routen für Token, Notaus und
+  Erneuerung; Maschinenroute, Alarm-Endpunkt und Erneuerer; die Schalter und Schlüssel unter `BotAccount:*`; der Schreib-Client;
+  die Editor-Prüfung (Lesen); die kontoweite Verfügbarkeit; der Dienst `BotAccountWorker` mit Advisory-Lock, Runner-Epoche,
+  Token-Haushalt, Schreibabstand und Budget. **Er bleibt der einzige Schreiber für das Konto:** ein späterer Nutzer schreibt
+  nur aus derselben Schleife und unter derselben Serialisierung, nie aus einem eigenen Dienst oder aus der Api.
+- **Wunsch-spezifisch** (bleibt beim Wunsch): siehe „Bleibt bewusst beim Wunsch“ in Revision 5a.
+- **Jede neue Nutzung braucht eigene Sicherheitsregeln und eine eigene Zustimmung.** Die Eigentumsregel der Wünsche (Spec 8: nur
+  selbst hinzugefügte Einträge entfernen) und die D7-Zustimmung zum Bot-Modus für Wünsche (E24) decken nichts anderes ab. Ein
+  Löschen auf der Nutzungsseite etwa entfernt Einträge, die der Bot nie hinzugefügt hat; es braucht also eine eigene Spec mit
+  eigener Freigabe je Kanal (D7-artig, eigene Spalten, eigener Audit-Namensraum), eigener Pilot-Freigabe statt
+  `Wishes:PilotChannelIds`, eigener Vorprüfung nach dem Muster von `WishBotPreflight` (kontoweite Stufen über
+  `BotAccountPreflight`) und eigenem Rückfall, bevor eine Zeile Code entsteht.
+- T1 nimmt einen Satz dazu in den DECISIONS-Eintrag auf („account-wide parts are named neutrally; any further use of the bot
+  account needs its own safety rules and consent“).
 
 ---
 
@@ -300,7 +382,7 @@ Bau: Befund 20 (Regressionsfälle bei ausgeschaltetem Bot) und eine additive Mig
 
 ### 2.2 Token: Ablage, Siegel, Öffnen (T1, T2)
 
-- **Tabelle `WishBotCredentials`** nach Spec 6.4, CHECK `Id = 1`, Status-CHECK auf die fünf Werte. **Keine Seed-Zeile [E]**
+- **Tabelle `BotAccountCredentials`** nach Spec 6.4, CHECK `Id = 1`, Status-CHECK auf die fünf Werte. **Keine Seed-Zeile [E]**
   (Muster `WishCaptureState`, DECISIONS K6 (a)): fehlt die Zeile, gilt `Status = none`, `KillSwitch = false`; jede Schreibung ist
   ein Upsert auf `Id = 1`. Additiv; das laufende Image liest die Tabelle nie.
 - **`CredentialVersion` (int, Default 0) [E, W20] (Sol-P1-3):** jedes `PUT /token` und `DELETE /token` erhöht sie im selben
@@ -322,35 +404,37 @@ Bau: Befund 20 (Regressionsfälle bei ausgeschaltetem Bot) und eine additive Mig
   unberührt; weil der Runner die Zeile während einer Sende-Transaktion `FOR SHARE` hält, wartet ein solches Update höchstens
   deren Ende ab (≤ 20 s, 2.5a (c)). Verwendung in 2.5a (g).
 - **Siegelformat** nach Spec 7.1: `v1.` + base64(verpackter Schlüssel ‖ Nonce ‖ Chiffrat ‖ Tag), RSA-3072-OAEP-SHA256 über
-  einen frischen AES-256-Schlüssel, AES-GCM mit 12 Byte Nonce und 16 Byte Tag. **[E]** Feste Zusatzdaten (AAD) `emotepurge:wishbot:v1`,
+  einen frischen AES-256-Schlüssel, AES-GCM mit 12 Byte Nonce und 16 Byte Tag. **[E]** Feste Zusatzdaten (AAD) `emotepurge:bot-account-token:v1`,
   damit ein Siegel nicht als anderes Geheimnis taugt (Revision 4: der Zweck aus Revision 3 entfällt, es gibt nur dieses eine
   Siegel). **Schlüsselformat [E]:** je eine Zeile base64-DER (öffentlich
   SubjectPublicKeyInfo, privat PKCS#8), weil mehrzeiliges PEM in Compose-Variablen bricht; der Opener prüft die
   Schlüssellänge 3072.
-- **Schnittstellen (Core):** `IWishBotTokenSealer.Seal(token) → string` (nur Api), `IWishBotTokenOpener.TryOpen(sealed) →
+- **Schnittstellen (Core):** `IBotAccountTokenSealer.Seal(token) → string` (nur Api), `IBotAccountTokenOpener.TryOpen(sealed) →
   string?` (nur Worker; jede Abweichung, auch Präfix, Länge, Tag, falscher Schlüssel, ergibt `null`, nie eine Ausnahme mit
-  Inhalt, AK72). Dazu rein (Core): `WishBotJwt.TryReadExpiry(token) → DateTime?` (drei base64url-Segmente, `exp` als Zahl;
-  sonst `null` = `wish_bot_token_malformed`; **ein Token ohne `exp` ist malformed [E]**, weil Spec 7.7 die Anzeige braucht).
-- **Registrierung [E]:** zwei Einstiege nach Befund 9, `AddWishBotTokenSealing(configuration)` (Api, `Program.cs` neben
-  `AddLogCapture`) und `AddWishBot(configuration)` (Worker, in `AddWorkerCore`; registriert Opener, Schreib-Client,
-  Runner, Signal). **Die Schlüssel stehen nicht in `WishOptions`** (die Optionen sind in beiden Prozessen injizierbar); jeder
-  Einstieg liest seinen Schlüssel selbst aus `IConfiguration`. Fail-Fast: `Wishes:BotMode:Enabled = true` und Schlüssel fehlt
+  Inhalt, AK72). Dazu rein (Core): `BotAccountJwt.TryReadExpiry(token) → DateTime?` (drei base64url-Segmente, `exp` als Zahl;
+  sonst `null` = `bot_account_token_malformed`; **ein Token ohne `exp` ist malformed [E]**, weil Spec 7.7 die Anzeige braucht).
+- **Registrierung [E]:** zwei Einstiege nach Befund 9, `AddBotAccountTokenSealing(configuration)` (Api, `Program.cs` neben
+  `AddLogCapture`) und `AddBotAccountWriter(configuration)` (Worker, in `AddWorkerCore`; registriert Opener, Schreib-Client,
+  Runner, Signal). **Die Schlüssel stehen nicht in `BotAccountOptions`** (die Optionen sind in beiden Prozessen injizierbar); jeder
+  Einstieg liest seinen Schlüssel selbst aus `IConfiguration`. Fail-Fast: `BotAccount:Enabled = true` und Schlüssel fehlt
   oder ist ungültig → Start bricht mit englischer Meldung ab, die den Schlüsselnamen nennt, nie den Wert. Bei ausgeschaltetem
-  Bot-Modus registriert der Api-Einstieg einen Sealer, der immer ablehnt (die Route antwortet ohnehin 404), der Worker-Einstieg
-  keinen Opener. AK72: `Api.Tests` prüft über den Service-Provider der Factory, dass kein `IWishBotTokenOpener` und kein
+  Bot-Konto registriert der Api-Einstieg einen Sealer, der immer ablehnt (die Route antwortet ohnehin 404), der Worker-Einstieg
+  keinen Opener. AK72: `Api.Tests` prüft über den Service-Provider der Factory, dass kein `IBotAccountTokenOpener` und kein
   `ISevenTvWriteClient` auflösbar ist.
 - **Klartext in der Api** lebt nur in der einen Anfrage: Form prüfen, `exp` lesen, abgelaufen → 400, versiegeln, Upsert mit
   `Status = unverified`, `ExpiresAtUtc = exp`, `SetAtUtc = jetzt`, `BotSevenTvUserId = null`, `LastErrorCode = null`, Audit
-  `wishBot.tokenSet` (Details nur `expiresAtUtc`), Commit, dann `WISHBOT:` ohne Nutzlast. Die Api ruft mit dem Token nie 7TV.
+  `botAccount.tokenSet` (Details nur `expiresAtUtc`), Commit, dann `BOTACCOUNT:` ohne Nutzlast. Die Api ruft mit dem Token nie 7TV.
   Der Anfragekörper wird nie geloggt; das Modell des Körpers hat kein `ToString`, das den Wert zeigt.
 
 ### 2.3 Verfügbarkeit und effektiver Modus (T4, T6)
 
-- **Global [P]:** `IWishBotAvailability` echt (Infrastructure, **scoped**, liest die eine Zeile): verfügbar genau dann, wenn
-  `Wishes:Enabled` **und** `Wishes:BotMode:Enabled` (eigener Prozess), `Status = valid`, `ExpiresAtUtc > jetzt`,
-  `KillSwitch = false`. Eine Pause nach 429 (`PausedUntilUtc`) ist **keine** Nichtverfügbarkeit (sonst legte ein kurzer 429 alle
-  fälligen Entfernungen vor). Ersetzt `WishBotNeverAvailable` in der einen Registrierung (Befund 6); die Lebensdauer passt zu
-  `WishExpiryService` (scoped). `WishBotNeverAvailable` entfällt.
+- **Global [P], zwei Ebenen [E] (Revision 5a):** `IBotAccountAvailability` (Core, neu; Infrastructure, **scoped**, liest die eine
+  Zeile) ist die kontoweite Antwort: verfügbar genau dann, wenn `BotAccount:Enabled` (eigener Prozess), `Status = valid`,
+  `ExpiresAtUtc > jetzt`, `KillSwitch = false`. Eine Pause nach 429 (`PausedUntilUtc`) ist **keine** Nichtverfügbarkeit (sonst
+  legte ein kurzer 429 alle fälligen Entfernungen vor). `IWishBotAvailability` (K2-Bestand, bleibt) ist die Sicht der Wünsche:
+  `Wishes:Enabled` **und** die kontoweite Antwort; die echte Implementierung `WishBotAvailability` delegiert nur. Sie ersetzt
+  `WishBotNeverAvailable` in der einen Registrierung (Befund 6); die Lebensdauer passt zu `WishExpiryService` (scoped).
+  `WishBotNeverAvailable` entfällt. Verhalten gegenüber Revision 5 unverändert.
 - **Je Kanal [E], eine reine Funktion `WishBotChannelState.Of(settings, globallyAvailable, listed, activatorIsAdminById, now)`**
   mit Ergebnis `manual` (Bot-Modus nicht aktiviert), `bot` (aktiviert, nicht ausgesetzt, global verfügbar, gedeckt), `fallback`
   (aktiviert, aber global nicht verfügbar, ausgesetzt, nicht gedeckt **oder Editor-Status unbekannt**). „Gedeckt“ (E8) = Kanal
@@ -374,7 +458,7 @@ Bau: Befund 20 (Regressionsfälle bei ausgeschaltetem Bot) und eine additive Mig
   statt `IsBotMode` ([W1]). Die globale Verfügbarkeit wird je Anfrage höchstens einmal gelesen (Übersicht: einmal für alle
   Kanäle). **Recht auf die Kanal-Vorgaben** (`CanChangeSettings`) hängt an `BotModeEnabled` roh, nicht am effektiven Zustand
   ([W2]): Solange die Aktivierung gespeichert ist, gilt D7, auch im Rückfall.
-- **`wishBotModeAvailable` in `/permissions` [E]:** nur wenn `Wishes:Enabled` und `Wishes:BotMode:Enabled` an sind, wird die
+- **`wishBotModeAvailable` in `/permissions` [E]:** nur wenn `Wishes:Enabled` und `BotAccount:Enabled` an sind, wird die
   Zeile gelesen; sonst `false` ohne Datenbankzugriff (Befund 19). Wert = global verfügbar **und** (Kanal gelistet **oder** Aufrufer
   globaler Admin per ID). Ein In-Process-Cache der Zeile für 30 s ist erlaubt, wenn T7 einen messbaren Mehraufwand findet; die
   Admin-Routen und der Worker lesen immer frisch.
@@ -397,13 +481,19 @@ Bau: Befund 20 (Regressionsfälle bei ausgeschaltetem Bot) und eine additive Mig
   `Unavailable` (Netz, 5xx, unlesbar). **Kein Fehlertext von 7TV geht in ein Log oder in die Datenbank** (nur Code und Status).
 - Der Lesepfad des Vollsyncs bleibt unverändert (Spec Files: `SevenTvApiClient` ohne `addedById`).
 
-### 2.5 `WishBotWorker` und Runner (T5, T8 bis T10)
+### 2.5 `BotAccountWorker` und Runner (T5, T8 bis T10)
 
 - **Dienst:** konkrete Klasse, nur `AddHostedService`, registriert **vor** `WishCaptureWorker` (Befund 10), damit siebzehn
-  (AK96). Bei `Wishes:Enabled = false` oder `Wishes:BotMode:Enabled = false` eine Logzeile, Ende, kein Scope, kein Öffnen.
+  (AK96). Er ist der **einzige Schreiber für das Bot-Konto** (1.5) und heißt deshalb neutral. Bei `BotAccount:Enabled = false`
+  oder ohne eingeschaltete Nutzung des Kontos (heute nur `Wishes:Enabled`) eine Logzeile, Ende, kein Scope, kein Öffnen.
+- **Schnitt Konto/Wunsch [E] (Revision 5a):** `IBotAccountRunner` (Core, Form) trägt, was jeder Nutzer des Kontos teilt: Lock,
+  Runner-Epoche, Schreibschranke (2.5a (g)), Token-Haushalt (2.8), `WriteDelaySeconds` zwischen zwei 7TV-Schreibzugriffen und das
+  Aktionsbudget je Durchgang. Die Wunsch-Schritte (0, 2 bis 5 unten) liegen in einem wunsch-spezifischen Teil (Form
+  `IWishBotPass`), den der Runner aufruft. Kein allgemeiner Mechanismus für weitere Nutzer: eine spätere Nutzung bekommt ihren
+  eigenen Aufruf in derselben Schleife.
   Wartet nicht auf `BootRecoveryGate` (der Runner liest nur Datenbank und 7TV). Takt 30 s per `PeriodicTimer`, Anstoß über
-  `WishBotSignal` (Form von `ChatLogBackfillSignal`), gesetzt in `Worker.cs` beim Präfix `WISHBOT:` (neu in `BotCommands`).
-- **Advisory-Lock [P]:** eigener Schlüssel `emotepurge:wish-bot`, gehalten auf eigener Verbindung für die Lebensdauer der
+  `BotAccountSignal` (Form von `ChatLogBackfillSignal`), gesetzt in `Worker.cs` beim Präfix `BOTACCOUNT:` (neu in `BotCommands`).
+- **Advisory-Lock [P]:** eigener Schlüssel `emotepurge:bot-account`, gehalten auf eigener Verbindung für die Lebensdauer der
   Schleife (Befund 11). Ohne Lock schreibt die Instanz nichts, liest nichts aus 7TV und versucht es im nächsten Takt erneut
   (AK81). Gehalten wird er nicht nur beim Holen: die Probe ist eine Schranke vor und nach jedem 7TV-Aufruf, beim Commit zählt
   die Runner-Epoche (2.5a (g)). Rückfall-Lauf (2.8) und Fristschritt brauchen den Lock nicht.
@@ -423,13 +513,18 @@ Bau: Befund 20 (Regressionsfälle bei ausgeschaltetem Bot) und eine additive Mig
 - **Vorprüfung vor jedem 7TV-Schreibzugriff** als reine Funktion `WishBotPreflight.Check(…)` mit fester Reihenfolge (Spec K4):
   Schalter → Deckung (E8) → `KillSwitch` (frisch aus der Datenbank, AK81) → `PausedUntilUtc` → Token-Status, Ablauf und
   `CredentialVersion` gleich der des geöffneten Tokens (2.2) → Editor-Status des Kanals (höchstens 1 Minute alt, zur selben
-  `IdentityVersion` gebucht, 2.3). Das erste Nein gewinnt und bestimmt den Rückfall (global oder je Kanal). **Ausnahme (Revision 3):** weicht nur die `CredentialVersion` ab
+  `IdentityVersion` gebucht, 2.3). Das erste Nein gewinnt und bestimmt den Rückfall (global oder je Kanal). **Revision 5a [E]:**
+  Die zusammenhängenden Kontostufen (`KillSwitch` → `PausedUntilUtc` → Token-Status, Ablauf, `CredentialVersion`) sind eine eigene
+  reine Funktion `BotAccountPreflight.Check(…)`, die `WishBotPreflight` an genau dieser Stelle aufruft; Reihenfolge und Ergebnis
+  bleiben gleich, Deckung und Editor-Status bleiben beim Wunsch. **Ausnahme (Revision 3):** weicht nur die `CredentialVersion` ab
   (Tausch über die Maschinenroute oder Hand-`PUT`), ist das kein Rückfallgrund: der Durchgang endet ohne Zustandswechsel, ein in
   diesem Durchgang festgeschriebener, nie gesendeter Versuch wird nach 2.5a (c) zurückgenommen, und der nächste Durchgang
   öffnet das neue Siegel. Der Runner öffnet zu Beginn jedes Durchgangs neu, wenn sich die Version geändert hat. Lesezugriffe für Bestätigung und Vor-Read prüfen dieselbe Kette ohne
   den Editor-Status. Die Vorprüfung läuft als Teil der Nachprüfung unter Sperre (2.5a (c)), nicht davor.
 - **Editor-Status [E]:** ein `GetEditorOfChannelsAsync(BotSevenTvUserId)` (unauthentifiziert, ohne `ModRoleCache`) beantwortet alle
-  Kanäle auf einmal und gilt 1 Minute; ausgesetzte `not_editor`-Kanäle werden alle 15 Minuten neu geprüft (Wiederaufnahme ohne neue
+  Kanäle auf einmal und gilt 1 Minute. **Revision 5a:** Das Lesen ist kontoweit (`IBotAccountEditorCheck`, Form: Kanäle, in denen
+  das Konto Editor ist, samt `IdentityVersion` und Bot-ID des Reads, oder `Unavailable`); die Buchung an `ChannelWishSettings`, das
+  Aussetzen und die Aktivierung bleiben beim Wunsch; ausgesetzte `not_editor`-Kanäle werden alle 15 Minuten neu geprüft (Wiederaufnahme ohne neue
   Aktivierung, Spec 7.8). `Unavailable` setzt nicht aus, sondern lässt den Durchgang ohne Schreiben enden (keine Aussetzung wegen
   7TV-Störung); hält es 15 Minuten an, ist der Kanal nach 2.3 im `fallback`, bis eine Prüfung wieder gelingt. Was die Prüfung wirklich unterscheiden kann (Einladung, Berechtigung „Emote-Sets verwalten“), klärt AK92; reicht
   `editor_of` nicht, nimmt T8 das in T0 gefundene authentifizierte Lesen.
@@ -439,7 +534,7 @@ Bau: Befund 20 (Regressionsfälle bei ausgeschaltetem Bot) und eine additive Mig
 Jeder 7TV-Schreibzugriff des Bots (Hinzufügen, Entfernen, Reparatur) ist ein **Versuch** mit diesen acht Regeln. 2.6 und 2.7
 sagen nur noch, was je Ablauf geprüft und gebucht wird.
 
-**Felder an `Wishes` [E, W20]** (Migration `AddWishBot`, T1, alle nullbar, additiv): `BotSetId` (Set des offenen Versuchs; nach
+**Felder an `Wishes` [E, W20]** (Migration `AddBotAccount`, T1, alle nullbar, additiv): `BotSetId` (Set des offenen Versuchs; nach
 einer Bestätigung mit Eigentum das Set des eigenen Eintrags; in `presented` (`unconfirmed`) das Set des Versuchs für `recheck`;
 sonst leer), `BotAttemptVersion` (`DecisionVersion` beim Festschreiben), `BotRemoveAtUtc` (Entfernungsversuch festgeschrieben,
 Gegenstück zu `BotWriteAtUtc`), `BotRemoveEvidence` (jsonb: Zieleintrag mit den vier Merkmalen und die übrigen Einträge derselben
@@ -582,7 +677,7 @@ Eigentum, (d)), `BotConfirmDeadlineAtUtc` (Revision 2: Ende der E11-Frist, (e)),
   (Revision 5, S5-9) `LastVerifiedCredentialVersion = <geöffnete Version>`, oder
   `invalid` mit `LastErrorCode`; Öffnen scheitert → `invalid` (`seal_unreadable`). `exp` erreicht → `expired` (nur aus `valid` und
   `unverified`; `invalid` bleibt, Revision 4). Erneute Prüfung alle 6 Stunden **[E]** und nach jedem `Unauthorized`. Ab 7 Tagen vor `exp` höchstens eine Warnung je UTC-Tag (Zähler im Speicher,
-  Neustart darf einmal mehr warnen). Wechsel nach `invalid` oder `expired` → je Wechsel ein Audit `wishBot.tokenState`. Jedes
+  Neustart darf einmal mehr warnen). Wechsel nach `invalid` oder `expired` → je Wechsel ein Audit `botAccount.tokenState`. Jedes
   dieser Ergebnisse wird nur auf die `CredentialVersion` gebucht, deren Token geprüft wurde (2.2, Sol-P1-3): eine verspätete
   Prüfung oder ein verspätetes 401 von Token A trifft ein inzwischen gesetztes Token B nie; Audit nur, wenn das Update traf.
   Ändert sich `BotSevenTvUserId` gegenüber dem Vortoken, bleibt bestehendes Eigentum stehen und scheitert beim frischen Read
@@ -597,7 +692,7 @@ Eigentum, (d)), `BotConfirmDeadlineAtUtc` (Revision 2: Ende der E11-Frist, (e)),
   Entfernungsversuch → nach 2.5a (e) ohne 7TV, der Beleg bleibt als Prüfphase (2.5a (h)); offene Prüfphasen bleiben unberührt.
   `approved` ohne Absicht bleibt `approved` (zählt als Handlungsbedarf, 2.3). Je Wunsch Zeilensperre, bedingte Updates, ein `wish.changed` je Kanal.
   Aufgerufen vom Runner (Schritt 4) **und vom Ablauf-Lauf als Schritt 0** (K2-Dienst, läuft mit `Wishes:Enabled` auch bei
-  ausgeschaltetem Bot), damit ein Abschalten von `WISHES_BOT_MODE_ENABLED` nichts hängen lässt. Ohne Bot-Kanäle eine Indexabfrage.
+  ausgeschaltetem Bot), damit ein Abschalten von `BOT_ACCOUNT_ENABLED` nichts hängen lässt. Ohne Bot-Kanäle eine Indexabfrage.
 - **Kanal aussetzen und aufnehmen:** `not_listed` bei fehlender Deckung, `not_editor` bei negativem Editor-Status oder
   `LackingPrivileges`; je Wechsel Audit `wish.botSuspend` (Details `reason`, beim Aufnehmen `resumed`), `BotEditorCheckedAtUtc`
   bei bestandener Prüfung. Aufnehmen leert den Grund; der Bot nimmt nur `approved` auf (Spec 7.8).
@@ -617,7 +712,7 @@ Eigentum, (d)), `BotConfirmDeadlineAtUtc` (Revision 2: Ende der E11-Frist, (e)),
 | `POST …/wishes/{id}/bot-remove` | – (`Bookkeeping`) | 202 `WishDto` |
 | `POST …/wishes/{id}/recheck` | – (`Bookkeeping`, Bestand) | 200 `WishDto` |
 
-- **Aktivierungsfilter, Reihenfolge [E] ([W12]):** (1) `Wishes:Enabled` oder `Wishes:BotMode:Enabled` aus → durchlassen (Handler:
+- **Aktivierungsfilter, Reihenfolge [E] ([W12]):** (1) `Wishes:Enabled` oder `BotAccount:Enabled` aus → durchlassen (Handler:
   404 `wishes_disabled` bzw. 409 `wish_bot_unavailable`, kein 7TV-Aufruf); (2) globaler Admin per ID → durch; (3) Kanal nicht
   gelistet → 403 `wish_bot_channel_not_listed` (billig, vor jedem 7TV-Aufruf); (4) Broadcaster per Twitch-ID → durch; (5)
   `ISevenTvEditorService.GetEditorGrantsAsync(caller)`: `Ok` mit der Twitch-ID des Kanals → durch; `Ok` ohne, `NoSevenTvAccount`,
@@ -627,7 +722,7 @@ Eigentum, (d)), `BotConfirmDeadlineAtUtc` (Revision 2: Ende der E11-Frist, (e)),
 - **Handler `activate`:** nicht verfügbar → 409 `wish_bot_unavailable`; `BotModeEnabled` → 409 `wish_bot_already_active`
   (Aktivierender unverändert); unter Kanalsperre `BotActivationRequested*` setzen, `BotActivationError` leeren. Liegt schon eine
   Anfrage, die jünger als 10 Minuten ist, bleibt deren Anfragender stehen, die Route stößt nur erneut an **[E]** (K5 „Erneut
-  prüfen“ ruft dieselbe Route). `WISHBOT:`, `wish.changed`.
+  prüfen“ ruft dieselbe Route). `BOTACCOUNT:`, `wish.changed`.
 - **Bestätigung im Worker (T8):** bestätigt wird nur genau die geprüfte Anfrage (Sol-P2-6): der Editor-Aufruf läuft ohne Sperre,
   danach unter Kanalsperre ein bedingtes Update auf `BotActivationRequestedAtUtc = <geprüfter Stempel>` und `BotModeEnabled =
   false`, im selben Commit gebunden an `IdentityVersion` und Bot-ID des Reads (2.3, R2-5, Revision 3); trifft es nichts (abgebrochen, neu
@@ -657,56 +752,59 @@ Eigentum, (d)), `BotConfirmDeadlineAtUtc` (Revision 2: Ende der E11-Frist, (e)),
   `wish_start_unconfirmed` **[E, neuer Code]**; Kanal nicht `bot` → 409 `wish_bot_unavailable`; sonst unter Zeilensperre
   `DecisionVersion + 1`, dann `RemovalQueuedAtUtc = jetzt`, `RemovalQueuedVersion = DecisionVersion` (die Anforderung ist selbst eine
   Entscheidung; die Version danach ist die, gegen die der Bot prüft), Audit `wish.botRemoveRequest` (Akteur Verwalter,
-  `previousExpiresAtUtc` nach K2 (e)), `WISHBOT:`. Schon eingereiht oder offener Versuch (2.5a (b)) → 409 `wish_state_conflict`.
+  `previousExpiresAtUtc` nach K2 (e)), `BOTACCOUNT:`. Schon eingereiht oder offener Versuch (2.5a (b)) → 409 `wish_state_conflict`.
 - **`recheck` (R2-8):** `WishTransitions`-Zeile (Bestand), Guard 2.5a (b); Kanal nicht `bot` → 409 `wish_bot_unavailable`;
   `BotSetId` leer oder ≠ `ActiveEmoteSetId` (unter der Kanalsperre gelesen) → 409 `wish_bot_set_changed` **[E, neuer Code]**; sonst
   `unconfirmed`, `BotAttemptCount = 0`, `BotNextAttemptAtUtc = jetzt`, `BotConfirmDeadlineAtUtc = jetzt + 16 min`; `BotSetId`,
-  `BotWriteAtUtc` (Generationsanker) und `BotAddAckAtUtc` bleiben; Audit `wish.recheck` **[E, neue Konstante]**, `WISHBOT:`.
+  `BotWriteAtUtc` (Generationsanker) und `BotAddAckAtUtc` bleiben; Audit `wish.recheck` **[E, neue Konstante]**, `BOTACCOUNT:`.
 - **Schwellenänderung und Auftrag [E]:** Eine Änderung der Schutzschwelle (K2 (d)) leert Aufträge an `presented` **nicht**: Der
   Auftrag wurde gegen Schutz oder Lücke erteilt und hängt nicht an der Schwelle.
 
 ### 2.10 Admin-Api und -Seite (T4, T12)
 
-- `/api/admin/wish-bot` als eigene Datei mit Gruppen-Erweiterung (Befund 15): `GET /` (Form der Spec; `queue` zählt `approved` in
+- `/api/admin/bot-account` als eigene Datei mit Gruppen-Erweiterung (Befund 15): `GET /` (Form der Spec; die Kontofelder oben,
+  die Zahlen der Wünsche **[E] (Revision 5a)** im Unterobjekt `wishes`, geliefert von `IWishBotService`: `queue` zählt `approved` in
   Bot-Kanälen, `unconfirmed`, Einreihungen; `botChannels` = aktivierte Kanäle; dazu **[E]** `suspendedChannels` und
   `openRepairChecks`, Zahl offener Prüfphasen, 2.5a (h)), `PUT /token`,
-  `DELETE /token` (Siegel, Ablauf, ID, Fehler leeren, `Status = none`; `KillSwitch` bleibt; Audit `wishBot.tokenDelete`),
-  `PUT /kill-switch` (Audit `wishBot.killSwitch` mit `enabled`). Mit `Wishes:BotMode:Enabled = false`: `PUT /token` 404
-  `wish_bot_disabled` **nach** dem Filter; **`GET /`, `DELETE /token` und `PUT /kill-switch` bleiben erreichbar [E] (Revision 4,
+  `DELETE /token` (Siegel, Ablauf, ID, Fehler leeren, `Status = none`; `KillSwitch` bleibt; Audit `botAccount.tokenDelete`),
+  `PUT /kill-switch` (Audit `botAccount.killSwitch` mit `enabled`). Mit `BotAccount:Enabled = false`: `PUT /token` 404
+  `bot_account_disabled` **nach** dem Filter; **`GET /`, `DELETE /token` und `PUT /kill-switch` bleiben erreichbar [E] (Revision 4,
   Notaus und Rückweg, Spec 18.8).** Keine Route gibt Token oder Siegel zurück (AK74). **Revision 4 (PR 3, T16):** `POST /renew`
-  (`RenewalRequestedAtUtc` und `NextRenewalAttemptAtUtc` = jetzt, Audit `wishBot.renewRequested`), `PUT /renewer-secret` (Körper mit
-  dem Geheimnis, 32 Byte base64url, sonst 400 `wish_bot_renewer_secret_malformed`; nur Hash und `RenewerSecretSetAtUtc` gespeichert,
-  Audit `wishBot.renewerSecretSet`), beide 404 ohne alle drei Schalter; `DELETE /renewer-secret` immer erreichbar (Audit
-  `wishBot.renewerSecretDelete`); Setzen und Widerrufen schließen einen offenen Lauf (Spec 18.4, S5-4); `GET /` zusätzlich
+  (`RenewalRequestedAtUtc` und `NextRenewalAttemptAtUtc` = jetzt, Audit `botAccount.renewRequested`), `PUT /renewer-secret` (Körper mit
+  dem Geheimnis, 32 Byte base64url, sonst 400 `bot_account_renewer_secret_malformed`; nur Hash und `RenewerSecretSetAtUtc` gespeichert,
+  Audit `botAccount.renewerSecretSet`), beide 404 ohne alle drei Schalter; `DELETE /renewer-secret` immer erreichbar (Audit
+  `botAccount.renewerSecretDelete`); Setzen und Widerrufen schließen einen offenen Lauf (Spec 18.4, S5-4); `GET /` zusätzlich
   `renewal { … }` (letzter Lauf mit Quittung, Code, nächster Versuch, Sitzungszustand und gemeldeter Ablauf, Lebenszeichen,
   Geheimnis gesetzt seit, geprüfte gegen aktuelle `CredentialVersion`) und `alertReasons` (dieselbe reine Funktion wie der
   Alarm-Endpunkt). Nie Cookie, Token, Siegel oder Geheimnis.
-- **Seite `admin/wish-bot`** (Spec K4): Zustand, Ablauf mit Hinweis ab 7 Tagen, Eingabe Typ Passwort ohne Vorbelegung, nach dem
-  Senden geleert (auch bei Fehler), Löschen mit `typed-confirm-dialog`, Notaus-Schalter mit Bestätigung, Warteschlange, Bot-Kanäle,
-  Hinweis bei geänderter Bot-ID (2.8). Eintrag in `admin-layout.ts`. **Revision 4 (T18):** Abschnitt „Erneuerung“ (letzter
+- **Seite `admin/bot-account`** (Spec K4): Zustand, Ablauf mit Hinweis ab 7 Tagen, Eingabe Typ Passwort ohne Vorbelegung, nach dem
+  Senden geleert (auch bei Fehler), Löschen mit `typed-confirm-dialog`, Notaus-Schalter mit Bestätigung, Abschnitt „Wünsche“
+  (Warteschlange, Bot-Kanäle), Hinweis bei geänderter Bot-ID (2.8). Eintrag in `admin-layout.ts`. **Revision 4 (T18):** Abschnitt „Erneuerung“ (letzter
   Lauf mit Code, nächster Versuch, gemeldeter Sitzungsablauf, Lebenszeichen, „Jetzt erneuern“), Abschnitt „Maschinengeheimnis“
   (Passwortfeld, gesetzt seit, Widerrufen mit Bestätigung) und die Alarmgründe; keine Eingabe von Cookies. Vitest nur für Zustandslogik (Regel 12): Hinweisgrenze 7 Tage,
   Feld geleert nach Erfolg und Fehler, Sperre des Senden-Knopfs bei leerem Feld.
 
 ### 2.11 Audit und Fehlercodes (T4, T7)
 
-- **Audit (Details nie Alias, Name, Login, Token):** neu `wishBot.tokenSet`, `wishBot.tokenDelete`, `wishBot.killSwitch`,
-  `wishBot.tokenState`, `wish.botActivate`, `wish.botDeactivate`, `wish.botAdd`, `wish.botRemove`, `wish.botRepair`,
+- **Audit (Details nie Alias, Name, Login, Token):** neu `botAccount.tokenSet`, `botAccount.tokenDelete`, `botAccount.killSwitch`,
+  `botAccount.tokenState`, `wish.botActivate`, `wish.botDeactivate`, `wish.botAdd`, `wish.botRemove`, `wish.botRepair`,
   `wish.botSuspectRemoval`, `wish.botSuspend`, `wish.botRemoveRequest`, `wish.recheck`. Übergänge des Bots ohne eigenen Eintrag
   (`bot_unconfirmed`, `bot_already_in_set`, `bot_reject`, `ownership_lost`, Rückfall) schreiben **keinen** Eintrag **[E]**; sie
   sind am Wunsch sichtbar, und die Pilot-Messung braucht sie nicht. Die Operations-Abfrage der Pilot-Messung (a) zählt
   `wish.botRemove` mit (Spec 13).
 - **Codes (Regel 7, je Code `api-error.ts` und beide Locales im selben Task):** die acht der Spec plus `wish_start_unconfirmed` und
-  `wish_bot_set_changed` (Revision 2).
+  `wish_bot_set_changed` (Revision 2). **Revision 5a:** kontoweit heißen sie `bot_account_*` (`disabled`, `token_malformed`,
+  `token_expired`, `renewer_secret_malformed`), die Kanal-Codes bleiben `wish_*`; Audit kontoweit `botAccount.*`, Wunsch `wish.bot*`.
 
 ### 2.12 Konfiguration und Compose (T1)
 
-`WishOptions.BotMode` (`Enabled`, `WriteDelaySeconds` 0 bis 60, Default 2) und `WishOptions.PilotChannelIds` (Zeichenkette, geparst
+`BotAccountOptions` (Core, eigener Abschnitt `BotAccount`, nicht in `WishOptions` [E, Revision 5a]: `Enabled`, `WriteDelaySeconds`
+0 bis 60, Default 2) und `WishOptions.PilotChannelIds` (Zeichenkette, geparst
 zu „alle“ oder einer Menge; leere Einträge ignoriert, ungültige Zeichen → Fail-Fast mit Schlüsselname). Compose (`docker-compose.yml`,
-`docker-compose.prod.yml`, `.env.example`): `WISHES_BOT_MODE_ENABLED` und `WISHES_PILOT_CHANNEL_IDS` an **api und worker**,
-`WISHES_BOT_TOKEN_PUBLIC_KEY` nur `api`, `WISHES_BOT_TOKEN_PRIVATE_KEY` nur `worker`; **[B] F2:** zusätzlich
+`docker-compose.prod.yml`, `.env.example`): `BOT_ACCOUNT_ENABLED` und `WISHES_PILOT_CHANNEL_IDS` an **api und worker**,
+`BOT_ACCOUNT_TOKEN_PUBLIC_KEY` nur `api`, `BOT_ACCOUNT_TOKEN_PRIVATE_KEY` nur `worker`; **[B] F2:** zusätzlich
 `Auth__AdminTwitchUserIds` am `worker` (gleicher Wert wie an der Api). Kommentare englisch, Werte nie im Repo (Regel 17).
-**Revision 4 (T16, T17):** an `api` nur `WISHES_BOT_RENEWAL_ENABLED` (Spec 14). Der Erneuerer steht in keiner Compose-Datei des
+**Revision 4 (T16, T17):** an `api` nur `BOT_ACCOUNT_RENEWAL_ENABLED` (Spec 14). Der Erneuerer steht in keiner Compose-Datei des
 Servers; `docker-compose.yml` bekommt ihn als Profil `renewer` für lokale Läufe; seine Variablen (Api-Adresse, Geheimnis, Pfad der
 Cookie-Datei, Schalter) beschreibt Operations generisch samt Beispiel-Compose für einen fremden Host (T19).
 
@@ -715,19 +813,19 @@ Cookie-Datei, Schalter) beschreibt Operations generisch samt Beispiel-Compose f�
 Spec 18.2 bis 18.8 sind der Vertrag (Ort, Ablage, Lauf, Tausch, Maschinenroute, Isolation, Alarm, Notaus); hier nur, was der Plan
 festlegt.
 
-- **Schnitt [B, E]:** zwei Hälften. **Api-Hälfte** (PR 3, T16): `WishBotRenewalPolicy` (Core, rein: fällig, Rückzug, Lease,
-  Alarmgründe samt Totmann und Startfrist aus einer Zeile, den Optionen und `jetzt`), `IWishBotRenewalService` (Infrastructure:
+- **Schnitt [B, E]:** zwei Hälften. **Api-Hälfte** (PR 3, T16): `BotAccountRenewalPolicy` (Core, rein: fällig, Rückzug, Lease,
+  Alarmgründe samt Totmann und Startfrist aus einer Zeile, den Optionen und `jetzt`), `IBotAccountRenewalService` (Infrastructure:
   Lebenszeichen, Beanspruchen, Ergebnis und Tausch, „Jetzt erneuern“, Geheimnis setzen und widerrufen), Gruppe
-  `/api/internal/wish-bot/renewal` in eigener Endpoint-Datei mit `WishBotRenewerAuthorizationFilter` (Regel 6) und eigener
+  `/api/internal/bot-account/renewal` in eigener Endpoint-Datei mit `BotAccountRenewerAuthorizationFilter` (Regel 6) und eigener
   Rate-Limit-Policy mit zwei Töpfen (Spec 18.5; Einordnung über einen Singleton-Halter des aktuellen Hashes, den der Dienst
-  beim Start und bei jeder Änderung des Geheimnisses setzt; Form `WishBotRenewerSecretHolder`), Alarm-Endpunkt. **Erneuerer** (PR 3, T17): `src/EmotePurge.WishBotRenewer` (Worker-SDK, **nur → Core**), ein
-  Hosted Service `WishBotRenewerWorker`, Treiber `ITwitchSessionLoginDriver` (Form: `LoginAsync(cookies, budget)` → `Token(jwt)` oder
-  `Failed(code)`, dazu die Cookies nach dem Lauf; Playwright nur hier), `IWishBotCookieStore` (Datei, Formprüfung über
-  `WishTwitchCookieSet` in Core, Inhalts-Hash, atomares Zurückschreiben, konservativer Ablauf), typisierter Client der
-  Maschinenroute, ein minimaler `users.me`-Read. Einstieg `AddWishBotRenewer(configuration)` im Erneuerer-Projekt; die Zahl der
+  beim Start und bei jeder Änderung des Geheimnisses setzt; Form `BotAccountRenewerSecretHolder`), Alarm-Endpunkt. **Erneuerer** (PR 3, T17): `src/EmotePurge.BotAccountRenewer` (Worker-SDK, **nur → Core**), ein
+  Hosted Service `BotAccountRenewerWorker`, Treiber `ITwitchSessionLoginDriver` (Form: `LoginAsync(cookies, budget)` → `Token(jwt)` oder
+  `Failed(code)`, dazu die Cookies nach dem Lauf; Playwright nur hier), `IBotAccountCookieStore` (Datei, Formprüfung über
+  `TwitchSessionCookieSet` in Core, Inhalts-Hash, atomares Zurückschreiben, konservativer Ablauf), typisierter Client der
+  Maschinenroute, ein minimaler `users.me`-Read. Einstieg `AddBotAccountRenewer(configuration)` im Erneuerer-Projekt; die Zahl der
   Infrastructure-Einstiege bleibt vier (T2). **Helfer [B] (Revision 5):** Modus `capture-session --out <Datei>` desselben
   Projekts **[E]** (statt eines Node-Skripts unter `scripts/`), weil Filter und Formprüfung dann genau eine Implementierung
-  in Core haben (`WishTwitchCookieSet`); der Modus startet keinen Hosted Service, braucht ein lokal installiertes Chromium mit
+  in Core haben (`TwitchSessionCookieSet`); der Modus startet keinen Hosted Service, braucht ein lokal installiertes Chromium mit
   Fenster (nicht im Image) und läuft nur per `dotnet run` auf einem Rechner des Betreibers (Spec 18.2).
 - **Ein Takt am Erneuerer (5 min):** Eingang übernehmen (Spec 18.2, nur hier) → Datei lesen und prüfen → `tick` mit
   Sitzungszustand und Ablauf → 204 schlafen; 404 oder 401 eine gedrosselte Logzeile, schlafen (der Alarm entsteht an der Api
@@ -738,16 +836,16 @@ festlegt.
 - **Api: Beanspruchen und Tausch** nach Spec 18.4, je eine Transaktion mit der Credentials-Zeile `FOR UPDATE`; die Zeile ist die
   einzige Sperre, kein Advisory-Lock (außerhalb der Api schreibt niemand). **Revision 5:** jede dieser Transaktionen beginnt mit
   dem Hash-Vergleich unter der Sperre (S5-4); die Ergebnisroute danach mit dem Zaun aus Kennung und Lease (S5-2) als reine
-  Entscheidung in `WishBotRenewalPolicy` (Eingang: Zeile, Kennung, `jetzt`; Ausgang: wirken, Wiederholung quittieren,
+  Entscheidung in `BotAccountRenewalPolicy` (Eingang: Zeile, Kennung, `jetzt`; Ausgang: wirken, Wiederholung quittieren,
   veraltet). `PUT`/`DELETE /token` und `PUT /kill-switch` kennen die
   Laufspalten nicht; ihre Wirkung auf einen offenen Lauf entsteht allein über `CredentialVersion` und `KillSwitchVersion` [P]. Hält
   der Runner die Zeile in einer Sende-Transaktion `FOR SHARE` (2.5a (c)), wartet der Tausch deren Ende ab (≤ 20 s) wie `PUT /token`;
   der Runner beendet danach seinen Durchgang am Versionswechsel (2.5).
 - **Fingerprint [E]:** SHA-256 über das SubjectPublicKeyInfo des öffentlichen Token-Schlüssels der Api; `PUT /token` schreibt ihn
   (T4), der Tausch vergleicht ihn mit dem eigenen Schlüssel.
-- **Alarm-Endpunkt [B]:** `GET /api/health/wish-bot` in `WorkerHealthEndpoints.cs` neben `/api/health`, Policy
-  `PublicWishBotHealth` (Form wie `PublicHealth`), liest die eine Zeile über `IWishBotService`, antwortet nach
-  `WishBotRenewalPolicy` ohne Körper. `/api/health` und `IWorkerHealthReader` bleiben unberührt (AK114).
+- **Alarm-Endpunkt [B]:** `GET /api/health/bot-account` in `WorkerHealthEndpoints.cs` neben `/api/health`, Policy
+  `PublicBotAccountHealth` (Form wie `PublicHealth`), liest die eine Zeile über `IBotAccountService`, antwortet nach
+  `BotAccountRenewalPolicy` ohne Körper. `/api/health` und `IWorkerHealthReader` bleiben unberührt (AK114).
 - **Worker und Runner:** keine neue Abhängigkeit; ein Tausch ist ein Versionswechsel (2.5), nach dem der Token-Haushalt das neue
   Token einmal prüft (`LastVerifiedAtUtc` leer, 2.8), ohne Rückfall.
 
@@ -765,11 +863,11 @@ geteilten Wunsch-Code ändert, hat einen Regressionsfall „Bot-Modus aus: unver
 | Task | Inhalt | Modell | PR |
 |---|---|---|---|
 | T0 | Frühe Live-Probe AK86 bis AK92 mit Wegwerf-Skript (Abschnitt 5) | Orchestrator mit Betreiber | – |
-| T1 | Migration `AddWishBot`, Entität, Optionen, Pilot-Liste, Compose, DECISIONS-Gerüst | sonnet | 1 |
+| T1 | Migration `AddBotAccount`, Entität, Optionen, Pilot-Liste, Compose, DECISIONS-Gerüst | sonnet | 1 |
 | T2 | Siegel, Öffnen, JWT-`exp`, zwei Registrierungs-Einstiege, Fail-Fast; Doku-Pflicht AK95 | opus | 1 |
 | T3 | Schreib-Client mit Fehlerabbildung, ohne Logging, eigene Aufrufquelle | opus | 1 |
-| T4 | Admin-Api, `IWishBotService` (Admin-Teil), echte `IWishBotAvailability`, `WISHBOT:`, Codes, Audit | opus | 1 |
-| T5 | `WishBotWorker`, Advisory-Lock, Signal, Token-Haushalt | opus | 1 |
+| T4 | Admin-Api, `IBotAccountService`, `IBotAccountAvailability` und echte `IWishBotAvailability`, `BOTACCOUNT:`, Codes, Audit | opus | 1 |
+| T5 | `BotAccountWorker`, Advisory-Lock, Signal, Token-Haushalt | opus | 1 |
 | T11a | Token-Vertrauensgrenze: AK74/AK75 für Setzen, Fehleingaben, Prüfen, 401, Löschen (Sol-P2-9) | sonnet | 1 |
 | T12 | Web: Admin-Seite, Service, Route, i18n (Admin, Codes, Audit, Aufrufquelle) | sonnet | 1 |
 | T6 | Nähte K1/K2: 2.1, [W1], [W2], [W4] bis [W10] | opus | 2 |
@@ -813,23 +911,24 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
 
 - **Lesen:** Spec 6.1, 6.4, 14, E8; 2.2, 2.3, 2.5a (Felder); `AppDbContext.cs` (Muster `WishCaptureState`), `Wish.cs`,
   `ChannelWishSettings.cs`, `WishOptions.cs`, `AddWishCaptureMigrationTests.cs`, DECISIONS K6 (a), (d); Compose (Befund 16).
-- **Liefert:** Entität `WishBotCredential` (Core) mit `CredentialVersion` und `RunnerEpoch`, Konfiguration inline, Migration
-  `AddWishBot` (additiv: die Tabelle mit CHECKs, die **sieben** nullbaren Spalten aus 2.5a an `Wishes` und die nullbare
-  `BotEditorCheckedIdentityVersion` (Revision 3) an `ChannelWishSettings`), `WishOptions.BotMode`, `PilotChannelIds` mit reiner
-  Auswertung `WishPilotList` (Core), `Validate()` mit Schlüsselnamen, Compose, `.env.example` (2.12), DECISIONS-Gerüst.
+- **Liefert:** Entität `BotAccountCredential` (Core) mit `CredentialVersion` und `RunnerEpoch`, Konfiguration inline, Migration
+  `AddBotAccount` (additiv: die Tabelle mit CHECKs, die **sieben** nullbaren Spalten aus 2.5a an `Wishes` und die nullbare
+  `BotEditorCheckedIdentityVersion` (Revision 3) an `ChannelWishSettings`), `BotAccountOptions` (eigener Abschnitt `BotAccount`, registriert für Api und Worker),
+  `WishOptions.PilotChannelIds` mit reiner Auswertung `WishPilotList` (Core), `Validate()` mit Schlüsselnamen, Compose,
+  `.env.example` (2.12), DECISIONS-Gerüst samt dem Satz aus 1.5.
 - **Grenzfälle:** zweites Insert scheitert (CHECK und PK); unbekannter Status scheitert; Liste `""`, `" , "`, `*`, `* ,123`
   (`*` gewinnt **[E]**), `123,abc` → Fail-Fast; `WriteDelaySeconds` −1, 61; ein Insert in `Wishes` und ein Upsert in
   `ChannelWishSettings` ohne die neuen Spalten (Form des laufenden Images) gelingen.
-- **Revision 4:** an `WishBotCredentials` zusätzlich die siebzehn Spalten aus Spec 18.2 (`IdentityVersion`, `KillSwitchVersion`,
+- **Revision 4:** an `BotAccountCredentials` zusätzlich die siebzehn Spalten aus Spec 18.2 (`IdentityVersion`, `KillSwitchVersion`,
   `TokenKeyFingerprint`, Lauf-, Ergebnis-, Lebenszeichen- und Geheimnis-Spalten, gemeldeter Sitzungsablauf; Zähler mit Default 0,
   sonst nullbar; **keine Spalte für Cookies**), **Revision 5** dazu `LastRenewalRunId` (uuid), `LastRenewalRunOutcome` (text),
   `TwitchSessionState` (text, CHECK auf `valid`, `malformed`, `lost`), `LastVerifiedCredentialVersion` (int), alle nullbar,
   zusammen einundzwanzig; an `ChannelWishSettings` heißt die Spalte `BotEditorCheckedIdentityVersion`;
-  `WishOptions.BotMode.Renewal` (`Enabled` Default aus, `LeadDays` 7 bis 28 Default 21, `SilenceAlertHours` 1 bis 168 Default 26) mit
+  `BotAccountOptions.Renewal` (`Enabled` Default aus, `LeadDays` 7 bis 28 Default 21, `SilenceAlertHours` 1 bis 168 Default 26) mit
   Validierung. In PR 1 und PR 2 gepflegt bzw. gelesen werden nur `IdentityVersion`, `KillSwitchVersion`, `TokenKeyFingerprint`
   und `LastVerifiedCredentialVersion` (T4, T5, T6, T8). T1 beginnt erst nach G0b. Migrationstest deckt die Defaults.
 - **Tests:** Schema-Test je Constraint, Migrationstest „additiv, keine Bestandsspalte geändert“ (Muster K6), `WishOptionsTests`
-  erweitert, `WishPilotListTests`. **AKs:** AK71. **Commit:** `feat: add wish bot credential schema and switches`
+  erweitert, `BotAccountOptionsTests`, `WishPilotListTests`. **AKs:** AK71. **Commit:** `feat: add bot account credential schema and switches`
 
 ### T2: Siegel, Öffnen, Registrierung, Vertrauensgrenze in der Doku
 
@@ -847,45 +946,46 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
 - **Grenzfälle:** leeres Token, 64 KB Token (Obergrenze **[E]** 8 KB → malformed), Präfix `v2.`, gekürztes Siegel, Tag gekippt,
   Nonce gekippt, verpackter Schlüssel gekippt, Schlüssel 2048 Bit, öffentlicher Schlüssel als privater; `exp` als Text, negativ,
   fehlend; Token mit vier Segmenten.
-- **Tests:** Unit Rundlauf und alle Fälle oben (AK72), `WishBotJwtTests`; `Api.Tests`: Opener und Schreib-Client nicht auflösbar,
+- **Tests:** Unit Rundlauf und alle Fälle oben (AK72), `BotAccountJwtTests`; `Api.Tests`: Opener und Schreib-Client nicht auflösbar,
   Fail-Fast mit fehlendem Schlüssel (Factory mit Konfiguration), Meldung enthält keinen Schlüsselwert. **AKs:** AK72, AK95.
-  **Commit:** `feat: seal the wish bot token for the worker only`
+  **Commit:** `feat: seal the bot account token for the worker only`
 
 ### T3: Schreib-Client
 
 - **Lesen:** 2.4, Protokoll T0, Befund 12 und 13, `SevenTvApiClient.cs` (Seitenlogik `:1311-1365`, 429-Erkennung `:189-197`),
   `ProviderRequestTelemetryHandler.cs`, `IRateLimitTelemetry.cs:119`, Web `seven-tv-import.service.ts:94-120`.
-- **Liefert:** `ISevenTvWriteClient` und Implementierung, Registrierung nur in `AddWishBot`, Aufrufquelle `seventv-bot`.
+- **Liefert:** `ISevenTvWriteClient` und Implementierung, Registrierung nur in `AddBotAccountWriter`, Aufrufquelle `seventv-bot`.
 - **Grenzfälle (Stub-Server, Integration):** verkleidetes 429 mit und ohne Reset-Hinweis, HTTP 429 mit `Retry-After` 30 s, 7 h
   (→ 6 h), ohne Header (→ 60 s); 401 mit Nicht-GraphQL-Körper; `LACKING_PRIVILEGES`; `extensions.status = 409`; Timeout; Seite 2
   von 3 fehlt; `page_count` größer als die Kappe; `data: null` neben Fehler; Eintrag ohne `addedAt` oder ohne `addedById`.
   Kein Log enthält Token oder Fehlertext (Logger-Fake).
-- **AKs:** AK76 (Client-Teil). **Commit:** `feat: 7tv write client for the wish bot`
+- **AKs:** AK76 (Client-Teil). **Commit:** `feat: 7tv write client for the bot account`
 
 ### T4: Admin-Api, Verfügbarkeit, Anstoß
 
 - **Lesen:** 2.2, 2.3 (global), 2.10, 2.11; `AdminEndpoints.cs:31-60`, `AdminLogEndpoints.cs`, `GlobalAdminAuthorizationFilter`,
   `AuditLogWrites.cs`, `ApiErrorCodes.cs:229-277`, `api-error.ts`, Locales, `BotCommands.cs`, `Worker.cs:56-112`,
   `ChatLogBackfillSignal.cs`, `ServiceCollectionExtensions.cs:344-364`, `WishExpiryService.cs:209-250`.
-- **Liefert:** `IWishBotService` (Core; Admin-Teil: Lesen, Token setzen, löschen, Notaus) und Implementierung, Admin-Routen,
-  `IWishBotAvailability` echt (2.3), `BotCommands.WishBotPrefix`, Codes `wish_bot_disabled`, `wish_bot_token_malformed`,
-  `wish_bot_token_expired` samt Frontend-Hälfte, Audit-Konstanten aus 2.11 (alle, damit T7 bis T10 nur noch nutzen).
+- **Liefert:** `IBotAccountService` (Core; Lesen, Token setzen, löschen, Notaus) und Implementierung, Admin-Routen (das
+  Unterobjekt `wishes` liefert `IWishBotService`, 2.10; T4 legt es mit dieser einen Lesemethode an, T7 ergänzt den Kanal-Teil),
+  `IBotAccountAvailability` und `IWishBotAvailability` echt (2.3), `BotCommands.BotAccountPrefix`, Codes `bot_account_disabled`, `bot_account_token_malformed`,
+  `bot_account_token_expired` samt Frontend-Hälfte, Audit-Konstanten aus 2.11 (alle, damit T7 bis T10 nur noch nutzen).
 - **Grenzfälle:** zwei gleichzeitige `PUT /token` (letzter gewinnt, zwei Audit-Einträge, `CredentialVersion` und
   `IdentityVersion` je um zwei höher, Revision 3);
   `DELETE` ohne Zeile (204, kein Audit **[E]**); Notaus setzen ohne Token-Zeile (Upsert, Version unverändert); Verfügbarkeit bei
   `valid` mit `exp` in der Vergangenheit (nein), bei Pause (ja). **Revision 4:** Notaus an, aus, an → `KillSwitchVersion + 3`,
-  gleicher Wert → unverändert; `PUT /token` schreibt `TokenKeyFingerprint`; mit `Wishes:BotMode:Enabled = false` antworten `GET /`,
+  gleicher Wert → unverändert; `PUT /token` schreibt `TokenKeyFingerprint`; mit `BotAccount:Enabled = false` antworten `GET /`,
   `DELETE /token` und `PUT /kill-switch` wie mit Schalter an, `PUT /token` 404.
-- **Tests:** `Api.Tests` AK73 (alle Zweige), Filtermatrix der Admin-Gruppe für die neuen Routen; Integration `WishBotServiceTests`
-  (Admin-Teil), `WishBotAvailabilityTests`; Regression: `WishExpiryService` mit Bot aus unverändert.
-- **AKs:** AK73, AK74 (Admin-Teil). **Commit:** `feat: admin routes for the wish bot token`
+- **Tests:** `Api.Tests` AK73 (alle Zweige), Filtermatrix der Admin-Gruppe für die neuen Routen; Integration `BotAccountServiceTests`,
+  `BotAccountAvailabilityTests`, `WishBotAvailabilityTests` (nur die Verknüpfung mit `Wishes:Enabled`); Regression: `WishExpiryService` mit Bot aus unverändert.
+- **AKs:** AK73, AK74 (Admin-Teil). **Commit:** `feat: admin routes for the bot account token`
 
 ### T5: Worker-Dienst und Token-Haushalt
 
 - **Lesen:** 2.5 (Dienst, Lock), 2.8 (Token-Haushalt); `ChatLogBackfillWorker.cs`, `ChatLogBackfillService.cs:58-76,660-735`,
   `WishExpiryWorker.cs`, `WorkerServiceRegistration.cs`, `WorkerServiceRegistrationTests.cs`.
-- **Liefert:** `WishBotWorker` (Worker), `WishBotSignal`, Registrierung vor `WishCaptureWorker`, `IWishBotRunner` (Core, Gerüst:
-  Lock holen, Token-Haushalt, Durchgang), Token-Haushalt vollständig.
+- **Liefert:** `BotAccountWorker` (Worker), `BotAccountSignal`, Registrierung vor `WishCaptureWorker`, `IBotAccountRunner` (Core, Gerüst:
+  Lock holen, Token-Haushalt, Durchgang mit dem Aufruf des Wunsch-Teils `IWishBotPass`, 2.5), Token-Haushalt vollständig.
 - **Liefert außerdem:** die Lock-Schranke **und** die Runner-Epoche aus 2.5a (g) als Baustein (Erhöhung nach dem Lock-Erwerb,
   Epochenprüfung `FOR SHARE` in der laufenden Transaktion), den T9 und T10 nur noch aufrufen; den Fristschritt (2.5, Schritt 0)
   als leeres Gerüst, das T9 und T10 füllen.
@@ -903,7 +1003,7 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   erste bucht nach dem Read nichts (Sol-P1-4); **Epoche (R2-3):** der erste hält eine Transaktion mit Epochenprüfung offen, der
   zweite erwirbt den Lock und wartet mit der Erhöhung, bis der erste committet; danach scheitert jede Buchung des ersten, auch
   bei intakter Arbeitsverbindung; `PUT /token` lässt `RunnerEpoch` unverändert; Token-Haushalt mit gestubbtem Client. **AKs:** AK96, AK81 (Lock-Teil).
-  **Commit:** `feat: wish bot worker with token upkeep`
+  **Commit:** `feat: bot account worker with token upkeep`
 
 ### T11a: Token-Vertrauensgrenze, Log- und Antwortfreiheit (PR 1) (Sol-P2-9)
 
@@ -915,15 +1015,15 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   (Ausnahme-Middleware), `DELETE /token`; Worker-Seite `VerifyAsync` mit `Ok` und mit 401 über den Stub. Geprüft wird jede formatierte
   Zeile, jede Ausnahme samt Inner, jede strukturierte Eigenschaft und jede gespeicherte Zeile: weder Token noch `Bearer` plus Wert
   noch das Siegel (AK75). Dazu der `Api.Tests`-Fall, der alle Antworten der Admin-Routen nach Wert und Siegelpräfix durchsucht
-  (AK74). **AKs:** AK74, AK75 (Token-Pfade). **Commit:** `test: the wish bot token never leaves its seal`
+  (AK74). **AKs:** AK74, AK75 (Token-Pfade). **Commit:** `test: the bot account token never leaves its seal`
 
 ### T12: Web-Admin-Seite
 
 - **Lesen:** 2.10, `web/.claude/CLAUDE.md`, `docs/UI-Designsprache.md` §11, `DESIGN.md`, `features/admin/admin-users-page.ts`
   (Bestätigungsdialog), `admin-layout.ts`, `core/admin/admin.service.ts`, `app.routes.ts:67-110`.
 - **Liefert:** Modell und Service-Methoden (mit `HttpTestingController`-Spec, Regel 12), Seite, Route, Navigation, i18n
-  `admin.wishBot.*`, `audit.actions.wishBot.*` und `audit.actions.wish.bot*`/`wish.recheck` ([W15]), `seventv-bot` in den Locales.
-- **AKs:** stützt AK73/AK74 (Eingabe, keine Anzeige des Werts). **Commit:** `feat(web): admin page for the wish bot`
+  `admin.botAccount.*`, `audit.actions.botAccount.*` und `audit.actions.wish.bot*`/`wish.recheck` ([W15]), `seventv-bot` in den Locales.
+- **AKs:** stützt AK73/AK74 (Eingabe, keine Anzeige des Werts). **Commit:** `feat(web): admin page for the bot account`
 
 ### T6: Nähte K1/K2
 
@@ -978,7 +1078,7 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
 
 - **Lesen:** 2.3, 2.5, 2.5a (c), (e), 2.8, 2.9 (Bestätigung), Spec 7.8, E8, AK79, AK80, AK85; `WishExpiryService.cs:60-115` (Schritt 0),
   `ISevenTvApiClient.GetEditorOfChannelsAsync`, `IGlobalAdminAllowlist`.
-- **Liefert:** `WishBotPreflight` (rein), Kanalzustände mit Aussetzen und Aufnehmen, Aktivierung bestätigen,
+- **Liefert:** `WishBotPreflight` und `BotAccountPreflight` (beide rein, 2.5), `IBotAccountEditorCheck` (2.5), Kanalzustände mit Aussetzen und Aufnehmen, Aktivierung bestätigen,
   `IWishBotFallback` und sein Aufruf im Runner und als Schritt 0 im Ablauf-Lauf; Editor-Ergebnisse an Version und Bot-ID (2.3).
 - **Grenzfälle:** Kanal fällt aus der Liste mit `approved`, `unconfirmed`, eingereihtem `active`, `presented` mit Auftrag; wieder
   gelistet → nur `approved` läuft weiter; Editor-Auskunft `Unavailable` → kein Aussetzen; global aus während Aktivierungsanfrage;
@@ -1050,7 +1150,7 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   Rollback in zwei Wegen samt Prüfabfrage (Abschnitt 6), Pilot-Liste, Schwelle „rechnet eher zu hoch“, Messabfrage mit
   `wish.botRemove`, „extern entfernt“ nur nach einer ohne 7TV aufgelösten Entfernung (2.5a (e)), Prüfphasen und
   `needs_review` samt Abfrage des Belegs (2.5a (h)), Restfenster R11);
-  `Architectur.md:86` siebzehn Dienste; `CLAUDE.md`: Worker-Liste siebzehn mit `WishBotWorker`, **Zeile „Wunsch-Emotes“ korrigiert**
+  `Architectur.md:86` siebzehn Dienste; `CLAUDE.md`: Worker-Liste siebzehn mit `BotAccountWorker`, **Zeile „Wunsch-Emotes“ korrigiert**
   (K1 bis K3 und K6 gemergt und seit 2026-11-20 auf Prod live und eingeschaltet, K4 auf Branch, K5 offen); DECISIONS vollständig
   inklusive Probe-Ergebnisse T0 (eigener Absatz, „unofficial, not confirmed by 7TV“) und [E]-Liste; **Revision 3/4:** Runbook
   nennt die Handerneuerung als Weg bis PR 3 und die Notaus-Reihenfolge nach Spec 18.8 schon jetzt; **Revision 5 (S5-3):** in
@@ -1063,9 +1163,9 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
 
 - **Lesen:** Spec 18 vollständig, 2.2, 2.10, 2.13, Protokoll T0b; `WorkerHealthEndpoints.cs`, `Program.cs:200-230`
   (Rate-Limit-Policies), `AdminEndpoints.cs`, `GlobalAdminAuthorizationFilter`, `AuthFilterMatrixTests.cs`, DECISIONS 2026-08-05.
-- **Liefert:** `WishBotRenewalPolicy`, `IWishBotRenewalService` samt Implementierung, Maschinenroute mit Filter und Policy, Admin-Routen
-  `renew` und `renewer-secret`, `GET /` erweitert, Alarm-Endpunkt; Code `wish_bot_renewer_secret_malformed` samt Frontend-Hälfte;
-  Audit `wishBot.renewed`, `…renewalFailed`, `…renewRequested`, `…renewerSecretSet`, `…renewerSecretDelete`; den DECISIONS-Absatz
+- **Liefert:** `BotAccountRenewalPolicy`, `IBotAccountRenewalService` samt Implementierung, Maschinenroute mit Filter und Policy, Admin-Routen
+  `renew` und `renewer-secret`, `GET /` erweitert, Alarm-Endpunkt; Code `bot_account_renewer_secret_malformed` samt Frontend-Hälfte;
+  Audit `botAccount.renewed`, `…renewalFailed`, `…renewRequested`, `…renewerSecretSet`, `…renewerSecretDelete`; den DECISIONS-Absatz
   (AK118, Regel 3: Vertrauensgrenze Spec 18.3, Ort außerhalb des Internet-Servers, „unofficial for both Twitch and 7TV“, Bezug
   2026-09-01).
 - **Grenzfälle:** fällig genau bei `exp − LeadDays`; `invalid` nie, `expired` doch; `tick` während offenem Lauf → 204, nach der
@@ -1083,29 +1183,29 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   angemeldete Anfrage (`tick` und Ergebnis je einzeln) auf die gehaltene Zeilensperre wartet** → 401, keine Schreibung,
   offener Lauf geschlossen (S5-4); Tausch ohne Prüfung des Workers → nach 15 min Alarm „Token ungeprüft“, nach der Prüfung der
   neuen Version 200 (S5-9).
-- **Tests:** Unit Policy; Integration `WishBotRenewalServiceTests` (alle Rennen oben gegen Postgres; Tausch gegen eine offene
+- **Tests:** Unit Policy; Integration `BotAccountRenewalServiceTests` (alle Rennen oben gegen Postgres; Tausch gegen eine offene
   `FOR SHARE`-Sende-Transaktion wartet und gilt danach); `Api.Tests` AK109 (Filter, Schalter, Rate-Limit, keine CORS-Kopfzeilen,
   Sitzungs-Cookie ohne Kopf → 401; **S5-1:** unangemeldeten Topf aus einer Quell-IP und mit falschem Bearer erschöpfen, danach
   gelingen gültiger `tick` und gültiges Ergebnis; Hash-Halter nach Rotation aktualisiert), Filtermatrix der neuen Admin-Routen samt Erreichbarkeit bei ausgeschalteten Schaltern, **keine
   Route und kein Körper der Maschinenroute ändert `KillSwitch`, `IdentityVersion`, `RunnerEpoch` oder `BotSevenTvUserId`**,
   Alarm-Endpunkt anonym, AK114-Gegenprobe `/api/health`. **AKs:** AK109, AK110 (Api-Teil), AK111, AK114, AK115 (Logik), AK119,
   AK120 (Policy-Teil).
-  **Commit:** `feat: wish bot token renewal at the api`
+  **Commit:** `feat: bot account token renewal at the api`
 
-### T17: Erneuerung II: Dienst `EmotePurge.WishBotRenewer` (PR 3)
+### T17: Erneuerung II: Dienst `EmotePurge.BotAccountRenewer` (PR 3)
 
 - **Lesen:** 2.13, Spec 18.2, 18.4, 18.6, Protokoll T0b (Namensliste, Seitenmerkmale, Host-Liste, Sandbox, Speicher);
   Worker-`Dockerfile`, `publish.yml` (Matrix, Pfadfilter #129), `.github/dependabot.yml` (Gruppe, `TwitchLib`-Ausnahme als Muster),
   `docker-compose.yml`; Context7 zu Microsoft.Playwright (.NET: Headless-Shell im Image, `ChromiumSandbox`, `Env`, Routen-Abbruch,
   Kontext-Cookies).
-- **Liefert:** Projekt (in `EmotePurge.slnx`, nur → Core), `AddWishBotRenewer`, `WishBotRenewerWorker`, Treiber mit
+- **Liefert:** Projekt (in `EmotePurge.slnx`, nur → Core), `AddBotAccountRenewer`, `BotAccountRenewerWorker`, Treiber mit
   Seitenmerkmal-Tabelle, Cookie-Ablage, Client der Maschinenroute, `users.me`-Read; Dockerfile (glibc-Basis, nicht Alpine, Browser vorinstalliert, nur Headless-Shell
   samt Abhängigkeiten, Nicht-Root, HEALTHCHECK per Lebenszeichen-Datei, lauffähig mit `read_only` und `cap_drop: ALL`);
-  Matrix-Eintrag `emotepurge-wishbot-renewer` mit Pfadfilter **und** monatlichem `schedule` nur für dieses Image; Dependabot:
+  Matrix-Eintrag `emotepurge-bot-account-renewer` mit Pfadfilter **und** monatlichem `schedule` nur für dieses Image; Dependabot:
   `Microsoft.Playwright` aus der Gruppe; Profil `renewer` in `docker-compose.yml` (nicht standardmäßig, gegen die lokale Api);
-  **Revision 5:** Eingang in `IWishBotCookieStore` (S5-6), getrennte Felder im Ergebnis (S5-7), Modus `capture-session` (Helfer,
+  **Revision 5:** Eingang in `IBotAccountCookieStore` (S5-6), getrennte Felder im Ergebnis (S5-7), Modus `capture-session` (Helfer,
   2.13) samt Runbook-Kurzhinweis zur lokalen Browser-Installation;
-  container-freies `tests/EmotePurge.WishBotRenewer.Tests` (Seiteneinordnung an bereinigten Testseiten, Cookie-Ablage, Ablauf mit
+  container-freies `tests/EmotePurge.BotAccountRenewer.Tests` (Seiteneinordnung an bereinigten Testseiten, Cookie-Ablage, Ablauf mit
   Fake-Treiber und Fake-Api, Registrierung, Strukturtest „nur Core“); der Treiber selbst live (Regel 11 und 16 wie
   `TwitchChatManager`).
 - **Grenzfälle:** Schalter aus am Erneuerer → eine Logzeile, kein Browser; Api 404 oder 401 → kein Browser; ungültige Datei →
@@ -1121,16 +1221,16 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   festen `cookies()`-Listen): fremde Domain, fehlender Pflichtname, doppelter Name, abgelaufener Ablauf, zu groß → nichts
   geschrieben; gültig → nur Pflichtnamen mit allen Attributen und konservativem Ablauf, Rechte 600, kein JWT in der Datei; der
   Browser selbst wird live geprüft (T20).
-- **AKs:** AK110 (Strukturteil), AK112, AK113, AK115 (Dienst), AK117, AK121. **Commit:** `feat: wish bot renewer service`
+- **AKs:** AK110 (Strukturteil), AK112, AK113, AK115 (Dienst), AK117, AK121. **Commit:** `feat: bot account renewer service`
 
 ### T18: Web: Erneuerung und Maschinengeheimnis auf der Admin-Seite (PR 3)
 
 - **Lesen:** 2.10 (Revision 4), T12-Ergebnis, `web/.claude/CLAUDE.md`, `docs/UI-Designsprache.md`.
-- **Liefert:** Modell, Service-Methoden mit Spec, Abschnitte aus 2.10, i18n `admin.wishBot.renewal.*`,
-  `admin.wishBot.renewerSecret.*`, die Ergebniscodes aus Spec 18.4 samt `run_revoked` und den Sitzungszuständen, geprüfte gegen
-  aktuelle `CredentialVersion`, `audit.actions.wishBot.*` (neu), Code. Vitest nur Zustandslogik:
+- **Liefert:** Modell, Service-Methoden mit Spec, Abschnitte aus 2.10, i18n `admin.botAccount.renewal.*`,
+  `admin.botAccount.renewerSecret.*`, die Ergebniscodes aus Spec 18.4 samt `run_revoked` und den Sitzungszuständen, geprüfte gegen
+  aktuelle `CredentialVersion`, `audit.actions.botAccount.*` (neu), Code. Vitest nur Zustandslogik:
   Geheimnis-Feld geleert nach Erfolg und Fehler, Knopf gesperrt ohne Eingabe, Alarmgründe als Liste. **AKs:** stützt AK109.
-  **Commit:** `feat(web): wish bot renewal on the admin page`
+  **Commit:** `feat(web): bot account renewal on the admin page`
 
 ### T19: Vertrauensgrenze der Erneuerung und Doku (PR 3)
 
@@ -1145,7 +1245,7 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   erweitert um Geheimnis-Hash, Laufspalten, Anfrage und Sitzungszustand, in beiden Wegen vor dem Start** (S5-3)); `Architectur.md` (Erneuerer außerhalb des Stacks, Maschinenroute); `CLAUDE.md` (Umsetzungsstand,
   Projektliste). Die Einrichtung am eigenen NAS schreibt der Betreiber in `infra-docs`. **AKs:** AK74, AK75 (Erneuerung), AK118,
   AK122 (Runbook-Teil).
-  **Commit:** `test: renewal secrets never reach a log` und `docs: wish bot token renewal`
+  **Commit:** `test: renewal secrets never reach a log` und `docs: bot account token renewal`
 
 ---
 
@@ -1294,21 +1394,21 @@ die Schritte einzeln vor und verbindet sich weder zum VPS noch zum NAS.
    Endstand für PR 1 und PR 2; **Revision 3 bis 5:** Fable, Sol und Astra über Revision 3, Sol über Revision 4; Revision 5 ist der
    Endstand des Nachtrags, keine weitere Runde vor T1); `/codex:review --model gpt-6.2-sol` je
    Branch; Opus-Review; bei Widerspruch Fable. Push, PR; der Merge gehört dem Betreiber.
-7. PR-Text (englisch): Migration `AddWishBot` von Hand vor den Images (PR 1); neue Variablen und welcher Dienst welchen Schlüssel
+7. PR-Text (englisch): Migration `AddBotAccount` von Hand vor den Images (PR 1); neue Variablen und welcher Dienst welchen Schlüssel
    bekommt; Bot-Modus bleibt aus; siebzehnter Dienst; [E]-Abweichungen; Probe-Ergebnisse; „nur getestet“.
 
-**Migration:** `AddWishBot`, eine neue Tabelle (mit den einundzwanzig Erneuerungs-Spalten aus Revision 4 und 5, kein Geheimnis außer
+**Migration:** `AddBotAccount` (Name nach Revision 5a), eine neue Tabelle `BotAccountCredentials` (mit den einundzwanzig Erneuerungs-Spalten aus Revision 4 und 5, kein Geheimnis außer
 einem Hash, keine Cookies), sieben nullbare Spalten an
 `Wishes` (2.5a) und eine an `ChannelWishSettings` (2.3, `BotEditorCheckedIdentityVersion`), rein additiv; PR 2 und PR 3 ohne
 Migration; Prod hat `AddWishes` und
 `AddWishCapture` schon, `list` zeigt genau eine. Das laufende Image liest weder Tabelle noch Spalten und legt Wünsche ohne sie an
-(T1-Test). **Deploy:** nicht Teil dieses Plans; Images dürfen mit `WISHES_BOT_MODE_ENABLED` aus ausgeliefert werden (dann kein
+(T1-Test). **Deploy:** nicht Teil dieses Plans; Images dürfen mit `BOT_ACCOUNT_ENABLED` aus ausgeliefert werden (dann kein
 Schlüssel nötig). **PR 3:** Api-Image wie gewohnt; das Erneuerer-Image gehört nicht in den Stack des Servers, der Betreiber betreibt es am eigenen
 Host (`infra-docs`); danach Stufe 0 (Spec 12 Punkt 7), erst dann der erste Pilot-Kanal.
 
 **Rollback, zwei getrennte Wege (Sol-P2-8, T13 schreibt beide ins Runbook):**
 
-- **(a) Schalter-Rollback, K4-Images bleiben:** Notaus auf der Admin-Seite, dann `WISHES_BOT_MODE_ENABLED=false` an Worker **und**
+- **(a) Schalter-Rollback, K4-Images bleiben:** Notaus auf der Admin-Seite, dann `BOT_ACCOUNT_ENABLED=false` an Worker **und**
   Api. Der Ablauf-Lauf (Schritt 0, 2.8) löst offene Versuche auf und legt `unconfirmed` und Einreihungen vor; die Api rechnet jeden
   aktivierten Kanal als `fallback`, `approved` ist wieder Handlungsbedarf. `BotModeEnabled` bleibt gespeichert, Wiedereinschalten
   setzt fort. Genügt für jeden Fehler im Bot-Weg.
@@ -1323,7 +1423,7 @@ Host (`infra-docs`); danach Stufe 0 (Spec 12 Punkt 7), erst dann der erste Pilot
   offene Prüfphase klärt er mit der Beleg-Abfrage aus dem Runbook und leert sie danach per SQL. (4) Images von Api und Worker
   tauschen. Tabelle und Spalten bleiben liegen.
 - **(c) Nur den Erneuerer zurücknehmen (Revision 4):** Container am Host stoppen, Maschinengeheimnis widerrufen (`DELETE
-  /renewer-secret`, auch bei ausgeschalteten Schaltern erreichbar), danach darf `WISHES_BOT_RENEWAL_ENABLED` an der Api aus; der
+  /renewer-secret`, auch bei ausgeschalteten Schaltern erreichbar), danach darf `BOT_ACCOUNT_RENEWAL_ENABLED` an der Api aus; der
   Bot läuft weiter, bis das JWT abläuft, dann Handerneuerung oder Rückfall. Ein Api-Image vor PR 3 kennt die Laufspalten nicht und
   stört sich nicht an ihnen; `IdentityVersion`, `KillSwitchVersion`, `TokenKeyFingerprint` und `LastVerifiedCredentialVersion`
   pflegen schon PR-1-Images.
