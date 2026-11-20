@@ -369,6 +369,60 @@ test.describe('wish emotes: the manager page (#485)', () => {
       await expect(section(page, 'running').locator('[data-wish-id="25"]')).toHaveCount(0);
     });
 
+    test('a long entry list scrolls underneath the action row: no radio or "Zum Wunsch" paints over it, and the dialog fits the viewport', async ({
+      page,
+    }) => {
+      // Regression: the rows lift their radio and "Zum Wunsch" to z-10 above the stretched label, and
+      // the sticky action row had no z-index, so while the list scrolled those controls slid over
+      // "Abbrechen"/"Übernehmen" and the reason beside them while the alias and date went underneath.
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await mockWishBackend(page, CHANNEL, {
+        slots: Array.from({ length: 80 }, (_, i) =>
+          buildWishSlot(`slot-${String(i).padStart(2, '0')}`, {
+            alias: `Entry${i}`,
+            ...(i % 7 === 3 ? { heldByWishId: 100 + i } : {}),
+          }),
+        ),
+      });
+      await page.goto(URL_WISHES);
+      await page.getByRole('button', { name: 'Bestand übernehmen' }).click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog.getByRole('radio', { name: 'Entry0' })).toBeVisible();
+      const pane = page.locator('.cdk-overlay-pane.app-dialog-panel');
+
+      // The dialog never outgrows the viewport; its body scrolls inside it instead.
+      const paneBox = await pane.evaluate((el) => el.getBoundingClientRect().toJSON() as DOMRect);
+      expect(paneBox.top).toBeGreaterThanOrEqual(0);
+      expect(paneBox.bottom).toBeLessThanOrEqual(800);
+      // The premise: there is plenty to scroll, so rows really pass under the action row.
+      expect(await pane.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(1000);
+
+      const actionsRow = dialog.locator('[dialog-actions]').first().locator('xpath=..');
+      for (const scrollTop of [300, 610, 1200]) {
+        await pane.evaluate((el, top) => (el.scrollTop = top), scrollTop);
+        // Every control the row's rectangle overlaps lies underneath it: the point hit there belongs
+        // to the action row, not to the control.
+        const covered = await actionsRow.evaluate((row) => {
+          const rowBox = row.getBoundingClientRect();
+          const list = [
+            ...(row.closest('[role="dialog"]')?.querySelectorAll('li input, li button') ?? []),
+          ];
+          return list.flatMap((control) => {
+            const box = control.getBoundingClientRect();
+            const top = Math.max(box.top, rowBox.top);
+            const bottom = Math.min(box.bottom, rowBox.bottom);
+            if (bottom - top < 2) {
+              return [];
+            }
+            const hit = document.elementFromPoint(box.left + box.width / 2, (top + bottom) / 2);
+            return [hit !== null && row.contains(hit)];
+          });
+        });
+        expect(covered.length).toBeGreaterThan(0);
+        expect(covered.every(Boolean)).toBe(true);
+      }
+    });
+
     test('real mouse clicks reach every control of the adopt dialog: each entry row, the start radios and the duration field', async ({
       page,
     }) => {

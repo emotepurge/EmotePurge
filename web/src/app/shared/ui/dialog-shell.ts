@@ -72,6 +72,12 @@ import { SheetDrag } from './sheet-drag';
  * the scroll container instead of the hull (see `styles.css`). Sticky needs no height chain, only a
  * scrolling ancestor, which the pane already is.
  *
+ * `z-20` on both sticky layers is the z-ladder of the design language (§8.5: row actions `z-10` <
+ * sticky bars `z-20`), not decoration either. A row that follows the stretched-link contract lifts its
+ * own controls to `relative z-10` above the overlay, and a positioned box with a z-index paints above a
+ * sticky one without — so in a long list (the adopt dialog's entries) the radios and "Zum Wunsch"
+ * buttons slid over the action row and the handle while the text beside them went underneath.
+ *
  * `bg-surface` and `border-t border-border` are load-bearing, not decoration: without its own opaque
  * surface the sticky row would let scrolled-under content show through, and without the rule the
  * boundary between "still scrolling" and "always visible" would be invisible. `rounded-b-lg` only
@@ -87,7 +93,7 @@ import { SheetDrag } from './sheet-drag';
       @if (isSheet()) {
         <div
           data-sheet-handle
-          class="sticky top-0 -mx-6 -mt-6 flex min-h-11 touch-none items-start justify-center rounded-t-2xl bg-surface py-3"
+          class="sticky top-0 z-20 -mx-6 -mt-6 flex min-h-11 touch-none items-start justify-center rounded-t-2xl bg-surface py-3"
           aria-hidden="true"
         >
           <span class="h-1 w-9 rounded-full bg-border-strong"></span>
@@ -151,7 +157,7 @@ export class DialogShell {
   // instead).
   protected readonly actionsClasses = computed(
     () =>
-      'sticky bottom-0 -mx-6 -mb-6 flex flex-wrap items-center justify-end gap-2 border-t ' +
+      'sticky bottom-0 z-20 -mx-6 -mb-6 flex flex-wrap items-center justify-end gap-2 border-t ' +
       'border-border bg-surface px-6 pt-4 pb-6 ' +
       (this.isSheet() ? '' : 'rounded-b-lg'),
   );
