@@ -142,6 +142,31 @@ public class WishSlotMatcherPendingTests
             new WishPendingDecision(null, WishStatusReason.AlreadyRunning),
             Decide(Name("Kappa"), [], held: [Slot("held", T.AddHours(1))], running: Emote));
 
+    // Sol R2: a viewer asks by the exact alias of an emote whose wish already runs. Its slot predates the redemption,
+    // so it is no candidate; the hint still says "running" (approve books the extension), never "in the set".
+    [Fact]
+    public void Hint_already_running_for_a_name_whose_older_slot_is_held_by_the_running_wish() =>
+        Assert.Equal(
+            new WishPendingDecision(null, WishStatusReason.AlreadyRunning),
+            Decide(Name("Kappa"), [], held: [Slot("held", T.AddDays(-3))], running: Emote));
+
+    // The hint never makes the older slot eligible: free, of a running emote, before the window, it is no link.
+    [Fact]
+    public void Hint_already_running_for_a_name_whose_older_free_slot_belongs_to_a_running_emote() =>
+        Assert.Equal(
+            new WishPendingDecision(null, WishStatusReason.AlreadyRunning),
+            Decide(Name("kappa"), [Slot("old", T.AddSeconds(-1))], running: Emote));
+
+    // Only an unambiguous older alias counts: the ordinal hit decides, and two case variants without one stay "in set".
+    [Fact]
+    public void Hint_for_an_older_name_follows_the_name_rule_ordinal_first_and_ambiguity_is_no_running_hint()
+    {
+        WishSlotCandidate[] variants = [Slot("a", T.AddDays(-3), "Kappa", Emote), Slot("b", T.AddDays(-2), "KAPPA", Other)];
+        Assert.Equal(new WishPendingDecision(null, WishStatusReason.AlreadyRunning), Decide(Name("Kappa"), variants, running: Emote));
+        Assert.Equal(new WishPendingDecision(null, WishStatusReason.AlreadyInSet), Decide(Name("Kappa"), variants, running: Other));
+        Assert.Equal(new WishPendingDecision(null, WishStatusReason.AlreadyInSet), Decide(Name("kappa"), variants, running: Emote));
+    }
+
     [Fact]
     public void Hint_already_in_set_for_a_slot_before_the_redemption()
     {

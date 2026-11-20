@@ -128,8 +128,9 @@ public static class WishSlotMatcher
     /// <param name="wish">A <c>pending</c> wish.</param>
     /// <param name="free">Admissible slots held by no other wish: the candidates.</param>
     /// <param name="visible">
-    /// Admissible slots including those held by other wishes (never the excluded ones): a held slot in the window
-    /// of a name wish shows its emote running, one before the window start shows the emote already in the set.
+    /// Admissible slots including those held by other wishes (never the excluded ones): a slot of a name wish in the
+    /// window, or the one older slot its name points at unambiguously, shows its emote running when a wish of that
+    /// emote runs; any other slot before the window start shows the emote already in the set.
     /// </param>
     /// <param name="isEmoteRunning">Whether another wish of the channel runs for this 7TV emote id.</param>
     public static WishPendingDecision DecidePending(
@@ -168,7 +169,8 @@ public static class WishSlotMatcher
             .ToList();
 
         if ((byId && isEmoteRunning(wish.SevenTvEmoteId))
-            || (byName && matching.Any(c => InWindow(c, start, end) && isEmoteRunning(c.SevenTvEmoteId))))
+            || (byName && matching.Any(c => InWindow(c, start, end) && isEmoteRunning(c.SevenTvEmoteId)))
+            || (byName && OlderNameHit(matching, start, wish.RequestedName!) is { } older && isEmoteRunning(older.SevenTvEmoteId)))
         {
             return new WishPendingDecision(null, WishStatusReason.AlreadyRunning);
         }
@@ -200,17 +202,35 @@ public static class WishSlotMatcher
             return WishMatchResult.None();
         }
 
-        var ordinal = inWindow.Where(c => string.Equals(c.Alias, wish.RequestedName, StringComparison.Ordinal)).ToList();
-        var hits = ordinal.Count > 0
-            ? ordinal
-            : inWindow.Where(c => string.Equals(c.Alias, wish.RequestedName, StringComparison.OrdinalIgnoreCase)).ToList();
-
+        var hits = NameHits(inWindow, wish.RequestedName);
         return hits.Count switch
         {
             0 => WishMatchResult.None(),
             1 => WishMatchResult.Matched(hits[0].SlotId),
             _ => WishMatchResult.Ambiguous(),
         };
+    }
+
+    // The slots whose alias is the name: the ordinal hits, and only without one the case-insensitive ones.
+    private static List<WishSlotCandidate> NameHits(IEnumerable<WishSlotCandidate> slots, string name)
+    {
+        var all = slots.Where(c => string.Equals(c.Alias, name, StringComparison.OrdinalIgnoreCase)).ToList();
+        var ordinal = all.Where(c => string.Equals(c.Alias, name, StringComparison.Ordinal)).ToList();
+        return ordinal.Count > 0 ? ordinal : all;
+    }
+
+    // The one slot older than the redemption the name points at, by the same rule as a match; null when none or
+    // ambiguous. Only for the hint (Sol R2): a running wish of its emote makes it "already running", so approve books
+    // the extension. Such a slot is never a candidate, so the hint links nothing (Sol-P1-3, live step B5a).
+    private static WishSlotCandidate? OlderNameHit(IEnumerable<WishSlotCandidate> slots, DateTime? start, string name)
+    {
+        if (start is not { } from)
+        {
+            return null;
+        }
+
+        var hits = NameHits(slots.Where(c => c.AddedAt < from), name);
+        return hits.Count == 1 ? hits[0] : null;
     }
 
     private static bool InWindow(WishSlotCandidate candidate, DateTime? start, DateTime? end) =>
