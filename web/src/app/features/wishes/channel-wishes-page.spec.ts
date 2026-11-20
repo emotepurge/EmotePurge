@@ -16,7 +16,10 @@ import { CHANNEL_RELOAD_DEBOUNCE_MS } from '../../core/live/live-reload';
 import type { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
 import { PagedResult } from '../../core/models/paged-result.model';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
-import { SevenTvEmoteLookup } from '../../core/seven-tv/seven-tv-emote-lookup';
+import {
+  SevenTvEmoteLookup,
+  SevenTvEmoteLookupResult,
+} from '../../core/seven-tv/seven-tv-emote-lookup';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { WishAddRequest, WishAddService, WishAddState } from '../../core/wishes/wish-add.service';
@@ -1829,7 +1832,7 @@ describe('ChannelWishesPage', () => {
       vi.mocked(preview.request).mockImplementation((_id, consumer) => {
         consumers.push(consumer);
       });
-      const withdraw = vi.spyOn(preview, 'withdraw').mockImplementation(() => undefined);
+      const release = vi.spyOn(preview, 'release').mockImplementation(() => undefined);
       const fixture = create();
       settle(fixture, [linked(1, 'e1'), linked(2, 'e1')]);
       showRow(fixture, 1, true);
@@ -1838,8 +1841,54 @@ describe('ChannelWishesPage', () => {
 
       expect(consumers).toHaveLength(2);
       expect(consumers[0]).not.toEqual(consumers[1]);
-      expect(withdraw).toHaveBeenCalledTimes(1);
-      expect(withdraw).toHaveBeenCalledWith('e1', consumers[0]);
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledWith(consumers[0]);
+    });
+
+    describe('with the real session queue', () => {
+      let reads: { id: string; answer: Subject<SevenTvEmoteLookupResult> }[];
+
+      beforeEach(() => {
+        reads = [];
+        vi.mocked(TestBed.inject(WishEmotePreviewService).request).mockRestore();
+        Object.assign(TestBed.inject(SevenTvEmoteLookup), {
+          lookup: (id: string) => {
+            const answer = new Subject<SevenTvEmoteLookupResult>();
+            reads.push({ id, answer });
+            return answer;
+          },
+        });
+      });
+
+      function finishRead(index: number): void {
+        reads[index].answer.next({ id: reads[index].id, kind: 'found', name: 'x', animated: true });
+        reads[index].answer.complete();
+      }
+
+      it('does not read an emote whose waiting row a reload removed', () => {
+        const fixture = create();
+        settle(fixture, [linked(1, 'e1'), linked(2, 'e2')]);
+        showRow(fixture, 1, true);
+        // Row 2's read waits behind row 1's.
+        showRow(fixture, 2, true);
+
+        liveReload(fixture, [linked(1, 'e1')]);
+        finishRead(0);
+
+        expect(reads).toHaveLength(1);
+      });
+
+      it('does not read what its rows waited for once the page is gone', () => {
+        const fixture = create();
+        settle(fixture, [linked(1, 'e1'), linked(2, 'e2')]);
+        showRow(fixture, 1, true);
+        showRow(fixture, 2, true);
+
+        fixture.destroy();
+        finishRead(0);
+
+        expect(reads).toHaveLength(1);
+      });
     });
 
     it('asks again when the window comes back, and not while it is hidden', () => {

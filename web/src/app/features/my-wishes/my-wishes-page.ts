@@ -218,12 +218,12 @@ export class MyWishesPage {
     });
 
     // Every reload, and the window coming back, asks again for the rows in view (as on the channel
-    // page, T19); `request` skips what is read or waiting. Nothing is asked while the window is hidden.
+    // page, T19); `request` skips what is read or waiting. Nothing is asked while the window is hidden;
+    // a row that is gone is released anyway.
     effect(() => {
       const items = this.items() ?? [];
-      if (this.visible()) {
-        untracked(() => this.requestPreviewsInView(items));
-      }
+      const ask = this.visible();
+      untracked(() => this.requestPreviewsInView(items, ask));
     });
 
     interval(CLOCK_TICK_MS)
@@ -245,7 +245,11 @@ export class MyWishesPage {
       )
       .subscribe(() => this.reload());
 
-    inject(DestroyRef).onDestroy(() => (this.requestNumber = -1));
+    inject(DestroyRef).onDestroy(() => {
+      this.requestNumber = -1;
+      // No row of this page waits any more (the session service outlives it, plan 2.10).
+      this.rowsInView.forEach((key) => this.preview.release(previewConsumer(key)));
+    });
   }
 
   protected reload(): void {
@@ -327,27 +331,26 @@ export class MyWishesPage {
       this.rowsInView.add(key);
     } else {
       this.rowsInView.delete(key);
-    }
-    const item = this.items()?.find((shown) => this.trackKey(shown) === key);
-    if (item === undefined) {
+      // Released whatever the wish needs now, and also when it is no longer listed.
+      this.preview.release(previewConsumer(key));
       return;
     }
-    if (!visible) {
-      // Released whatever the wish needs now: a reload may have brought the picture since it asked.
-      this.preview.withdraw(item.wish.sevenTvEmoteId, previewConsumer(key));
-    } else if (needsEmotePreview(item.wish)) {
+    const item = this.items()?.find((shown) => this.trackKey(shown) === key);
+    if (item !== undefined && needsEmotePreview(item.wish)) {
       this.preview.request(item.wish.sevenTvEmoteId, previewConsumer(key));
     }
   }
 
   /** The rows in view ask again, with the wish as the reload brought it; a row no longer listed is forgotten. */
-  private requestPreviewsInView(items: readonly WishOverviewItem[]): void {
+  private requestPreviewsInView(items: readonly WishOverviewItem[], ask: boolean): void {
     const shown = new Map(items.map((item) => [this.trackKey(item), item]));
     for (const key of [...this.rowsInView]) {
       const item = shown.get(key);
       if (item === undefined) {
+        // Its row is gone: what it asked for goes, by the id it asked with.
         this.rowsInView.delete(key);
-      } else if (needsEmotePreview(item.wish)) {
+        this.preview.release(previewConsumer(key));
+      } else if (ask && needsEmotePreview(item.wish)) {
         this.preview.request(item.wish.sevenTvEmoteId, previewConsumer(key));
       }
     }

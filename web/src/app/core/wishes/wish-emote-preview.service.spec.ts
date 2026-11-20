@@ -137,6 +137,26 @@ describe('WishEmotePreviewService', () => {
     expect(reads.map((read) => read.id)).toEqual([A]);
   });
 
+  it('releases everything a consumer still waits for without naming the emotes', () => {
+    service.request(A, ROW);
+    service.request(B, 'row-2');
+    service.request(C, 'row-2');
+    service.release('row-2');
+    answer(0, { id: A, kind: 'found', name: 'Pag', animated: null });
+
+    expect(reads.map((read) => read.id)).toEqual([A]);
+  });
+
+  it('keeps a released emote another consumer still waits for', () => {
+    service.request(A, ROW);
+    service.request(B, 'row-2');
+    service.request(B, 'row-3');
+    service.release('row-2');
+    answer(0, { id: A, kind: 'found', name: 'Pag', animated: null });
+
+    expect(reads.map((read) => read.id)).toEqual([A, B]);
+  });
+
   it('stops for the session after a throttle and drops what was waiting', () => {
     service.request(A, ROW);
     service.request(B, ROW);

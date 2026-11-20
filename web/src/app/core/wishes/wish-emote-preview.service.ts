@@ -27,7 +27,8 @@ export type WishEmotePreview =
  *   a single short failure does not leave a still emote without its picture for the whole session. An
  *   unknown emote is an answer and is not read again.
  * - **Only rows in view ask** (`request`), and a row that leaves the view before its turn takes its
- *   request back (`withdraw`); a read already on the way finishes. Interest is kept **per consumer**
+ *   request back (`withdraw`, or `release` for everything it asked, also when its wish is no longer
+ *   at hand: removed by a reload, the page destroyed); a read already on the way finishes. Interest is kept **per consumer**
  *   (a row of the work list, a row of `my-wishes`, an open approve dialog): several of them may wait
  *   for the same emote, and a waiting id leaves the queue only once none of them still needs it.
  * - **After a throttle** (a real 429 or 7TV's "429 as HTTP 200") it stops for the session: the queue is
@@ -53,6 +54,8 @@ export class WishEmotePreviewService {
   private readonly queue: string[] = [];
   /** Who still waits for each queued id; an id without anyone leaves the queue. */
   private readonly interest = new Map<string, Set<WishEmotePreviewConsumer>>();
+  /** The reverse: the queued ids each consumer waits for, so `release` needs no id. */
+  private readonly waitsFor = new Map<WishEmotePreviewConsumer, Set<string>>();
   /** The id whose read is on the way. */
   private current: string | null = null;
   /** Failed reads per canonical id; at `MAX_READ_FAILURES` the failure stays. */
@@ -90,6 +93,7 @@ export class WishEmotePreviewService {
     }
     if (this.queue.includes(id)) {
       this.interest.get(id)?.add(consumer);
+      this.track(consumer, id);
       return;
     }
     const known = this.results().get(id);
@@ -106,6 +110,7 @@ export class WishEmotePreviewService {
     }
     this.queue.push(id);
     this.interest.set(id, new Set([consumer]));
+    this.track(consumer, id);
     this.next();
   }
 
@@ -123,6 +128,7 @@ export class WishEmotePreviewService {
       return;
     }
     waiting.delete(consumer);
+    this.untrack(consumer, id);
     if (waiting.size > 0) {
       return;
     }
@@ -130,6 +136,33 @@ export class WishEmotePreviewService {
     const index = this.queue.indexOf(id);
     if (index >= 0) {
       this.queue.splice(index, 1);
+    }
+  }
+
+  /**
+   * `consumer` is gone or needs nothing any more (its row was removed by a reload or a page change,
+   * its page was destroyed): every id it still waits for is withdrawn for it, whatever its wish names
+   * by now.
+   */
+  release(consumer: WishEmotePreviewConsumer): void {
+    for (const id of [...(this.waitsFor.get(consumer) ?? [])]) {
+      this.withdraw(id, consumer);
+    }
+  }
+
+  private track(consumer: WishEmotePreviewConsumer, id: string): void {
+    const ids = this.waitsFor.get(consumer);
+    if (ids === undefined) {
+      this.waitsFor.set(consumer, new Set([id]));
+    } else {
+      ids.add(id);
+    }
+  }
+
+  private untrack(consumer: WishEmotePreviewConsumer, id: string): void {
+    const ids = this.waitsFor.get(consumer);
+    if (ids?.delete(id) && ids.size === 0) {
+      this.waitsFor.delete(consumer);
     }
   }
 
@@ -141,6 +174,10 @@ export class WishEmotePreviewService {
     if (id === undefined) {
       return;
     }
+    // On its way now: nobody waits for it in the queue any more.
+    for (const consumer of this.interest.get(id) ?? []) {
+      this.untrack(consumer, id);
+    }
     this.interest.delete(id);
     this.current = id;
     this.lookup.lookup(id).subscribe((result) => this.onResult(id, result));
@@ -151,6 +188,7 @@ export class WishEmotePreviewService {
     if (result.kind === 'throttled') {
       this.queue.length = 0;
       this.interest.clear();
+      this.waitsFor.clear();
       this.stoppedState.set(true);
       return;
     }

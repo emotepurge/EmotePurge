@@ -79,7 +79,7 @@ function linked(id: number, emote: string, overrides: Partial<Wish> = {}): WishO
 describe('MyWishesPage: picture and name of an open wish (plan 2.10, T19)', () => {
   let lists: Subject<WishOverviewItem[]>[];
   let asked: string[];
-  let withdrawn: string[];
+  let released: unknown[];
   let stillIds: Set<string>;
   let names: Map<string, string>;
   const fixtures: ComponentFixture<MyWishesPage>[] = [];
@@ -87,7 +87,7 @@ describe('MyWishesPage: picture and name of an open wish (plan 2.10, T19)', () =
   beforeEach(() => {
     lists = [];
     asked = [];
-    withdrawn = [];
+    released = [];
     stillIds = new Set();
     names = new Map();
     FakeIntersectionObserver.instances = [];
@@ -117,7 +117,7 @@ describe('MyWishesPage: picture and name of an open wish (plan 2.10, T19)', () =
           provide: WishEmotePreviewService,
           useValue: {
             request: (id: string) => asked.push(id),
-            withdraw: (id: string) => withdrawn.push(id),
+            release: (consumer: unknown) => released.push(consumer),
             nameOf: (id: string) => names.get(id) ?? null,
           },
         },
@@ -169,7 +169,28 @@ describe('MyWishesPage: picture and name of an open wish (plan 2.10, T19)', () =
     expect(asked).toEqual(['e2']);
 
     showRow(fixture, 2, false);
-    expect(withdrawn).toEqual(['e2']);
+    expect(released).toEqual(['my-wishes-row:chan#2']);
+  });
+
+  it('releases what a row in view asked for once a reload no longer lists it', () => {
+    const fixture = create([linked(1, 'e1'), linked(2, 'e2')]);
+    showRow(fixture, 1, true);
+    showRow(fixture, 2, true);
+
+    fixture.componentInstance['reload']();
+    answer(fixture, [linked(1, 'e1')]);
+
+    expect(released).toEqual(['my-wishes-row:chan#2']);
+  });
+
+  it('releases what its rows in view asked for when the page goes away', () => {
+    const fixture = create([linked(1, 'e1'), linked(2, 'e2')]);
+    showRow(fixture, 1, true);
+    showRow(fixture, 2, true);
+
+    fixture.destroy();
+
+    expect(released).toEqual(['my-wishes-row:chan#1', 'my-wishes-row:chan#2']);
   });
 
   it('reads nothing for a wish that has its picture and name, or no emote', () => {

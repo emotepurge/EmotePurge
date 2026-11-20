@@ -753,12 +753,11 @@ export class ChannelWishesPage {
     // reported "in view" (T19): a read that did not start when the row came into view (its wish then
     // needed none, or it was dropped) or that failed once gets its chance without the row having to
     // leave and re-enter the view. `request` skips what is read or waiting, so this costs no second
-    // read. Nothing is asked while the window is hidden.
+    // read. Nothing is asked while the window is hidden; a row that is gone is released anyway.
     effect(() => {
       const rows = this.usageRows();
-      if (this.visible()) {
-        untracked(() => this.requestPreviewsInView(rows));
-      }
+      const ask = this.visible();
+      untracked(() => this.requestPreviewsInView(rows, ask));
     });
 
     // An add result says what it had to once its wish left `approved`; drop it then (plan 2.5a).
@@ -801,6 +800,8 @@ export class ChannelWishesPage {
 
     inject(DestroyRef).onDestroy(() => {
       this.destroyed = true;
+      // No row of this page waits any more (the session service outlives it, plan 2.10).
+      this.openRowsInView.forEach((id) => this.preview.release(previewConsumer(id)));
       // Give the clearance back at once — the next page may have no dock to release it.
       this.dockClearance.release();
     });
@@ -973,7 +974,7 @@ export class ChannelWishesPage {
     } else {
       this.openRowsInView.delete(wish.id);
       // Released whatever the wish needs now: a reload may have brought the picture since it asked.
-      this.preview.withdraw(wish.sevenTvEmoteId, previewConsumer(wish.id));
+      this.preview.release(previewConsumer(wish.id));
       return;
     }
     if (needsEmotePreview(wish)) {
@@ -1261,17 +1262,19 @@ export class ChannelWishesPage {
   }
 
   /**
-   * The open rows in view ask for their preview again, with the wish as the reload brought it. A row
-   * whose wish is no longer shown, or no longer open, is forgotten: its row is gone or reports anew.
+   * The open rows in view ask for their preview again, with the wish as the reload brought it (only
+   * while `ask`, the window visible). A row whose wish is no longer shown, or no longer open, is
+   * forgotten and releases what it asked for: its row is gone or reports anew.
    */
-  private requestPreviewsInView(rows: readonly Wish[]): void {
+  private requestPreviewsInView(rows: readonly Wish[], ask: boolean): void {
     const shown = new Map(rows.map((row) => [row.id, row]));
     for (const id of [...this.openRowsInView]) {
       const wish = shown.get(id);
       if (wish === undefined || wish.status !== 'pending') {
+        // Its row is gone or no longer asks: what it asked for goes, by the id it asked with.
         this.openRowsInView.delete(id);
-        this.preview.withdraw(wish?.sevenTvEmoteId ?? '', previewConsumer(id));
-      } else if (needsEmotePreview(wish)) {
+        this.preview.release(previewConsumer(id));
+      } else if (ask && needsEmotePreview(wish)) {
         this.preview.request(wish.sevenTvEmoteId, previewConsumer(id));
       }
     }
