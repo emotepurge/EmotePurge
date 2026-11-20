@@ -329,13 +329,14 @@ export class MyWishesPage {
       this.rowsInView.delete(key);
     }
     const item = this.items()?.find((shown) => this.trackKey(shown) === key);
-    if (item === undefined || !needsEmotePreview(item.wish)) {
+    if (item === undefined) {
       return;
     }
-    if (visible) {
-      this.preview.request(item.wish.sevenTvEmoteId);
-    } else {
-      this.preview.withdraw(item.wish.sevenTvEmoteId);
+    if (!visible) {
+      // Released whatever the wish needs now: a reload may have brought the picture since it asked.
+      this.preview.withdraw(item.wish.sevenTvEmoteId, previewConsumer(key));
+    } else if (needsEmotePreview(item.wish)) {
+      this.preview.request(item.wish.sevenTvEmoteId, previewConsumer(key));
     }
   }
 
@@ -347,8 +348,13 @@ export class MyWishesPage {
       if (item === undefined) {
         this.rowsInView.delete(key);
       } else if (needsEmotePreview(item.wish)) {
-        this.preview.request(item.wish.sevenTvEmoteId);
+        this.preview.request(item.wish.sevenTvEmoteId, previewConsumer(key));
       }
     }
   }
+}
+
+/** The preview consumer of one row (`WishEmotePreviewService`): one per row key. */
+function previewConsumer(rowKey: string): string {
+  return `my-wishes-row:${rowKey}`;
 }

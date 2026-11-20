@@ -969,14 +969,12 @@ export class ChannelWishesPage {
       this.openRowsInView.add(wish.id);
     } else {
       this.openRowsInView.delete(wish.id);
-    }
-    if (!needsEmotePreview(wish)) {
+      // Released whatever the wish needs now: a reload may have brought the picture since it asked.
+      this.preview.withdraw(wish.sevenTvEmoteId, previewConsumer(wish.id));
       return;
     }
-    if (visible) {
-      this.preview.request(wish.sevenTvEmoteId);
-    } else {
-      this.preview.withdraw(wish.sevenTvEmoteId);
+    if (needsEmotePreview(wish)) {
+      this.preview.request(wish.sevenTvEmoteId, previewConsumer(wish.id));
     }
   }
 
@@ -1266,8 +1264,9 @@ export class ChannelWishesPage {
       const wish = shown.get(id);
       if (wish === undefined || wish.status !== 'pending') {
         this.openRowsInView.delete(id);
+        this.preview.withdraw(wish?.sevenTvEmoteId ?? '', previewConsumer(id));
       } else if (needsEmotePreview(wish)) {
-        this.preview.request(wish.sevenTvEmoteId);
+        this.preview.request(wish.sevenTvEmoteId, previewConsumer(id));
       }
     }
   }
@@ -1519,4 +1518,9 @@ function errorKey(error: unknown): string {
   return error instanceof HttpErrorResponse
     ? apiErrorTranslationKey(error)
     : GENERIC_ERROR_TRANSLATION_KEY;
+}
+
+/** The preview consumer of one work-list row (`WishEmotePreviewService`): one per wish. */
+function previewConsumer(wishId: number): string {
+  return `wishes-row:${wishId}`;
 }

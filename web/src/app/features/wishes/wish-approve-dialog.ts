@@ -462,9 +462,15 @@ export class WishApproveDialog {
   });
 
   constructor() {
-    inject(DestroyRef).onDestroy(() => this.cancelRead());
+    inject(DestroyRef).onDestroy(() => {
+      this.cancelRead();
+      // A closed dialog no longer waits for its emote; a row in view may still (per-consumer interest).
+      if (this.fixedId !== null) {
+        this.preview.withdraw(this.fixedId, this);
+      }
+    });
     if (this.fixedId !== null) {
-      this.preview.request(this.fixedId);
+      this.preview.request(this.fixedId, this);
     }
   }
 

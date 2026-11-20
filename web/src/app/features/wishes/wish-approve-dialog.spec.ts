@@ -10,6 +10,7 @@ import {
   SevenTvEmoteLookup,
   SevenTvEmoteLookupResult,
 } from '../../core/seven-tv/seven-tv-emote-lookup';
+import { WishEmotePreviewService } from '../../core/wishes/wish-emote-preview.service';
 import type { ApprovedWish, ApproveWishBody, Wish } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
 import { WishApproveDialog, WishApproveDialogResult } from './wish-approve-dialog';
@@ -92,7 +93,8 @@ describe('WishApproveDialog', () => {
     vi.useRealTimers();
   });
 
-  function create(value: Wish): void {
+  /** `before` runs against the configured injector before the dialog opens (the session's preview). */
+  function create(value: Wish, before?: () => void): void {
     TestBed.configureTestingModule({
       imports: [
         WishApproveDialog,
@@ -127,6 +129,7 @@ describe('WishApproveDialog', () => {
         },
       ],
     });
+    before?.();
     fixture = TestBed.createComponent(WishApproveDialog);
     fixture.detectChanges();
   }
@@ -172,6 +175,33 @@ describe('WishApproveDialog', () => {
   }
 
   describe('a wish that knows its emote', () => {
+    it('still gets its read when a row that asked for the same emote leaves the view first', () => {
+      const OTHER = '01F5VW2TKR0003RCV2Z6JBHCST';
+      create(linkWish(), () => {
+        const preview = TestBed.inject(WishEmotePreviewService);
+        // Another row's read is on the way, and a row with this wish's emote waits behind it.
+        preview.request(OTHER, 'row-other');
+        preview.request(A, 'row-a');
+      });
+      TestBed.inject(WishEmotePreviewService).withdraw(A, 'row-a');
+      settleRead(0, { id: OTHER, kind: 'found', name: 'other', animated: true });
+
+      expect(lookups.map((read) => read.id)).toEqual([OTHER, A]);
+      settleRead(1, { id: A, kind: 'found', name: 'catJAM', animated: true });
+      expect(blocked()).toBeNull();
+    });
+
+    it('releases its emote when it closes before the read started', () => {
+      const OTHER = '01F5VW2TKR0003RCV2Z6JBHCST';
+      create(linkWish(), () => {
+        TestBed.inject(WishEmotePreviewService).request(OTHER, 'row-other');
+      });
+      fixture.destroy();
+      settleRead(0, { id: OTHER, kind: 'found', name: 'other', animated: true });
+
+      expect(lookups.map((read) => read.id)).toEqual([OTHER]);
+    });
+
     it('reads the emote once and proposes its default name as the alias', () => {
       create(linkWish());
 

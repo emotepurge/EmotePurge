@@ -1773,6 +1773,25 @@ describe('ChannelWishesPage', () => {
       expect(asked).toEqual([]);
     });
 
+    it('asks and releases per row, so a row leaving does not release the emote for another', () => {
+      const preview = TestBed.inject(WishEmotePreviewService);
+      const consumers: unknown[] = [];
+      vi.mocked(preview.request).mockImplementation((_id, consumer) => {
+        consumers.push(consumer);
+      });
+      const withdraw = vi.spyOn(preview, 'withdraw').mockImplementation(() => undefined);
+      const fixture = create();
+      settle(fixture, [linked(1, 'e1'), linked(2, 'e1')]);
+      showRow(fixture, 1, true);
+      showRow(fixture, 2, true);
+      showRow(fixture, 1, false);
+
+      expect(consumers).toHaveLength(2);
+      expect(consumers[0]).not.toEqual(consumers[1]);
+      expect(withdraw).toHaveBeenCalledTimes(1);
+      expect(withdraw).toHaveBeenCalledWith('e1', consumers[0]);
+    });
+
     it('asks again when the window comes back, and not while it is hidden', () => {
       const fixture = create();
       settle(fixture, [linked(1, 'e1')]);
