@@ -38,7 +38,7 @@ public static class AdminEndpoints
 
         group.MapAdminLogEndpoints();
 
-        group.MapGet("/health", async (IWorkerHealthReader healthReader, CancellationToken ct) =>
+        group.MapGet("/health", async (IWorkerHealthReader healthReader, WishOptions wishOptions, CancellationToken ct) =>
         {
             // Admin counterpart to the public GET /api/worker/health (Z1 split): same snapshot, same
             // derived statuses — via the shared WorkerHealthStatus so the thresholds cannot drift —
@@ -85,6 +85,8 @@ public static class AdminEndpoints
                         instanceId = (string?)null,
                         processStartedUtc = (DateTime?)null,
                     },
+                    wishCaptureActive = (bool?)null,
+                    apiWishCaptureEnabled = wishOptions.CaptureActive,
                 });
             }
 
@@ -133,6 +135,11 @@ public static class AdminEndpoints
                     instanceId = snapshot.WorkerInstanceId,
                     processStartedUtc = snapshot.ProcessStartedUtc,
                 },
+                // Wish capture (K6, plan #486 2.3): the worker's switch decides whether redemptions are stored, the
+                // Api's only shows routes and UI. Both travel so the monitoring page can name a disagreement ("worker
+                // captures, Api hides it" and the reverse). Null is a worker that predates the field, not "off".
+                wishCaptureActive = snapshot.WishCaptureActive,
+                apiWishCaptureEnabled = wishOptions.CaptureActive,
             });
         });
 

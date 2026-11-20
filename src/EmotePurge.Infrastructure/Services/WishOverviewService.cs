@@ -12,6 +12,11 @@ namespace EmotePurge.Infrastructure.Services;
 /// only, one after the other: the moderated-channel list behind it is cached per user, so the first check may
 /// paginate Helix and every later one, for this call and for the next minutes, reads Redis. This service never
 /// touches <c>IMyChannelsService</c> and keeps no cache of its own.
+/// <para>
+/// K6 (plan #486 2.4a): the list gives out the redeemer data of a captured wish only for a channel where the caller is
+/// confirmed on the row's Twitch id (<see cref="IChannelAccessService.ResolveWishCaptureAccessAsync"/>, asked next to
+/// the manager check and only for channels whose answer holds a captured wish). The counter carries numbers only.
+/// </para>
 /// </summary>
 public sealed class WishOverviewService(
     AppDbContext db,
@@ -41,6 +46,10 @@ public sealed class WishOverviewService(
         // One image read for the whole answer, over the channels and emote ids that occur in it.
         var images = await db.ReadWishImageUrlsAsync(
             rows.Select(w => w.ChannelId).ToList(), rows.Select(w => w.SevenTvEmoteId).ToList(), cancellationToken);
+        var confirmed = await ConfirmedChannelsAsync(principal, manageable, rows, cancellationToken);
+        var labels = confirmed.Count == 0
+            ? new Dictionary<long, string>()
+            : await db.ReadRewardLabelsAsync(rows.Where(w => confirmed.Contains(w.ChannelId)).ToList(), cancellationToken);
         return rows
             .OrderBy(w => w.ExpiresAtUtc is null)
             .ThenBy(w => w.ExpiresAtUtc)
@@ -49,7 +58,11 @@ public sealed class WishOverviewService(
             .Select(w =>
             {
                 var channel = manageable[w.ChannelId];
-                return new WishOverviewItemDto(channel.Name, WishService.ToDto(w, channel.Settings, images.GetValueOrDefault((w.ChannelId, w.SevenTvEmoteId))));
+                var include = confirmed.Contains(w.ChannelId);
+                var label = include && w.RewardId is { } rewardId ? labels.GetValueOrDefault(rewardId) : null;
+                return new WishOverviewItemDto(
+                    channel.Name,
+                    WishService.ToDto(w, channel.Settings, images.GetValueOrDefault((w.ChannelId, w.SevenTvEmoteId)), include, label));
             })
             .ToList();
     }
@@ -62,6 +75,31 @@ public sealed class WishOverviewService(
         var candidates = await LoadCandidatesAsync(includeProbation: false, cancellationToken);
         var manageable = await ManageableChannelsAsync(principal, candidates, cancellationToken);
         return candidates.Count(c => manageable.ContainsKey(c.ChannelId));
+    }
+
+    // The channels of the answer whose captured wishes may show their redeemer data: asked per channel that holds one,
+    // decided on the row the manager check saw (same id, same current Twitch id), so a rename in between hides them.
+    private async Task<HashSet<string>> ConfirmedChannelsAsync(
+        TwitchPrincipalInfo principal,
+        Dictionary<string, ManageableChannel> manageable,
+        List<Wish> rows,
+        CancellationToken cancellationToken)
+    {
+        var confirmed = new HashSet<string>(StringComparer.Ordinal);
+        var withCapture = rows.Where(w => w.Source == WishSource.Irc).Select(w => w.ChannelId).Distinct(StringComparer.Ordinal);
+        foreach (var channelId in withCapture.OrderBy(id => manageable[id].Name, StringComparer.Ordinal))
+        {
+            var channel = manageable[channelId];
+            var access = await channelAccess.ResolveWishCaptureAccessAsync(principal, channel.Name, cancellationToken);
+            if (access is not null
+                && string.Equals(access.ChannelId, channelId, StringComparison.Ordinal)
+                && WishService.IsConfirmedOn(access, channel.TwitchChannelId))
+            {
+                confirmed.Add(channelId);
+            }
+        }
+
+        return confirmed;
     }
 
     // One query on the wish table narrows to what could qualify (a status that may need action, or an active
@@ -121,14 +159,15 @@ public sealed class WishOverviewService(
         var channelIds = candidates.Select(c => c.ChannelId).Distinct().ToList();
         var names = await db.Channels.AsNoTracking()
             .Where(c => channelIds.Contains(c.Id))
-            .Select(c => new { c.Id, c.ChannelName })
+            .Select(c => new { c.Id, c.ChannelName, c.TwitchChannelId })
             .ToListAsync(cancellationToken);
 
         foreach (var channel in names.OrderBy(n => n.ChannelName, StringComparer.Ordinal))
         {
             if (await channelAccess.CanManageChannelAsync(principal, channel.ChannelName, cancellationToken))
             {
-                result[channel.Id] = new ManageableChannel(channel.ChannelName, candidates.First(c => c.ChannelId == channel.Id).Settings);
+                result[channel.Id] = new ManageableChannel(
+                    channel.ChannelName, channel.TwitchChannelId, candidates.First(c => c.ChannelId == channel.Id).Settings);
             }
         }
 
@@ -137,5 +176,5 @@ public sealed class WishOverviewService(
 
     private sealed record Candidate(long WishId, string ChannelId, bool NeedsAction, WishService.EffectiveSettings Settings);
 
-    private sealed record ManageableChannel(string Name, WishService.EffectiveSettings Settings);
+    private sealed record ManageableChannel(string Name, string? TwitchChannelId, WishService.EffectiveSettings Settings);
 }

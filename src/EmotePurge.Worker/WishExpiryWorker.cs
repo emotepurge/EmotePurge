@@ -82,7 +82,7 @@ public class WishExpiryWorker(
     }
 
     // Exception type and SQLSTATE only: a message can carry connection or row data.
-    private static string DescribeFailure(Exception exception)
+    internal static string DescribeFailure(Exception exception)
     {
         for (var inner = exception; inner is not null; inner = inner.InnerException)
         {

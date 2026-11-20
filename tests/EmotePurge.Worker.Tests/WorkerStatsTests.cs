@@ -192,4 +192,35 @@ public class WorkerStatsTests
         Assert.Equal(1, stats.TwitchRebuildCount);
         Assert.Equal(1, stats.TwitchRebuildAttemptFailureCount);
     }
+
+    [Fact]
+    public void TakeRewardCaptureCounters_ReturnsEachCounter_AndZeroesThem()
+    {
+        var stats = new WorkerStats();
+        stats.RecordRewardObservationOverflow();
+        stats.RecordRewardObservationOverflow();
+        stats.RecordRewardObservationRejectedAtShutdown();
+        stats.RecordSplicedRewardRedemption();
+        stats.RecordRewardCaptureFault();
+        stats.RecordRewardCaptureFault();
+        stats.RecordRewardCaptureFault();
+        stats.RecordRewardObservationAtEmptySnapshot();
+
+        var first = stats.TakeRewardCaptureCounters();
+        var second = stats.TakeRewardCaptureCounters();
+
+        Assert.Equal(new RewardCaptureCounters(2, 1, 1, 3, 1), first);
+        Assert.False(first.IsZero);
+        Assert.True(second.IsZero);
+    }
+
+    [Fact]
+    public void RecordSplicedRewardRedemption_LeavesTheSplicedLineCounterToItsOwnCall()
+    {
+        var stats = new WorkerStats();
+
+        stats.RecordSplicedRewardRedemption();
+
+        Assert.Equal(0, stats.TakeSplicedIrcLinesSinceLastFlush());
+    }
 }

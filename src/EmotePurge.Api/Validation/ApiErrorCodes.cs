@@ -253,4 +253,26 @@ internal static class ApiErrorCodes
     public const string WishSlotNotFound = "wish_slot_not_found";
     // 409 from adopt: another live wish holds the slot.
     public const string WishSlotAlreadyLinked = "wish_slot_already_linked";
+
+    // Wish emotes, K6 (#486). 400 from approve: neither the body nor the open wish names an emote.
+    public const string WishEmoteRequired = "wish_emote_required";
+    // 409 from approve: a wish of the emote runs without an expiry to extend; the body carries wishId.
+    public const string WishRunningNotExtendable = "wish_running_not_extendable";
+    // 404 on every reward route while the Api's capture switch is off (Wishes:Capture:Enabled, only together with
+    // Wishes:Enabled); approve, reject and unlink stay reachable (plan #486 W7).
+    public const string WishCaptureDisabled = "wish_capture_disabled";
+    // 409: the channel row has no Twitch id yet, so nothing can be learned or captured for it.
+    public const string WishChannelUnbound = "wish_channel_unbound";
+    // 409 from starting to learn: an unexpired learning session exists.
+    public const string WishLearningActive = "wish_learning_active";
+    // 409 from confirming or cancelling: the learning row carries another session or candidate than the dialog showed.
+    public const string WishLearningStale = "wish_learning_stale";
+    // 409 from confirming: no session, an expired one, or one without a candidate.
+    public const string WishRewardNoCandidate = "wish_reward_no_candidate";
+    // 409 from confirming: the candidate's reward is learned in this channel already.
+    public const string WishRewardAlreadyKnown = "wish_reward_already_known";
+    // 409 from starting or confirming: the channel holds the maximum number of rewards.
+    public const string WishRewardLimit = "wish_reward_limit";
+    // 404 from PATCH/DELETE …/rewards/{rewardId}: no such reward in this channel.
+    public const string WishRewardNotFound = "wish_reward_not_found";
 }

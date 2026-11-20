@@ -375,6 +375,22 @@
           "incomplete": "Erfassung von {{source}} unvollständig seit {{time}}",
           "retentionOverdue": "Log-Löschung überfällig"
         }
+      },
+      "wishCapture": {
+        "title": "Wunsch-Erfassung",
+        "active": "Aktiv",
+        "mismatch": "Abweichung",
+        "unknown": "Unbekannt",
+        "worker": "Worker",
+        "api": "Api",
+        "workerOn": "erfasst Einlösungen",
+        "workerOff": "erfasst nicht",
+        "workerUnknown": "meldet den Stand nicht",
+        "apiOn": "zeigt die Oberfläche",
+        "apiOff": "blendet die Oberfläche aus",
+        "mismatchWorkerOnly": "Der Worker erfasst Einlösungen, aber die Api blendet Belohnungen und Anlernen aus. Setze WISHES_CAPTURE_ENABLED für beide gleich und starte die Api neu.",
+        "mismatchApiOnly": "Die Api zeigt die Erfassung, aber der Worker speichert keine Einlösungen. Es entstehen keine Wünsche. Setze WISHES_CAPTURE_ENABLED für beide gleich und starte den Worker neu.",
+        "unknownHint": "Der Worker meldet nicht, ob er erfasst (älterer Worker oder kein Status). Prüfe die Startzeile des Workers."
       }
     },
     "rateLimits": {
@@ -1050,7 +1066,14 @@
       "wishUpdate": "Wunsch bearbeitet",
       "userRevokeSessions": "User-Sessions widerrufen",
       "userInvalidateRoleCache": "Rollen-Cache geleert",
-      "userDelete": "Account gelöscht"
+      "userDelete": "Account gelöscht",
+      "wishApprove": "Offenen Wunsch freigegeben",
+      "wishReject": "Offenen Wunsch abgelehnt",
+      "wishAutoLink": "Wunsch automatisch mit Set-Eintrag verknüpft",
+      "wishUnlink": "Verknüpfung eines Wunsches gelöst",
+      "wishRewardAdd": "Belohnung für Wünsche angelernt",
+      "wishRewardChange": "Belohnung für Wünsche geändert",
+      "wishRewardRemove": "Belohnung für Wünsche vergessen"
     },
     "details": {
       "emoteCount": {
@@ -2574,7 +2597,17 @@
       "wish_settings_out_of_range": "Mindestens ein Wert der Einstellungen liegt außerhalb des erlaubten Bereichs.",
       "wish_settings_restricted": "Diese Einstellungen dürfen nur der Broadcaster, wer den Bot aktiviert hat, und Admins ändern.",
       "wish_slot_not_found": "Dieser Eintrag ist nicht (mehr) aktiv im Set.",
-      "wish_slot_already_linked": "Dieser Eintrag gehört bereits zu einem anderen Wunsch."
+      "wish_slot_already_linked": "Dieser Eintrag gehört bereits zu einem anderen Wunsch.",
+      "wish_emote_required": "Wähle zuerst das Emote: Füge einen 7TV-Link oder eine Emote-ID ein.",
+      "wish_running_not_extendable": "Der laufende Wunsch für dieses Emote ist noch nicht im Set. Freigeben geht, sobald er es ist.",
+      "wish_capture_disabled": "Die Erfassung aus dem Chat ist auf diesem Server ausgeschaltet. Wünsche kannst du weiter von Hand eintragen.",
+      "wish_channel_unbound": "Dieser Kanal ist noch nicht vollständig eingerichtet. Versuche es nach dem nächsten Sync in ein paar Minuten erneut.",
+      "wish_learning_active": "Für diesen Kanal läuft bereits ein Anlernen. Die Seite zeigt den aktuellen Stand: Schließe es ab oder brich es ab.",
+      "wish_learning_stale": "Inzwischen hat jemand neu angelernt. Lade neu und sieh dir den aktuellen Stand an.",
+      "wish_reward_no_candidate": "Es liegt keine erkannte Einlösung zum Bestätigen vor. Starte das Anlernen neu.",
+      "wish_reward_already_known": "Diese Belohnung ist bereits angelernt. Du findest sie in der Liste und kannst sie dort bearbeiten.",
+      "wish_reward_limit": "Dieser Kanal hat schon die höchste Zahl an Belohnungen. Vergiss zuerst eine.",
+      "wish_reward_not_found": "Diese Belohnung gibt es nicht mehr. Die Liste zeigt den aktuellen Stand."
     }
   },
   "backfill": {
@@ -2719,7 +2752,11 @@
       "extend": "Verlängern",
       "keep": "Behalten",
       "remove": "Entfernen",
-      "reAdd": "Wieder hinzufügen"
+      "reAdd": "Wieder hinzufügen",
+      "approve": "Freigeben",
+      "approveExtend": "Als Verlängerung freigeben",
+      "reject": "Ablehnen",
+      "unlink": "Zuordnung lösen"
     },
     "row": {
       "probation": "Probezeit",
@@ -2787,7 +2824,51 @@
     },
     "confirm": {
       "keep": "„{{ name }}“ dauerhaft behalten? Das Emote bleibt im Set, der Wunsch ist damit abgeschlossen.",
-      "close": "Wunsch „{{ name }}“ schließen? Er endet, ohne dass in 7TV etwas geändert wird."
+      "close": "Wunsch „{{ name }}“ schließen? Er endet, ohne dass in 7TV etwas geändert wird.",
+      "reject": "Wunsch „{{ name }}“ ablehnen? In 7TV wird nichts geändert.\nDie Kanalpunkte erstattest du in Twitch, in der Warteschlange der Einlösungen.",
+      "unlink": "Zuordnung von „{{ name }}“ lösen? Der Wunsch ist danach wieder offen, und dieser Eintrag im Set wird ihm nicht noch einmal automatisch zugeordnet. In 7TV wird nichts geändert."
+    },
+    "pending": {
+      "title": "Offen",
+      "others": "Weitere Entscheidungen",
+      "untitled": "Wunsch ohne Text",
+      "textLabel": "Einlösetext:",
+      "reward": "über „{{ label }}“",
+      "age": {
+        "today": "heute eingelöst",
+        "days": {
+          "one": "vor {{ count }} Tag eingelöst",
+          "other": "vor {{ count }} Tagen eingelöst"
+        }
+      },
+      "hint": {
+        "unparsed": "Im Text war kein 7TV-Link und kein Emote-Name zu erkennen. Beim Freigeben gibst du das Emote an.",
+        "ambiguous_match": "Mehrere Einträge im Set passen zu diesem Namen. Verknüpfe den richtigen oder gib das Emote beim Freigeben an.",
+        "already_in_set": "Das Emote ist schon im Set. Verknüpfe den Eintrag mit dem Wunsch.",
+        "already_running": "Für dieses Emote läuft schon ein Wunsch. Freigeben verlängert ihn."
+      }
+    },
+    "approve": {
+      "title": "Wunsch freigeben",
+      "titleExtend": "Als Verlängerung freigeben",
+      "intro": "Freigegeben steht der Wunsch zum Hinzufügen bereit. In 7TV hinzufügen kannst du ihn danach an seiner Zeile.",
+      "introExtend": "Für dieses Emote läuft schon ein Wunsch. Freigeben verlängert ihn, und dieser Wunsch wird mit ihm zusammengeführt.",
+      "extension": {
+        "label": "Verlängerung",
+        "one": "{{ count }} Tag, die Standardlaufzeit des Kanals",
+        "other": "{{ count }} Tage, die Standardlaufzeit des Kanals",
+        "unknown": "Um die Standardlaufzeit des Kanals",
+        "ifRunning": "Ist das eingetragene Emote das laufende, wird stattdessen der laufende Wunsch um die Standardlaufzeit des Kanals verlängert."
+      },
+      "blocked": {
+        "emoteMissing": "Ohne Emote lässt sich der Wunsch nicht freigeben. Es fehlt der 7TV-Link oder die Emote-ID."
+      },
+      "conflict": {
+        "inSet": "Das Emote ist schon im Set. Übernimm den Eintrag für diesen Wunsch, statt ihn freizugeben.",
+        "notExtendable": "Der laufende Wunsch für dieses Emote ist noch nicht im Set, deshalb lässt er sich nicht verlängern. Freigeben geht, sobald er dort ist. Dieser Wunsch bleibt offen."
+      },
+      "merged": "Als Verlängerung verbucht. Der laufende Wunsch läuft jetzt bis {{ date }}.",
+      "mergedNoDate": "Als Verlängerung des laufenden Wunsches verbucht."
     },
     "lock": {
       "running": "In 7TV läuft gerade {{ kind }}. Bis dahin sind die 7TV-Aktionen hier gesperrt.",
@@ -2835,7 +2916,99 @@
       "changed": "Die Einstellungen wurden inzwischen geändert. Deine Eingaben sind noch nicht gespeichert.",
       "reload": "Neu laden",
       "loadFailed": "Die Einstellungen konnten nicht geladen werden.",
-      "retry": "Erneut versuchen"
+      "retry": "Erneut versuchen",
+      "pending": {
+        "label": "Verfall offener Wünsche in Tagen",
+        "hint": "So lange bleibt ein aus dem Chat erfasster Wunsch offen. Entscheidet bis dahin niemand, verfällt er."
+      },
+      "pendingInvalid": {
+        "empty": "Gib eine Zahl von Tagen an.",
+        "not_integer": "Der Verfall ist eine ganze Zahl von Tagen.",
+        "out_of_range": "Der Verfall liegt zwischen 1 und {{ max }} Tagen."
+      },
+      "rewards": {
+        "title": "Belohnungen aus dem Chat",
+        "count": "{{ count }} von {{ limit }}",
+        "intro": "Löst ein Zuschauer eine angelernte Kanalpunkte-Belohnung ein, entsteht daraus ein offener Wunsch. Erkannt werden nur Belohnungen mit Texteingabe.",
+        "unbound": "Dieser Kanal ist noch nicht mit seinem Twitch-Konto verknüpft. Belohnungen lassen sich nach dem nächsten Sync anlernen.",
+        "forbidden": "Die Belohnungen dieses Kanals kannst du nicht sehen. Dafür muss Twitch dich als Broadcaster oder Moderator dieses Kanals bestätigen.",
+        "loadFailed": "Die Belohnungen konnten nicht geladen werden.",
+        "captureStopped": "Die Erfassung im Chat hat sich seit mehr als drei Minuten nicht gemeldet. Einlösungen werden gerade vielleicht nicht erkannt.",
+        "empty": "Noch keine Belohnung angelernt",
+        "emptyHint": "Lerne die Belohnung an, mit der sich Zuschauer ein Emote wünschen.",
+        "paused": "Pausiert",
+        "duration": {
+          "one": "Standardlaufzeit {{ count }} Tag",
+          "other": "Standardlaufzeit {{ count }} Tage"
+        },
+        "lastSeen": "Zuletzt erkannt am {{ date }}",
+        "neverSeen": "Noch nie erkannt",
+        "edit": "Bearbeiten",
+        "pause": "Pausieren",
+        "remove": "Vergessen",
+        "removeConfirm": "Belohnung „{{ label }}“ vergessen? Ihre Einlösungen werden danach nicht mehr erkannt. Wünsche, die schon da sind, bleiben.",
+        "readOnly": "Belohnungen anlernen und ändern dürfen nur der Broadcaster, wer den Bot aktiviert hat, und Admins.",
+        "reload": "Neu laden",
+        "learning": {
+          "start": "Belohnung anlernen",
+          "startHint": "Starte das Anlernen und löse die Belohnung danach innerhalb von 10 Minuten einmal selbst ein. Diese Einlösung wird kein Wunsch.",
+          "limit": "Dieser Kanal hat schon {{ limit }} Belohnungen. Vergiss zuerst eine.",
+          "waiting": "Anlernen läuft: Warte auf eine Einlösung.",
+          "waitingHint": "Löse die Belohnung jetzt in deinem Kanal ein, mit beliebigem Text. Die erste Einlösung einer noch unbekannten Belohnung erscheint hier.",
+          "candidate": "Einlösung erkannt",
+          "candidateHint": "Ist das die Belohnung für Emote-Wünsche? Dann bestätige sie. Diese Einlösung selbst wird kein Wunsch.",
+          "textLabel": "Text der Einlösung:",
+          "noText": "Ohne Text",
+          "seenBy": "von {{ login }} um {{ time }}",
+          "remaining": "Noch {{ time }}",
+          "expired": "Das Anlernen ist abgelaufen, ohne dass eine Belohnung bestätigt wurde.",
+          "cancel": "Anlernen abbrechen",
+          "confirm": "Bestätigen"
+        },
+        "feedback": {
+          "cancelled": "Anlernen abgebrochen.",
+          "learned": "Belohnung „{{ label }}“ angelernt.",
+          "saved": "Belohnung gespeichert.",
+          "paused": "„{{ label }}“ pausiert.",
+          "resumed": "„{{ label }}“ wird wieder erkannt.",
+          "removed": "„{{ label }}“ vergessen."
+        },
+        "gaps": {
+          "title": "Erfassungslücken",
+          "none": "Keine Erfassungslücken in den letzten 14 Tagen.",
+          "hint": "Ungefähre Zeiträume der letzten 14 Tage, in denen Einlösungen vielleicht nicht erfasst wurden. Die Messung ist eine Näherung. Sieh für diese Zeiten in der Twitch-Warteschlange der Belohnung nach.",
+          "reason": {
+            "disconnect": "Verbindung zu Twitch unterbrochen",
+            "worker_restart": "Erfassung neu gestartet",
+            "not_joined": "Kanal nicht betreten",
+            "unknown": "Ohne bekannten Grund"
+          }
+        },
+        "dialog": {
+          "confirmTitle": "Belohnung bestätigen",
+          "editTitle": "Belohnung bearbeiten",
+          "candidateIntro": "Erkannte Einlösung:",
+          "notAWish": "Diese Einlösung wird kein Wunsch.",
+          "label": "Bezeichnung",
+          "labelHint": "Euer Name für die Belohnung, zum Beispiel ihr Titel in Twitch.",
+          "labelInvalid": {
+            "empty": "Gib eine Bezeichnung an.",
+            "too_long": "Die Bezeichnung hat höchstens {{ max }} Zeichen.",
+            "forbidden_char": "Die Bezeichnung enthält ein Steuerzeichen.",
+            "rejected": "Diese Bezeichnung nimmt der Server nicht an."
+          },
+          "duration": "Standardlaufzeit neuer Wünsche in Tagen",
+          "save": "Speichern",
+          "blocked": {
+            "stale": "Nicht mehr aktuell.",
+            "expired": "Das Anlernen ist abgelaufen.",
+            "label": "Gib eine gültige Bezeichnung an.",
+            "unchanged": "Du hast nichts geändert."
+          }
+        },
+        "forbiddenWrite": "Twitch bestätigt dich für diesen Kanal gerade nicht als Broadcaster oder Moderator, darum wurde nichts geändert. Bist du erst kürzlich Moderator geworden, versuche es in etwa 10 Minuten erneut.",
+        "resume": "Fortsetzen"
+      }
     },
     "dialog": {
       "toWish": "Zum Wunsch",
@@ -2947,8 +3120,10 @@
       "intro": "Ändere Alias oder Laufzeit von „{{ name }}“. Gesendet wird nur, was du änderst.",
       "submit": "Speichern",
       "blocked": {
-        "unchanged": "Alias und Laufzeit sind unverändert."
-      }
+        "unchanged": "Alias und Laufzeit sind unverändert.",
+        "durationUnchanged": "Die Laufzeit ist unverändert."
+      },
+      "introDuration": "Ändere die Laufzeit von „{{ name }}“. Einen Alias bekommt der Wunsch, sobald das Emote feststeht."
     },
     "readd": {
       "title": "Wunsch wieder hinzufügen",

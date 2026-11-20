@@ -37,6 +37,7 @@ import { AdminLogErrorsRow } from './admin-log-errors-row';
 import { openRateLimitDetailsDialog } from './admin-rate-limit-details-dialog';
 import { policyExceptions, providerExceptions, trendSeriesSpecs } from './admin-rate-limit-view';
 import { AdminRosterCard } from './admin-roster-card';
+import { wishCaptureRow, type WishCaptureRow } from './admin-wish-capture';
 
 /** Bar fills are small meaning-carrying graphics — the `dot` tokens owe 3:1, not 4.5:1. */
 const TONE_FILL: Record<UtilizationTone, string> = {
@@ -509,6 +510,53 @@ const DASHBOARD_POLL_INTERVAL_MS = 60_000;
               </div>
             </dl>
           </section>
+
+          <!-- Wish capture (K6): only while one side is on. The worker decides whether redemptions
+               are stored, the Api only shows the interface; a disagreement is the one thing here
+               that must not stay quiet. -->
+          @if (wishCapture(); as capture) {
+            <section class="flex flex-col gap-3 border-t border-border pt-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <h3 class="text-base font-semibold">
+                  {{ 'admin.monitoring.wishCapture.title' | transloco }}
+                </h3>
+                <app-health-marker
+                  [tone]="
+                    capture.state === 'active'
+                      ? 'ok'
+                      : capture.state === 'mismatch'
+                        ? 'warning'
+                        : 'idle'
+                  "
+                  [label]="'admin.monitoring.wishCapture.' + capture.state | transloco"
+                />
+              </div>
+              <dl class="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+                <div class="flex justify-between gap-4 sm:block">
+                  <dt class="text-fg-muted">
+                    {{ 'admin.monitoring.wishCapture.worker' | transloco }}
+                  </dt>
+                  <dd class="text-fg-body">{{ wishCaptureWorkerKey(capture) | transloco }}</dd>
+                </div>
+                <div class="flex justify-between gap-4 sm:block">
+                  <dt class="text-fg-muted">
+                    {{ 'admin.monitoring.wishCapture.api' | transloco }}
+                  </dt>
+                  <dd class="text-fg-body">
+                    {{
+                      (data.apiWishCaptureEnabled
+                        ? 'admin.monitoring.wishCapture.apiOn'
+                        : 'admin.monitoring.wishCapture.apiOff'
+                      ) | transloco
+                    }}
+                  </dd>
+                </div>
+              </dl>
+              @if (wishCaptureHintKey(capture); as hint) {
+                <p class="text-sm text-fg-body">{{ hint | transloco }}</p>
+              }
+            </section>
+          }
         }
       </div>
     </div>
@@ -567,6 +615,11 @@ export class AdminMonitoringPage {
   );
 
   /** Drives the refresh button's disabled state only — never a content swap. */
+  protected readonly wishCapture = computed(() => {
+    const data = this.health();
+    return data ? wishCaptureRow(data.wishCaptureActive, data.apiWishCaptureEnabled) : null;
+  });
+
   protected readonly isLoading = computed(
     () =>
       this.healthResource.isLoading() ||
@@ -842,6 +895,32 @@ export class AdminMonitoringPage {
 
   protected openDetails(snapshot: RateLimitTelemetrySnapshot): void {
     openRateLimitDetailsDialog(this.dialog, snapshot);
+  }
+
+  protected wishCaptureWorkerKey(row: WishCaptureRow): string {
+    switch (row.state) {
+      case 'unknown':
+        return 'admin.monitoring.wishCapture.workerUnknown';
+      case 'active':
+        return 'admin.monitoring.wishCapture.workerOn';
+      default:
+        return row.workerActive
+          ? 'admin.monitoring.wishCapture.workerOn'
+          : 'admin.monitoring.wishCapture.workerOff';
+    }
+  }
+
+  protected wishCaptureHintKey(row: WishCaptureRow): string | null {
+    switch (row.state) {
+      case 'mismatch':
+        return row.workerActive
+          ? 'admin.monitoring.wishCapture.mismatchWorkerOnly'
+          : 'admin.monitoring.wishCapture.mismatchApiOnly';
+      case 'unknown':
+        return 'admin.monitoring.wishCapture.unknownHint';
+      default:
+        return null;
+    }
   }
 
   protected toneFor(status: SevenTvConnectionStatus | WorkerConnectionStatus): HealthTone {

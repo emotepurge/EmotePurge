@@ -13,6 +13,7 @@ import {
 } from '../../core/wishes/wish-input';
 import type { UpdateWishBody, Wish } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
+import { hasEmote, wishTitle } from '../../core/wishes/wish-view';
 import { Button } from '../../shared/ui/button';
 import { openAppDialog } from '../../shared/ui/dialog';
 import { DialogShell } from '../../shared/ui/dialog-shell';
@@ -54,37 +55,54 @@ export function wishEditBody(
  * with the wish's own values. **Only fields the manager changed are sent**, and without a change
  * sending is blocked with the reason. A conflict that says the wish moved on closes the dialog with
  * `stale`: the page owns the section banner and the reload (as for the row's other commands).
+ *
+ * **An open wish (K6).** Without an emote there is no alias to set (Sol-P3-12): the dialog shows only
+ * the duration, checks no alias and sends exactly `{ durationDays }`. An open wish that knows its
+ * emote but has no alias yet (captured from a link) keeps the alias field; left empty it stays unset
+ * and is not sent.
  */
 @Component({
   selector: 'app-wish-edit-dialog',
   imports: [Button, DialogShell, NoticeBanner, TranslocoPipe],
   template: `
     <app-dialog-shell [dialogTitle]="'wishes.edit.title' | transloco">
-      <p class="text-sm text-fg-secondary">
-        {{ 'wishes.edit.intro' | transloco: { name: data.wish.alias || data.wish.emoteName } }}
+      <p class="text-sm break-words text-fg-secondary">
+        @if (aliasEditable) {
+          {{
+            'wishes.edit.intro'
+              | transloco: { name: name || ('wishes.pending.untitled' | transloco) }
+          }}
+        } @else {
+          {{
+            'wishes.edit.introDuration'
+              | transloco: { name: name || ('wishes.pending.untitled' | transloco) }
+          }}
+        }
       </p>
 
-      <div class="flex flex-col gap-1">
-        <label for="wish-edit-alias" class="text-sm text-fg-secondary">
-          {{ 'wishes.entry.alias.label' | transloco }}
-        </label>
-        <input
-          id="wish-edit-alias"
-          type="text"
-          class="app-input"
-          autocomplete="off"
-          spellcheck="false"
-          [value]="alias()"
-          [attr.aria-invalid]="aliasError() ? 'true' : null"
-          [attr.aria-describedby]="aliasError() ? 'wish-edit-alias-error' : null"
-          (input)="setAlias($any($event.target).value)"
-        />
-        @if (aliasError(); as key) {
-          <p id="wish-edit-alias-error" class="text-sm text-danger-fg">
-            {{ key | transloco: { max: aliasMax } }}
-          </p>
-        }
-      </div>
+      @if (aliasEditable) {
+        <div class="flex flex-col gap-1">
+          <label for="wish-edit-alias" class="text-sm text-fg-secondary">
+            {{ 'wishes.entry.alias.label' | transloco }}
+          </label>
+          <input
+            id="wish-edit-alias"
+            type="text"
+            class="app-input"
+            autocomplete="off"
+            spellcheck="false"
+            [value]="alias()"
+            [attr.aria-invalid]="aliasError() ? 'true' : null"
+            [attr.aria-describedby]="aliasError() ? 'wish-edit-alias-error' : null"
+            (input)="setAlias($any($event.target).value)"
+          />
+          @if (aliasError(); as key) {
+            <p id="wish-edit-alias-error" class="text-sm text-danger-fg">
+              {{ key | transloco: { max: aliasMax } }}
+            </p>
+          }
+        </div>
+      }
 
       <div class="flex flex-col gap-1">
         <label for="wish-edit-duration" class="text-sm text-fg-secondary">
@@ -153,6 +171,12 @@ export class WishEditDialog {
   protected readonly aliasMax = WISH_ALIAS_MAX_LENGTH;
   protected readonly durationMax = WISH_DURATION_DAYS_MAX;
 
+  /** An alias needs an emote (plan 2.6 PATCH, Sol-P3-12); an open wish without one edits only its duration. */
+  protected readonly aliasEditable = hasEmote(this.data.wish);
+  /** An empty alias may stay empty: the wish never had one (an open link wish). */
+  private readonly aliasMayStayEmpty = this.data.wish.alias === '';
+  protected readonly name = wishTitle(this.data.wish);
+
   protected readonly alias = signal(this.data.wish.alias);
   protected readonly duration = signal(String(this.data.wish.durationDays));
   /** A field the server refused, as the translation key to show there; cleared by the next edit. */
@@ -163,7 +187,11 @@ export class WishEditDialog {
   protected readonly disabledFeature = signal(false);
   protected readonly saving = signal(false);
 
-  private readonly aliasResult = computed(() => validateWishAlias(this.alias()));
+  private readonly aliasResult = computed(() =>
+    !this.aliasEditable || (this.aliasMayStayEmpty && this.alias() === '')
+      ? { ok: true as const, alias: this.data.wish.alias }
+      : validateWishAlias(this.alias()),
+  );
   private readonly durationResult = computed(() => parseWishDurationDays(this.duration()));
 
   protected readonly aliasError = computed(() => {
@@ -204,7 +232,12 @@ export class WishEditDialog {
     if (!this.durationResult().ok) {
       return 'wishes.dialog.blocked.duration';
     }
-    return this.body() === null ? 'wishes.edit.blocked.unchanged' : null;
+    if (this.body() === null) {
+      return this.aliasEditable
+        ? 'wishes.edit.blocked.unchanged'
+        : 'wishes.edit.blocked.durationUnchanged';
+    }
+    return null;
   });
 
   protected setAlias(value: string): void {

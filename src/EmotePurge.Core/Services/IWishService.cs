@@ -11,6 +11,16 @@ namespace EmotePurge.Core.Services;
 /// writes nothing, audits nothing and publishes nothing. The handler maps
 /// <see cref="WishCommandResult.Outcome"/> to a status and an error code and decides nothing itself.
 /// </para>
+/// <para>
+/// <b>Redeemer data (K6, plan #486 2.4a).</b> Every method that answers a <see cref="WishDto"/> takes an optional
+/// <see cref="WishCaptureAccess"/>, the answer of <see cref="IChannelAccessService.ResolveWishCaptureAccessAsync"/>.
+/// With one, the method works on its <see cref="WishCaptureAccess.ChannelId"/> instead of resolving the name again, so
+/// a rename between the check and the query cannot hit another row; the redeemer fields of a wish with source
+/// <c>irc</c> (<see cref="WishDto.RequestText"/>, <see cref="WishDto.RequestedName"/>,
+/// <see cref="WishDto.RequesterLogin"/>, <see cref="WishDto.RewardLabel"/>) are filled only when the caller is
+/// confirmed on that row's current Twitch id. Without one (or unconfirmed) they are null. Access to the commands
+/// themselves stays the K1 manager check.
+/// </para>
 /// </summary>
 public interface IWishService
 {
@@ -58,15 +68,26 @@ public interface IWishService
     /// <see cref="WishOutcome.DurationOutOfRange"/>, <see cref="WishOutcome.ChannelNotFound"/>.
     /// </summary>
     Task<WishCommandResult> AdoptAsync(
-        string channelName, AdoptWishRequest request, AuditActor actor, CancellationToken cancellationToken = default);
+        string channelName,
+        AdoptWishRequest request,
+        AuditActor actor,
+        WishCaptureAccess? access = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// PATCH: changes alias and/or duration while the wish may still be edited (<c>approved</c>, <c>failed</c>;
     /// <c>pending</c> from K6 on). Audited as <c>wish.update</c>. Refusals: <see cref="WishOutcome.DurationOutOfRange"/>,
     /// <see cref="WishOutcome.AliasInvalid"/> and the common ones of the transition commands (see <see cref="ExtendAsync"/>).
+    /// An open wish without an emote takes only the duration: a sent alias is <see cref="WishOutcome.StateConflict"/>
+    /// (plan #486 2.6, P3-12). A change of an open wish starts the reconcile after the commit.
     /// </summary>
     Task<WishCommandResult> UpdateAsync(
-        string channelName, long wishId, UpdateWishRequest request, AuditActor actor, CancellationToken cancellationToken = default);
+        string channelName,
+        long wishId,
+        UpdateWishRequest request,
+        AuditActor actor,
+        WishCaptureAccess? access = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Extends an <c>active</c> or <c>presented</c> wish by the channel's default duration (E12: from the current
@@ -80,19 +101,23 @@ public interface IWishService
     /// success counts the decision (E25) and publishes <c>wish.changed</c> once.
     /// </para>
     /// </summary>
-    Task<WishCommandResult> ExtendAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
+    Task<WishCommandResult> ExtendAsync(
+        string channelName, long wishId, AuditActor actor, WishCaptureAccess? access = null, CancellationToken cancellationToken = default);
 
     /// <summary><c>active</c> or <c>presented</c> to <c>kept</c>; bot ownership ends. Audited as <c>wish.keep</c>.</summary>
-    Task<WishCommandResult> KeepAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
+    Task<WishCommandResult> KeepAsync(
+        string channelName, long wishId, AuditActor actor, WishCaptureAccess? access = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// <c>approved</c>, <c>failed</c>, and <c>presented</c> without a linked slot, to <c>closed</c>. Audited as
     /// <c>wish.close</c>.
     /// </summary>
-    Task<WishCommandResult> CloseAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
+    Task<WishCommandResult> CloseAsync(
+        string channelName, long wishId, AuditActor actor, WishCaptureAccess? access = null, CancellationToken cancellationToken = default);
 
     /// <summary><c>failed</c> to <c>approved</c> with a fresh approval time. Audited as <c>wish.retry</c>.</summary>
-    Task<WishCommandResult> RetryAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
+    Task<WishCommandResult> RetryAsync(
+        string channelName, long wishId, AuditActor actor, WishCaptureAccess? access = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// <c>removed</c> or <c>removed_externally</c> back to <c>approved</c>, timed (duration or the channel default) or
@@ -102,7 +127,12 @@ public interface IWishService
     /// emote runs again, with its id).
     /// </summary>
     Task<WishCommandResult> ReAddAsync(
-        string channelName, long wishId, ReAddWishRequest request, AuditActor actor, CancellationToken cancellationToken = default);
+        string channelName,
+        long wishId,
+        ReAddWishRequest request,
+        AuditActor actor,
+        WishCaptureAccess? access = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The browser engine reports a removal of the entry named in <paramref name="request"/> (plan #485 2.1a, the
@@ -116,7 +146,12 @@ public interface IWishService
     /// Audited as <c>wish.remove</c> with slot, generation and set. Further refusals as for the transition commands.
     /// </summary>
     Task<WishCommandResult> CompleteRemovalAsync(
-        string channelName, long wishId, CompleteWishRemovalRequest request, AuditActor actor, CancellationToken cancellationToken = default);
+        string channelName,
+        long wishId,
+        CompleteWishRemovalRequest request,
+        AuditActor actor,
+        WishCaptureAccess? access = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// "Check again" (<c>presented</c> with reason <c>unconfirmed</c>). Its only transition needs the bot, which K1
@@ -124,15 +159,59 @@ public interface IWishService
     /// </summary>
     Task<WishCommandResult> RecheckAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
 
-    /// <summary>One page of the channel's wishes in a view; null when the channel is unknown.</summary>
+    /// <summary>
+    /// K6: decides an open wish (plan #486 2.6). Only from <c>pending</c>, else <see cref="WishOutcome.StateConflict"/>.
+    /// The emote is the body's id (shape as for a manual entry, then canonical, 2.5a), else the wish's; without either
+    /// <see cref="WishOutcome.EmoteRequired"/>. Then, in this order: (1) a wish of the emote runs: the open wish ends as
+    /// <c>merged</c> into it and the running wish is extended exactly like <see cref="ExtendAsync"/> (both rows locked in
+    /// id order behind the channel row, the running one re-read; <c>wish.approve</c> and <c>wish.extend</c> in one
+    /// transaction; <see cref="WishCommandResult.ExtendedExpiresAtUtc"/> carries its new expiry), or, while the running
+    /// wish has no expiry to extend, <see cref="WishOutcome.RunningNotExtendable"/> with its id and nothing written;
+    /// (2) the emote is in the set already: <see cref="WishOutcome.EmoteAlreadyInSet"/>; (3) <c>approved</c> with the
+    /// alias of the body, else the wish's, else the requested name, else the emote name
+    /// (<see cref="WishOutcome.AliasInvalid"/> when none is valid). Further refusals:
+    /// <see cref="WishOutcome.EmoteIdInvalid"/>, <see cref="WishOutcome.DurationOutOfRange"/> and the common ones.
+    /// </summary>
+    Task<WishCommandResult> ApproveAsync(
+        string channelName,
+        long wishId,
+        ApproveWishRequest request,
+        AuditActor actor,
+        WishCaptureAccess? access = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>K6: <c>pending</c> to <c>rejected</c>. Audited as <c>wish.reject</c>.</summary>
+    Task<WishCommandResult> RejectAsync(
+        string channelName, long wishId, AuditActor actor, WishCaptureAccess? access = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// K6: releases an automatic capture link. Only <c>active</c> with source <c>irc</c> and link origin <c>auto</c>, else
+    /// <see cref="WishOutcome.StateConflict"/> (also for <c>presented</c>: the reconcile's date correction may release
+    /// that one, a manager may not). Back to <c>pending</c> through <see cref="WishUnlinkReset.ToPending"/>, the pair
+    /// (wish, slot) goes into <c>WishSlotExclusions</c>, audited as <c>wish.unlink</c> (<c>wishId</c>,
+    /// <c>fromStatus</c>, <c>slotId</c>), and the reconcile runs after the commit.
+    /// </summary>
+    Task<WishCommandResult> UnlinkAsync(
+        string channelName, long wishId, AuditActor actor, WishCaptureAccess? access = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// One page of the channel's wishes in a view; null when the channel is unknown. <see cref="WishListView.Open"/>
+    /// lists <c>pending</c> first, oldest first, then the rest by expiry as the other views.
+    /// </summary>
     Task<PagedResult<WishDto>?> ListAsync(
-        string channelName, WishListView view, int page, int pageSize, CancellationToken cancellationToken = default);
+        string channelName,
+        WishListView view,
+        int page,
+        int pageSize,
+        WishCaptureAccess? access = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// One wish of the channel with its usage (E4, E5, E16), evaluated now; null when the channel is unknown or the
     /// wish belongs to another channel. A wish without a start has no usage (<see cref="WishDetailDto.Usage"/> null).
     /// </summary>
-    Task<WishDetailDto?> GetAsync(string channelName, long wishId, CancellationToken cancellationToken = default);
+    Task<WishDetailDto?> GetAsync(
+        string channelName, long wishId, WishCaptureAccess? access = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The entries "take over from the set" may pick (plan #485 2.1a): the channel's slots that
@@ -185,6 +264,15 @@ public enum WishOutcome
     RequesterInvalid,
     SettingsOutOfRange,
 
+    /// <summary>K6 <c>approve</c>: neither the body nor the open wish names an emote.</summary>
+    EmoteRequired,
+
+    /// <summary>
+    /// K6 <c>approve</c>: a wish of the emote runs but has no expiry to extend (<c>approved</c>, <c>unconfirmed</c>);
+    /// <see cref="WishCommandResult.ConflictingWishId"/> names it. Nothing is written, the open wish stays decidable.
+    /// </summary>
+    RunningNotExtendable,
+
     /// <summary>The start date of an adoption lies in the future or before the slot's <c>AddedAt</c>.</summary>
     StartsAtInvalid,
 
@@ -221,7 +309,8 @@ public enum WishOutcome
 /// <see cref="Settings"/> on success, <see cref="SlotIds"/> and <see cref="ConflictingWishId"/> on the
 /// matching conflicts (the running wish of <see cref="WishOutcome.AlreadyRunning"/> and
 /// <see cref="WishOutcome.EmoteAlreadyInSet"/>, the holder of <see cref="WishOutcome.SlotAlreadyLinked"/>),
-/// <see cref="SetFull"/> as the hint of a manual entry.
+/// <see cref="SetFull"/> as the hint of a manual entry, <see cref="ExtendedExpiresAtUtc"/> the new expiry of the running
+/// wish an approval was merged into (K6).
 /// </summary>
 public sealed record WishCommandResult(
     WishOutcome Outcome,
@@ -229,7 +318,8 @@ public sealed record WishCommandResult(
     WishSettingsDto? Settings = null,
     IReadOnlyList<string>? SlotIds = null,
     long? ConflictingWishId = null,
-    bool SetFull = false)
+    bool SetFull = false,
+    DateTime? ExtendedExpiresAtUtc = null)
 {
     public bool IsSuccess => Outcome == WishOutcome.Success;
 
@@ -245,6 +335,14 @@ public sealed record WishCommandResult(
 /// <see cref="StartsAtAuthoritative"/> is true (plan #485 2.1a, held by a test over every way a generation is
 /// bound). <see cref="ImageUrl"/> is the channel's stored image of the same 7TV emote, null when the channel never
 /// had the emote in its set or the row carries no image.
+/// </para>
+/// <para>
+/// K6 (plan #486 2.6): <see cref="SevenTvEmoteId"/>, <see cref="EmoteName"/> and <see cref="Alias"/> may be empty for an
+/// open wish, meaning "not known yet" (2.8a). <see cref="RequestText"/>, <see cref="RequestedName"/>,
+/// <see cref="RewardLabel"/> and, for a wish with source <c>irc</c>, <see cref="RequesterLogin"/> are redeemer data and
+/// null unless the caller is confirmed on the channel's Twitch id (2.4a); <see cref="RewardLabel"/> is null as well once
+/// the reward was forgotten. <see cref="MatchKind"/> is one of <c>WishMatchKind</c>, null for a wish not captured in
+/// chat. <see cref="MergedIntoWishId"/> names the running wish a <c>merged</c> wish went into.
 /// </para>
 /// </summary>
 public record WishDto(
@@ -274,7 +372,12 @@ public record WishDto(
     bool BotWritePending,
     DateTime? BotNextAttemptAtUtc,
     DateTime? RemovalQueuedAtUtc,
-    string Mode);
+    string Mode,
+    string? RequestText = null,
+    string? RequestedName = null,
+    string? MatchKind = null,
+    string? RewardLabel = null,
+    long? MergedIntoWishId = null);
 
 /// <summary>
 /// The detail view: the <see cref="WishDto"/> plus the usage of its window. Serialized flat, the usage as one
@@ -333,13 +436,17 @@ public sealed record WishAdoptableSlotDto(
     long? RunningWishId,
     bool RunningWishAdoptable);
 
-/// <summary>The channel's wish settings; the defaults of <see cref="Entities.WishLimits"/> while no row exists.</summary>
+/// <summary>
+/// The channel's wish settings; the defaults of <see cref="Entities.WishLimits"/> while no row exists.
+/// <see cref="PendingExpiryDays"/> (K6) is how long a captured wish may stay <c>pending</c>.
+/// </summary>
 public sealed record WishSettingsDto(
     int DefaultDurationDays,
     int ProbationLeadDays,
     decimal? ProtectionThresholdPerDay,
     bool BotModeEnabled,
-    string? BotSuspendedReason);
+    string? BotSuspendedReason,
+    int PendingExpiryDays = Entities.WishLimits.DefaultPendingExpiryDays);
 
 /// <summary>Body of the manual entry; a missing duration takes the channel's default.</summary>
 public sealed record CreateWishRequest(
@@ -385,6 +492,12 @@ public static class WishRemovalEvidence
     public const string Absent = "absent";
 }
 
+/// <summary>
+/// Body of the K6 <c>approve</c> (plan #486 2.6): every field optional. A missing id takes the wish's, a missing duration
+/// the wish's; alias and emote name are derived from each other as in a manual entry.
+/// </summary>
+public sealed record ApproveWishRequest(string? SevenTvEmoteId, string? EmoteName, string? Alias, int? DurationDays);
+
 /// <summary>Body of the PATCH: a null field stays as it is.</summary>
 public sealed record UpdateWishRequest(string? Alias, int? DurationDays);
 
@@ -404,10 +517,12 @@ public static class WishReAddMode
 /// <summary>
 /// Body of the settings write: a null threshold switches protection off. With
 /// <see cref="KeepProtectionThreshold"/> (the threshold was not sent, plan #485 2.1a) the stored threshold stays and
-/// <see cref="ProtectionThresholdPerDay"/> is ignored.
+/// <see cref="ProtectionThresholdPerDay"/> is ignored. A null <see cref="PendingExpiryDays"/> (not sent, K6 plan #486
+/// 2.8) keeps the stored value; a value must lie in 1 to 90.
 /// </summary>
 public sealed record UpdateWishSettingsRequest(
     int DefaultDurationDays,
     int ProbationLeadDays,
     decimal? ProtectionThresholdPerDay,
-    bool KeepProtectionThreshold = false);
+    bool KeepProtectionThreshold = false,
+    int? PendingExpiryDays = null);

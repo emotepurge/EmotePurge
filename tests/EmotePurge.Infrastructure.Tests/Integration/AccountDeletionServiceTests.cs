@@ -766,6 +766,110 @@ public class AccountDeletionServiceTests(PostgresFixture fixture, RedisFixture r
         DetailsJson = detailsJson
     };
 
+    // K6 (plan T8, AK64, W10): the chat-captured request data of the account's wishes goes with the requester
+    // fields, a learning candidate of the account's login loses all five candidate fields (the session stays),
+    // and the content-free receipt stays. Other accounts' wishes and candidates are untouched.
+    [Fact]
+    public async Task Delete_ClearsTheCapturedRequestData_AndTheLearningCandidateOfTheAccount()
+    {
+        var user = await SeedUserAsync("acctdelcapture");
+        var other = await SeedUserAsync("acctdelcaptureother");
+        var (channel, _, _, _) = await SeedChannelWithSessionsAsync("acctdelcapturech");
+        var (otherChannel, _, _, _) = await SeedChannelWithSessionsAsync("acctdelcapturech2");
+        long own, foreign;
+        await using (var seedDb = fixture.CreateDbContext())
+        {
+            var ownWish = CapturedWish(channel.Id, user.Id, user.TwitchUsername, "msg-own");
+            var foreignWish = CapturedWish(channel.Id, other.Id, other.TwitchUsername, "msg-foreign");
+            seedDb.Wishes.AddRange(ownWish, foreignWish);
+            seedDb.WishCaptureReceipts.Add(new WishCaptureReceipt { ChannelId = channel.Id, IrcMessageId = "msg-own", SeenAtUtc = DateTime.UtcNow });
+            seedDb.WishRewardLearnings.AddRange(
+                Learning(channel.Id, user.TwitchUsername),
+                Learning(otherChannel.Id, other.TwitchUsername));
+            await seedDb.SaveChangesAsync();
+            (own, foreign) = (ownWish.Id, foreignWish.Id);
+        }
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            Assert.Equal(AccountDeletionOutcome.Deleted, (await CreateService(db).DeleteAsync(user.Id, Admin, AccountDeletionReason.AdminRequest, null)).Outcome);
+        }
+
+        await using var verify = fixture.CreateDbContext();
+        var cleared = await verify.Wishes.AsNoTracking().SingleAsync(w => w.Id == own);
+        Assert.Equal(
+            ((string?)null, (string?)null, (string?)null, (string?)null, (string?)null),
+            (cleared.RequesterTwitchUserId, cleared.RequesterLogin, cleared.RequestText, cleared.RequestedName, cleared.IrcMessageId));
+        Assert.Equal(WishMatchKind.Name, cleared.MatchKind);
+        var kept = await verify.Wishes.AsNoTracking().SingleAsync(w => w.Id == foreign);
+        Assert.Equal(("wish text", "Requested", "msg-foreign"), (kept.RequestText, kept.RequestedName, kept.IrcMessageId));
+        Assert.True(await verify.WishCaptureReceipts.AnyAsync(r => r.ChannelId == channel.Id && r.IrcMessageId == "msg-own"));
+
+        var ownLearning = await verify.WishRewardLearnings.AsNoTracking().SingleAsync(l => l.ChannelId == channel.Id);
+        Assert.Equal(
+            ((Guid?)null, (string?)null, (string?)null, (string?)null, (DateTime?)null),
+            (ownLearning.CandidateId, ownLearning.CandidateRewardId, ownLearning.CandidateText, ownLearning.CandidateLogin, ownLearning.CandidateSeenAtUtc));
+        Assert.NotEqual(Guid.Empty, ownLearning.SessionId);
+        var otherLearning = await verify.WishRewardLearnings.AsNoTracking().SingleAsync(l => l.ChannelId == otherChannel.Id);
+        Assert.NotNull(otherLearning.CandidateId);
+        Assert.Equal(other.TwitchUsername, otherLearning.CandidateLogin);
+    }
+
+    [Fact]
+    public async Task Delete_ClearsTheCapturedData_OfAWishNoLongerHeldByARequesterId_OnlyThroughItsOwnRules()
+    {
+        // A wish whose requester id was already cleared is not matched again: it is the retention's to clear.
+        var user = await SeedUserAsync("acctdelcaptureold");
+        var (channel, _, _, _) = await SeedChannelWithSessionsAsync("acctdelcaptureoldch");
+        long orphan;
+        await using (var seedDb = fixture.CreateDbContext())
+        {
+            var wish = CapturedWish(channel.Id, requesterId: null, user.TwitchUsername, "msg-orphan");
+            seedDb.Wishes.Add(wish);
+            await seedDb.SaveChangesAsync();
+            orphan = wish.Id;
+        }
+
+        await using (var db = fixture.CreateDbContext())
+        {
+            await CreateService(db).DeleteAsync(user.Id, Admin, AccountDeletionReason.AdminRequest, null);
+        }
+
+        await using var verify = fixture.CreateDbContext();
+        Assert.Equal("wish text", (await verify.Wishes.AsNoTracking().SingleAsync(w => w.Id == orphan)).RequestText);
+    }
+
+    private static Wish CapturedWish(string channelId, string? requesterId, string login, string messageId) => new()
+    {
+        ChannelId = channelId,
+        SevenTvEmoteId = string.Empty,
+        EmoteName = string.Empty,
+        Alias = string.Empty,
+        Source = WishSource.Irc,
+        Status = WishStatus.Pending,
+        StatusChangedAtUtc = DateTime.UtcNow,
+        CreatedAtUtc = DateTime.UtcNow,
+        RequesterTwitchUserId = requesterId,
+        RequesterLogin = login,
+        RequestText = "wish text",
+        RequestedName = "Requested",
+        IrcMessageId = messageId,
+        MatchKind = WishMatchKind.Name
+    };
+
+    private static WishRewardLearning Learning(string channelId, string login) => new()
+    {
+        ChannelId = channelId,
+        SessionId = Guid.NewGuid(),
+        StartedAtUtc = DateTime.UtcNow,
+        ExpiresAtUtc = DateTime.UtcNow.AddMinutes(10),
+        CandidateId = Guid.NewGuid(),
+        CandidateRewardId = "reward-1",
+        CandidateText = "candidate text",
+        CandidateLogin = login.ToLowerInvariant(),
+        CandidateSeenAtUtc = DateTime.UtcNow
+    };
+
     private static Wish AccountWish(string channelId, string status, string? requesterId, string requesterLogin) => new()
     {
         ChannelId = channelId,

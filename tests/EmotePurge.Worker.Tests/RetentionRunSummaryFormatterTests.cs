@@ -27,7 +27,7 @@ public class RetentionRunSummaryFormatterTests
             "vote sessions deleted: 0, votes deleted: 0, ballot entries deleted: 0; " +
             "audit log entries deleted: 0; " +
             "backfill runs deleted: 0; " +
-            "ended wishes deleted: 0, wish requesters cleared: 0; " +
+            "ended wishes deleted: 0, wish requesters cleared: 0, wish capture gaps deleted: 0; " +
             "channels restamped: 0, purged: 0, still active: 0, not found: 0, failed: 0, " +
             "emotes deleted: 0, usage rows deleted: 0, live days deleted: 0, vote sessions deleted: 0, " +
             "votes deleted: 0, observation intervals deleted: 0; " +
@@ -70,7 +70,8 @@ public class RetentionRunSummaryFormatterTests
             SystemLoadRawSamplesWithoutHourlyRow: 26,
             SystemLoadHourlyRowsDeleted: 27,
             EndedWishesDeleted: 28,
-            WishRequestersCleared: 29);
+            WishRequestersCleared: 29,
+            WishCaptureGapsDeleted: 30);
 
         var line = RetentionRunSummaryFormatter.Format(summary);
 
@@ -81,7 +82,7 @@ public class RetentionRunSummaryFormatterTests
             "vote sessions deleted: 9, votes deleted: 10, ballot entries deleted: 11; " +
             "audit log entries deleted: 12; " +
             "backfill runs deleted: 24; " +
-            "ended wishes deleted: 28, wish requesters cleared: 29; " +
+            "ended wishes deleted: 28, wish requesters cleared: 29, wish capture gaps deleted: 30; " +
             "channels restamped: 13, purged: 14, still active: 15, not found: 16, failed: 17, " +
             "emotes deleted: 18, usage rows deleted: 19, live days deleted: 20, vote sessions deleted: 21, " +
             "votes deleted: 22, observation intervals deleted: 23; " +

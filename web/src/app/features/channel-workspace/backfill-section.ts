@@ -382,60 +382,68 @@ interface SetView {
         </div>
 
         @if (status.lastRun; as run) {
-          <app-backfill-run-status kind="last" [run]="run" />
+          <app-backfill-run-status class="mt-2" kind="last" [run]="run" />
         }
       } @else if (statusReadError()) {
         <app-notice-banner variant="error">{{ statusErrorKey() | transloco }}</app-notice-banner>
       } @else {
         <app-skeleton-rows [count]="3" />
       }
-    </section>
 
-    @if (removalAnnouncement(); as removal) {
-      <!-- Replaces the section it reports on, under the same heading, so the trigger that vanished
-           with it hands focus to the outcome rather than to <body>. -->
-      <section class="flex flex-col gap-4" aria-labelledby="backfill-imported-heading">
-        <h3 id="backfill-imported-heading" class="text-base font-semibold">
-          {{ 'backfill.remove.title' | transloco }}
-        </h3>
-        <p #removalConfirmation tabindex="-1" class="text-sm">
-          {{ removal.key | transloco: { count: removal.count } }}
-        </p>
-      </section>
-    } @else if (importedIntervals().length > 0) {
-      <section class="flex flex-col gap-4" aria-labelledby="backfill-imported-heading">
-        <h3 id="backfill-imported-heading" class="text-base font-semibold">
-          {{ 'backfill.remove.title' | transloco }}
-        </h3>
-        <p class="text-sm text-fg-secondary">{{ 'backfill.remove.intro' | transloco }}</p>
-        <ul class="flex flex-col gap-1 text-sm">
-          @for (interval of importedIntervals(); track interval.key) {
-            <li>{{ 'backfill.remove.interval' | transloco: interval }}</li>
-          }
-        </ul>
-        <div class="flex flex-col items-start gap-2">
-          <button
-            type="button"
-            appButton="danger"
-            [disabled]="!canRemove()"
-            [attr.aria-describedby]="removeBlockedReasonKey() ? 'backfill-remove-blocked' : null"
-            (click)="remove()"
+      <!-- A sub-block of the backfill section (it removes what the runs imported), nested so the
+           region and the heading level say the same as the look. -->
+      @if (removalAnnouncement(); as removal) {
+        <!-- Replaces the section it reports on, under the same heading, so the trigger that vanished
+             with it hands focus to the outcome rather than to <body>. -->
+        <section class="mt-2 flex flex-col gap-4" aria-labelledby="backfill-imported-heading">
+          <h4
+            id="backfill-imported-heading"
+            class="text-[11px] font-semibold tracking-[0.13em] text-fg-secondary uppercase"
           >
-            {{ 'backfill.remove.action' | transloco }}
-          </button>
-          @if (removeBlockedReasonKey(); as reasonKey) {
-            <p id="backfill-remove-blocked" class="text-sm text-fg-muted">
-              {{ reasonKey | transloco }}
-            </p>
-          }
-          @if (removeErrorKey(); as key) {
-            <app-notice-banner variant="error" class="block">{{
-              key | transloco
-            }}</app-notice-banner>
-          }
-        </div>
-      </section>
-    }
+            {{ 'backfill.remove.title' | transloco }}
+          </h4>
+          <p #removalConfirmation tabindex="-1" class="text-sm">
+            {{ removal.key | transloco: { count: removal.count } }}
+          </p>
+        </section>
+      } @else if (importedIntervals().length > 0) {
+        <section class="mt-2 flex flex-col gap-4" aria-labelledby="backfill-imported-heading">
+          <h4
+            id="backfill-imported-heading"
+            class="text-[11px] font-semibold tracking-[0.13em] text-fg-secondary uppercase"
+          >
+            {{ 'backfill.remove.title' | transloco }}
+          </h4>
+          <p class="text-sm text-fg-secondary">{{ 'backfill.remove.intro' | transloco }}</p>
+          <ul class="flex flex-col gap-1 text-sm">
+            @for (interval of importedIntervals(); track interval.key) {
+              <li>{{ 'backfill.remove.interval' | transloco: interval }}</li>
+            }
+          </ul>
+          <div class="flex flex-col items-start gap-2">
+            <button
+              type="button"
+              appButton="danger"
+              [disabled]="!canRemove()"
+              [attr.aria-describedby]="removeBlockedReasonKey() ? 'backfill-remove-blocked' : null"
+              (click)="remove()"
+            >
+              {{ 'backfill.remove.action' | transloco }}
+            </button>
+            @if (removeBlockedReasonKey(); as reasonKey) {
+              <p id="backfill-remove-blocked" class="text-sm text-fg-muted">
+                {{ reasonKey | transloco }}
+              </p>
+            }
+            @if (removeErrorKey(); as key) {
+              <app-notice-banner variant="error" class="block">{{
+                key | transloco
+              }}</app-notice-banner>
+            }
+          </div>
+        </section>
+      }
+    </section>
   `,
 })
 export class BackfillSection {

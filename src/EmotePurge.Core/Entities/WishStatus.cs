@@ -63,6 +63,15 @@ public static class WishStatus
     public static readonly IReadOnlySet<string> Ended =
         new HashSet<string>(StringComparer.Ordinal) { Rejected, Expired, Removed, RemovedExternally, Kept, Closed, Merged };
 
+    /// <summary>
+    /// The states in which a wish may carry no emote yet: <see cref="Wish.SevenTvEmoteId"/>,
+    /// <see cref="Wish.EmoteName"/> and <see cref="Wish.Alias"/> may hold the empty placeholder here and only
+    /// here (K6, CHECK <c>CK_Wishes_EmotePlaceholder</c>). Every transition out of <see cref="Pending"/> into
+    /// another state fills all three in the same update.
+    /// </summary>
+    public static readonly IReadOnlySet<string> EmotePlaceholderAllowed =
+        new HashSet<string>(StringComparer.Ordinal) { Pending, Rejected, Expired };
+
     public static bool IsRunning(string status) => Running.Contains(status);
 
     public static bool IsEnded(string status) => Ended.Contains(status);
@@ -113,6 +122,31 @@ public static class WishSource
     public const string Adopted = "adopted";
 }
 
+/// <summary>The values of <see cref="Wish.MatchKind"/>: what the parser read from a captured redemption text (K6).</summary>
+public static class WishMatchKind
+{
+    /// <summary>A 7TV emote link or id; the wish carries the id.</summary>
+    public const string Link = "link";
+
+    /// <summary>A bare name; the wish carries <see cref="Wish.RequestedName"/>, no id.</summary>
+    public const string Name = "name";
+
+    /// <summary>Nothing usable; the wish carries the hint <c>unparsed</c>.</summary>
+    public const string None = "none";
+
+    public static readonly IReadOnlyList<string> All = [Link, Name, None];
+}
+
+/// <summary>The values of <see cref="WishCaptureGap.Reason"/> (K6).</summary>
+public static class WishCaptureGapReason
+{
+    public const string Disconnect = "disconnect";
+    public const string WorkerRestart = "worker_restart";
+    public const string NotJoined = "not_joined";
+
+    public static readonly IReadOnlyList<string> All = [Disconnect, WorkerRestart, NotJoined];
+}
+
 /// <summary>The values of <see cref="Wish.LinkOrigin"/>: how the link to the slot came about.</summary>
 public static class WishLinkOrigin
 {
@@ -145,6 +179,37 @@ public static class WishLimits
     public const int RequesterLoginMaxLength = 25;
     public const int SevenTvEmoteIdMaxLength = 32;
 
+    // Chat capture (K6, plan #486 2.8).
+
+    /// <summary>Learned rewards per channel.</summary>
+    public const int MaxRewardsPerChannel = 10;
+
+    /// <summary>Open (<c>pending</c>) wishes per channel; above it a redemption is counted and discarded.</summary>
+    public const int MaxPendingPerChannel = 200;
+
+    /// <summary>Bounds and default of <c>Wishes:Capture:MaxPendingPerRequester</c> (open wishes per viewer and channel).</summary>
+    public const int MaxPendingPerRequesterMin = 1;
+    public const int MaxPendingPerRequesterMax = 50;
+    public const int DefaultMaxPendingPerRequester = 3;
+
+    /// <summary>Bounds and default of <see cref="ChannelWishSettings.PendingExpiryDays"/>.</summary>
+    public const int PendingExpiryDaysMin = 1;
+    public const int PendingExpiryDaysMax = 90;
+    public const int DefaultPendingExpiryDays = 14;
+
+    public const int RewardLabelMaxLength = 50;
+
+    /// <summary>A captured redemption text, and the learning candidate's text.</summary>
+    public const int RequestTextMaxLength = 500;
+
+    public const int RequestedNameMaxLength = 100;
+
+    /// <summary>Twitch's <c>custom-reward-id</c> tag.</summary>
+    public const int RewardIdMaxLength = 64;
+
+    /// <summary>Twitch's <c>id</c> tag of a message.</summary>
+    public const int IrcMessageIdMaxLength = 64;
+
     /// <summary>E10: how long after an external removal a returning slot is still taken over.</summary>
     public static readonly TimeSpan AdoptionWindow = TimeSpan.FromHours(6);
 
@@ -159,4 +224,18 @@ public static class WishLimits
     /// authoritative 7TV date), counted from the expiry and from the channel's last full sync.
     /// </summary>
     public static readonly TimeSpan ProvisionalStartGrace = TimeSpan.FromHours(24);
+
+    // Chat capture durations (K6).
+
+    /// <summary>How long a learning session waits for its candidate and the manager's confirmation.</summary>
+    public static readonly TimeSpan LearningWindow = TimeSpan.FromMinutes(10);
+
+    /// <summary>How long a dedupe receipt (<see cref="WishCaptureReceipt"/>) is kept.</summary>
+    public static readonly TimeSpan CaptureReceiptRetention = TimeSpan.FromDays(7);
+
+    /// <summary>How far back the capture gaps are shown.</summary>
+    public static readonly TimeSpan CaptureGapDisplayWindow = TimeSpan.FromDays(14);
+
+    /// <summary>Shorter stretches without capture are not stored.</summary>
+    public static readonly TimeSpan MinCaptureGap = TimeSpan.FromSeconds(60);
 }

@@ -244,6 +244,116 @@ public partial class DataRetentionServiceTests
         Assert.False(await db.Wishes.AnyAsync(w => w.RequesterTwitchUserId != null || w.RequesterLogin != null));
     }
 
+    // K6 (plan T8, AK62, AK64): the chat capture's request data goes with the requester under the same rules, in
+    // the same update; a row held only by the new columns counts as holding data; the content-free receipt stays.
+    [Fact]
+    public async Task CapturedRequestData_IsClearedWithTheRequester_PastThePeriodOnly_AndADryRunChangesNothing()
+    {
+        var channel = await SeedChannelAsync("wishcapturedata", isBotActive: true, deactivatedAtUtc: null);
+        var days = RetentionPolicy.WishRequester.TotalDays;
+        var cap = RetentionPolicy.WishNeverActiveRequesterCap.TotalDays;
+        var due = new List<long>
+        {
+            await SeedRetentionWishAsync(channel.Id, WishStatus.Removed, endedDaysAgo: days + 1, firstActivatedDaysAgo: 60, captured: true),
+            // E14 (c): an open wish that never became active, created past the cap.
+            await SeedRetentionWishAsync(channel.Id, WishStatus.Pending, createdDaysAgo: cap + 1, captured: true),
+            // Held only by the capture columns (the requester was cleared by an account deletion earlier).
+            await SeedRetentionWishAsync(channel.Id, WishStatus.Rejected, endedDaysAgo: days + 1, withRequester: false, captured: true)
+        };
+        var inside = new List<long>
+        {
+            await SeedRetentionWishAsync(channel.Id, WishStatus.Removed, endedDaysAgo: days - 1, firstActivatedDaysAgo: 60, captured: true),
+            await SeedRetentionWishAsync(channel.Id, WishStatus.Pending, createdDaysAgo: cap - 1, captured: true),
+            await SeedRetentionWishAsync(channel.Id, WishStatus.Rejected, endedDaysAgo: days - 1, withRequester: false, captured: true)
+        };
+        await using (var seed = CreateDbContext())
+        {
+            seed.WishCaptureReceipts.Add(new WishCaptureReceipt { ChannelId = channel.Id, IrcMessageId = "receipt-1", SeenAtUtc = _now.AddDays(-1) });
+            await seed.SaveChangesAsync();
+        }
+
+        var before = await WishSnapshotAsync();
+        var dry = await RunAsync(enforce: false);
+        Assert.Equal(before, await WishSnapshotAsync());
+        var enforced = await RunAsync(enforce: true);
+
+        Assert.Equal(due.Count, dry.WishRequestersCleared);
+        Assert.Equal(due.Count, enforced.WishRequestersCleared);
+        await using var db = CreateDbContext();
+        var rows = await db.Wishes.AsNoTracking().ToDictionaryAsync(w => w.Id);
+        Assert.All(due, id => Assert.Equal(
+            ((string?)null, (string?)null, (string?)null, (string?)null, (string?)null),
+            (rows[id].RequesterTwitchUserId, rows[id].RequesterLogin, rows[id].RequestText, rows[id].RequestedName, rows[id].IrcMessageId)));
+        Assert.All(inside, id => Assert.NotNull(rows[id].RequestText));
+        Assert.All(inside, id => Assert.NotNull(rows[id].RequestedName));
+        Assert.All(inside, id => Assert.NotNull(rows[id].IrcMessageId));
+        // What carries no viewer content stays.
+        Assert.All(due, id => Assert.Equal(WishMatchKind.Name, rows[id].MatchKind));
+        Assert.All(rows.Values, w => Assert.Equal(0, w.DecisionVersion));
+        Assert.True(await db.WishCaptureReceipts.AnyAsync(r => r.ChannelId == channel.Id && r.IrcMessageId == "receipt-1"));
+    }
+
+    [Fact]
+    public async Task CaptureGaps_AreDeleted30DaysAfterTheirEnd_AndADryRunOnlyCounts()
+    {
+        var channel = await SeedChannelAsync("wishgaps", isBotActive: true, deactivatedAtUtc: null);
+        var days = RetentionPolicy.WishCaptureGap.TotalDays;
+        await using (var seed = CreateDbContext())
+        {
+            seed.WishCaptureGaps.AddRange(
+                Gap(channel.Id, endedDaysAgo: days + 1),
+                Gap(channel.Id, endedDaysAgo: days + 20),
+                Gap(channel.Id, endedDaysAgo: days - 1),
+                Gap(channel.Id, endedDaysAgo: 0.01));
+            await seed.SaveChangesAsync();
+        }
+
+        var dry = await RunAsync(enforce: false);
+        await using (var check = CreateDbContext())
+        {
+            Assert.Equal(4, await check.WishCaptureGaps.CountAsync(g => g.ChannelId == channel.Id));
+        }
+
+        var enforced = await RunAsync(enforce: true);
+
+        Assert.Equal(2, dry.WishCaptureGapsDeleted);
+        Assert.Equal(2, enforced.WishCaptureGapsDeleted);
+        await using var db = CreateDbContext();
+        Assert.Equal(2, await db.WishCaptureGaps.CountAsync(g => g.ChannelId == channel.Id));
+        Assert.All(await db.WishCaptureGaps.AsNoTracking().ToListAsync(), g => Assert.True(g.ToUtc > _now - RetentionPolicy.WishCaptureGap));
+    }
+
+    [Fact]
+    public async Task CaptureGaps_WalkMoreThanOneBatch()
+    {
+        var channel = await SeedChannelAsync("wishgapbatches", isBotActive: true, deactivatedAtUtc: null);
+        await using (var seed = CreateDbContext())
+        {
+            var ended = _now.AddDays(-40);
+            var started = ended.AddMinutes(-5);
+            await seed.Database.ExecuteSqlAsync(
+                $"""
+                INSERT INTO "WishCaptureGaps" ("ChannelId", "FromUtc", "ToUtc", "Reason")
+                SELECT {channel.Id}, {started}, {ended}, 'disconnect' FROM generate_series(1, 1001)
+                """);
+        }
+
+        var (dry, enforced) = await RunDryThenEnforcedAsync();
+
+        Assert.Equal(1001, dry.WishCaptureGapsDeleted);
+        Assert.Equal(1001, enforced.WishCaptureGapsDeleted);
+        await using var db = CreateDbContext();
+        Assert.False(await db.WishCaptureGaps.AnyAsync(g => g.ChannelId == channel.Id));
+    }
+
+    private WishCaptureGap Gap(string channelId, double endedDaysAgo) => new()
+    {
+        ChannelId = channelId,
+        FromUtc = _now.AddDays(-endedDaysAgo).AddMinutes(-5),
+        ToUtc = _now.AddDays(-endedDaysAgo),
+        Reason = WishCaptureGapReason.Disconnect
+    };
+
     private async Task<long> SeedRetentionWishAsync(
         string channelId,
         string status,
@@ -255,7 +365,8 @@ public partial class DataRetentionServiceTests
         double? firstActivatedDaysAgo = null,
         int durationDays = 30,
         bool withRequester = true,
-        long? mergedInto = null)
+        long? mergedInto = null,
+        bool captured = false)
     {
         await using var db = CreateDbContext();
         var wish = new Wish
@@ -278,6 +389,22 @@ public partial class DataRetentionServiceTests
             FirstActivatedAtUtc = firstActivatedDaysAgo is { } activated ? _now.AddDays(-activated) : null,
             MergedIntoWishId = mergedInto
         };
+        if (captured)
+        {
+            // A chat-captured wish: the viewer's text, the name read from it and the IRC message id.
+            wish.Source = WishSource.Irc;
+            wish.RequestText = "please add Emote";
+            wish.RequestedName = "Emote";
+            wish.IrcMessageId = Guid.NewGuid().ToString("N");
+            wish.MatchKind = WishMatchKind.Name;
+            if (status is WishStatus.Pending or WishStatus.Rejected)
+            {
+                wish.SevenTvEmoteId = string.Empty;
+                wish.EmoteName = string.Empty;
+                wish.Alias = string.Empty;
+            }
+        }
+
         db.Wishes.Add(wish);
         await db.SaveChangesAsync();
         return wish.Id;

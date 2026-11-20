@@ -11,7 +11,7 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 // the CHECKs, the cascade and SET NULL behaviour, and that the migration leaves nothing pending. Runs
 // against the shared head-schema database.
 [Collection("Postgres")]
-public class WishSchemaTests(PostgresFixture fixture)
+public partial class WishSchemaTests(PostgresFixture fixture)
 {
     [Fact]
     public async Task Migrations_AreFullyApplied_AndTheModelHasNoDriftAgainstThem()

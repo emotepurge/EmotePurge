@@ -4,7 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { wishConflict, WishService } from './wish.service';
-import { CreatedWish, Wish, WishDetail } from './wish.model';
+import { ApprovedWish, CreatedWish, Wish, WishDetail } from './wish.model';
 
 const WISH = { id: 7, alias: 'KEKW', status: 'active' } as Wish;
 const BASE = '/api/channels/handofblood/wishes';
@@ -160,6 +160,102 @@ describe('WishService', () => {
     const set = httpMock.expectOne(`${BASE}/settings`);
     expect(set.request.body.protectionThresholdPerDay).toBe(2.5);
     set.flush({});
+  });
+
+  it('sends pendingExpiryDays with the settings write only when given', () => {
+    const base = { defaultDurationDays: 30, probationLeadDays: 3 };
+
+    service.updateSettings('handofblood', base).subscribe();
+    const absent = httpMock.expectOne(`${BASE}/settings`);
+    expect('pendingExpiryDays' in absent.request.body).toBe(false);
+    absent.flush({});
+
+    service.updateSettings('handofblood', { ...base, pendingExpiryDays: 21 }).subscribe();
+    const set = httpMock.expectOne(`${BASE}/settings`);
+    expect(set.request.body.pendingExpiryDays).toBe(21);
+    set.flush({});
+  });
+
+  it('approves with the body as given, an empty one included, and hands the extension back', () => {
+    let got: ApprovedWish | undefined;
+    service.approve('handofblood', 9).subscribe((r) => (got = r));
+    const plain = httpMock.expectOne(`${BASE}/9/approve`);
+    expect(plain.request.method).toBe('POST');
+    expect(plain.request.body).toEqual({});
+    plain.flush({ ...WISH, extendedExpiresAtUtc: null });
+    expect(got?.extendedExpiresAtUtc).toBeNull();
+
+    const body = { sevenTvEmoteId: '01ABC', alias: 'KEKW', durationDays: 30 };
+    service.approve('handofblood', 9, body).subscribe((r) => (got = r));
+    const full = httpMock.expectOne(`${BASE}/9/approve`);
+    expect(full.request.body).toEqual(body);
+    full.flush({ ...WISH, mergedIntoWishId: 4, extendedExpiresAtUtc: '2026-12-20T00:00:00Z' });
+    expect(got?.extendedExpiresAtUtc).toBe('2026-12-20T00:00:00Z');
+    expect(got?.mergedIntoWishId).toBe(4);
+  });
+
+  it.each(['reject', 'unlink'] as const)('posts %s without a body', (action) => {
+    service[action]('handofblood', 9).subscribe();
+    const req = httpMock.expectOne(`${BASE}/9/${action}`);
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toBeNull();
+    req.flush(WISH);
+  });
+
+  describe('rewards', () => {
+    const REWARDS = `${BASE}/rewards`;
+
+    it('reads the reward state and hands it back unchanged', () => {
+      const read = { channelBound: true, rewards: [], limit: 10, learning: null, gaps: [] };
+      let got: unknown;
+      service.getRewards('handofblood').subscribe((r) => (got = r));
+      const req = httpMock.expectOne(REWARDS);
+      expect(req.request.method).toBe('GET');
+      req.flush(read);
+      expect(got).toEqual(read);
+    });
+
+    it('starts a learning session with no body', () => {
+      service.startLearning('handofblood').subscribe();
+      const req = httpMock.expectOne(`${REWARDS}/learning`);
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body).toBeNull();
+      req.flush({});
+    });
+
+    it('confirms with exactly the ids and fields it is given', () => {
+      const body = { sessionId: 's1', candidateId: 'c1', label: 'Wish an emote' };
+      service.confirmLearning('handofblood', body).subscribe();
+      const bare = httpMock.expectOne(`${REWARDS}/learning/confirm`);
+      expect(bare.request.method).toBe('POST');
+      expect(bare.request.body).toEqual(body);
+      bare.flush({});
+
+      service.confirmLearning('handofblood', { ...body, defaultDurationDays: 21 }).subscribe();
+      const timed = httpMock.expectOne(`${REWARDS}/learning/confirm`);
+      expect(timed.request.body.defaultDurationDays).toBe(21);
+      timed.flush({});
+    });
+
+    it('cancels a learning session by its id in the query', () => {
+      service.cancelLearning('handofblood', 's-1').subscribe();
+      const req = httpMock.expectOne(`${REWARDS}/learning?sessionId=s-1`);
+      expect(req.request.method).toBe('DELETE');
+      req.flush(null, { status: 204, statusText: 'No Content' });
+    });
+
+    it('patches and deletes a reward by its row id', () => {
+      service.updateReward('handofblood', 5, { isActive: false }).subscribe();
+      const patch = httpMock.expectOne(`${REWARDS}/5`);
+      expect(patch.request.method).toBe('PATCH');
+      expect(patch.request.body).toEqual({ isActive: false });
+      patch.flush({});
+
+      service.deleteReward('handofblood', 5).subscribe();
+      const del = httpMock.expectOne(`${REWARDS}/5`);
+      expect(del.request.method).toBe('DELETE');
+      del.flush(null, { status: 204, statusText: 'No Content' });
+    });
   });
 
   it('reads settings with canEdit and the cross-channel routes', () => {

@@ -16,10 +16,14 @@ import { CHANNEL_RELOAD_DEBOUNCE_MS } from '../../core/live/live-reload';
 import type { EmoteSetStatus } from '../../core/emotes/emote-set-status.model';
 import { PagedResult } from '../../core/models/paged-result.model';
 import { SevenTvDeleteService } from '../../core/seven-tv/seven-tv-delete.service';
-import { SevenTvEmoteLookup } from '../../core/seven-tv/seven-tv-emote-lookup';
+import {
+  SevenTvEmoteLookup,
+  SevenTvEmoteLookupResult,
+} from '../../core/seven-tv/seven-tv-emote-lookup';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { WishAddRequest, WishAddService, WishAddState } from '../../core/wishes/wish-add.service';
+import { WishEmotePreviewService } from '../../core/wishes/wish-emote-preview.service';
 import {
   WishRemovalEnd,
   WishRemovalState,
@@ -32,6 +36,7 @@ import { WishSummaryService } from '../../core/wishes/wish-summary.service';
 import { DeleteProgressSection } from '../../shared/seven-tv/delete-progress-section';
 import { ChannelWishesPage, WISH_RUN_LOCK_ID, WISH_SAFETY_RELOAD_MS } from './channel-wishes-page';
 import { WishAdoptDialog } from './wish-adopt-dialog';
+import { WishApproveDialog } from './wish-approve-dialog';
 import { WishEntryDialog } from './wish-entry-dialog';
 import { WishEditDialog } from './wish-edit-dialog';
 import { WishReAddDialog } from './wish-readd-dialog';
@@ -177,6 +182,8 @@ describe('ChannelWishesPage', () => {
   let getCalls: GetCall[];
   let actions: { name: string; id: number; answer: Subject<Wish> }[];
   let dialogs: Subject<boolean>[];
+  /** Index of each dialog the page closed itself (`DialogRef.close`). */
+  let closedByPage: number[];
   let openDialog: ReturnType<typeof vi.fn>;
   let stillIds: Set<string>;
   let addRequests: WishAddRequest[];
@@ -199,6 +206,7 @@ describe('ChannelWishesPage', () => {
     getCalls = [];
     actions = [];
     dialogs = [];
+    closedByPage = [];
     stillIds = new Set();
     addRequests = [];
     addStates = signal<ReadonlyMap<number, WishAddState>>(new Map());
@@ -211,8 +219,14 @@ describe('ChannelWishesPage', () => {
     prunedRemovals = [];
     openDialog = vi.fn(() => {
       const closed = new Subject<boolean>();
-      dialogs.push(closed);
-      return { closed };
+      const index = dialogs.push(closed) - 1;
+      return {
+        closed,
+        close: (result?: unknown) => {
+          closedByPage.push(index);
+          (closed as Subject<unknown>).next(result);
+        },
+      };
     });
     // jsdom has no layout, so the pager's reposition on a page change needs a stand-in.
     Element.prototype.scrollIntoView = vi.fn();
@@ -250,6 +264,8 @@ describe('ChannelWishesPage', () => {
             retry: action('retry'),
             keep: action('keep'),
             close: action('close'),
+            reject: action('reject'),
+            unlink: action('unlink'),
           },
         },
         { provide: Dialog, useValue: { open: openDialog } },
@@ -1472,6 +1488,457 @@ describe('ChannelWishesPage', () => {
       http.expectOne('/api/channels/c/emotes/active-set').flush(setStatus('set-c'));
       fixture.detectChanges();
       expect(dockSetId(fixture)).toBe('set-c');
+    });
+  });
+
+  describe('open wishes captured in chat (K6)', () => {
+    function pending(id: number, overrides: Partial<Wish> = {}): Wish {
+      return wish(id, {
+        status: 'pending',
+        source: 'irc',
+        linkOrigin: null,
+        sevenTvEmoteId: '',
+        emoteName: '',
+        alias: '',
+        approvedAtUtc: null,
+        startsAtUtc: null,
+        startsAtAuthoritative: false,
+        expiresAtUtc: null,
+        slotId: null,
+        slotAddedAtUtc: null,
+        requestText: `wish ${id} pls`,
+        requestedName: `wish${id}`,
+        matchKind: 'name',
+        ...overrides,
+      });
+    }
+
+    function openCall(index: number): { component: unknown; data: Record<string, unknown> } {
+      const [component, config] = openDialog.mock.calls[index] as [
+        unknown,
+        { data: Record<string, unknown> },
+      ];
+      return { component, data: config.data };
+    }
+
+    function closeWith(index: number, result: unknown): void {
+      (dialogs[index] as Subject<unknown>).next(result);
+      dialogs[index].complete();
+    }
+
+    /** The named groups of the "needs action" section: accessible name and the wish ids in it. */
+    function groups(fixture: ComponentFixture<ChannelWishesPage>): [string, number[]][] {
+      return Array.from(section(fixture, 'open').querySelectorAll('[role="group"]'))
+        .filter((group) => group.hasAttribute('aria-labelledby') && !group.closest('app-wish-row'))
+        .map((group) => [
+          fixture.nativeElement
+            .querySelector(`#${group.getAttribute('aria-labelledby')}`)
+            ?.textContent?.trim() ?? '',
+          Array.from(group.querySelectorAll('[data-wish-id]')).map((row) =>
+            Number(row.getAttribute('data-wish-id')),
+          ),
+        ]);
+    }
+
+    it('gives the open wishes of view=open their own group "Offen", the rest a second one', () => {
+      const fixture = create();
+      settle(fixture, [pending(1), pending(2), wish(3, { status: 'approved', slotId: null })]);
+
+      expect(groups(fixture)).toEqual([
+        [de.wishes.pending.title, [1, 2]],
+        [de.wishes.pending.others, [3]],
+      ]);
+    });
+
+    it('keeps the single list of K3 while no open wish is on the page', () => {
+      const fixture = create();
+      settle(fixture, [wish(3, { status: 'approved', slotId: null })]);
+
+      expect(groups(fixture)).toEqual([]);
+      expect(rowIds(fixture, 'open')).toEqual([3]);
+    });
+
+    it('moves an open wish to the running list on wish.changed, without a page reload', () => {
+      const fixture = create();
+      settle(fixture, [pending(1)]);
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      const linked = wish(1, { source: 'irc', linkOrigin: 'auto', status: 'active' });
+      settle(fixture, [], [linked]);
+
+      expect(groups(fixture)).toEqual([]);
+      expect(rowIds(fixture, 'running')).toEqual([1]);
+      expect(buttonIn(section(fixture, 'running'), de.wishes.actions.unlink)).toBeDefined();
+    });
+
+    it('opens the approve dialog for the row’s wish and reloads after an approve', () => {
+      const fixture = create('Chan');
+      const open = pending(1);
+      settle(fixture, [open]);
+
+      buttonIn(section(fixture, 'open'), de.wishes.actions.approve).click();
+      expect(openCall(0)).toEqual({
+        component: WishApproveDialog,
+        data: { channelName: 'chan', wish: open },
+      });
+      closeWith(0, { kind: 'approved', wish: { ...open, status: 'approved' } });
+      expect(calls('open')).toHaveLength(2);
+      expect(summaryRefresh).toHaveBeenCalledOnce();
+    });
+
+    it("drops the rows with the redeemers' texts when a later reload is refused (403)", () => {
+      const fixture = create();
+      settle(fixture, [pending(1, { requesterLogin: 'viewer_one' })]);
+      expect(section(fixture, 'open').textContent).toContain('wish 1 pls');
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('open').answer.error(new HttpErrorResponse({ status: 403 }));
+      fixture.detectChanges();
+
+      expect(rowIds(fixture, 'open')).toEqual([]);
+      expect(section(fixture, 'open').textContent).not.toContain('wish 1 pls');
+      expect(section(fixture, 'open').textContent).not.toContain('viewer_one');
+      expect(alerts(fixture, 'open')).toHaveLength(1);
+    });
+
+    it('keeps the rows when a later reload fails for another reason', () => {
+      const fixture = create();
+      settle(fixture, [pending(1)]);
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('open').answer.error(new HttpErrorResponse({ status: 500 }));
+      fixture.detectChanges();
+
+      expect(rowIds(fixture, 'open')).toEqual([1]);
+    });
+
+    it('closes an open approve dialog when a reload is refused (403)', () => {
+      const fixture = create();
+      settle(fixture, [pending(1)]);
+      buttonIn(section(fixture, 'open'), de.wishes.actions.approve).click();
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('open').answer.error(new HttpErrorResponse({ status: 403 }));
+      fixture.detectChanges();
+
+      expect(closedByPage).toEqual([0]);
+    });
+
+    it('hands focus to "Neu laden" when a 403 reload takes the approve trigger away', async () => {
+      const fixture = create();
+      settle(fixture, [pending(1)]);
+      const trigger = buttonIn(section(fixture, 'open'), de.wishes.actions.approve);
+      // The dialog has given focus back to the button that opened it, as CDK does on close.
+      trigger.focus();
+      trigger.click();
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('open').answer.error(new HttpErrorResponse({ status: 403 }));
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      expect(document.activeElement).toBe(
+        buttonIn(section(fixture, 'open'), de.wishes.page.reload),
+      );
+    });
+
+    it('leaves focus where it is when the 403 reload removed nothing it was on', async () => {
+      const fixture = create();
+      settle(fixture, [pending(1)], [wish(2)]);
+      const elsewhere = section(fixture, 'running').querySelector('button') as HTMLButtonElement;
+      elsewhere.focus();
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('open').answer.error(new HttpErrorResponse({ status: 403 }));
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      expect(document.activeElement).toBe(elsewhere);
+    });
+
+    it('says an approve booked as an extension with the new expiry and the way to that wish', () => {
+      const fixture = create();
+      settle(fixture, [pending(1, { statusReason: 'already_running', sevenTvEmoteId: 'e1' })]);
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+
+      buttonIn(section(fixture, 'open'), de.wishes.actions.approveExtend).click();
+      closeWith(0, {
+        kind: 'merged',
+        wish: pending(1, { status: 'merged' }),
+        runningWishId: 12,
+        extendedExpiresAtUtc: '2026-12-30T10:00:00Z',
+      });
+      fixture.detectChanges();
+
+      const spoken = Array.from(
+        fixture.nativeElement.querySelectorAll('p[role="status"]') as NodeListOf<HTMLElement>,
+      )
+        .map((region) => region.textContent?.trim() ?? '')
+        .join(' ');
+      expect(spoken).toContain('Als Verlängerung verbucht. Der laufende Wunsch läuft jetzt bis');
+      expect(spoken).toContain('2026');
+      expect(calls('open')).toHaveLength(2);
+
+      buttonIn(fixture.nativeElement, de.wishes.dialog.toWish).click();
+      expect(navigate).toHaveBeenCalledWith(
+        [],
+        expect.objectContaining({ queryParams: { wish: 12 } }),
+      );
+    });
+
+    it('opens the take-over dialog for this wish when the emote is already in the set', () => {
+      const fixture = create();
+      const open = pending(1, { sevenTvEmoteId: 'e1' });
+      settle(fixture, [open]);
+
+      buttonIn(section(fixture, 'open'), de.wishes.actions.approve).click();
+      closeWith(0, { kind: 'adopt', sevenTvEmoteId: 'e1', slotIds: ['s1'] });
+
+      expect(openCall(1)).toEqual({
+        component: WishAdoptDialog,
+        data: { channelName: 'chan', wish: open, sevenTvEmoteId: 'e1', slotIds: ['s1'] },
+      });
+    });
+
+    it('shows a stale approve at the section and reloads', () => {
+      const fixture = create();
+      settle(fixture, [pending(1)]);
+
+      buttonIn(section(fixture, 'open'), de.wishes.actions.approve).click();
+      closeWith(0, { kind: 'stale', errorKey: 'errors.api.wish_state_conflict' });
+      fixture.detectChanges();
+
+      expect(alerts(fixture, 'open')).toEqual([de.errors.api.wish_state_conflict]);
+      expect(calls('open')).toHaveLength(2);
+    });
+
+    it('links an open wish without an emote to any entry: no emote filter', () => {
+      const fixture = create();
+      const open = pending(1);
+      settle(fixture, [open]);
+
+      buttonIn(section(fixture, 'open'), de.wishes.actions.adopt).click();
+      expect(openCall(0)).toEqual({
+        component: WishAdoptDialog,
+        data: { channelName: 'chan', wish: open },
+      });
+    });
+
+    it('rejects only after a confirmation that names the refund in Twitch', () => {
+      const fixture = create();
+      settle(fixture, [pending(1)]);
+
+      buttonIn(section(fixture, 'open'), de.wishes.actions.reject).click();
+      const message = openCall(0).data['message'] as string;
+      expect(message).toContain('wish1');
+      expect(message).toContain('Warteschlange der Einlösungen');
+      expect(actions).toEqual([]);
+
+      close(dialogs[0], true);
+      expect(actions).toEqual([expect.objectContaining({ name: 'reject', id: 1 })]);
+      actions[0].answer.next(pending(1, { status: 'rejected' }));
+      expect(calls('open')).toHaveLength(2);
+    });
+
+    it('takes an automatic link back only after a confirmation', () => {
+      const fixture = create();
+      settle(fixture, [], [wish(4, { source: 'irc', linkOrigin: 'auto' })]);
+
+      buttonIn(section(fixture, 'running'), de.wishes.actions.unlink).click();
+      close(dialogs[0], false);
+      expect(actions).toEqual([]);
+
+      buttonIn(section(fixture, 'running'), de.wishes.actions.unlink).click();
+      close(dialogs[1], true);
+      expect(actions).toEqual([expect.objectContaining({ name: 'unlink', id: 4 })]);
+    });
+  });
+
+  describe('preview of the open rows in view (plan 2.10, T19)', () => {
+    let asked: string[];
+
+    /** An open wish captured from a 7TV link: the emote is known, name and picture are not. */
+    function linked(id: number, emote: string, overrides: Partial<Wish> = {}): Wish {
+      return wish(id, {
+        status: 'pending',
+        source: 'irc',
+        linkOrigin: null,
+        sevenTvEmoteId: emote,
+        emoteName: '',
+        alias: '',
+        imageUrl: null,
+        approvedAtUtc: null,
+        startsAtUtc: null,
+        startsAtAuthoritative: false,
+        expiresAtUtc: null,
+        slotId: null,
+        slotAddedAtUtc: null,
+        requestText: `https://7tv.app/emotes/${emote}`,
+        requestedName: null,
+        matchKind: 'link',
+        ...overrides,
+      });
+    }
+
+    /** The row of this wish reports whether it is in view, as its IntersectionObserver would. */
+    function showRow(
+      fixture: ComponentFixture<ChannelWishesPage>,
+      id: number,
+      visible: boolean,
+    ): void {
+      const row = fixture.nativeElement.querySelector(`[data-wish-id="${id}"]`) as Element;
+      FakeIntersectionObserver.instances
+        .filter((observer) => [...observer.targets].some((target) => row.contains(target)))
+        .forEach((observer) => observer.show(visible));
+      fixture.detectChanges();
+    }
+
+    function liveReload(fixture: ComponentFixture<ChannelWishesPage>, open: Wish[]): void {
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      settle(fixture, open);
+    }
+
+    beforeEach(() => {
+      FakeIntersectionObserver.instances = [];
+      vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver);
+      asked = [];
+      vi.spyOn(TestBed.inject(WishEmotePreviewService), 'request').mockImplementation((id) => {
+        asked.push(id);
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('asks for a live-added row once it is in view, and again for it after every reload', () => {
+      const fixture = create();
+      settle(fixture);
+      liveReload(fixture, [linked(1, 'e1')]);
+      expect(asked).toEqual([]);
+
+      showRow(fixture, 1, true);
+      expect(asked).toEqual(['e1']);
+
+      liveReload(fixture, [linked(1, 'e1'), linked(2, 'e2')]);
+      // Row 2 has not reported "in view" yet: only row 1 is asked again.
+      expect(asked).toEqual(['e1', 'e1']);
+    });
+
+    it('asks for a row in view whose wish needed no read before, once a reload says it does', () => {
+      const fixture = create();
+      settle(fixture, [
+        linked(1, 'e1', { imageUrl: 'https://cdn.example/e1.webp', alias: 'dino' }),
+      ]);
+      showRow(fixture, 1, true);
+      expect(asked).toEqual([]);
+
+      liveReload(fixture, [linked(1, 'e1')]);
+      expect(asked).toEqual(['e1']);
+    });
+
+    it('does not ask again for a row that left the view, or whose wish is no longer open', () => {
+      const fixture = create();
+      settle(fixture, [linked(1, 'e1'), linked(2, 'e2')]);
+      showRow(fixture, 1, true);
+      showRow(fixture, 2, true);
+      showRow(fixture, 2, false);
+      asked = [];
+
+      liveReload(fixture, [linked(1, 'e1', { status: 'approved' }), linked(2, 'e2')]);
+      expect(asked).toEqual([]);
+
+      // The wish open again: its row reports anew, it is not remembered from before.
+      liveReload(fixture, [linked(1, 'e1'), linked(2, 'e2')]);
+      expect(asked).toEqual([]);
+    });
+
+    it('asks and releases per row, so a row leaving does not release the emote for another', () => {
+      const preview = TestBed.inject(WishEmotePreviewService);
+      const consumers: unknown[] = [];
+      vi.mocked(preview.request).mockImplementation((_id, consumer) => {
+        consumers.push(consumer);
+      });
+      const release = vi.spyOn(preview, 'release').mockImplementation(() => undefined);
+      const fixture = create();
+      settle(fixture, [linked(1, 'e1'), linked(2, 'e1')]);
+      showRow(fixture, 1, true);
+      showRow(fixture, 2, true);
+      showRow(fixture, 1, false);
+
+      expect(consumers).toHaveLength(2);
+      expect(consumers[0]).not.toEqual(consumers[1]);
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledWith(consumers[0]);
+    });
+
+    describe('with the real session queue', () => {
+      let reads: { id: string; answer: Subject<SevenTvEmoteLookupResult> }[];
+
+      beforeEach(() => {
+        reads = [];
+        vi.mocked(TestBed.inject(WishEmotePreviewService).request).mockRestore();
+        Object.assign(TestBed.inject(SevenTvEmoteLookup), {
+          lookup: (id: string) => {
+            const answer = new Subject<SevenTvEmoteLookupResult>();
+            reads.push({ id, answer });
+            return answer;
+          },
+        });
+      });
+
+      function finishRead(index: number): void {
+        reads[index].answer.next({ id: reads[index].id, kind: 'found', name: 'x', animated: true });
+        reads[index].answer.complete();
+      }
+
+      it('does not read an emote whose waiting row a reload removed', () => {
+        const fixture = create();
+        settle(fixture, [linked(1, 'e1'), linked(2, 'e2')]);
+        showRow(fixture, 1, true);
+        // Row 2's read waits behind row 1's.
+        showRow(fixture, 2, true);
+
+        liveReload(fixture, [linked(1, 'e1')]);
+        finishRead(0);
+
+        expect(reads).toHaveLength(1);
+      });
+
+      it('does not read what its rows waited for once the page is gone', () => {
+        const fixture = create();
+        settle(fixture, [linked(1, 'e1'), linked(2, 'e2')]);
+        showRow(fixture, 1, true);
+        showRow(fixture, 2, true);
+
+        fixture.destroy();
+        finishRead(0);
+
+        expect(reads).toHaveLength(1);
+      });
+    });
+
+    it('asks again when the window comes back, and not while it is hidden', () => {
+      const fixture = create();
+      settle(fixture, [linked(1, 'e1')]);
+      showRow(fixture, 1, true);
+      asked = [];
+
+      setVisibility('hidden');
+      fixture.detectChanges();
+      liveReload(fixture, [linked(1, 'e1')]);
+      expect(asked).toEqual([]);
+
+      setVisibility('visible');
+      fixture.detectChanges();
+      expect(asked).toEqual(['e1']);
     });
   });
 });

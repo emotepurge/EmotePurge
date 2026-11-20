@@ -44,6 +44,13 @@ export type AuditAction =
   | 'wish.settings'
   | 'wish.due'
   | 'wish.update'
+  | 'wish.approve'
+  | 'wish.reject'
+  | 'wish.autoLink'
+  | 'wish.unlink'
+  | 'wish.rewardAdd'
+  | 'wish.rewardChange'
+  | 'wish.rewardRemove'
   | 'user.revokeSessions'
   | 'user.invalidateRoleCache'
   | 'user.delete';

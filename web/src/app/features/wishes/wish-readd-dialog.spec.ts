@@ -103,6 +103,7 @@ describe('WishReAddDialog', () => {
       protectionThresholdPerDay: null,
       botModeEnabled: false,
       botSuspendedReason: null,
+      pendingExpiryDays: 14,
       canEdit: true,
     });
     fixture.detectChanges();
@@ -152,6 +153,7 @@ describe('WishReAddDialog', () => {
       protectionThresholdPerDay: null,
       botModeEnabled: false,
       botSuspendedReason: null,
+      pendingExpiryDays: 14,
       canEdit: true,
     });
     fixture.detectChanges();

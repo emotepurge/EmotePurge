@@ -351,6 +351,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IWishChangedPublisher, WishChangedPublisher>();
         services.AddScoped<IWishService, WishService>();
         services.AddScoped<IWishOverviewService, WishOverviewService>();
+        services.AddScoped<IWishRewardService, WishRewardService>();
+        // The capture's database side (K6): scoped on AppDbContext, resolved by the worker per observation and per pass.
+        services.AddScoped<IWishCaptureService, WishCaptureService>();
         // The reconcile opens a scope and a context of its own per call (never the caller's), so it can be a
         // singleton that scoped and singleton callers alike take.
         services.AddSingleton<IWishReconcileService, WishReconcileService>();

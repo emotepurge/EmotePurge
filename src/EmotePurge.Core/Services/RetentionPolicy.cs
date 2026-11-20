@@ -77,6 +77,13 @@ public static class RetentionPolicy
     /// </summary>
     public static readonly TimeSpan WishNeverActiveRequesterCap = TimeSpan.FromDays(120);
 
+    /// <summary>
+    /// A chat-capture gap (<c>WishCaptureGap</c>, K6) is deleted 30 days after it ended (<c>ToUtc</c>). A gap
+    /// holds no personal data, only a channel and a stretch of time; the period bounds how long the manager
+    /// settings show it (they show the last 14 days).
+    /// </summary>
+    public static readonly TimeSpan WishCaptureGap = TimeSpan.FromDays(30);
+
     /// <summary>Hourly system-load summaries remain for thirteen calendar months.</summary>
     public const int SystemLoadHourlyMonths = 13;
 }

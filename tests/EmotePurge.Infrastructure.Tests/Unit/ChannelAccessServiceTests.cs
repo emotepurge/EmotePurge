@@ -1,6 +1,7 @@
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
+using EmotePurge.Core.Twitch;
 using EmotePurge.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -239,6 +240,103 @@ public class ChannelAccessServiceTests
         await editors.DidNotReceive().GetEditorGrantsAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
+    // ------------------------------------------------------------------ K6 data, confirmed on the id (plan #486 2.4a)
+
+    [Fact]
+    public async Task ResolveWishCaptureAccess_SameLoginOtherBroadcasterId_IsNotConfirmed()
+    {
+        // A moderator of whoever owns the login now: the login matches the row, the BroadcasterId does not.
+        var lists = Lists(new TwitchModeratedChannelInfo("streamer", "2002"));
+        var service = CreateService(channelService: Channels(twitchId: "1001"), moderatedChannels: lists);
+
+        var access = await service.ResolveWishCaptureAccessAsync(Principal("somemod"), "streamer");
+
+        Assert.Equal(new WishCaptureAccess("row-1", "1001", false), access);
+    }
+
+    [Fact]
+    public async Task ResolveWishCaptureAccess_MatchingBroadcasterIdUnderAnotherLogin_IsConfirmed()
+    {
+        var lists = Lists(new TwitchModeratedChannelInfo("renamed_streamer", "1001"));
+        var service = CreateService(channelService: Channels(twitchId: "1001"), moderatedChannels: lists);
+
+        var access = await service.ResolveWishCaptureAccessAsync(Principal("somemod"), "  Streamer ");
+
+        Assert.Equal(new WishCaptureAccess("row-1", "1001", true), access);
+    }
+
+    [Fact]
+    public async Task ResolveWishCaptureAccess_ARowWithoutAnId_IsNeverConfirmed_NotEvenForTheBroadcasterByLogin()
+    {
+        var lists = Lists(new TwitchModeratedChannelInfo("streamer", "1001"));
+        var service = CreateService(
+            channelService: Channels(twitchId: null), moderatedChannels: lists, settings: new() { ["Auth:AdminTwitchUserIds"] = "42" });
+
+        // The caller is the login's broadcaster, a listed moderator and an admin by id at once.
+        var access = await service.ResolveWishCaptureAccessAsync(Principal("streamer"), "streamer");
+
+        Assert.Equal(new WishCaptureAccess("row-1", null, false), access);
+        Assert.False(access!.IsBound);
+        await lists.DidNotReceive().GetModeratedChannelsAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ResolveWishCaptureAccess_AListThatCannotBeDetermined_IsNotConfirmed()
+    {
+        var lists = Substitute.For<IModeratedChannelsProvider>();
+        lists.GetModeratedChannelsAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<CancellationToken>())
+            .Returns(new ModeratedChannelsLookup(null, ReauthRequired: true));
+        var service = CreateService(channelService: Channels(twitchId: "1001"), moderatedChannels: lists);
+
+        Assert.False((await service.ResolveWishCaptureAccessAsync(Principal("somemod"), "streamer"))!.IdConfirmed);
+    }
+
+    [Fact]
+    public async Task ResolveWishCaptureAccess_TheBroadcasterById_IsConfirmed_WithoutAskingForTheList()
+    {
+        var lists = Substitute.For<IModeratedChannelsProvider>();
+        var service = CreateService(channelService: Channels(twitchId: "42"), moderatedChannels: lists);
+
+        Assert.True((await service.ResolveWishCaptureAccessAsync(Principal("renamed"), "streamer"))!.IdConfirmed);
+        await lists.DidNotReceive().GetModeratedChannelsAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task ResolveWishCaptureAccess_AnAdminById_IsConfirmedOnABoundRow_ButAnAdminOnlyByLoginIsNot()
+    {
+        var byId = CreateService(channelService: Channels(twitchId: "1001"), settings: new() { ["Auth:AdminTwitchUserIds"] = "42" });
+        var byLogin = CreateService(
+            channelService: Channels(twitchId: "1001"), moderatedChannels: Lists(), settings: new() { ["Auth:AdminTwitchLogins"] = "sensitron" });
+
+        Assert.True((await byId.ResolveWishCaptureAccessAsync(Principal("sensitron"), "streamer"))!.IdConfirmed);
+        Assert.True(byLogin.IsGlobalAdmin(Principal("sensitron")));
+        Assert.False((await byLogin.ResolveWishCaptureAccessAsync(Principal("sensitron"), "streamer"))!.IdConfirmed);
+    }
+
+    [Fact]
+    public async Task ResolveWishCaptureAccess_AnUnknownChannel_IsNull()
+    {
+        var service = CreateService(channelService: Substitute.For<IChannelService>(), settings: new() { ["Auth:AdminTwitchUserIds"] = "42" });
+
+        Assert.Null(await service.ResolveWishCaptureAccessAsync(Principal("sensitron"), "nochannel"));
+    }
+
+    private static IChannelService Channels(string? twitchId)
+    {
+        var channels = Substitute.For<IChannelService>();
+        channels.GetByNameAsync("streamer", Arg.Any<CancellationToken>())
+            .Returns(new Channel { Id = "row-1", ChannelName = "streamer", TwitchChannelId = twitchId });
+        return channels;
+    }
+
+    private static IModeratedChannelsProvider Lists(params TwitchModeratedChannelInfo[] channels)
+    {
+        var lists = Substitute.For<IModeratedChannelsProvider>();
+        lists.GetModeratedChannelsAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<CancellationToken>())
+            .Returns(new ModeratedChannelsLookup(channels, ReauthRequired: false));
+        return lists;
+    }
+
     private static TwitchPrincipalInfo Principal(string login) => new("42", login, AccessToken: null);
 
     private static SevenTvEditorGrants Grants(string[]? logins = null, string[]? twitchIds = null) =>
@@ -248,13 +346,15 @@ public class ChannelAccessServiceTests
         IModeratorCheckService? moderatorCheck = null,
         ISevenTvEditorService? sevenTvEditorService = null,
         IChannelService? channelService = null,
-        Dictionary<string, string?>? settings = null)
+        Dictionary<string, string?>? settings = null,
+        IModeratedChannelsProvider? moderatedChannels = null)
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings ?? []).Build();
         var allowlist = new GlobalAdminAllowlist(configuration, NullLogger<GlobalAdminAllowlist>.Instance);
 
         return new ChannelAccessService(
             moderatorCheck ?? Substitute.For<IModeratorCheckService>(),
+            moderatedChannels ?? Substitute.For<IModeratedChannelsProvider>(),
             sevenTvEditorService ?? Substitute.For<ISevenTvEditorService>(),
             channelService ?? Substitute.For<IChannelService>(),
             allowlist,

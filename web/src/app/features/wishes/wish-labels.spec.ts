@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   wishDurationPart,
+  wishPendingAgePart,
   wishReasonKey,
   wishRemainingPart,
   wishStatusKey,
@@ -39,6 +40,16 @@ describe('wishReasonKey', () => {
     expect(wishReasonKey({ status: 'presented', statusReason: 'already_in_set' })).toBe(
       'wishes.reason.other',
     );
+  });
+
+  it('says the four hints of an open wish and nothing for an unknown or missing one', () => {
+    for (const hint of ['unparsed', 'ambiguous_match', 'already_in_set', 'already_running']) {
+      expect(wishReasonKey({ status: 'pending', statusReason: hint })).toBe(
+        `wishes.pending.hint.${hint}`,
+      );
+    }
+    expect(wishReasonKey({ status: 'pending', statusReason: 'something_new' })).toBeNull();
+    expect(wishReasonKey({ status: 'pending', statusReason: null })).toBeNull();
   });
 
   it('has no line without a reason or outside presented and failed', () => {
@@ -96,5 +107,26 @@ describe('wishDurationPart', () => {
 
   it('has none for a permanent wish', () => {
     expect(wishDurationPart({ permanent: true, durationDays: 7, extensionCount: 0 })).toBeNull();
+  });
+});
+
+describe('wishPendingAgePart', () => {
+  it('counts whole days since the redemption, "today" within the first one', () => {
+    expect(wishPendingAgePart({ status: 'pending', createdAtUtc: at(-DAY + 1000) }, NOW)).toEqual({
+      key: 'wishes.pending.age.today',
+    });
+    expect(wishPendingAgePart({ status: 'pending', createdAtUtc: at(-DAY) }, NOW)).toEqual({
+      key: 'wishes.pending.age.days.one',
+      params: { count: 1 },
+    });
+    expect(wishPendingAgePart({ status: 'pending', createdAtUtc: at(-3 * DAY - 5) }, NOW)).toEqual({
+      key: 'wishes.pending.age.days.other',
+      params: { count: 3 },
+    });
+  });
+
+  it('is only for open wishes with a usable date', () => {
+    expect(wishPendingAgePart({ status: 'approved', createdAtUtc: at(-DAY) }, NOW)).toBeNull();
+    expect(wishPendingAgePart({ status: 'pending', createdAtUtc: 'garbage' }, NOW)).toBeNull();
   });
 });

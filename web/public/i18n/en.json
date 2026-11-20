@@ -375,6 +375,22 @@
           "incomplete": "Capture of {{source}} incomplete since {{time}}",
           "retentionOverdue": "Log deletion overdue"
         }
+      },
+      "wishCapture": {
+        "title": "Wish capture",
+        "active": "Active",
+        "mismatch": "Mismatch",
+        "unknown": "Unknown",
+        "worker": "Worker",
+        "api": "Api",
+        "workerOn": "captures redemptions",
+        "workerOff": "does not capture",
+        "workerUnknown": "does not report its state",
+        "apiOn": "shows the interface",
+        "apiOff": "hides the interface",
+        "mismatchWorkerOnly": "The worker captures redemptions, but the Api hides rewards and learning. Set WISHES_CAPTURE_ENABLED the same for both and restart the Api.",
+        "mismatchApiOnly": "The Api shows the capture, but the worker stores no redemptions, so no wishes arise. Set WISHES_CAPTURE_ENABLED the same for both and restart the worker.",
+        "unknownHint": "The worker does not report whether it captures (older worker or no status). Check the worker start-up line."
       }
     },
     "rateLimits": {
@@ -1050,7 +1066,14 @@
       "wishUpdate": "Wish edited",
       "userRevokeSessions": "User sessions revoked",
       "userInvalidateRoleCache": "Role cache cleared",
-      "userDelete": "Account deleted"
+      "userDelete": "Account deleted",
+      "wishApprove": "Open wish approved",
+      "wishReject": "Open wish rejected",
+      "wishAutoLink": "Wish linked to a set entry automatically",
+      "wishUnlink": "Wish link removed",
+      "wishRewardAdd": "Wish reward learned",
+      "wishRewardChange": "Wish reward changed",
+      "wishRewardRemove": "Wish reward forgotten"
     },
     "details": {
       "emoteCount": {
@@ -2574,7 +2597,17 @@
       "wish_settings_out_of_range": "At least one settings value is outside the allowed range.",
       "wish_settings_restricted": "Only the broadcaster, whoever activated the bot, and admins may change these settings.",
       "wish_slot_not_found": "This entry is not (or no longer) active in the set.",
-      "wish_slot_already_linked": "This entry already belongs to another wish."
+      "wish_slot_already_linked": "This entry already belongs to another wish.",
+      "wish_emote_required": "Choose the emote first: paste a 7TV link or an emote ID.",
+      "wish_running_not_extendable": "The running wish for this emote is not in the set yet. You can approve this one once it is.",
+      "wish_capture_disabled": "Capturing wishes from chat is switched off on this server. You can still add wishes by hand.",
+      "wish_channel_unbound": "This channel is not fully set up yet. Try again in a few minutes, after the next sync.",
+      "wish_learning_active": "Learning a reward is already in progress for this channel. The page shows the current state: finish it or stop it.",
+      "wish_learning_stale": "Someone has started learning again in the meantime. Reload to see the current state.",
+      "wish_reward_no_candidate": "There is no recognised redemption to confirm. Start learning again.",
+      "wish_reward_already_known": "This reward has been learned already. You will find it in the list and can edit it there.",
+      "wish_reward_limit": "This channel already has the maximum number of rewards. Forget one first.",
+      "wish_reward_not_found": "This reward no longer exists. The list shows the current state."
     }
   },
   "backfill": {
@@ -2719,7 +2752,11 @@
       "extend": "Extend",
       "keep": "Keep",
       "remove": "Remove",
-      "reAdd": "Add again"
+      "reAdd": "Add again",
+      "approve": "Approve",
+      "approveExtend": "Approve as extension",
+      "reject": "Reject",
+      "unlink": "Unlink"
     },
     "row": {
       "probation": "Probation",
@@ -2787,7 +2824,51 @@
     },
     "confirm": {
       "keep": "Keep “{{ name }}” for good? The emote stays in the set and the wish is done.",
-      "close": "Close the wish “{{ name }}”? It ends without any change in 7TV."
+      "close": "Close the wish “{{ name }}”? It ends without any change in 7TV.",
+      "reject": "Reject the wish “{{ name }}”? Nothing changes in 7TV.\nRefund the channel points in Twitch, in the redemption queue.",
+      "unlink": "Unlink “{{ name }}”? The wish is open again, and this set entry is not linked to it automatically again. Nothing changes in 7TV."
+    },
+    "pending": {
+      "title": "Open",
+      "others": "Other decisions",
+      "untitled": "Wish without text",
+      "textLabel": "Redeemed text:",
+      "reward": "via “{{ label }}”",
+      "age": {
+        "today": "redeemed today",
+        "days": {
+          "one": "redeemed {{ count }} day ago",
+          "other": "redeemed {{ count }} days ago"
+        }
+      },
+      "hint": {
+        "unparsed": "The text holds no 7TV link and no emote name. Name the emote when you approve.",
+        "ambiguous_match": "Several set entries match this name. Link the right one, or name the emote when you approve.",
+        "already_in_set": "The emote is already in the set. Link the entry to the wish.",
+        "already_running": "A wish for this emote is already running. Approving extends it."
+      }
+    },
+    "approve": {
+      "title": "Approve wish",
+      "titleExtend": "Approve as extension",
+      "intro": "Once approved, the wish is ready to be added. You then add it in 7TV from its row.",
+      "introExtend": "A wish for this emote is already running. Approving extends it, and this wish is merged into it.",
+      "extension": {
+        "label": "Extension",
+        "one": "{{ count }} day, the channel's default duration",
+        "other": "{{ count }} days, the channel's default duration",
+        "unknown": "By the channel's default duration",
+        "ifRunning": "If the emote you enter is the running one, the running wish is extended by the channel's default duration instead."
+      },
+      "blocked": {
+        "emoteMissing": "Without an emote the wish cannot be approved. The 7TV link or emote id is missing."
+      },
+      "conflict": {
+        "inSet": "The emote is already in the set. Take the entry over for this wish instead of approving it.",
+        "notExtendable": "The running wish for this emote is not in the set yet, so it cannot be extended. Approving works once it is there. This wish stays open."
+      },
+      "merged": "Booked as an extension. The running wish now runs until {{ date }}.",
+      "mergedNoDate": "Booked as an extension of the running wish."
     },
     "lock": {
       "running": "Busy in 7TV: {{ kind }} is still running. Until it is done, the 7TV actions here are locked.",
@@ -2835,7 +2916,99 @@
       "changed": "The settings have changed in the meantime. Your entries are not saved yet.",
       "reload": "Reload",
       "loadFailed": "The settings could not be loaded.",
-      "retry": "Try again"
+      "retry": "Try again",
+      "pending": {
+        "label": "Open wishes expire after days",
+        "hint": "How long a wish captured from chat stays open. If nobody decides by then, it expires."
+      },
+      "pendingInvalid": {
+        "empty": "Enter a number of days.",
+        "not_integer": "The expiry is a whole number of days.",
+        "out_of_range": "The expiry is between 1 and {{ max }} days."
+      },
+      "rewards": {
+        "title": "Rewards from chat",
+        "count": "{{ count }} of {{ limit }}",
+        "intro": "When a viewer redeems a learned channel points reward, it becomes an open wish. Only rewards that ask for text are recognised.",
+        "unbound": "This channel is not linked to its Twitch account yet. Rewards can be learned after the next sync.",
+        "forbidden": "You cannot see this channel's rewards. Twitch has to confirm you as this channel's broadcaster or moderator for that.",
+        "loadFailed": "The rewards could not be loaded.",
+        "captureStopped": "The chat capture has not reported in for more than three minutes. Redemptions may not be recognised right now.",
+        "empty": "No reward learned yet",
+        "emptyHint": "Learn the reward viewers use to wish for an emote.",
+        "paused": "Paused",
+        "duration": {
+          "one": "Default duration {{ count }} day",
+          "other": "Default duration {{ count }} days"
+        },
+        "lastSeen": "Last recognised on {{ date }}",
+        "neverSeen": "Never recognised yet",
+        "edit": "Edit",
+        "pause": "Pause",
+        "remove": "Forget",
+        "removeConfirm": "Forget the reward “{{ label }}”? Its redemptions will no longer be recognised. Wishes that already exist stay.",
+        "readOnly": "Only the broadcaster, whoever activated the bot, and admins may learn and change rewards.",
+        "reload": "Reload",
+        "learning": {
+          "start": "Learn a reward",
+          "startHint": "Start learning, then redeem the reward once yourself within 10 minutes. That redemption does not become a wish.",
+          "limit": "This channel already has {{ limit }} rewards. Forget one first.",
+          "waiting": "Learning: waiting for a redemption.",
+          "waitingHint": "Redeem the reward in your channel now, with any text. The first redemption of a reward not known yet shows up here.",
+          "candidate": "Redemption recognised",
+          "candidateHint": "Is this the reward for emote wishes? Then confirm it. This redemption itself does not become a wish.",
+          "textLabel": "Text of the redemption:",
+          "noText": "Without text",
+          "seenBy": "by {{ login }} at {{ time }}",
+          "remaining": "{{ time }} left",
+          "expired": "Learning ran out before a reward was confirmed.",
+          "cancel": "Stop learning",
+          "confirm": "Confirm"
+        },
+        "feedback": {
+          "cancelled": "Learning stopped.",
+          "learned": "Reward “{{ label }}” learned.",
+          "saved": "Reward saved.",
+          "paused": "“{{ label }}” paused.",
+          "resumed": "“{{ label }}” is recognised again.",
+          "removed": "“{{ label }}” forgotten."
+        },
+        "gaps": {
+          "title": "Capture gaps",
+          "none": "No capture gaps in the last 14 days.",
+          "hint": "Approximate periods in the last 14 days in which redemptions may not have been captured. The measurement is an approximation. For these times, check the reward's queue on Twitch.",
+          "reason": {
+            "disconnect": "Connection to Twitch lost",
+            "worker_restart": "Capture restarted",
+            "not_joined": "Channel not joined",
+            "unknown": "No known reason"
+          }
+        },
+        "dialog": {
+          "confirmTitle": "Confirm reward",
+          "editTitle": "Edit reward",
+          "candidateIntro": "Recognised redemption:",
+          "notAWish": "This redemption does not become a wish.",
+          "label": "Label",
+          "labelHint": "Your name for the reward, for example its title on Twitch.",
+          "labelInvalid": {
+            "empty": "Enter a label.",
+            "too_long": "The label has at most {{ max }} characters.",
+            "forbidden_char": "The label contains a control character.",
+            "rejected": "The server does not accept this label."
+          },
+          "duration": "Default duration of new wishes in days",
+          "save": "Save",
+          "blocked": {
+            "stale": "No longer current.",
+            "expired": "Learning has run out.",
+            "label": "Enter a valid label.",
+            "unchanged": "You have not changed anything."
+          }
+        },
+        "forbiddenWrite": "Twitch does not currently confirm you as this channel's broadcaster or moderator, so nothing was changed. If you were made a moderator only recently, try again in about 10 minutes.",
+        "resume": "Resume"
+      }
     },
     "dialog": {
       "toWish": "Go to wish",
@@ -2947,8 +3120,10 @@
       "intro": "Change the alias or the duration of “{{ name }}”. Only what you change is sent.",
       "submit": "Save",
       "blocked": {
-        "unchanged": "Alias and duration are unchanged."
-      }
+        "unchanged": "Alias and duration are unchanged.",
+        "durationUnchanged": "The duration is unchanged."
+      },
+      "introDuration": "Change the duration of “{{ name }}”. The wish gets an alias once the emote is settled."
     },
     "readd": {
       "title": "Add wish again",

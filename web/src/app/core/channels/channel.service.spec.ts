@@ -16,6 +16,7 @@ const PERMISSIONS: ChannelPermissions = {
   canPurgeAsBroadcaster: false,
   chatLogBackfillEnabled: false,
   wishesEnabled: false,
+  wishCaptureEnabled: false,
 };
 
 describe('ChannelService', () => {

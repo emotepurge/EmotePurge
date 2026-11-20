@@ -34,6 +34,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<LogFilter> LogFilters => Set<LogFilter>();
     public DbSet<Wish> Wishes => Set<Wish>();
     public DbSet<ChannelWishSettings> ChannelWishSettings => Set<ChannelWishSettings>();
+    public DbSet<ChannelWishReward> ChannelWishRewards => Set<ChannelWishReward>();
+    public DbSet<WishRewardLearning> WishRewardLearnings => Set<WishRewardLearning>();
+    public DbSet<WishCaptureGap> WishCaptureGaps => Set<WishCaptureGap>();
+    public DbSet<WishCaptureState> WishCaptureState => Set<WishCaptureState>();
+    public DbSet<WishSlotExclusion> WishSlotExclusions => Set<WishSlotExclusion>();
+    public DbSet<WishCaptureReceipt> WishCaptureReceipts => Set<WishCaptureReceipt>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -484,10 +490,27 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(w => w.EmoteName).HasMaxLength(WishLimits.EmoteNameMaxLength);
             entity.Property(w => w.Alias).HasMaxLength(WishLimits.AliasMaxLength);
             entity.Property(w => w.RequesterLogin).HasMaxLength(WishLimits.RequesterLoginMaxLength);
+            entity.Property(w => w.IrcMessageId).HasMaxLength(WishLimits.IrcMessageIdMaxLength);
+            entity.Property(w => w.RequestText).HasMaxLength(WishLimits.RequestTextMaxLength);
+            entity.Property(w => w.RequestedName).HasMaxLength(WishLimits.RequestedNameMaxLength);
 
-            entity.ToTable(t => t.HasCheckConstraint(
-                "CK_Wishes_DurationDays",
-                $"\"DurationDays\" BETWEEN {WishLimits.DurationDaysMin} AND {WishLimits.DurationDaysMax}"));
+            entity.ToTable(t =>
+            {
+                t.HasCheckConstraint(
+                    "CK_Wishes_DurationDays",
+                    $"\"DurationDays\" BETWEEN {WishLimits.DurationDaysMin} AND {WishLimits.DurationDaysMax}");
+
+                // K6 (plan #486 2.8a): an open wish without an emote keeps the three columns NOT NULL and carries
+                // the empty string instead, so an image older than K6 never reads a null there. Only the states
+                // that may lack an emote may hold the placeholder; every other state has all three.
+                t.HasCheckConstraint(
+                    "CK_Wishes_EmotePlaceholder",
+                    $"\"Status\" IN ({SqlList(WishStatus.All.Where(WishStatus.EmotePlaceholderAllowed.Contains))}) "
+                    + "OR (\"SevenTvEmoteId\" <> '' AND \"EmoteName\" <> '' AND \"Alias\" <> '')");
+                t.HasCheckConstraint(
+                    "CK_Wishes_MatchKind",
+                    $"\"MatchKind\" IS NULL OR \"MatchKind\" IN ({SqlList(WishMatchKind.All)})");
+            });
 
             entity.HasIndex(w => new { w.ChannelId, w.Status });
             entity.HasIndex(w => new { w.Status, w.ExpiresAtUtc });
@@ -526,6 +549,18 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 .WithMany()
                 .HasForeignKey(w => w.MergedIntoWishId)
                 .OnDelete(DeleteBehavior.SetNull);
+
+            // K6: one wish per IRC message and channel; manual and adopted wishes carry none.
+            entity.HasIndex(w => new { w.ChannelId, w.IrcMessageId })
+                .IsUnique()
+                .HasDatabaseName("IX_Wishes_ChannelId_IrcMessageId")
+                .HasFilter("\"IrcMessageId\" IS NOT NULL");
+
+            // Forgetting a reward keeps its wishes.
+            entity.HasOne(w => w.Reward)
+                .WithMany()
+                .HasForeignKey(w => w.RewardId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<ChannelWishSettings>(entity =>
@@ -544,12 +579,101 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
                 t.HasCheckConstraint(
                     "CK_ChannelWishSettings_ProtectionThreshold",
                     "\"ProtectionThresholdPerDay\" IS NULL OR \"ProtectionThresholdPerDay\" > 0");
+                t.HasCheckConstraint(
+                    "CK_ChannelWishSettings_PendingExpiryDays",
+                    $"\"PendingExpiryDays\" BETWEEN {WishLimits.PendingExpiryDaysMin} AND {WishLimits.PendingExpiryDaysMax}");
             });
+
+            // A database default as well as the CLR one: an image older than K6 keeps inserting settings rows
+            // without naming the column while AddWishCapture is already applied.
+            entity.Property(s => s.PendingExpiryDays).HasDefaultValue(WishLimits.DefaultPendingExpiryDays);
 
             entity.HasOne(s => s.Channel)
                 .WithOne()
                 .HasForeignKey<ChannelWishSettings>(s => s.ChannelId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
+
+        // Chat capture (K6, migration AddWishCapture). Every table goes with its channel (purge, merge loser).
+        modelBuilder.Entity<ChannelWishReward>(entity =>
+        {
+            entity.Property(r => r.RewardId).HasMaxLength(WishLimits.RewardIdMaxLength);
+            entity.Property(r => r.Label).HasMaxLength(WishLimits.RewardLabelMaxLength);
+            entity.HasIndex(r => new { r.ChannelId, r.RewardId }).IsUnique();
+            entity.ToTable(t => t.HasCheckConstraint(
+                "CK_ChannelWishRewards_DefaultDurationDays",
+                $"\"DefaultDurationDays\" BETWEEN {WishLimits.DurationDaysMin} AND {WishLimits.DurationDaysMax}"));
+
+            entity.HasOne(r => r.Channel)
+                .WithMany()
+                .HasForeignKey(r => r.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<WishRewardLearning>(entity =>
+        {
+            entity.HasKey(l => l.ChannelId);
+            entity.Property(l => l.CandidateRewardId).HasMaxLength(WishLimits.RewardIdMaxLength);
+            entity.Property(l => l.CandidateText).HasMaxLength(WishLimits.RequestTextMaxLength);
+            entity.Property(l => l.CandidateLogin).HasMaxLength(WishLimits.RequesterLoginMaxLength);
+
+            // A candidate is all five fields or none: "has a candidate" is one question, asked on CandidateId.
+            entity.ToTable(t => t.HasCheckConstraint(
+                "CK_WishRewardLearnings_Candidate",
+                "(\"CandidateId\" IS NULL AND \"CandidateRewardId\" IS NULL AND \"CandidateText\" IS NULL "
+                + "AND \"CandidateLogin\" IS NULL AND \"CandidateSeenAtUtc\" IS NULL) "
+                + "OR (\"CandidateId\" IS NOT NULL AND \"CandidateRewardId\" IS NOT NULL AND \"CandidateText\" IS NOT NULL "
+                + "AND \"CandidateLogin\" IS NOT NULL AND \"CandidateSeenAtUtc\" IS NOT NULL)"));
+
+            entity.HasOne(l => l.Channel)
+                .WithOne()
+                .HasForeignKey<WishRewardLearning>(l => l.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<WishCaptureGap>(entity =>
+        {
+            entity.HasIndex(g => new { g.ChannelId, g.FromUtc });
+            entity.ToTable(t => t.HasCheckConstraint(
+                "CK_WishCaptureGaps_Reason",
+                $"\"Reason\" IN ({SqlList(WishCaptureGapReason.All)})"));
+
+            entity.HasOne(g => g.Channel)
+                .WithMany()
+                .HasForeignKey(g => g.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<WishCaptureState>(entity =>
+        {
+            entity.Property(s => s.Id).ValueGeneratedNever();
+            entity.ToTable(t => t.HasCheckConstraint("CK_WishCaptureState_Singleton", $"\"Id\" = {(global::EmotePurge.Core.Entities.WishCaptureState.SingletonId)}"));
+        });
+
+        modelBuilder.Entity<WishSlotExclusion>(entity =>
+        {
+            entity.HasKey(x => new { x.WishId, x.SlotId });
+
+            // No foreign key to the slot: the exclusion outlives an archived or deleted slot.
+            entity.HasOne(x => x.Wish)
+                .WithMany()
+                .HasForeignKey(x => x.WishId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<WishCaptureReceipt>(entity =>
+        {
+            entity.HasKey(r => new { r.ChannelId, r.IrcMessageId });
+            entity.Property(r => r.IrcMessageId).HasMaxLength(WishLimits.IrcMessageIdMaxLength);
+            entity.HasIndex(r => r.SeenAtUtc);
+
+            entity.HasOne(r => r.Channel)
+                .WithMany()
+                .HasForeignKey(r => r.ChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
     }
+
+    // A SQL list of string literals for a CHECK. Only ever fed with the code's own constants.
+    private static string SqlList(IEnumerable<string> values) => string.Join(", ", values.Select(v => $"'{v}'"));
 }

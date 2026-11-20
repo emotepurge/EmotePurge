@@ -107,6 +107,9 @@ export interface MockAdminHealth {
   lastMessageReceivedUtc: string | null;
   connectAttemptedUtc: string | null;
   secondsSinceLastMessage: number | null;
+  /** #486: the worker's capture state and the Api's switch; absent from an older Api. */
+  wishCaptureActive?: boolean | null;
+  apiWishCaptureEnabled?: boolean;
   sevenTv: {
     status: 'connected' | 'stale' | 'disconnected' | 'unknown' | 'disabled';
     enabled: boolean;
@@ -1169,6 +1172,8 @@ export async function mockChannelPermissions(
     chatLogBackfillEnabled: boolean;
     /** #485: the operator switch for wish emotes. Off by default; the wish specs switch it on. */
     wishesEnabled: boolean;
+    /** #486: the operator switch for chat capture of wishes. Off by default; the capture specs switch it on. */
+    wishCaptureEnabled: boolean;
   }> = {},
 ): Promise<void> {
   await page.route(`**/api/channels/${channelName}/permissions`, (route) =>
@@ -1182,6 +1187,7 @@ export async function mockChannelPermissions(
       canPurgeAsBroadcaster: false,
       chatLogBackfillEnabled: true,
       wishesEnabled: false,
+      wishCaptureEnabled: false,
       ...overrides,
     }),
   );
@@ -3575,7 +3581,16 @@ export type MockWishCallKind =
   | 'retry'
   | 'recheck'
   | 'complete-removal'
-  | 're-add';
+  | 're-add'
+  | 'approve'
+  | 'reject'
+  | 'unlink'
+  | 'rewards-read'
+  | 'learning-start'
+  | 'learning-confirm'
+  | 'learning-cancel'
+  | 'reward-update'
+  | 'reward-delete';
 
 /** One request the wish backend saw, in arrival order. `body` is the parsed JSON body, if any. */
 export interface MockWishCall {
@@ -3595,7 +3610,35 @@ export interface MockWishSettings {
   protectionThresholdPerDay: number | null;
   botModeEnabled: boolean;
   botSuspendedReason: string | null;
+  pendingExpiryDays: number;
   canEdit: boolean;
+}
+
+/** `GET …/wishes/rewards` (#486): the learned rewards, the learning session and the capture gaps. */
+export interface MockWishRewards {
+  channelBound: boolean;
+  rewards: Record<string, unknown>[];
+  limit: number;
+  /** The running learning session; set `candidate` on it and emit `wish.changed` to show a redemption. */
+  learning: Record<string, unknown> | null;
+  gaps: { fromUtc: string; toUtc: string; reason: string }[];
+  canEdit: boolean;
+  pendingExpiryDays: number;
+  /** Absent answers "now" at the moment of the read (capture alive); `null` is "never heard of". */
+  captureAliveAtUtc?: string | null;
+}
+
+/** One learned reward as `…/rewards` lists it. */
+export function buildWishReward(id: number, overrides: Record<string, unknown> = {}) {
+  return {
+    id,
+    label: `Reward ${id}`,
+    defaultDurationDays: 14,
+    isActive: true,
+    createdAtUtc: wishInstant(-30),
+    lastRedemptionSeenAtUtc: null as string | null,
+    ...overrides,
+  };
 }
 
 export interface MockWishBackend {
@@ -3610,6 +3653,8 @@ export interface MockWishBackend {
   usage: Map<number, Record<string, unknown> | null>;
   slots: ReturnType<typeof buildWishSlot>[];
   settings: MockWishSettings;
+  /** The state behind `…/wishes/rewards`; only asked while the capture switch is on. */
+  rewards: MockWishRewards;
   calls: MockWishCall[];
   /**
    * Awaited before the request is answered: return a promise to hold it back (the order in which
@@ -3645,6 +3690,7 @@ export async function mockWishBackend(
   channelName: string,
   init: Partial<Pick<MockWishBackend, 'open' | 'running' | 'ended' | 'slots'>> & {
     settings?: Partial<MockWishSettings>;
+    rewards?: Partial<MockWishRewards>;
   } = {},
 ): Promise<MockWishBackend> {
   const backend: MockWishBackend = {
@@ -3660,8 +3706,19 @@ export async function mockWishBackend(
       protectionThresholdPerDay: null,
       botModeEnabled: false,
       botSuspendedReason: null,
+      pendingExpiryDays: 14,
       canEdit: true,
       ...init.settings,
+    },
+    rewards: {
+      channelBound: true,
+      rewards: [],
+      limit: 10,
+      learning: null,
+      gaps: [],
+      canEdit: true,
+      pendingExpiryDays: 14,
+      ...init.rewards,
     },
     calls: [],
     of: (kind, id) =>
@@ -3705,6 +3762,19 @@ export async function mockWishBackend(
         kind = method === 'GET' ? 'settings-read' : 'settings-write';
       } else if (rest[0] === 'adopt') {
         kind = 'adopt';
+      } else if (rest[0] === 'rewards') {
+        if (rest.length === 1) {
+          kind = 'rewards-read';
+        } else if (rest[1] === 'learning') {
+          kind =
+            rest[2] === 'confirm'
+              ? 'learning-confirm'
+              : method === 'DELETE'
+                ? 'learning-cancel'
+                : 'learning-start';
+        } else {
+          kind = method === 'DELETE' ? 'reward-delete' : 'reward-update';
+        }
       } else if (numeric !== null && rest.length === 1) {
         kind = method === 'GET' ? 'detail' : 'update';
       } else {
@@ -3714,7 +3784,10 @@ export async function mockWishBackend(
         index: backend.calls.length,
         kind,
         method,
-        id: numeric,
+        id:
+          rest[0] === 'rewards' && rest[1] !== undefined && /^\d+$/.test(rest[1])
+            ? Number(rest[1])
+            : numeric,
         view: url.searchParams.get('view'),
         page: url.searchParams.has('page') ? Number(url.searchParams.get('page')) : null,
         sevenTvEmoteId: url.searchParams.get('sevenTvEmoteId'),
@@ -3762,6 +3835,14 @@ export async function mockWishBackend(
       if (kind === 'settings-read') {
         return fulfillJson(route, 200, backend.settings);
       }
+      if (kind === 'rewards-read') {
+        const { captureAliveAtUtc, ...read } = backend.rewards;
+        return fulfillJson(route, 200, {
+          ...read,
+          captureAliveAtUtc:
+            captureAliveAtUtc === undefined ? new Date().toISOString() : captureAliveAtUtc,
+        });
+      }
       const custom = backend.onCommand?.(call, backend);
       if (custom !== undefined) {
         // Status 0: the connection fails (no answer at all), as a network error does.
@@ -3776,6 +3857,57 @@ export async function mockWishBackend(
         };
         backend.settings = { ...saved, canEdit: backend.settings.canEdit };
         return fulfillJson(route, 200, saved);
+      }
+      if (kind === 'learning-start') {
+        const learning = {
+          sessionId: `session-${backend.calls.length}`,
+          startedAtUtc: new Date().toISOString(),
+          expiresAtUtc: new Date(Date.now() + 10 * 60_000).toISOString(),
+          candidate: null,
+        };
+        backend.rewards.learning = learning;
+        return fulfillJson(route, 201, learning);
+      }
+      if (kind === 'learning-confirm') {
+        const learning = backend.rewards.learning;
+        const candidate = learning?.['candidate'] as Record<string, unknown> | null | undefined;
+        if (
+          learning === null ||
+          candidate === null ||
+          candidate === undefined ||
+          learning['sessionId'] !== body?.['sessionId'] ||
+          candidate['candidateId'] !== body?.['candidateId']
+        ) {
+          return fulfillJson(route, 409, { errorCode: 'wish_learning_stale' });
+        }
+        const reward = buildWishReward(
+          Math.max(0, ...backend.rewards.rewards.map((r) => r['id'] as number)) + 1,
+          {
+            label: body?.['label'],
+            defaultDurationDays:
+              body?.['defaultDurationDays'] ?? backend.settings.defaultDurationDays,
+          },
+        );
+        backend.rewards.rewards = [...backend.rewards.rewards, reward];
+        backend.rewards.learning = null;
+        return fulfillJson(route, 201, reward);
+      }
+      if (kind === 'learning-cancel') {
+        backend.rewards.learning = null;
+        return fulfillJson(route, 204, null);
+      }
+      if (kind === 'reward-update' || kind === 'reward-delete') {
+        const index = backend.rewards.rewards.findIndex((r) => r['id'] === call.id);
+        if (index < 0) {
+          return fulfillJson(route, 404, { errorCode: 'wish_reward_not_found' });
+        }
+        if (kind === 'reward-delete') {
+          backend.rewards.rewards.splice(index, 1);
+          return fulfillJson(route, 204, null);
+        }
+        const updated = { ...backend.rewards.rewards[index], ...body };
+        backend.rewards.rewards[index] = updated;
+        return fulfillJson(route, 200, updated);
       }
       if (kind === 'create') {
         const created = buildWish(
@@ -3832,6 +3964,65 @@ export async function mockWishBackend(
         return fulfillJson(route, 404, { errorCode: 'wish_not_found' });
       }
       switch (kind) {
+        case 'approve': {
+          // A wish whose emote already runs extends that wish and ends as `merged`; any other one is
+          // booked as `approved`, with the emote and alias the body names.
+          const running = backend.running.find(
+            (w) =>
+              w['sevenTvEmoteId'] === known['sevenTvEmoteId'] && known['sevenTvEmoteId'] !== '',
+          );
+          if (known['statusReason'] === 'already_running' && running !== undefined) {
+            const extendedExpiresAtUtc = wishInstant(23);
+            move(running.id, 'running', {
+              extensionCount: Number(running['extensionCount'] ?? 0) + 1,
+              expiresAtUtc: extendedExpiresAtUtc,
+            });
+            const merged = move(id, 'ended', {
+              status: 'merged',
+              mergedIntoWishId: running.id,
+              statusReason: null,
+              endedAtUtc: wishInstant(0),
+            });
+            return fulfillJson(route, 200, { ...merged, extendedExpiresAtUtc });
+          }
+          const approved = move(id, 'open', {
+            status: 'approved',
+            statusReason: null,
+            approvedAtUtc: wishInstant(0),
+            ...(body?.['sevenTvEmoteId'] === undefined
+              ? {}
+              : { sevenTvEmoteId: body['sevenTvEmoteId'] }),
+            ...(body?.['emoteName'] === undefined ? {} : { emoteName: body['emoteName'] }),
+            ...(body?.['alias'] === undefined ? {} : { alias: body['alias'] }),
+            ...(body?.['durationDays'] === undefined ? {} : { durationDays: body['durationDays'] }),
+          });
+          return fulfillJson(route, 200, { ...approved, extendedExpiresAtUtc: null });
+        }
+        case 'reject':
+          return fulfillJson(
+            route,
+            200,
+            move(id, 'ended', {
+              status: 'rejected',
+              statusReason: null,
+              endedAtUtc: wishInstant(0),
+            }),
+          );
+        case 'unlink':
+          return fulfillJson(
+            route,
+            200,
+            move(id, 'open', {
+              status: 'pending',
+              linkOrigin: null,
+              statusReason: null,
+              slotId: null,
+              slotAddedAtUtc: null,
+              startsAtUtc: null,
+              probationStartsAtUtc: null,
+              expiresAtUtc: null,
+            }),
+          );
         case 'keep':
           return fulfillJson(
             route,

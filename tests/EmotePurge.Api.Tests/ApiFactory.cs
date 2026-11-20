@@ -256,6 +256,12 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// <summary>Substituted like <see cref="Wishes"/>, for the cross-channel overview.</summary>
     public IWishOverviewService WishOverview { get; } = Substitute.For<IWishOverviewService>();
 
+    /// <summary>
+    /// Substituted like <see cref="Wishes"/>, for the reward routes of the chat capture (K6, #486). The capture switch is
+    /// <b>on</b> here; <see cref="WithWishCaptureDisabled"/> is the off variant.
+    /// </summary>
+    public IWishRewardService WishRewards { get; } = Substitute.For<IWishRewardService>();
+
     public ApiFactory()
     {
         LegalContent.GetAvailabilityAsync(Arg.Any<CancellationToken>())
@@ -287,8 +293,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         // On, so the filter matrix reaches the backfill handlers; the off variant overrides it.
         builder.UseSetting("ChatLogBackfill:Enabled", "true");
 
-        // Likewise for the wish routes; the off variant overrides it.
+        // Likewise for the wish routes and their chat capture (K6); the off variants override them.
         builder.UseSetting("Wishes:Enabled", "true");
+        builder.UseSetting("Wishes:Capture:Enabled", "true");
 
         // Warnings and above still reach the console. A failing filter test reports only a status
         // code, and the difference between "the filter answered 500" and "the filter answered the
@@ -339,6 +346,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => ChatLogImportRemoval);
             services.AddScoped(_ => Wishes);
             services.AddScoped(_ => WishOverview);
+            services.AddScoped(_ => WishRewards);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected
             // services *before* it runs the endpoint filter pipeline. A request the filter is about
@@ -364,6 +372,13 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// <summary>The same factory — same substitutes — with <c>Wishes:Enabled</c> off, the production default.</summary>
     public WebApplicationFactory<Program> WithWishesDisabled() =>
         WithWebHostBuilder(builder => builder.UseSetting("Wishes:Enabled", "false"));
+
+    /// <summary>
+    /// The same factory with <c>Wishes:Enabled</c> on and <c>Wishes:Capture:Enabled</c> off (the Api hides the capture,
+    /// whatever the worker does).
+    /// </summary>
+    public WebApplicationFactory<Program> WithWishCaptureDisabled() =>
+        WithWebHostBuilder(builder => builder.UseSetting("Wishes:Capture:Enabled", "false"));
 
     private static IChannelEmoteSetObservationService CreateDefaultObservationService()
     {

@@ -31,4 +31,10 @@ public class ChannelWishSettings
 
     /// <summary><c>not_editor</c> after a failed check; cleared by the next activate.</summary>
     public string? BotActivationError { get; set; }
+
+    /// <summary>
+    /// Days a captured wish may stay <c>pending</c> before it expires (K6, 1 to 90). Carries a database default
+    /// as well, because an image older than K6 keeps inserting settings rows without naming the column.
+    /// </summary>
+    public int PendingExpiryDays { get; set; } = WishLimits.DefaultPendingExpiryDays;
 }

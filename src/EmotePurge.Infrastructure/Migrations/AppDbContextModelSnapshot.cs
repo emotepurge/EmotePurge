@@ -202,6 +202,51 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.ToTable("ChannelLiveDays");
                 });
 
+            modelBuilder.Entity("EmotePurge.Core.Entities.ChannelWishReward", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("DefaultDurationDays")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<DateTime?>("LastRedemptionSeenAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RewardId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChannelId", "RewardId")
+                        .IsUnique();
+
+                    b.ToTable("ChannelWishRewards", t =>
+                        {
+                            t.HasCheckConstraint("CK_ChannelWishRewards_DefaultDurationDays", "\"DefaultDurationDays\" BETWEEN 1 AND 365");
+                        });
+                });
+
             modelBuilder.Entity("EmotePurge.Core.Entities.ChannelWishSettings", b =>
                 {
                     b.Property<string>("ChannelId")
@@ -240,6 +285,11 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Property<int>("DefaultDurationDays")
                         .HasColumnType("integer");
 
+                    b.Property<int>("PendingExpiryDays")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(14);
+
                     b.Property<int>("ProbationLeadDays")
                         .HasColumnType("integer");
 
@@ -252,6 +302,8 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.ToTable("ChannelWishSettings", t =>
                         {
                             t.HasCheckConstraint("CK_ChannelWishSettings_DefaultDurationDays", "\"DefaultDurationDays\" BETWEEN 1 AND 365");
+
+                            t.HasCheckConstraint("CK_ChannelWishSettings_PendingExpiryDays", "\"PendingExpiryDays\" BETWEEN 1 AND 90");
 
                             t.HasCheckConstraint("CK_ChannelWishSettings_ProbationLeadDays", "\"ProbationLeadDays\" BETWEEN 1 AND 30");
 
@@ -1316,7 +1368,14 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Property<DateTime?>("FirstActivatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("IrcMessageId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("LinkOrigin")
+                        .HasColumnType("text");
+
+                    b.Property<string>("MatchKind")
                         .HasColumnType("text");
 
                     b.Property<long?>("MergedIntoWishId")
@@ -1331,12 +1390,23 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.Property<int?>("RemovalQueuedVersion")
                         .HasColumnType("integer");
 
+                    b.Property<string>("RequestText")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<string>("RequestedName")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
                     b.Property<string>("RequesterLogin")
                         .HasMaxLength(25)
                         .HasColumnType("character varying(25)");
 
                     b.Property<string>("RequesterTwitchUserId")
                         .HasColumnType("text");
+
+                    b.Property<long?>("RewardId")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("SevenTvEmoteId")
                         .IsRequired()
@@ -1380,10 +1450,17 @@ namespace EmotePurge.Infrastructure.Migrations
 
                     b.HasIndex("MergedIntoWishId");
 
+                    b.HasIndex("RewardId");
+
                     b.HasIndex("SlotId")
                         .IsUnique()
                         .HasDatabaseName("IX_Wishes_SlotId_Live")
                         .HasFilter("\"SlotId\" IS NOT NULL AND \"Status\" IN ('active', 'presented', 'kept')");
+
+                    b.HasIndex("ChannelId", "IrcMessageId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_Wishes_ChannelId_IrcMessageId")
+                        .HasFilter("\"IrcMessageId\" IS NOT NULL");
 
                     b.HasIndex("ChannelId", "SevenTvEmoteId")
                         .IsUnique()
@@ -1397,7 +1474,134 @@ namespace EmotePurge.Infrastructure.Migrations
                     b.ToTable("Wishes", t =>
                         {
                             t.HasCheckConstraint("CK_Wishes_DurationDays", "\"DurationDays\" BETWEEN 1 AND 365");
+
+                            t.HasCheckConstraint("CK_Wishes_EmotePlaceholder", "\"Status\" IN ('pending', 'rejected', 'expired') OR (\"SevenTvEmoteId\" <> '' AND \"EmoteName\" <> '' AND \"Alias\" <> '')");
+
+                            t.HasCheckConstraint("CK_Wishes_MatchKind", "\"MatchKind\" IS NULL OR \"MatchKind\" IN ('link', 'name', 'none')");
                         });
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.WishCaptureGap", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<string>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("FromUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("ToUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChannelId", "FromUtc");
+
+                    b.ToTable("WishCaptureGaps", t =>
+                        {
+                            t.HasCheckConstraint("CK_WishCaptureGaps_Reason", "\"Reason\" IN ('disconnect', 'worker_restart', 'not_joined')");
+                        });
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.WishCaptureReceipt", b =>
+                {
+                    b.Property<string>("ChannelId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("IrcMessageId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime>("SeenAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("ChannelId", "IrcMessageId");
+
+                    b.HasIndex("SeenAtUtc");
+
+                    b.ToTable("WishCaptureReceipts");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.WishCaptureState", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("LastAliveAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("WishCaptureState", t =>
+                        {
+                            t.HasCheckConstraint("CK_WishCaptureState_Singleton", "\"Id\" = 1");
+                        });
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.WishRewardLearning", b =>
+                {
+                    b.Property<string>("ChannelId")
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("CandidateId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CandidateLogin")
+                        .HasMaxLength(25)
+                        .HasColumnType("character varying(25)");
+
+                    b.Property<string>("CandidateRewardId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime?>("CandidateSeenAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CandidateText")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("ChannelId");
+
+                    b.ToTable("WishRewardLearnings", t =>
+                        {
+                            t.HasCheckConstraint("CK_WishRewardLearnings_Candidate", "(\"CandidateId\" IS NULL AND \"CandidateRewardId\" IS NULL AND \"CandidateText\" IS NULL AND \"CandidateLogin\" IS NULL AND \"CandidateSeenAtUtc\" IS NULL) OR (\"CandidateId\" IS NOT NULL AND \"CandidateRewardId\" IS NOT NULL AND \"CandidateText\" IS NOT NULL AND \"CandidateLogin\" IS NOT NULL AND \"CandidateSeenAtUtc\" IS NOT NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.WishSlotExclusion", b =>
+                {
+                    b.Property<long>("WishId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SlotId")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("WishId", "SlotId");
+
+                    b.ToTable("WishSlotExclusions");
                 });
 
             modelBuilder.Entity("EmotePurge.Core.Entities.ChannelEmoteSetObservation", b =>
@@ -1412,6 +1616,17 @@ namespace EmotePurge.Infrastructure.Migrations
                 });
 
             modelBuilder.Entity("EmotePurge.Core.Entities.ChannelLiveDay", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Channel");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.ChannelWishReward", b =>
                 {
                     b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
                         .WithMany()
@@ -1652,6 +1867,11 @@ namespace EmotePurge.Infrastructure.Migrations
                         .HasForeignKey("MergedIntoWishId")
                         .OnDelete(DeleteBehavior.SetNull);
 
+                    b.HasOne("EmotePurge.Core.Entities.ChannelWishReward", "Reward")
+                        .WithMany()
+                        .HasForeignKey("RewardId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("EmotePurge.Core.Entities.EmoteSlot", "Slot")
                         .WithMany()
                         .HasForeignKey("SlotId")
@@ -1659,7 +1879,53 @@ namespace EmotePurge.Infrastructure.Migrations
 
                     b.Navigation("Channel");
 
+                    b.Navigation("Reward");
+
                     b.Navigation("Slot");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.WishCaptureGap", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Channel");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.WishCaptureReceipt", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Channel");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.WishRewardLearning", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.Channel", "Channel")
+                        .WithOne()
+                        .HasForeignKey("EmotePurge.Core.Entities.WishRewardLearning", "ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Channel");
+                });
+
+            modelBuilder.Entity("EmotePurge.Core.Entities.WishSlotExclusion", b =>
+                {
+                    b.HasOne("EmotePurge.Core.Entities.Wish", "Wish")
+                        .WithMany()
+                        .HasForeignKey("WishId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Wish");
                 });
 
             modelBuilder.Entity("EmotePurge.Core.Entities.Channel", b =>

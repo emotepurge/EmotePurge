@@ -11,6 +11,13 @@ namespace EmotePurge.Api.Endpoints;
 /// translate: the switch is checked first (404 <c>wishes_disabled</c>, after the authorization filters, so a
 /// caller who may not manage the channel never learns whether the feature exists), then the body, then the
 /// service decides and <see cref="MapResult"/> turns its outcome into a status and an error code.
+/// <para>
+/// K6 (plan #486 2.9): <c>approve</c>, <c>reject</c> and <c>unlink</c> need only <c>Wishes:Enabled</c>; the reward
+/// routes under <c>…/wishes/rewards</c> carry <see cref="WishCaptureAccessFilter"/>, which also answers 404
+/// <c>wish_capture_disabled</c> while the Api's capture switch is off. Every handler whose answer carries a wish asks
+/// <see cref="IChannelAccessService.ResolveWishCaptureAccessAsync"/> and passes the answer on, so redeemer data leaves
+/// only for a caller confirmed on the channel's Twitch id (2.4a).
+/// </para>
 /// </summary>
 public static class WishEndpoints
 {
@@ -27,8 +34,10 @@ public static class WishEndpoints
             string? view,
             string? page,
             string? pageSize,
+            HttpContext httpContext,
             WishOptions options,
             IWishService wishService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             if (!options.Enabled)
@@ -42,7 +51,8 @@ public static class WishEndpoints
             }
 
             var (effectivePage, effectivePageSize) = PagingQuery.Clamp(page, pageSize);
-            var result = await wishService.ListAsync(channelName, parsedView, effectivePage, effectivePageSize, ct);
+            var access = await ResolveAccessAsync(httpContext, channelName, channelAccess, ct);
+            var result = await wishService.ListAsync(channelName, parsedView, effectivePage, effectivePageSize, access, ct);
             return result is null
                 ? Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound })
                 : Results.Ok(result);
@@ -132,8 +142,10 @@ public static class WishEndpoints
         group.MapGet("/{id:long}", async (
             string channelName,
             long id,
+            HttpContext httpContext,
             WishOptions options,
             IWishService wishService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             if (!options.Enabled)
@@ -141,7 +153,8 @@ public static class WishEndpoints
                 return WishesDisabled();
             }
 
-            var detail = await wishService.GetAsync(channelName, id, ct);
+            var access = await ResolveAccessAsync(httpContext, channelName, channelAccess, ct);
+            var detail = await wishService.GetAsync(channelName, id, access, ct);
             return detail is null
                 ? Results.NotFound(new { errorCode = ApiErrorCodes.WishNotFound })
                 : Results.Ok(detail);
@@ -179,6 +192,7 @@ public static class WishEndpoints
             HttpContext httpContext,
             WishOptions options,
             IWishService wishService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             if (!options.Enabled)
@@ -192,9 +206,13 @@ public static class WishEndpoints
             }
 
             var actor = httpContext.User.TryBuildAuditActor();
-            return actor is null
-                ? Results.Unauthorized()
-                : MapResult(await wishService.AdoptAsync(channelName, request, actor, ct), StatusCodes.Status201Created);
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var access = await ResolveAccessAsync(httpContext, channelName, channelAccess, ct);
+            return MapResult(await wishService.AdoptAsync(channelName, request, actor, access, ct), StatusCodes.Status201Created);
         })
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
@@ -205,6 +223,7 @@ public static class WishEndpoints
             HttpContext httpContext,
             WishOptions options,
             IWishService wishService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             if (!options.Enabled)
@@ -218,9 +237,13 @@ public static class WishEndpoints
             }
 
             var actor = httpContext.User.TryBuildAuditActor();
-            return actor is null
-                ? Results.Unauthorized()
-                : MapResult(await wishService.UpdateAsync(channelName, id, request, actor, ct), StatusCodes.Status200OK);
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var access = await ResolveAccessAsync(httpContext, channelName, channelAccess, ct);
+            return MapResult(await wishService.UpdateAsync(channelName, id, request, actor, access, ct), StatusCodes.Status200OK);
         })
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
@@ -231,6 +254,7 @@ public static class WishEndpoints
             HttpContext httpContext,
             WishOptions options,
             IWishService wishService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             if (!options.Enabled)
@@ -244,16 +268,20 @@ public static class WishEndpoints
             }
 
             var actor = httpContext.User.TryBuildAuditActor();
-            return actor is null
-                ? Results.Unauthorized()
-                : MapResult(await wishService.ReAddAsync(channelName, id, request, actor, ct), StatusCodes.Status200OK);
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var access = await ResolveAccessAsync(httpContext, channelName, channelAccess, ct);
+            return MapResult(await wishService.ReAddAsync(channelName, id, request, actor, access, ct), StatusCodes.Status200OK);
         })
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
-        MapTransition(group, "/{id:long}/extend", (s, c, id, a, ct) => s.ExtendAsync(c, id, a, ct));
-        MapTransition(group, "/{id:long}/keep", (s, c, id, a, ct) => s.KeepAsync(c, id, a, ct));
-        MapTransition(group, "/{id:long}/close", (s, c, id, a, ct) => s.CloseAsync(c, id, a, ct));
-        MapTransition(group, "/{id:long}/retry", (s, c, id, a, ct) => s.RetryAsync(c, id, a, ct));
+        MapTransition(group, "/{id:long}/extend", (s, c, id, a, access, ct) => s.ExtendAsync(c, id, a, access, ct));
+        MapTransition(group, "/{id:long}/keep", (s, c, id, a, access, ct) => s.KeepAsync(c, id, a, access, ct));
+        MapTransition(group, "/{id:long}/close", (s, c, id, a, access, ct) => s.CloseAsync(c, id, a, access, ct));
+        MapTransition(group, "/{id:long}/retry", (s, c, id, a, access, ct) => s.RetryAsync(c, id, a, access, ct));
         // Plan #485 2.1a: the report names slot, generation and set, so it has a body and a handler of its own.
         group.MapPost("/{id:long}/complete-removal", async (
             string channelName,
@@ -262,6 +290,7 @@ public static class WishEndpoints
             HttpContext httpContext,
             WishOptions options,
             IWishService wishService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             if (!options.Enabled)
@@ -275,14 +304,22 @@ public static class WishEndpoints
             }
 
             var actor = httpContext.User.TryBuildAuditActor();
-            return actor is null
-                ? Results.Unauthorized()
-                : MapResult(await wishService.CompleteRemovalAsync(channelName, id, request, actor, ct), StatusCodes.Status200OK);
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var access = await ResolveAccessAsync(httpContext, channelName, channelAccess, ct);
+            return MapResult(await wishService.CompleteRemovalAsync(channelName, id, request, actor, access, ct), StatusCodes.Status200OK);
         })
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
-        // K1 registers the route; the command refuses every state until K4 gives it its one transition.
-        MapTransition(group, "/{id:long}/recheck", (s, c, id, a, ct) => s.RecheckAsync(c, id, a, ct));
+        // K1 registers the route; the command refuses every state until K4 gives it its one transition. It answers no
+        // wish, so it asks no capture access.
+        MapTransition(group, "/{id:long}/recheck", (s, c, id, a, _, ct) => s.RecheckAsync(c, id, a, ct), resolveAccess: false);
+
+        MapCaptureCommands(group);
+        MapRewardEndpoints(group);
 
         // The cross-channel side (E18). Neither read goes through IMyChannelsService.
         var overview = app.MapGroup("/api/wishes")
@@ -329,7 +366,8 @@ public static class WishEndpoints
     /// <see cref="WishOutcome"/> through it. Outcomes without a code of their own reuse existing ones:
     /// <see cref="WishOutcome.EmoteIdInvalid"/> is <c>emote_ids_invalid</c>, and <see cref="WishOutcome.StartsAtInvalid"/>,
     /// <see cref="WishOutcome.ModeInvalid"/> and <see cref="WishOutcome.RequestInvalid"/> are <c>invalid_request_body</c>.
-    /// The three conflicts that concern another wish name it as <c>wishId</c> (plan #485 2.1a; null when
+    /// The conflicts that concern another wish name it as <c>wishId</c> (plan #485 2.1a, and K6's
+    /// <c>wish_running_not_extendable</c>; null when
     /// <c>wish_emote_already_in_set</c> has no running wish).
     /// </summary>
     internal static IResult MapResult(WishCommandResult result, int successStatus)
@@ -385,15 +423,43 @@ public static class WishEndpoints
                 return Results.Conflict(new { errorCode = ApiErrorCodes.WishSlotAlreadyLinked, wishId = result.ConflictingWishId });
             case WishOutcome.StateConflict:
                 return Results.Conflict(new { errorCode = ApiErrorCodes.WishStateConflict });
+            case WishOutcome.EmoteRequired:
+                return Results.BadRequest(new { errorCode = ApiErrorCodes.WishEmoteRequired });
+            case WishOutcome.RunningNotExtendable:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.WishRunningNotExtendable, wishId = result.ConflictingWishId });
             default:
                 throw new UnreachableException($"Unexpected {nameof(WishOutcome)} value: {result.Outcome}.");
         }
     }
 
+    /// <summary>
+    /// The one place a reward outcome becomes a status and an error code (plan #486 2.4, 2.9). Public for the same
+    /// reason as <see cref="MapResult"/>. <see cref="WishRewardOutcome.AccessDenied"/> is a 403 in the form of the
+    /// manager filter (no body): the service's second wall behind <see cref="WishCaptureAccessFilter"/>.
+    /// </summary>
+    internal static IResult MapRewardResult(WishRewardResult result, Func<WishRewardResult, IResult> success) =>
+        result.Outcome switch
+        {
+            WishRewardOutcome.Success => success(result),
+            WishRewardOutcome.ChannelNotFound => Results.NotFound(new { errorCode = ApiErrorCodes.ChannelNotFound }),
+            WishRewardOutcome.ChannelUnbound => Results.Conflict(new { errorCode = ApiErrorCodes.WishChannelUnbound }),
+            WishRewardOutcome.AccessDenied => Results.Forbid(),
+            WishRewardOutcome.LearningActive => Results.Conflict(new { errorCode = ApiErrorCodes.WishLearningActive }),
+            WishRewardOutcome.LearningStale => Results.Conflict(new { errorCode = ApiErrorCodes.WishLearningStale }),
+            WishRewardOutcome.NoCandidate => Results.Conflict(new { errorCode = ApiErrorCodes.WishRewardNoCandidate }),
+            WishRewardOutcome.AlreadyKnown => Results.Conflict(new { errorCode = ApiErrorCodes.WishRewardAlreadyKnown }),
+            WishRewardOutcome.RewardLimit => Results.Conflict(new { errorCode = ApiErrorCodes.WishRewardLimit }),
+            WishRewardOutcome.RewardNotFound => Results.NotFound(new { errorCode = ApiErrorCodes.WishRewardNotFound }),
+            WishRewardOutcome.RequestInvalid => InvalidBody(),
+            WishRewardOutcome.DurationOutOfRange => Results.BadRequest(new { errorCode = ApiErrorCodes.WishDurationOutOfRange }),
+            _ => throw new UnreachableException($"Unexpected {nameof(WishRewardOutcome)} value: {result.Outcome}."),
+        };
+
     private static void MapTransition(
         RouteGroupBuilder group,
         string pattern,
-        Func<IWishService, string, long, AuditActor, CancellationToken, Task<WishCommandResult>> command)
+        Func<IWishService, string, long, AuditActor, WishCaptureAccess?, CancellationToken, Task<WishCommandResult>> command,
+        bool resolveAccess = true)
     {
         group.MapPost(pattern, async (
             string channelName,
@@ -401,6 +467,7 @@ public static class WishEndpoints
             HttpContext httpContext,
             WishOptions options,
             IWishService wishService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             if (!options.Enabled)
@@ -409,11 +476,194 @@ public static class WishEndpoints
             }
 
             var actor = httpContext.User.TryBuildAuditActor();
-            return actor is null
-                ? Results.Unauthorized()
-                : MapResult(await command(wishService, channelName, id, actor, ct), StatusCodes.Status200OK);
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var access = resolveAccess ? await ResolveAccessAsync(httpContext, channelName, channelAccess, ct) : null;
+            return MapResult(await command(wishService, channelName, id, actor, access, ct), StatusCodes.Status200OK);
         })
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+    }
+
+    // Plan #486 W7: deciding an open wish needs Wishes:Enabled only, not the capture switch. Wishes captured before the
+    // capture was switched off (or captured by a worker whose switch is on while the Api's is off) stay decidable.
+    // Access to the commands is the K1 manager check (2.4a); the answers carry redeemer data per the access.
+    private static void MapCaptureCommands(RouteGroupBuilder group)
+    {
+        group.MapPost("/{id:long}/approve", async (
+            string channelName,
+            long id,
+            ApproveWishRequest? request,
+            HttpContext httpContext,
+            WishOptions options,
+            IWishService wishService,
+            IChannelAccessService channelAccess,
+            CancellationToken ct) =>
+        {
+            if (!options.Enabled)
+            {
+                return WishesDisabled();
+            }
+
+            if (request is null)
+            {
+                return InvalidBody();
+            }
+
+            var actor = httpContext.User.TryBuildAuditActor();
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var access = await ResolveAccessAsync(httpContext, channelName, channelAccess, ct);
+            var result = await wishService.ApproveAsync(channelName, id, request, actor, access, ct);
+            // The answer names the outcome the manager has to be told about: merged into the running wish (the wish
+            // carries mergedIntoWishId) and that wish's new expiry; null when the wish was approved on its own.
+            return result is { IsSuccess: true, Wish: { } wish }
+                ? Results.Ok(new ApprovedWishDto(wish, result.ExtendedExpiresAtUtc))
+                : MapResult(result, StatusCodes.Status200OK);
+        })
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
+        MapTransition(group, "/{id:long}/reject", (s, c, id, a, access, ct) => s.RejectAsync(c, id, a, access, ct));
+        MapTransition(group, "/{id:long}/unlink", (s, c, id, a, access, ct) => s.UnlinkAsync(c, id, a, access, ct));
+    }
+
+    // The reward routes (plan #486 2.9). Every one carries WishCaptureAccessFilter right after the group's manager
+    // filter; it answers the two switches, the binding and the id-confirmed access, and hands the access on. The
+    // writes add the settings filter behind it (bot mode: broadcaster, activator, admin). {rewardId} is the row id.
+    private static void MapRewardEndpoints(RouteGroupBuilder group)
+    {
+        var rewards = group.MapGroup("/rewards")
+            .AddEndpointFilter<WishCaptureAccessFilter>();
+
+        rewards.MapGet("", async (
+            HttpContext httpContext,
+            IWishRewardService rewardService,
+            IChannelAccessService channelAccess,
+            CancellationToken ct) =>
+        {
+            var principal = httpContext.User.TryBuildTwitchPrincipal();
+            if (principal is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var result = await rewardService.GetAsync(
+                WishCaptureAccessFilter.GetAccess(httpContext), principal.TwitchUserId, channelAccess.IsGlobalAdmin(principal), ct);
+            return MapRewardResult(result, r => Results.Ok(r.Rewards));
+        })
+        .RequireRateLimiting(RateLimitPolicyNames.InteractiveRead);
+
+        rewards.MapPost("/learning", async (
+            HttpContext httpContext,
+            IWishRewardService rewardService,
+            CancellationToken ct) =>
+        {
+            var actor = httpContext.User.TryBuildAuditActor();
+            return actor is null
+                ? Results.Unauthorized()
+                : MapRewardResult(
+                    await rewardService.StartLearningAsync(WishCaptureAccessFilter.GetAccess(httpContext), actor, ct),
+                    r => Results.Json(r.Learning, statusCode: StatusCodes.Status201Created));
+        })
+        .AddEndpointFilter<WishSettingsAuthorizationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
+        rewards.MapPost("/learning/confirm", async (
+            ConfirmWishRewardLearningRequest? request,
+            HttpContext httpContext,
+            IWishRewardService rewardService,
+            CancellationToken ct) =>
+        {
+            if (request is null)
+            {
+                return InvalidBody();
+            }
+
+            var actor = httpContext.User.TryBuildAuditActor();
+            return actor is null
+                ? Results.Unauthorized()
+                : MapRewardResult(
+                    await rewardService.ConfirmLearningAsync(WishCaptureAccessFilter.GetAccess(httpContext), request, actor, ct),
+                    r => Results.Json(r.Reward, statusCode: StatusCodes.Status201Created));
+        })
+        .AddEndpointFilter<WishSettingsAuthorizationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
+        // The session travels in the query (a DELETE has no body). Bound as a string so a malformed id is the same
+        // translatable 400 as a missing one, not the framework's bare binding failure.
+        rewards.MapDelete("/learning", async (
+            string? sessionId,
+            HttpContext httpContext,
+            IWishRewardService rewardService,
+            CancellationToken ct) =>
+        {
+            if (!Guid.TryParse(sessionId, out var parsedSessionId) || parsedSessionId == Guid.Empty)
+            {
+                return InvalidBody();
+            }
+
+            var actor = httpContext.User.TryBuildAuditActor();
+            return actor is null
+                ? Results.Unauthorized()
+                : MapRewardResult(
+                    await rewardService.CancelLearningAsync(WishCaptureAccessFilter.GetAccess(httpContext), parsedSessionId, actor, ct),
+                    _ => Results.NoContent());
+        })
+        .AddEndpointFilter<WishSettingsAuthorizationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
+        rewards.MapPatch("/{rewardId:long}", async (
+            long rewardId,
+            UpdateWishRewardRequest? request,
+            HttpContext httpContext,
+            IWishRewardService rewardService,
+            CancellationToken ct) =>
+        {
+            if (request is null)
+            {
+                return InvalidBody();
+            }
+
+            var actor = httpContext.User.TryBuildAuditActor();
+            return actor is null
+                ? Results.Unauthorized()
+                : MapRewardResult(
+                    await rewardService.UpdateRewardAsync(WishCaptureAccessFilter.GetAccess(httpContext), rewardId, request, actor, ct),
+                    r => Results.Ok(r.Reward));
+        })
+        .AddEndpointFilter<WishSettingsAuthorizationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
+        rewards.MapDelete("/{rewardId:long}", async (
+            long rewardId,
+            HttpContext httpContext,
+            IWishRewardService rewardService,
+            CancellationToken ct) =>
+        {
+            var actor = httpContext.User.TryBuildAuditActor();
+            return actor is null
+                ? Results.Unauthorized()
+                : MapRewardResult(
+                    await rewardService.DeleteRewardAsync(WishCaptureAccessFilter.GetAccess(httpContext), rewardId, actor, ct),
+                    _ => Results.NoContent());
+        })
+        .AddEndpointFilter<WishSettingsAuthorizationFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+    }
+
+    // Plan #486 2.4a: every answer that carries a WishDto asks the id-bound question next to the manager filter's and
+    // hands the answer to the service, which gives out redeemer data only when it is confirmed. Access to the route
+    // itself stays the manager filter's decision; an unconfirmed answer only empties those fields.
+    private static async Task<WishCaptureAccess?> ResolveAccessAsync(
+        HttpContext httpContext, string channelName, IChannelAccessService channelAccess, CancellationToken ct)
+    {
+        var principal = httpContext.User.TryBuildTwitchPrincipal();
+        return principal is null ? null : await channelAccess.ResolveWishCaptureAccessAsync(principal, channelName, ct);
     }
 
     private static bool TryParseView(string? view, out WishListView parsed)
@@ -447,6 +697,8 @@ public static class WishEndpoints
 /// <summary>
 /// The settings read: the settings plus <see cref="CanEdit"/>, whether this caller may write them (plan #485,
 /// F1 = A). The write answers the plain settings: whoever got through its filter may edit.
+/// <see cref="PendingExpiryDays"/> (K6, plan #486 2.8) is the channel's expiry of open wishes, carried whatever the
+/// capture switch says, like the other values.
 /// </summary>
 internal sealed record WishSettingsReadDto(
     int DefaultDurationDays,
@@ -454,6 +706,7 @@ internal sealed record WishSettingsReadDto(
     decimal? ProtectionThresholdPerDay,
     bool BotModeEnabled,
     string? BotSuspendedReason,
+    int PendingExpiryDays,
     bool CanEdit)
 {
     public WishSettingsReadDto(WishSettingsDto settings, bool canEdit)
@@ -463,6 +716,7 @@ internal sealed record WishSettingsReadDto(
             settings.ProtectionThresholdPerDay,
             settings.BotModeEnabled,
             settings.BotSuspendedReason,
+            settings.PendingExpiryDays,
             canEdit)
     {
     }
@@ -472,8 +726,10 @@ internal sealed record WishSettingsReadDto(
 /// The wire body of <c>PUT …/wishes/settings</c>. A threshold that is absent from the JSON keeps the stored one, an
 /// explicit <c>null</c> switches protection off, a value sets it (plan #485 2.1a, Sol-P2-4). System.Text.Json calls
 /// the <c>init</c> accessor only for a property present in the body, which is what tells "absent" from <c>null</c>.
+/// <see cref="PendingExpiryDays"/> (K6, plan #486 2.8) is optional the plain way: absent or <c>null</c> keeps the
+/// stored value, as there is no "switch off" for it.
 /// </summary>
-internal sealed record UpdateWishSettingsBody(int DefaultDurationDays, int ProbationLeadDays)
+internal sealed record UpdateWishSettingsBody(int DefaultDurationDays, int ProbationLeadDays, int? PendingExpiryDays = null)
 {
     private readonly decimal? _protectionThresholdPerDay;
 
@@ -491,7 +747,7 @@ internal sealed record UpdateWishSettingsBody(int DefaultDurationDays, int Proba
     public bool ThresholdSent { get; private init; }
 
     public UpdateWishSettingsRequest ToRequest() =>
-        new(DefaultDurationDays, ProbationLeadDays, ProtectionThresholdPerDay, KeepProtectionThreshold: !ThresholdSent);
+        new(DefaultDurationDays, ProbationLeadDays, ProtectionThresholdPerDay, KeepProtectionThreshold: !ThresholdSent, PendingExpiryDays);
 }
 
 /// <summary>The manual entry's answer: the wish plus the hint that the set was at capacity (never a refusal).</summary>
@@ -504,4 +760,20 @@ internal sealed record CreatedWishDto : WishDto
     }
 
     public bool SetFull { get; init; }
+}
+
+/// <summary>
+/// The answer of <c>POST …/wishes/{id}/approve</c> (K6, plan #486 2.6): the wish plus <see cref="ExtendedExpiresAtUtc"/>,
+/// the new expiry of the running wish it was merged into (the wish then carries <c>mergedIntoWishId</c>); null when
+/// the wish was approved on its own. Always present on this route, so the client reads the outcome without guessing.
+/// </summary>
+internal sealed record ApprovedWishDto : WishDto
+{
+    public ApprovedWishDto(WishDto wish, DateTime? ExtendedExpiresAtUtc)
+        : base(wish)
+    {
+        this.ExtendedExpiresAtUtc = ExtendedExpiresAtUtc;
+    }
+
+    public DateTime? ExtendedExpiresAtUtc { get; init; }
 }

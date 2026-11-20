@@ -20,13 +20,14 @@ public static class WishImageQueries
         IReadOnlyCollection<string> sevenTvEmoteIds,
         CancellationToken cancellationToken)
     {
-        if (channelIds.Count == 0 || sevenTvEmoteIds.Count == 0)
+        // The empty K6 placeholder of an open wish without an emote has no image and is never looked up.
+        var emotes = sevenTvEmoteIds.Where(id => id.Length > 0).Distinct(StringComparer.Ordinal).ToList();
+        if (channelIds.Count == 0 || emotes.Count == 0)
         {
             return new Dictionary<(string, string), string>();
         }
 
         var channels = channelIds.Distinct(StringComparer.Ordinal).ToList();
-        var emotes = sevenTvEmoteIds.Distinct(StringComparer.Ordinal).ToList();
         var rows = await db.Emotes.AsNoTracking()
             .Where(e => channels.Contains(e.ChannelId) && emotes.Contains(e.SevenTvEmoteId) && !e.IsPlaceholder && e.ImageUrl != "")
             .Select(e => new { e.ChannelId, e.SevenTvEmoteId, e.ImageUrl })

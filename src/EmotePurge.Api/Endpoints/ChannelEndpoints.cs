@@ -127,7 +127,8 @@ public static class ChannelEndpoints
                 TagRunsEnabled: tagOptions.RunsEnabled,
                 CanPurgeAsBroadcaster: BroadcasterOwnership.CanPurge(channel, principal),
                 ChatLogBackfillEnabled: backfillOptions.Enabled,
-                WishesEnabled: wishOptions.Enabled));
+                WishesEnabled: wishOptions.Enabled,
+                WishCaptureEnabled: wishOptions.CaptureActive));
         })
         // Ordinary navigation, and the single most requested route in the app: every page that shows
         // anything channel-scoped asks it first. Both access checks can reach Helix or 7TV on a cache
@@ -713,7 +714,10 @@ public static class ChannelEndpoints
 /// </para>
 /// <para>
 /// <c>WishesEnabled</c> (#481) is the operator's <c>Wishes:Enabled</c> switch, global like the two above;
-/// the wish routes answer 404 <c>wishes_disabled</c> while it is off.
+/// the wish routes answer 404 <c>wishes_disabled</c> while it is off. <c>WishCaptureEnabled</c> (K6, plan #486 2.9)
+/// is the Api's <see cref="WishOptions.CaptureActive"/>: the settings tab shows the reward section only while it is
+/// on, and the reward routes answer 404 <c>wish_capture_disabled</c> while it is off. Whether redemptions are
+/// captured is the worker's decision (its own switch, shown in the admin health), not this value.
 /// </para>
 /// <para>
 /// No <c>IsSevenTvEditor</c> field, despite the review's sketch: nothing consumes it today, and
@@ -730,7 +734,8 @@ internal sealed record ChannelPermissionsDto(
     bool TagRunsEnabled,
     bool CanPurgeAsBroadcaster,
     bool ChatLogBackfillEnabled,
-    bool WishesEnabled);
+    bool WishesEnabled,
+    bool WishCaptureEnabled);
 
 /// <summary>
 /// Body of <c>POST /api/channels/{channelName}/backfill</c>. Both members are nullable on purpose: a

@@ -15,13 +15,16 @@ import { toLocale } from '../../core/i18n/locale';
 import { pluralKey } from '../../core/i18n/plural';
 import type { Wish } from '../../core/wishes/wish.model';
 import {
+  approveExtendsRunning,
   endedDate,
+  hasEmote,
   isDue,
   isProbation,
   isSevenTvAction,
   timeInSet,
   WishAction,
   wishActions,
+  wishTitle,
 } from '../../core/wishes/wish-view';
 import { emotePageUrl } from '../../shared/emotes/emote-url';
 import { UsageSparkline } from '../../shared/emotes/usage-sparkline';
@@ -32,6 +35,7 @@ import {
   TextPart,
   wishReasonKey,
   wishDurationPart,
+  wishPendingAgePart,
   wishRemainingPart,
   wishStatusKey,
   wishStatusTone,
@@ -42,7 +46,11 @@ import { usageSeries, usageWindowLabel, WishUsageBlock } from './wish-usage';
 const KNOWN_SOURCES: ReadonlySet<string> = new Set(['irc', 'manual', 'adopted']);
 
 /** Actions that destroy or end without keeping; they stand last, after a gap (§8.7). */
-const DESTRUCTIVE_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>(['remove', 'close']);
+const DESTRUCTIVE_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
+  'remove',
+  'close',
+  'reject',
+]);
 
 /**
  * One wish as a ruled row (#485, plan T4): picture, alias, status, deadlines and the actions of the
@@ -61,15 +69,36 @@ const DESTRUCTIVE_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>(['remov
   template: `
     <div #root class="flex flex-col gap-3 sm:flex-row sm:items-start">
       <div class="flex min-w-0 flex-1 items-start gap-3">
-        <app-wish-image
-          [imageUrl]="wish().imageUrl"
-          [sevenTvEmoteId]="wish().sevenTvEmoteId"
-          [knownStill]="knownStill()"
-        />
+        @if (emoteKnown()) {
+          <app-wish-image
+            [imageUrl]="wish().imageUrl"
+            [sevenTvEmoteId]="wish().sevenTvEmoteId"
+            [knownStill]="knownStill()"
+          />
+        } @else {
+          <!-- An open wish without an emote has no picture yet; the empty plate keeps the column. -->
+          <span class="flex size-10 shrink-0 bg-emote-canvas" aria-hidden="true"></span>
+        }
         <div class="flex min-w-0 flex-1 flex-col gap-1">
           <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span [id]="titleId()" class="max-w-full truncate font-medium">{{ name() }}</span>
-            <app-status-badge [tone]="statusTone()">{{ statusKey() | transloco }}</app-status-badge>
+            <!-- The redemption text as title wraps (it may be long); a name stays on one line. -->
+            @if (titleIsText()) {
+              <span
+                [id]="titleId()"
+                class="line-clamp-2 max-w-full font-medium break-words"
+                [attr.title]="name()"
+                >{{ name() }}</span
+              >
+            } @else {
+              <span [id]="titleId()" class="max-w-full truncate font-medium">{{
+                name() || ('wishes.pending.untitled' | transloco)
+              }}</span>
+            }
+            @if (!statusImplied()) {
+              <app-status-badge [tone]="statusTone()">{{
+                statusKey() | transloco
+              }}</app-status-badge>
+            }
             @if (probation()) {
               <app-status-badge tone="accent">{{
                 'wishes.row.probation' | transloco
@@ -79,6 +108,13 @@ const DESTRUCTIVE_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>(['remov
               <span class="text-sm text-fg-secondary">{{ part.key | transloco: part.params }}</span>
             }
           </div>
+          @if (requestText(); as text) {
+            <!-- What the viewer typed, as plain text: never a link, never markup (plan 2.10). -->
+            <p class="line-clamp-3 text-sm break-words text-fg-body" [attr.title]="text">
+              <span class="sr-only">{{ 'wishes.pending.textLabel' | transloco }}</span>
+              <q>{{ text }}</q>
+            </p>
+          }
           @if (reasonKey(); as key) {
             <p class="text-sm text-fg-body">{{ key | transloco }}</p>
           }
@@ -156,14 +192,16 @@ const DESTRUCTIVE_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>(['remov
             <!-- Why "Entfernen" is locked (plan 2.6); the button points here. -->
             <p [id]="removeBlockId()" class="text-xs text-fg-muted">{{ key | transloco }}</p>
           }
-          <a
-            [href]="pageUrl()"
-            target="_blank"
-            rel="noopener"
-            class="inline-flex min-h-6 items-center self-start text-sm text-fg-secondary underline decoration-border-strong underline-offset-2 transition hover:text-fg hover:decoration-accent"
-            >{{ 'wishes.row.openOnSevenTv' | transloco
-            }}<span class="sr-only"> {{ 'common.opensInNewTab' | transloco }}</span></a
-          >
+          @if (pageUrl(); as url) {
+            <a
+              [href]="url"
+              target="_blank"
+              rel="noopener"
+              class="inline-flex min-h-6 items-center self-start text-sm text-fg-secondary underline decoration-border-strong underline-offset-2 transition hover:text-fg hover:decoration-accent"
+              >{{ 'wishes.row.openOnSevenTv' | transloco
+              }}<span class="sr-only"> {{ 'common.opensInNewTab' | transloco }}</span></a
+            >
+          }
         </div>
       </div>
 
@@ -223,6 +261,17 @@ export class WishRow {
   readonly busy = input(false);
   /** Passed on to the picture rule (plan 2.10); set from the 7TV read of this session (T6). */
   readonly knownStill = input(false);
+  /**
+   * The emote's 7TV default name from this session's preview read (K6): an open wish captured from a
+   * link knows the emote but has no alias or name yet. `null` while unknown.
+   */
+  readonly previewName = input<string | null>(null);
+  /**
+   * The surrounding group already names the status (the "Offen" group of the work list): the pill
+   * would repeat the heading on every row (UI-Designsprache §4.3, notable how often), so it is left
+   * out. Wherever the same wish stands outside that group, the pill stays.
+   */
+  readonly statusImplied = input(false);
 
   /**
    * The usage of this wish's window, handed in by the page (T5); `null` shows nothing. The row
@@ -249,10 +298,30 @@ export class WishRow {
 
   protected readonly titleId = computed(() => `wish-title-${this.wish().id}`);
 
-  /** Only the alias names a wish (plan 2.8 c); the emote name is a fallback for an empty alias. */
-  protected readonly name = computed(() => this.wish().alias || this.wish().emoteName);
+  /** Whether the wish knows its 7TV emote (plan 2.8a): picture and 7TV link only then. */
+  protected readonly emoteKnown = computed(() => hasEmote(this.wish()));
 
-  protected readonly pageUrl = computed(() => emotePageUrl(this.wish().sevenTvEmoteId));
+  /**
+   * The alias names a wish (plan 2.8 c), the emote name and the preview's default name stand in for
+   * an empty one; an open wish without an emote is named by what the viewer typed (`wishTitle`). With
+   * nothing known at all (redeemer data withheld) a neutral title stands.
+   */
+  protected readonly name = computed(() => wishTitle(this.wish(), this.previewName()));
+
+  /** The title is the redemption text itself: it then wraps, and the text line is not repeated. */
+  protected readonly titleIsText = computed(() => {
+    const text = this.wish().requestText ?? '';
+    return text !== '' && this.name() === text;
+  });
+
+  /** The redemption text as its own line, unless it already is the title. */
+  protected readonly requestText = computed(() =>
+    this.titleIsText() ? null : this.wish().requestText || null,
+  );
+
+  protected readonly pageUrl = computed(() =>
+    this.emoteKnown() ? emotePageUrl(this.wish().sevenTvEmoteId) : null,
+  );
 
   protected readonly statusKey = computed(() => wishStatusKey(this.wish()));
 
@@ -309,6 +378,13 @@ export class WishRow {
     const parts: TextPart[] = [];
     if (wish.requesterLogin) {
       parts.push({ key: 'wishes.row.requester', params: { login: wish.requesterLogin } });
+    }
+    if (wish.rewardLabel) {
+      parts.push({ key: 'wishes.pending.reward', params: { label: wish.rewardLabel } });
+    }
+    const age = wishPendingAgePart(wish, this.now());
+    if (age) {
+      parts.push(age);
     }
     if (KNOWN_SOURCES.has(wish.source)) {
       parts.push({ key: `wishes.source.${wish.source}` });
@@ -384,6 +460,10 @@ export class WishRow {
   }
 
   protected actionKey(action: WishAction): string {
+    // Approving a wish whose emote already runs books an extension of that one (plan 2.10).
+    if (action === 'approve' && approveExtendsRunning(this.wish())) {
+      return 'wishes.actions.approveExtend';
+    }
     return `wishes.actions.${action}`;
   }
 

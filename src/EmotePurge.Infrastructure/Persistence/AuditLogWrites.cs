@@ -19,8 +19,9 @@ internal static class AuditLogWrites
     /// (e.g. <c>new { emoteCount = 12 }</c>), which System.Text.Json writes through unchanged.
     /// <paramref name="occurredAtUtc"/> defaults to the wall clock; a writer whose own reads depend on the stamp
     /// (the wish expiry run, which searches its earlier entries from the expiry on) passes its clock's time.
+    /// Returns the staged entry, for a writer that may have to drop it again (the wish reconcile behind a savepoint).
     /// </summary>
-    public static void AddAuditEntry(
+    public static AuditLogEntry AddAuditEntry(
         this AppDbContext db,
         AuditActor actor,
         string action,
@@ -30,7 +31,7 @@ internal static class AuditLogWrites
         object? details = null,
         DateTime? occurredAtUtc = null)
     {
-        db.AuditLogEntries.Add(new AuditLogEntry
+        var entry = new AuditLogEntry
         {
             OccurredAtUtc = occurredAtUtc ?? DateTime.UtcNow,
             ActorTwitchUserId = actor.TwitchUserId,
@@ -40,6 +41,8 @@ internal static class AuditLogWrites
             TargetType = targetType,
             TargetId = targetId,
             DetailsJson = details is null ? null : JsonSerializer.Serialize(details)
-        });
+        };
+        db.AuditLogEntries.Add(entry);
+        return entry;
     }
 }

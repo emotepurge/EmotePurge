@@ -1,4 +1,4 @@
-import { Dialog } from '@angular/cdk/dialog';
+import { Dialog, DialogRef } from '@angular/cdk/dialog';
 import { NgTemplateOutlet } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import {
@@ -30,6 +30,8 @@ import {
 } from '../../core/i18n/api-error';
 import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { CHANNEL_RELOAD_DEBOUNCE_MS, liveReload, liveReopened } from '../../core/live/live-reload';
+import { LanguageService } from '../../core/i18n/language.service';
+import { toLocale } from '../../core/i18n/locale';
 import { DockClearanceService } from '../../core/layout/dock-clearance.service';
 import { PagedResult } from '../../core/models/paged-result.model';
 import { pageVisible } from '../../core/page-visibility/page-visibility';
@@ -44,13 +46,21 @@ import {
 } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { WishAddService, WishAddState } from '../../core/wishes/wish-add.service';
+import { WishEmotePreviewService } from '../../core/wishes/wish-emote-preview.service';
 import { wishRemovalBlockKey } from '../../core/wishes/wish-removal';
 import { WishRemovalTracker } from '../../core/wishes/wish-removal-tracker';
 import { wishErrorKey } from '../../core/wishes/wish-error';
 import type { Wish, WishListView } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
 import { WishSummaryService } from '../../core/wishes/wish-summary.service';
-import { isConfirmedAction, isSevenTvAction, WishAction } from '../../core/wishes/wish-view';
+import {
+  hasEmote,
+  isConfirmedAction,
+  isSevenTvAction,
+  needsEmotePreview,
+  WishAction,
+  wishTitle,
+} from '../../core/wishes/wish-view';
 import { Pager } from '../../shared/pagination/pager';
 import { DeleteAbortNotice } from '../../shared/seven-tv/delete-flow';
 import { DeleteProgressSection } from '../../shared/seven-tv/delete-progress-section';
@@ -67,6 +77,7 @@ import {
   WishAdoptDialogData,
   WishAdoptDialogResult,
 } from './wish-adopt-dialog';
+import { openWishApproveDialog, WishApproveDialogResult } from './wish-approve-dialog';
 import { openWishEditDialog } from './wish-edit-dialog';
 import { openWishEntryDialog, WishEntryDialogResult } from './wish-entry-dialog';
 import {
@@ -89,9 +100,10 @@ export const WISH_SAFETY_RELOAD_MS = 5 * 60_000;
 const CLOCK_TICK_MS = 60_000;
 
 /**
- * The actions this page carries out — since T9 every one of the action table. `adopt`, `edit` and
- * `reAdd` open a dialog instead of sending a command (T6, T7); `add7tv` starts the wish add (T8),
- * `remove` the removal (T9).
+ * The actions this page carries out — every one of the action table. `adopt`, `edit`, `reAdd` and
+ * `approve` open a dialog instead of sending a command (T6, T7, K6); `add7tv` starts the wish add (T8),
+ * `remove` the removal (T9). `reject` and `unlink` (K6) are confirmed commands; none of the K6 actions
+ * writes to 7TV.
  */
 const OFFERED_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
   'add7tv',
@@ -103,7 +115,17 @@ const OFFERED_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
   'adopt',
   'edit',
   'reAdd',
+  'approve',
+  'reject',
+  'unlink',
 ]);
+
+/** An approve the server booked as an extension of the running wish, said once at the page top. */
+interface MergedNotice {
+  runningWishId: number | null;
+  /** The running wish's new expiry; `null` when the answer did not carry one. */
+  expiresAtUtc: string | null;
+}
 
 /** Id of the page's one status line that names a blocking 7TV run (plan 2.7). */
 export const WISH_RUN_LOCK_ID = 'wishes-run-lock';
@@ -200,6 +222,37 @@ type PinnedState =
           <app-notice-banner variant="info" aria-hidden="true">{{
             'wishes.remove.notBooked' | transloco
           }}</app-notice-banner>
+        }
+        <!-- An approve the server booked as an extension of the running wish (plan 2.6 (1)): said
+             after the dialog closed, with the way to that wish. Same pair of regions; the visible
+             text is aria-hidden, its button is not. -->
+        <p role="status" class="sr-only">
+          @if (mergedNotice(); as notice) {
+            <ng-container
+              [ngTemplateOutlet]="mergedText"
+              [ngTemplateOutletContext]="{ $implicit: notice }"
+            />
+          }
+        </p>
+        @if (mergedNotice(); as notice) {
+          <app-notice-banner variant="info">
+            <span aria-hidden="true">
+              <ng-container
+                [ngTemplateOutlet]="mergedText"
+                [ngTemplateOutletContext]="{ $implicit: notice }"
+              />
+            </span>
+            @if (notice.runningWishId !== null) {
+              <button
+                notice-action
+                type="button"
+                appButton="outline"
+                (click)="goToWish(notice.runningWishId)"
+              >
+                {{ 'wishes.dialog.toWish' | transloco }}
+              </button>
+            }
+          </app-notice-banner>
         }
       </div>
 
@@ -350,6 +403,14 @@ type PinnedState =
       </div>
     }
 
+    <ng-template #mergedText let-notice>
+      @if (notice.expiresAtUtc) {
+        {{ 'wishes.approve.merged' | transloco: { date: formatDateTime(notice.expiresAtUtc) } }}
+      } @else {
+        {{ 'wishes.approve.mergedNoDate' | transloco }}
+      }
+    </ng-template>
+
     <ng-template #lockText let-message>
       @if (message.kindKey) {
         {{ message.key | transloco: { kind: message.kindKey | transloco } }}
@@ -365,7 +426,13 @@ type PinnedState =
       @if (section.loadError(); as key) {
         <app-notice-banner variant="error">
           {{ key | transloco }}
-          <button notice-action type="button" appButton="outline" (click)="retryLoad(section)">
+          <button
+            notice-action
+            type="button"
+            appButton="outline"
+            [attr.data-retry-view]="section.view"
+            (click)="retryLoad(section)"
+          >
             {{ 'wishes.page.reload' | transloco }}
           </button>
         </app-notice-banner>
@@ -377,14 +444,52 @@ type PinnedState =
             [description]="'wishes.page.' + section.view + '.emptyHint' | transloco"
           />
         } @else {
-          <ul class="-mx-3 divide-y divide-border border-y border-border">
-            @for (wish of result.items; track wish.id) {
-              <ng-container
-                [ngTemplateOutlet]="row"
-                [ngTemplateOutletContext]="{ $implicit: wish, section: section.view }"
-              />
+          @if (section.view === 'open' && openGroups(); as groups) {
+            <!-- Open wishes captured in chat come first (the server orders them so, plan 2.6) and
+                 form their own named group; what else needs a decision follows as a second one. -->
+            <div role="group" aria-labelledby="wishes-pending-title" class="flex flex-col gap-2">
+              <h3 id="wishes-pending-title" class="text-base font-semibold">
+                {{ 'wishes.pending.title' | transloco }}
+              </h3>
+              <ul class="-mx-3 divide-y divide-border border-y border-border">
+                @for (wish of groups.pending; track wish.id) {
+                  <!-- The group heading says "Offen" already: the rows leave out the same pill. -->
+                  <ng-container
+                    [ngTemplateOutlet]="row"
+                    [ngTemplateOutletContext]="{
+                      $implicit: wish,
+                      section: section.view,
+                      statusImplied: true,
+                    }"
+                  />
+                }
+              </ul>
+            </div>
+            @if (groups.rest.length > 0) {
+              <div role="group" aria-labelledby="wishes-decide-title" class="flex flex-col gap-2">
+                <h3 id="wishes-decide-title" class="text-base font-semibold">
+                  {{ 'wishes.pending.others' | transloco }}
+                </h3>
+                <ul class="-mx-3 divide-y divide-border border-y border-border">
+                  @for (wish of groups.rest; track wish.id) {
+                    <ng-container
+                      [ngTemplateOutlet]="row"
+                      [ngTemplateOutletContext]="{ $implicit: wish, section: section.view }"
+                    />
+                  }
+                </ul>
+              </div>
             }
-          </ul>
+          } @else {
+            <ul class="-mx-3 divide-y divide-border border-y border-border">
+              @for (wish of result.items; track wish.id) {
+                <ng-container
+                  [ngTemplateOutlet]="row"
+                  [ngTemplateOutletContext]="{ $implicit: wish, section: section.view }"
+                />
+              }
+            </ul>
+          }
           <app-pager
             [page]="section.page()"
             [totalPages]="result.totalPages"
@@ -397,7 +502,7 @@ type PinnedState =
       }
     </ng-template>
 
-    <ng-template #row let-wish let-section="section">
+    <ng-template #row let-wish let-section="section" let-statusImplied="statusImplied">
       <!-- tabindex="-1": the jump target of ?wish= takes focus without becoming a tab stop. -->
       <li class="px-3 py-3" tabindex="-1" [attr.data-wish-id]="wish.id">
         <app-wish-row
@@ -409,11 +514,13 @@ type PinnedState =
           [lockDescriptionId]="lockDescriptionId()"
           [busy]="pendingIds().has(wish.id)"
           [knownStill]="isKnownStill(wish.sevenTvEmoteId)"
+          [previewName]="previewNameOf(wish)"
+          [statusImplied]="statusImplied === true"
           [usage]="usageStore.blockFor(wish)"
           [trackUsage]="section !== 'ended'"
           [operation]="operationOf(wish)"
           [removeBlockKey]="removeBlockOf(wish)"
-          (seen)="usageStore.setVisible(wish, $event)"
+          (seen)="onRowSeen(wish, $event)"
           (action)="onAction(section, wish, $event)"
           (retryOperation)="retryRemovalReport(wish)"
         />
@@ -442,6 +549,8 @@ export class ChannelWishesPage {
   private readonly restoreService = inject(SevenTvRestoreService);
   private readonly dockClearance = inject(DockClearanceService);
   private readonly emoteAdminService = inject(EmoteAdminService);
+  private readonly preview = inject(WishEmotePreviewService);
+  private readonly languageService = inject(LanguageService);
   private readonly removalDeps: WishRemovalFlowDeps = {
     emoteSetService: inject(SevenTvEmoteSetService),
     emoteAdminService: this.emoteAdminService,
@@ -492,11 +601,32 @@ export class ChannelWishesPage {
    *  next removal starts or the channel changes. */
   protected readonly removalNotice = signal(false);
 
+  /** The last approve was booked as an extension of the running wish; stays until the next approve. */
+  protected readonly mergedNotice = signal<MergedNotice | null>(null);
+
+  /**
+   * The open wishes of the "needs action" page and the rest, in the server's order; `null` while the
+   * page holds no open wish, so the list stays the single one of K3.
+   */
+  protected readonly openGroups = computed(() => {
+    const items = this.open.result()?.items ?? [];
+    const pending = items.filter((wish) => wish.status === 'pending');
+    return pending.length === 0
+      ? null
+      : { pending, rest: items.filter((wish) => wish.status !== 'pending') };
+  });
+
   /** Wishes whose action request is on the way; their row's buttons wait. */
   protected readonly pendingIds = signal<ReadonlySet<number>>(new Set());
 
+  /** Open rows that last reported "in view" (wish ids), asked for their preview again (plan 2.10). */
+  private readonly openRowsInView = new Set<number>();
+
   /** The target already focused once; a reload must not pull the focus back. */
   private focusedTarget: number | null = null;
+
+  /** The open approve dialog; it shows the redeemer's text and login, so a 403 reload closes it. */
+  private approveDialog: DialogRef<WishApproveDialogResult | undefined> | null = null;
 
   /** Set once the page is gone; a 7TV start that is still deciding then aborts (plan 2.5, 3b i). */
   private destroyed = false;
@@ -625,6 +755,17 @@ export class ChannelWishesPage {
       untracked(() => this.usageStore.sync(rows));
     });
 
+    // Every list reload, and the window coming back, asks the preview again for the open rows that
+    // reported "in view" (T19): a read that did not start when the row came into view (its wish then
+    // needed none, or it was dropped) or that failed once gets its chance without the row having to
+    // leave and re-enter the view. `request` skips what is read or waiting, so this costs no second
+    // read. Nothing is asked while the window is hidden; a row that is gone is released anyway.
+    effect(() => {
+      const rows = this.usageRows();
+      const ask = this.visible();
+      untracked(() => this.requestPreviewsInView(rows, ask));
+    });
+
     // An add result says what it had to once its wish left `approved`; drop it then (plan 2.5a).
     // A removal line likewise once its wish is neither running nor removed any more (plan 2.6).
     effect(() => {
@@ -665,6 +806,8 @@ export class ChannelWishesPage {
 
     inject(DestroyRef).onDestroy(() => {
       this.destroyed = true;
+      // No row of this page waits any more (the session service outlives it, plan 2.10).
+      this.openRowsInView.forEach((id) => this.preview.release(previewConsumer(id)));
       // Give the clearance back at once — the next page may have no dock to release it.
       this.dockClearance.release();
     });
@@ -749,7 +892,12 @@ export class ChannelWishesPage {
       return;
     }
     if (action === 'adopt') {
-      this.openAdopt({ wish, sevenTvEmoteId: wish.sevenTvEmoteId });
+      // An open wish without an emote lists every entry: the manager picks the one it means.
+      this.openAdopt(hasEmote(wish) ? { wish, sevenTvEmoteId: wish.sevenTvEmoteId } : { wish });
+      return;
+    }
+    if (action === 'approve') {
+      this.openApprove(wish, sectionId);
       return;
     }
     if (action === 'add7tv') {
@@ -772,7 +920,9 @@ export class ChannelWishesPage {
       this.runAction(sectionId, wish, action);
       return;
     }
-    const name = wish.alias || wish.emoteName;
+    const name =
+      wishTitle(wish, this.previewNameOf(wish)) ||
+      this.transloco.translate('wishes.pending.untitled');
     openConfirmDialog(this.dialog, {
       message: this.transloco.translate(`wishes.confirm.${action}`, { name }),
       confirmLabel: this.transloco.translate(`wishes.actions.${action}`),
@@ -806,7 +956,48 @@ export class ChannelWishesPage {
   }
 
   protected isKnownStill(sevenTvEmoteId: string): boolean {
-    return this.lookup.isKnownStill(sevenTvEmoteId);
+    return hasEmote({ sevenTvEmoteId }) && this.lookup.isKnownStill(sevenTvEmoteId);
+  }
+
+  /** 7TV's default name of an open wish's emote, from this session's preview read; else `null`. */
+  protected previewNameOf(wish: Wish): string | null {
+    return wish.status === 'pending' && hasEmote(wish)
+      ? this.preview.nameOf(wish.sevenTvEmoteId)
+      : null;
+  }
+
+  /**
+   * A row came into view or left it. Usage is for wishes with a window (not open ones); the preview
+   * read (plan 2.10) only for an open wish that knows its emote but lacks a name or a stored picture.
+   */
+  protected onRowSeen(wish: Wish, visible: boolean): void {
+    if (wish.status !== 'pending') {
+      this.usageStore.setVisible(wish, visible);
+      return;
+    }
+    if (visible) {
+      this.openRowsInView.add(wish.id);
+    } else {
+      this.openRowsInView.delete(wish.id);
+      // Released whatever the wish needs now: a reload may have brought the picture since it asked.
+      this.preview.release(previewConsumer(wish.id));
+      return;
+    }
+    if (needsEmotePreview(wish)) {
+      this.preview.request(wish.sevenTvEmoteId, previewConsumer(wish.id));
+    }
+  }
+
+  /** "Zum Wunsch" of the extension notice: the jump target of plan 2.4. */
+  protected goToWish(id: number): void {
+    this.jumpTo(id);
+  }
+
+  protected formatDateTime(iso: string): string {
+    return new Date(iso).toLocaleString(toLocale(this.languageService.lang()), {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    });
   }
 
   protected openEntry(): void {
@@ -842,6 +1033,22 @@ export class ChannelWishesPage {
         this.reloadAfterChange();
       } else if (result?.kind === 'stale') {
         this.onStale(sectionId, result.errorKey);
+      }
+    });
+  }
+
+  /** "Freigeben" (K6, plan 2.10): the dialog decides with the server; the page shows what came of it. */
+  protected openApprove(wish: Wish, sectionId: SectionId = 'open'): void {
+    const channel = this.channel();
+    this.mergedNotice.set(null);
+    const ref = openWishApproveDialog(this.dialog, { channelName: channel, wish });
+    this.approveDialog = ref;
+    ref.closed.subscribe((result) => {
+      if (this.approveDialog === ref) {
+        this.approveDialog = null;
+      }
+      if (channel === this.channel()) {
+        this.onApproveClosed(wish, sectionId, result);
       }
     });
   }
@@ -942,6 +1149,36 @@ export class ChannelWishesPage {
     }
   }
 
+  private onApproveClosed(
+    wish: Wish,
+    sectionId: SectionId,
+    result: WishApproveDialogResult | undefined,
+  ): void {
+    switch (result?.kind) {
+      case 'approved':
+        this.reloadAfterChange();
+        return;
+      case 'merged':
+        this.mergedNotice.set({
+          runningWishId: result.runningWishId,
+          expiresAtUtc: result.extendedExpiresAtUtc,
+        });
+        this.reloadAfterChange();
+        return;
+      case 'adopt':
+        this.openAdopt({ wish, sevenTvEmoteId: result.sevenTvEmoteId, slotIds: result.slotIds });
+        return;
+      case 'jump':
+        this.jumpTo(result.wishId);
+        return;
+      case 'stale':
+        this.onStale(sectionId, result.errorKey);
+        return;
+      default:
+        return;
+    }
+  }
+
   private onAdoptClosed(result: WishAdoptDialogResult | undefined): void {
     if (result?.kind === 'adopted') {
       this.reloadAfterChange();
@@ -980,6 +1217,7 @@ export class ChannelWishesPage {
     this.pinned.set(null);
     this.pinnedActionError.set(null);
     this.setFullNotice.set(false);
+    this.mergedNotice.set(null);
     this.focusedTarget = null;
     this.usageStore.reset();
     this.removalNotice.set(false);
@@ -1027,6 +1265,25 @@ export class ChannelWishesPage {
         }
       },
     });
+  }
+
+  /**
+   * The open rows in view ask for their preview again, with the wish as the reload brought it (only
+   * while `ask`, the window visible). A row whose wish is no longer shown, or no longer open, is
+   * forgotten and releases what it asked for: its row is gone or reports anew.
+   */
+  private requestPreviewsInView(rows: readonly Wish[], ask: boolean): void {
+    const shown = new Map(rows.map((row) => [row.id, row]));
+    for (const id of [...this.openRowsInView]) {
+      const wish = shown.get(id);
+      if (wish === undefined || wish.status !== 'pending') {
+        // Its row is gone or no longer asks: what it asked for goes, by the id it asked with.
+        this.openRowsInView.delete(id);
+        this.preview.release(previewConsumer(id));
+      } else if (ask && needsEmotePreview(wish)) {
+        this.preview.request(wish.sevenTvEmoteId, previewConsumer(id));
+      }
+    }
   }
 
   private reloadAfterGap(): void {
@@ -1087,8 +1344,20 @@ export class ChannelWishesPage {
         section.loadError.set(null);
       },
       error: (error: unknown) => {
-        if (current()) {
-          section.loadError.set(errorKey(error));
+        if (!current()) {
+          return;
+        }
+        section.loadError.set(errorKey(error));
+        if (error instanceof HttpErrorResponse && error.status === 403) {
+          // No longer allowed to see this list: what it showed (the redeemers' texts and logins
+          // among it) goes with it, and so does an approve dialog holding one of them.
+          const focusAtRisk =
+            this.approveDialog !== null || this.host.nativeElement.contains(document.activeElement);
+          section.result.set(null);
+          this.approveDialog?.close(undefined);
+          if (focusAtRisk) {
+            this.focusRetryWhenLost(section.view);
+          }
         }
       },
     });
@@ -1161,6 +1430,27 @@ export class ChannelWishesPage {
     });
   }
 
+  /**
+   * The dialog hands focus back to its trigger and the cleared list takes that (or a focused row
+   * control) with it: once rendered, focus left on nothing goes to the list's "Neu laden" beside the
+   * refusal (web/.claude/CLAUDE.md, focus management). Focus that landed elsewhere stays.
+   */
+  private focusRetryWhenLost(view: WishListView): void {
+    if (this.destroyed) {
+      return;
+    }
+    afterNextRender(
+      () => {
+        const active = document.activeElement;
+        if (active !== null && active !== document.body) {
+          return;
+        }
+        this.host.nativeElement.querySelector<HTMLElement>(`[data-retry-view="${view}"]`)?.focus();
+      },
+      { injector: this.injector },
+    );
+  }
+
   private focusOnce(id: number): void {
     if (this.focusedTarget === id) {
       return;
@@ -1216,6 +1506,10 @@ export class ChannelWishesPage {
         return this.wishService.keep(channel, id);
       case 'close':
         return this.wishService.close(channel, id);
+      case 'reject':
+        return this.wishService.reject(channel, id);
+      case 'unlink':
+        return this.wishService.unlink(channel, id);
       default:
         // Unreachable: onAction lets through only what OFFERED_ACTIONS names.
         throw new Error(`Wish action ${action} is not offered on this page.`);
@@ -1272,4 +1566,9 @@ function errorKey(error: unknown): string {
   return error instanceof HttpErrorResponse
     ? apiErrorTranslationKey(error)
     : GENERIC_ERROR_TRANSLATION_KEY;
+}
+
+/** The preview consumer of one work-list row (`WishEmotePreviewService`): one per wish. */
+function previewConsumer(wishId: number): string {
+  return `wishes-row:${wishId}`;
 }

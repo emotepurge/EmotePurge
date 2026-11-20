@@ -17,9 +17,11 @@ import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.mod
 import { liveReload } from '../../core/live/live-reload';
 import { wishErrorKey } from '../../core/wishes/wish-error';
 import {
+  parsePendingExpiryDays,
   parseProbationLeadDays,
   parseWishDurationDays,
   WISH_DURATION_DAYS_MAX,
+  WISH_PENDING_EXPIRY_DAYS_MAX,
   WISH_PROBATION_LEAD_DAYS_MAX,
 } from '../../core/wishes/wish-input';
 import type { WishSettingsRead, WishSettingsUpdate } from '../../core/wishes/wish.model';
@@ -27,6 +29,7 @@ import { WishService } from '../../core/wishes/wish.service';
 import { Button } from '../../shared/ui/button';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
 import { SkeletonRows } from '../../shared/ui/skeleton-rows';
+import { WishRewardsSection } from './wish-rewards-section';
 
 /** UI-Designsprache §4.5: an acknowledgement fades after this long. */
 const SAVED_FEEDBACK_MS = 4000;
@@ -34,17 +37,28 @@ const SAVED_FEEDBACK_MS = 4000;
 const RELOAD_DEBOUNCE_MS = 500;
 
 /**
- * The `PUT` body for the two fields, or `null` while either is not a valid whole number in its range.
- * The protection threshold is deliberately never part of it: an absent key leaves the stored value
- * alone, whoever changed it meanwhile (#485, plan T10).
+ * The `PUT` body for the fields, or `null` while one is not a valid whole number in its range. The
+ * protection threshold is deliberately never part of it: an absent key leaves the stored value
+ * alone, whoever changed it meanwhile (#485, plan T10). The same holds for the open-wish expiry
+ * (K6): it is sent only while its field is shown (`pendingExpiry` given), i.e. while the capture is on.
  */
-export function wishSettingsBody(duration: string, lead: string): WishSettingsUpdate | null {
+export function wishSettingsBody(
+  duration: string,
+  lead: string,
+  pendingExpiry?: string,
+): WishSettingsUpdate | null {
   const durationDays = parseWishDurationDays(duration);
   const probationLeadDays = parseProbationLeadDays(lead);
-  if (!durationDays.ok || !probationLeadDays.ok) {
+  const pendingExpiryDays =
+    pendingExpiry === undefined ? null : parsePendingExpiryDays(pendingExpiry);
+  if (!durationDays.ok || !probationLeadDays.ok || pendingExpiryDays?.ok === false) {
     return null;
   }
-  return { defaultDurationDays: durationDays.value, probationLeadDays: probationLeadDays.value };
+  return {
+    defaultDurationDays: durationDays.value,
+    probationLeadDays: probationLeadDays.value,
+    ...(pendingExpiryDays?.ok ? { pendingExpiryDays: pendingExpiryDays.value } : {}),
+  };
 }
 
 /** How a settings read is applied: first load, a live nudge, or the manager asking to discard edits. */
@@ -58,7 +72,7 @@ type LoadMode = 'initial' | 'quiet' | 'discard';
  */
 @Component({
   selector: 'app-wish-settings-section',
-  imports: [Button, NoticeBanner, SkeletonRows, TranslocoPipe],
+  imports: [Button, NoticeBanner, SkeletonRows, TranslocoPipe, WishRewardsSection],
   host: { class: 'flex flex-col gap-4' },
   template: `
     <section class="flex flex-col gap-4" aria-labelledby="wish-settings-heading">
@@ -157,6 +171,36 @@ type LoadMode = 'initial' | 'quiet' | 'discard';
           }
         </div>
 
+        @if (captureEnabled()) {
+          <div class="flex flex-col gap-1">
+            <label for="wish-settings-pending" class="text-sm font-medium">
+              {{ 'wishes.settings.pending.label' | transloco }}
+            </label>
+            <input
+              id="wish-settings-pending"
+              type="text"
+              inputmode="numeric"
+              autocomplete="off"
+              class="app-input max-w-40"
+              [value]="pending()"
+              [disabled]="readOnly()"
+              [readOnly]="saving()"
+              [attr.aria-invalid]="pendingError() ? 'true' : null"
+              [attr.aria-describedby]="describedBy('pending')"
+              (input)="setPending($any($event.target).value)"
+              (blur)="pendingTouched.set(true)"
+            />
+            <p id="wish-settings-pending-hint" class="text-xs text-fg-muted">
+              {{ 'wishes.settings.pending.hint' | transloco }}
+            </p>
+            @if (pendingError(); as key) {
+              <p id="wish-settings-pending-error" class="text-sm text-danger-fg">
+                {{ key | transloco: { max: pendingMax } }}
+              </p>
+            }
+          </div>
+        }
+
         @if (!readOnly()) {
           <div class="flex flex-wrap items-center gap-3">
             <button type="button" appButton="primary" [disabled]="!canSave()" (click)="save()">
@@ -171,6 +215,16 @@ type LoadMode = 'initial' | 'quiet' | 'discard';
           @if (saveErrorKey(); as key) {
             <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
           }
+        }
+
+        @if (captureEnabled()) {
+          <!-- A sub-block of this section, not a section of its own: no rule above it (the page
+               draws one per section), a small step of extra space and an h4 in the label type. -->
+          <app-wish-rewards-section
+            class="mt-2"
+            [channelName]="channelName()"
+            [defaultDurationDays]="current.defaultDurationDays"
+          />
         }
       } @else if (loadError()) {
         <app-notice-banner variant="error">
@@ -187,20 +241,25 @@ type LoadMode = 'initial' | 'quiet' | 'discard';
 })
 export class WishSettingsSection {
   readonly channelName = input.required<string>();
+  /** The chat capture is on (`wishCaptureEnabled`, K6): the open-wish expiry and the rewards show. */
+  readonly captureEnabled = input(false);
 
   private readonly wishService = inject(WishService);
   private readonly destroyRef = inject(DestroyRef);
 
   protected readonly durationMax = WISH_DURATION_DAYS_MAX;
   protected readonly leadMax = WISH_PROBATION_LEAD_DAYS_MAX;
+  protected readonly pendingMax = WISH_PENDING_EXPIRY_DAYS_MAX;
 
   /** The last settings answer the form was filled from; `null` until the first one. */
   protected readonly baseline = signal<WishSettingsRead | null>(null);
   protected readonly loadError = signal(false);
   protected readonly duration = signal('');
   protected readonly lead = signal('');
+  protected readonly pending = signal('');
   protected readonly durationTouched = signal(false);
   protected readonly leadTouched = signal(false);
+  protected readonly pendingTouched = signal(false);
   protected readonly saving = signal(false);
   protected readonly saveErrorKey = signal<string | null>(null);
   protected readonly savedFeedback = signal(false);
@@ -225,22 +284,26 @@ export class WishSettingsSection {
     return !result.ok && this.leadTouched() ? `wishes.settings.leadInvalid.${result.reason}` : null;
   });
 
-  /** The fields differ from what the server last said. */
+  protected readonly pendingError = computed(() => {
+    const result = parsePendingExpiryDays(this.pending());
+    return !result.ok && this.pendingTouched()
+      ? `wishes.settings.pendingInvalid.${result.reason}`
+      : null;
+  });
+
+  /** The fields differ from what the server last said; the expiry only while it is shown. */
   protected readonly dirty = computed(() => {
     const current = this.baseline();
     return (
       current !== null &&
       (this.duration().trim() !== String(current.defaultDurationDays) ||
-        this.lead().trim() !== String(current.probationLeadDays))
+        this.lead().trim() !== String(current.probationLeadDays) ||
+        (this.captureEnabled() && this.pending().trim() !== String(current.pendingExpiryDays)))
     );
   });
 
   protected readonly canSave = computed(
-    () =>
-      !this.readOnly() &&
-      !this.saving() &&
-      this.dirty() &&
-      wishSettingsBody(this.duration(), this.lead()) !== null,
+    () => !this.readOnly() && !this.saving() && this.dirty() && this.body() !== null,
   );
 
   private loadSubscription: Subscription | null = null;
@@ -291,9 +354,23 @@ export class WishSettingsSection {
     this.saveErrorKey.set(null);
   }
 
+  protected setPending(value: string): void {
+    if (this.saving()) {
+      return;
+    }
+    this.pending.set(value);
+    this.pendingTouched.set(true);
+    this.saveErrorKey.set(null);
+  }
+
   /** The ids a field's `aria-describedby` names: its hint, its error, and the read-only sentence. */
-  protected describedBy(field: 'duration' | 'lead'): string {
-    const error = field === 'duration' ? this.durationError() : this.leadError();
+  protected describedBy(field: 'duration' | 'lead' | 'pending'): string {
+    const error =
+      field === 'duration'
+        ? this.durationError()
+        : field === 'lead'
+          ? this.leadError()
+          : this.pendingError();
     return [
       `wish-settings-${field}-hint`,
       error ? `wish-settings-${field}-error` : null,
@@ -304,7 +381,7 @@ export class WishSettingsSection {
   }
 
   protected save(): void {
-    const body = wishSettingsBody(this.duration(), this.lead());
+    const body = this.body();
     const current = this.baseline();
     if (!this.canSave() || body === null || current === null) {
       return;
@@ -407,8 +484,19 @@ export class WishSettingsSection {
     this.baseline.set(read);
     this.duration.set(String(read.defaultDurationDays));
     this.lead.set(String(read.probationLeadDays));
+    this.pending.set(String(read.pendingExpiryDays));
     this.durationTouched.set(false);
     this.leadTouched.set(false);
+    this.pendingTouched.set(false);
+  }
+
+  /** The body the form would send now; the expiry belongs to it only while its field is shown. */
+  private body(): WishSettingsUpdate | null {
+    return wishSettingsBody(
+      this.duration(),
+      this.lead(),
+      this.captureEnabled() ? this.pending() : undefined,
+    );
   }
 
   private onSaveError(error: unknown): void {
@@ -446,8 +534,10 @@ export class WishSettingsSection {
     this.loadError.set(false);
     this.duration.set('');
     this.lead.set('');
+    this.pending.set('');
     this.durationTouched.set(false);
     this.leadTouched.set(false);
+    this.pendingTouched.set(false);
     this.saving.set(false);
     this.saveErrorKey.set(null);
     this.changedUpstream.set(false);

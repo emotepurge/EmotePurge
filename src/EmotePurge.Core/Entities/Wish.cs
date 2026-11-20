@@ -90,4 +90,31 @@ public class Wish
 
     /// <summary>Set on the first entry into <c>active</c>; never changed or cleared afterwards.</summary>
     public DateTime? FirstActivatedAtUtc { get; set; }
+
+    // Chat capture (K6). Filled only for Source = irc; RequestText and RequestedName are requester data.
+
+    /// <summary>The learned reward this wish was redeemed with; SET NULL when the reward is forgotten.</summary>
+    public long? RewardId { get; set; }
+    public ChannelWishReward? Reward { get; set; }
+
+    /// <summary>Twitch's <c>id</c> tag of the redemption message; unique per channel while set.</summary>
+    public string? IrcMessageId { get; set; }
+
+    /// <summary>The redemption's text, as typed by the viewer.</summary>
+    public string? RequestText { get; set; }
+
+    /// <summary>The emote name the parser read from <see cref="RequestText"/>, if any.</summary>
+    public string? RequestedName { get; set; }
+
+    /// <summary>One of <see cref="WishMatchKind"/>; null for wishes not captured in chat.</summary>
+    public string? MatchKind { get; set; }
+
+    /// <summary>
+    /// Whether the wish names a 7TV emote. An open wish (<c>pending</c>, and the ended <c>rejected</c> and
+    /// <c>expired</c>) may carry the empty string as a placeholder in <see cref="SevenTvEmoteId"/>,
+    /// <see cref="EmoteName"/> and <see cref="Alias"/> (CHECK <c>CK_Wishes_EmotePlaceholder</c>); every other
+    /// state has all three. Every lookup or comparison by emote id asks here first. Not mapped; a query
+    /// compares <c>SevenTvEmoteId != ""</c> instead.
+    /// </summary>
+    public bool HasEmote => SevenTvEmoteId.Length > 0;
 }

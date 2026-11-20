@@ -26,6 +26,7 @@ public class WishTransitionsTests
 
     private static readonly string[] Adoptable = ["unconfirmed", "already_in_set"];
     private static readonly string[] Recheckable = ["unconfirmed"];
+    private static readonly string[] Unlinkable = ["unconfirmed_start"];
 
     private static readonly Expected[] Table =
     [
@@ -94,6 +95,7 @@ public class WishTransitionsTests
         new(Pre, null, "remove", Cond.Always, "removed"),
         new(Pre, null, "close", Cond.NoSlot, "closed"),
         new(Pre, Recheckable, "recheck", Cond.Always, "unconfirmed"),
+        new(Pre, Unlinkable, "unlink", Cond.IrcAuto, "pending"),
         new(Pre, null, "external_removal", Cond.Always, "removed_externally"),
 
         // Removed states.

@@ -1,9 +1,11 @@
+using EmotePurge.Core.Entities;
+
 namespace EmotePurge.Core.Services;
 
 /// <summary>
 /// Bound from configuration section <c>Wishes:*</c>: a plain POCO, bound and validated once at startup
-/// and registered as a singleton. It lives in Core because K2 reads it from there. Later children add
-/// keys (expiry interval, capture switch, pilot list); today the only key is the feature switch.
+/// and registered as a singleton. It lives in Core because K2 reads it from there. Each process reads its
+/// own environment; for the chat capture the Worker's value is the one that counts (plan #486 2.3).
 /// </summary>
 public sealed class WishOptions
 {
@@ -19,6 +21,15 @@ public sealed class WishOptions
     /// <summary>Minutes between two runs of the expiry worker (1 to 1440).</summary>
     public int ExpiryIntervalMinutes { get; set; } = 15;
 
+    /// <summary>The chat capture, <c>Wishes:Capture:*</c> (K6).</summary>
+    public WishCaptureOptions Capture { get; set; } = new();
+
+    /// <summary>
+    /// Whether this process captures (Worker) respectively offers the reward routes (Api): only together
+    /// with the feature switch.
+    /// </summary>
+    public bool CaptureActive => Enabled && Capture.Enabled;
+
     /// <summary>
     /// Throws unless every value is usable. Called during startup, so a typo in an environment variable
     /// stops the container with a readable message.
@@ -30,5 +41,22 @@ public sealed class WishOptions
             throw new InvalidOperationException(
                 $"Wishes:ExpiryIntervalMinutes must be between 1 and 1440, but is {ExpiryIntervalMinutes}.");
         }
+
+        if (Capture.MaxPendingPerRequester is < WishLimits.MaxPendingPerRequesterMin or > WishLimits.MaxPendingPerRequesterMax)
+        {
+            throw new InvalidOperationException(
+                $"Wishes:Capture:MaxPendingPerRequester must be between {WishLimits.MaxPendingPerRequesterMin} and "
+                + $"{WishLimits.MaxPendingPerRequesterMax}, but is {Capture.MaxPendingPerRequester}.");
+        }
+    }
+
+    /// <summary>Bound from <c>Wishes:Capture:*</c>.</summary>
+    public sealed class WishCaptureOptions
+    {
+        /// <summary>The capture switch, <c>false</c> by default; effective only with <see cref="WishOptions.Enabled"/>.</summary>
+        public bool Enabled { get; set; }
+
+        /// <summary>Open wishes per viewer and channel (1 to 50, default 3).</summary>
+        public int MaxPendingPerRequester { get; set; } = WishLimits.DefaultMaxPendingPerRequester;
     }
 }

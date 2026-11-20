@@ -92,6 +92,10 @@ public static class WishTransitions
 
     private static readonly string[] RecheckablePresentedReasons = [WishStatusReason.Unconfirmed];
 
+    // The reconcile's date correction (K6, plan #486 2.5) releases an automatic capture link also after the
+    // expiry run presented it for its provisional start.
+    private static readonly string[] UnlinkablePresentedReasons = [WishStatusReason.UnconfirmedStart];
+
     private static readonly Row[] Rows = BuildRows();
 
     /// <summary>
@@ -195,6 +199,7 @@ public static class WishTransitions
         Add(WishStatus.Presented, WishAction.Remove, WishStatus.Removed);
         Add(WishStatus.Presented, WishAction.Close, WishStatus.Closed, when: c => !c.HasSlot);
         Add(WishStatus.Presented, WishAction.Recheck, WishStatus.Unconfirmed, RecheckablePresentedReasons);
+        Add(WishStatus.Presented, WishAction.Unlink, WishStatus.Pending, UnlinkablePresentedReasons, c => c.IrcAutoLinked);
         Add(WishStatus.Presented, WishAction.ExternalRemoval, WishStatus.RemovedExternally);
 
         // Removed states. The 6-hour window of removed_externally -> removed is the caller's check.

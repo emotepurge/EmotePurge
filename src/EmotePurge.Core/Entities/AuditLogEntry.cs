@@ -66,6 +66,36 @@ public static class AuditActions
 
     /// <summary>PATCH of alias or duration; not in the spec's list, added so no manager action goes unrecorded.</summary>
     public const string WishUpdate = "wish.update";
+
+    /// <summary>
+    /// A manager decided an open wish (K6): details <c>wishId</c>, <c>outcome</c> (<c>approved</c> or <c>merged</c>) and
+    /// <c>mergedIntoWishId</c> (null for <c>approved</c>). A merge writes <see cref="WishExtend"/> on the running wish in
+    /// the same transaction.
+    /// </summary>
+    public const string WishApprove = "wish.approve";
+
+    /// <summary>A manager rejected an open wish (K6); the standard wish details, never the redemption text.</summary>
+    public const string WishReject = "wish.reject";
+
+    /// <summary>
+    /// The reconcile linked a wish without a click (<c>pending</c> or <c>approved</c>, K6). Written under
+    /// <see cref="AuditActor.System"/>; details <c>wishId</c>, <c>source</c>, <c>fromStatus</c>, <c>matchKind</c>.
+    /// </summary>
+    public const string WishAutoLink = "wish.autoLink";
+
+    /// <summary>
+    /// An automatic capture link was released back to <c>pending</c> (K6): by a manager, or by the reconcile's
+    /// date correction under <see cref="AuditActor.System"/> with <c>cause: date_correction</c>.
+    /// </summary>
+    public const string WishUnlink = "wish.unlink";
+
+    // Learned channel-point rewards (K6), written by the reward service under the acting manager. Target
+    // ("wishReward", row id); details carry the row id and, for a change, the names of the changed fields only:
+    // never the label, the reward's Twitch tag, a redemption text or a login. Starting and cancelling a learning
+    // session are not audited.
+    public const string WishRewardAdd = "wish.rewardAdd";
+    public const string WishRewardChange = "wish.rewardChange";
+    public const string WishRewardRemove = "wish.rewardRemove";
 }
 
 /// <summary>

@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   normalizeRequesterLogin,
   parseEmoteInput,
+  parsePendingExpiryDays,
   parseProbationLeadDays,
   parseWishDurationDays,
+  validateRewardLabel,
   validateWishAlias,
 } from './wish-input';
 
@@ -124,6 +126,16 @@ describe('duration and lead', () => {
     expect(parseProbationLeadDays(String(days)).ok).toBe(valid);
   });
 
+  it.each([
+    [0, false],
+    [1, true],
+    [90, true],
+    [91, false],
+  ])('open-wish expiry %i -> valid %s', (days, valid) => {
+    expect(parsePendingExpiryDays(days).ok).toBe(valid);
+    expect(parsePendingExpiryDays(String(days)).ok).toBe(valid);
+  });
+
   it('names the reason', () => {
     expect(parseWishDurationDays(0)).toEqual({ ok: false, reason: 'out_of_range' });
     expect(parseWishDurationDays('366')).toEqual({ ok: false, reason: 'out_of_range' });
@@ -186,5 +198,21 @@ describe('validateWishAlias (code points)', () => {
     for (const ok of ['Hänno', 'ß', 'KEKW', 'a_b-c.d', '(:']) {
       expect(validateWishAlias(ok).ok, ok).toBe(true);
     }
+  });
+});
+
+describe('validateRewardLabel', () => {
+  it('trims and keeps inner spaces', () => {
+    expect(validateRewardLabel('  Emote wünschen ')).toEqual({ ok: true, label: 'Emote wünschen' });
+  });
+
+  it('counts code points, not UTF-16 units', () => {
+    expect(validateRewardLabel('😀'.repeat(50)).ok).toBe(true);
+    expect(validateRewardLabel('😀'.repeat(51))).toEqual({ ok: false, reason: 'too_long' });
+  });
+
+  it('names the reason', () => {
+    expect(validateRewardLabel('   ')).toEqual({ ok: false, reason: 'empty' });
+    expect(validateRewardLabel('a\u0007b')).toEqual({ ok: false, reason: 'forbidden_char' });
   });
 });

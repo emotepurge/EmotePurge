@@ -48,6 +48,9 @@ export type WishLinkOrigin = 'auto' | 'adopted' | 'bot' | (string & {});
 
 export type WishMode = 'manual' | 'bot' | (string & {});
 
+/** How the redeemed text was read (K6): a 7TV link, a bare name, or nothing usable. */
+export type WishMatchKind = 'link' | 'name' | 'none' | (string & {});
+
 /** The three lists of the channel page; `open` is the server default. */
 export type WishListView = 'open' | 'running' | 'ended';
 
@@ -102,6 +105,26 @@ export interface Wish {
   botNextAttemptAtUtc: string | null;
   removalQueuedAtUtc: string | null;
   mode: WishMode;
+  /**
+   * K6 redeemer data, optional because an older server omits it. `requestText`, `requestedName` and
+   * `rewardLabel` (and `requesterLogin` of an `irc` wish) arrive only for a caller confirmed on the
+   * channel's Twitch id, otherwise `null`; `rewardLabel` is `null` as well once the reward was forgotten.
+   */
+  requestText?: string | null;
+  requestedName?: string | null;
+  /** `null` for a wish not captured in chat. */
+  matchKind?: WishMatchKind | null;
+  rewardLabel?: string | null;
+  /** The running wish a `merged` wish went into. */
+  mergedIntoWishId?: number | null;
+}
+
+/**
+ * Answer of `POST …/approve`: the wish plus the new expiry of the running wish it was merged into
+ * (`mergedIntoWishId` is then set), `null` when it was approved on its own. Always present on this route.
+ */
+export interface ApprovedWish extends Wish {
+  extendedExpiresAtUtc: string | null;
 }
 
 /** `GET …/wishes/{id}`: the wish plus the usage of its window (`null` without a start). */
@@ -134,6 +157,8 @@ export interface WishSettings {
   protectionThresholdPerDay: number | null;
   botModeEnabled: boolean;
   botSuspendedReason: string | null;
+  /** K6: how many days a captured wish may stay `pending` (1 to 90). */
+  pendingExpiryDays: number;
 }
 
 /** `GET …/wishes/settings`: the settings plus whether this caller may write them. */
@@ -149,6 +174,8 @@ export interface WishSettingsUpdate {
   defaultDurationDays: number;
   probationLeadDays: number;
   protectionThresholdPerDay?: number | null;
+  /** Absent keeps the stored value; there is no "off" for it. */
+  pendingExpiryDays?: number;
 }
 
 export interface CreateWishBody {
@@ -168,6 +195,17 @@ export interface AdoptWishBody {
   wishId?: number;
   durationDays?: number;
   startsAtUtc?: string;
+}
+
+/**
+ * Body of `POST …/approve`. Every field is optional: the emote id falls back to the wish's own (a wish
+ * without one needs it here, else 400 `wish_emote_required`), duration to the wish's.
+ */
+export interface ApproveWishBody {
+  sevenTvEmoteId?: string;
+  emoteName?: string;
+  alias?: string;
+  durationDays?: number;
 }
 
 export type WishRemovalEvidence = 'acknowledged' | 'absent';
@@ -211,4 +249,74 @@ export interface WishSummary {
 export interface WishConflict {
   slotIds?: string[];
   wishId?: number | null;
+}
+
+/** A learned reward of the channel; `id` is the row id the routes take, Twitch's tag never reaches the client. */
+export interface WishReward {
+  id: number;
+  label: string;
+  defaultDurationDays: number;
+  isActive: boolean;
+  createdAtUtc: string;
+  /** `null` until a redemption of it was seen. */
+  lastRedemptionSeenAtUtc: string | null;
+}
+
+/** The redemption a running learning session saw: `candidateId` is the opaque id it is confirmed by. */
+export interface WishRewardCandidate {
+  candidateId: string;
+  text: string;
+  login: string;
+  seenAtUtc: string;
+}
+
+/** A running learning session; `candidate` is `null` until the first redemption of an unknown reward. */
+export interface WishRewardLearning {
+  sessionId: string;
+  startedAtUtc: string;
+  expiresAtUtc: string;
+  candidate: WishRewardCandidate | null;
+}
+
+export type WishCaptureGapReason = 'disconnect' | 'worker_restart' | 'not_joined' | (string & {});
+
+/** A stretch in which the capture may have missed redemptions; the bounds are approximate. */
+export interface WishCaptureGap {
+  fromUtc: string;
+  toUtc: string;
+  reason: WishCaptureGapReason;
+}
+
+/**
+ * `GET …/wishes/rewards`. An unbound channel row (`channelBound` false) has no rewards, no gaps and no
+ * learning whatever the tables hold; `canEdit`, `pendingExpiryDays` and `captureAliveAtUtc` stay set.
+ */
+export interface WishRewardsRead {
+  channelBound: boolean;
+  rewards: WishReward[];
+  /** The most rewards a channel may have. */
+  limit: number;
+  learning: WishRewardLearning | null;
+  /** Gaps ending within the last 14 days, newest first. */
+  gaps: WishCaptureGap[];
+  canEdit: boolean;
+  pendingExpiryDays: number;
+  /** The capture's last life stamp; `null` while it never wrote one. */
+  captureAliveAtUtc: string | null;
+}
+
+/** Body of `POST …/rewards/learning/confirm`: the ids exactly as the dialog showed them. */
+export interface ConfirmWishRewardBody {
+  sessionId: string;
+  candidateId: string;
+  label: string;
+  /** Absent takes the channel's default duration. */
+  defaultDurationDays?: number;
+}
+
+/** Body of `PATCH …/rewards/{id}`: an absent field stays as it is. */
+export interface UpdateWishRewardBody {
+  label?: string;
+  defaultDurationDays?: number;
+  isActive?: boolean;
 }

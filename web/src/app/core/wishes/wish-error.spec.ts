@@ -40,6 +40,24 @@ describe('wishErrorKey', () => {
     }
   });
 
+  it.each([
+    ['wish_emote_required', 400],
+    ['wish_running_not_extendable', 409],
+    ['wish_capture_disabled', 404],
+    ['wish_channel_unbound', 409],
+    ['wish_learning_active', 409],
+    ['wish_learning_stale', 409],
+    ['wish_reward_no_candidate', 409],
+    ['wish_reward_already_known', 409],
+    ['wish_reward_limit', 409],
+    ['wish_reward_not_found', 404],
+  ])('maps the capture code %s to its own text in every context', (errorCode, status) => {
+    const error = failure(status, { errorCode });
+    for (const context of CONTEXTS) {
+      expect(wishErrorKey(error, context)).toBe(`errors.api.${errorCode}`);
+    }
+  });
+
   it.each([0, 401, 403, 429, 500, 503])(
     'leaves a body-less status %i to the general mapping',
     (status) => {

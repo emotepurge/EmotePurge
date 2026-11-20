@@ -5,17 +5,24 @@ import { Observable } from 'rxjs';
 import { PagedResult } from '../models/paged-result.model';
 import {
   AdoptWishBody,
+  ApprovedWish,
+  ApproveWishBody,
   CompleteWishRemovalBody,
+  ConfirmWishRewardBody,
   CreatedWish,
   CreateWishBody,
   ReAddWishBody,
   UpdateWishBody,
+  UpdateWishRewardBody,
   Wish,
   WishAdoptableSlot,
   WishConflict,
   WishDetail,
   WishListView,
   WishOverviewItem,
+  WishReward,
+  WishRewardLearning,
+  WishRewardsRead,
   WishSettings,
   WishSettingsRead,
   WishSettingsUpdate,
@@ -100,6 +107,57 @@ export class WishService {
     return this.http.post<Wish>(`${this.base(channelName)}/${wishId}/re-add`, body);
   }
 
+  /**
+   * Releases an open wish. The answer carries `extendedExpiresAtUtc`: set when the wish was merged into the
+   * running one as an extension, `null` when it was approved on its own. Reachable with capture switched off.
+   */
+  approve(
+    channelName: string,
+    wishId: number,
+    body: ApproveWishBody = {},
+  ): Observable<ApprovedWish> {
+    return this.http.post<ApprovedWish>(`${this.base(channelName)}/${wishId}/approve`, body);
+  }
+
+  reject(channelName: string, wishId: number): Observable<Wish> {
+    return this.transition(channelName, wishId, 'reject');
+  }
+
+  /** Takes an automatic link back; only an `active` wish with `source` `irc` and `linkOrigin` `auto` allows it. */
+  unlink(channelName: string, wishId: number): Observable<Wish> {
+    return this.transition(channelName, wishId, 'unlink');
+  }
+
+  getRewards(channelName: string): Observable<WishRewardsRead> {
+    return this.http.get<WishRewardsRead>(this.rewardsBase(channelName));
+  }
+
+  startLearning(channelName: string): Observable<WishRewardLearning> {
+    return this.http.post<WishRewardLearning>(`${this.rewardsBase(channelName)}/learning`, null);
+  }
+
+  confirmLearning(channelName: string, body: ConfirmWishRewardBody): Observable<WishReward> {
+    return this.http.post<WishReward>(`${this.rewardsBase(channelName)}/learning/confirm`, body);
+  }
+
+  /** Ends the session the dialog holds; a session that was replaced meanwhile is not the caller's to end. */
+  cancelLearning(channelName: string, sessionId: string): Observable<void> {
+    const params = new HttpParams().set('sessionId', sessionId);
+    return this.http.delete<void>(`${this.rewardsBase(channelName)}/learning`, { params });
+  }
+
+  updateReward(
+    channelName: string,
+    rewardId: number,
+    body: UpdateWishRewardBody,
+  ): Observable<WishReward> {
+    return this.http.patch<WishReward>(`${this.rewardsBase(channelName)}/${rewardId}`, body);
+  }
+
+  deleteReward(channelName: string, rewardId: number): Observable<void> {
+    return this.http.delete<void>(`${this.rewardsBase(channelName)}/${rewardId}`);
+  }
+
   getSettings(channelName: string): Observable<WishSettingsRead> {
     return this.http.get<WishSettingsRead>(`${this.base(channelName)}/settings`);
   }
@@ -120,13 +178,17 @@ export class WishService {
   private transition(
     channelName: string,
     wishId: number,
-    action: 'extend' | 'keep' | 'close' | 'retry' | 'recheck',
+    action: 'extend' | 'keep' | 'close' | 'retry' | 'recheck' | 'reject' | 'unlink',
   ): Observable<Wish> {
     return this.http.post<Wish>(`${this.base(channelName)}/${wishId}/${action}`, null);
   }
 
   private base(channelName: string): string {
     return `/api/channels/${channelName}/wishes`;
+  }
+
+  private rewardsBase(channelName: string): string {
+    return `${this.base(channelName)}/rewards`;
   }
 }
 

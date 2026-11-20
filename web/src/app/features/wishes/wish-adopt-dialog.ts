@@ -14,7 +14,7 @@ import { wishErrorKey } from '../../core/wishes/wish-error';
 import { parseWishDurationDays, WISH_DURATION_DAYS_MAX } from '../../core/wishes/wish-input';
 import type { Wish, WishAdoptableSlot, WishStatus } from '../../core/wishes/wish.model';
 import { wishConflict, WishService } from '../../core/wishes/wish.service';
-import { wishActions } from '../../core/wishes/wish-view';
+import { wishActions, wishTitle } from '../../core/wishes/wish-view';
 import { Button } from '../../shared/ui/button';
 import { openAppDialog } from '../../shared/ui/dialog';
 import { DialogShell } from '../../shared/ui/dialog-shell';
@@ -189,8 +189,11 @@ interface StaleNotice {
   template: `
     <app-dialog-shell [dialogTitle]="titleKey() | transloco">
       <p class="text-sm text-fg-secondary">
-        @if (data.wish; as given) {
-          {{ 'wishes.adopt.introLink' | transloco: { name: given.alias || given.emoteName } }}
+        @if (data.wish) {
+          {{
+            'wishes.adopt.introLink'
+              | transloco: { name: givenWishName || ('wishes.pending.untitled' | transloco) }
+          }}
         } @else {
           {{ 'wishes.adopt.intro' | transloco }}
         }
@@ -479,6 +482,8 @@ export class WishAdoptDialog {
   protected readonly pluralKey = pluralKey;
 
   private readonly givenWishId = this.data.wish?.id ?? null;
+  /** The given wish's name; an open wish without an emote is named by what the viewer typed (K6). */
+  protected readonly givenWishName = this.data.wish ? wishTitle(this.data.wish) : '';
 
   protected readonly now = signal(Date.now());
   protected readonly entries = signal<EntriesState>({ kind: 'loading' });

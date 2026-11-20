@@ -7,6 +7,7 @@ namespace EmotePurge.Infrastructure.Services;
 
 public class ChannelAccessService(
     IModeratorCheckService moderatorCheckService,
+    IModeratedChannelsProvider moderatedChannelsProvider,
     ISevenTvEditorService sevenTvEditorService,
     IChannelService channelService,
     IGlobalAdminAllowlist globalAdminAllowlist,
@@ -64,6 +65,40 @@ public class ChannelAccessService(
     public bool IsGlobalAdmin(TwitchPrincipalInfo principal) => globalAdminAllowlist.IsAdmin(principal);
 
     public bool IsGlobalAdminById(TwitchPrincipalInfo principal) => globalAdminAllowlist.IsAdminById(principal);
+
+    // K6 data (redeemer text and login, the learning candidate, rewards, gaps) is decided on the row's immutable
+    // Twitch id only (plan #486 2.4a). The moderator part deliberately does not go through IModeratorCheckService,
+    // which matches the login: a reassigned login would otherwise hand the old row's redeemer data to a moderator of
+    // the new owner. The admin part takes the id list only, for the same reason (the transitional login list names a
+    // login, too). One row is read and every branch decides on it.
+    public async Task<WishCaptureAccess?> ResolveWishCaptureAccessAsync(
+        TwitchPrincipalInfo principal, string channelName, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(principal);
+        ArgumentNullException.ThrowIfNull(channelName);
+
+        var channel = await channelService.GetByNameAsync(ChannelName.Normalize(channelName), cancellationToken);
+        if (channel is null)
+        {
+            return null;
+        }
+
+        if (channel.TwitchChannelId is not { } channelTwitchId)
+        {
+            return new WishCaptureAccess(channel.Id, null, IdConfirmed: false);
+        }
+
+        if (IsGlobalAdminById(principal) || string.Equals(principal.TwitchUserId, channelTwitchId, StringComparison.Ordinal))
+        {
+            return new WishCaptureAccess(channel.Id, channelTwitchId, IdConfirmed: true);
+        }
+
+        // Null is "cannot tell right now" (no token, Helix failure, unfinished pagination): denied, as in the
+        // moderator check. Only an actual list can confirm.
+        var lookup = await moderatedChannelsProvider.GetModeratedChannelsAsync(principal, cancellationToken);
+        var moderates = lookup.Channels?.Any(c => string.Equals(c.BroadcasterId, channelTwitchId, StringComparison.Ordinal)) ?? false;
+        return new WishCaptureAccess(channel.Id, channelTwitchId, moderates);
+    }
 
     // Twitch permits renames and releases the old name again after a grace period. Deciding "is
     // broadcaster" on the login alone therefore handed the channel to whoever registered the freed-up

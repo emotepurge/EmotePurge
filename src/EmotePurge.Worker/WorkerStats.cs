@@ -47,6 +47,15 @@ public sealed class WorkerStats
     private long _twitchRebuildCount;
     private long _twitchRebuildAttemptFailureCount;
 
+    // The reward capture's own counters (plan #486 2.1, 2.3): bumped from the chat handler and the observation
+    // queue, read and zeroed together once a minute by the capture worker's log line. Interlocked for the same
+    // reason as the hot-path counters above.
+    private long _rewardObservationOverflows;
+    private long _rewardObservationsRejectedAtShutdown;
+    private long _splicedRewardRedemptions;
+    private long _rewardCaptureFaults;
+    private long _rewardObservationsAtEmptySnapshot;
+
     public int ConsecutiveFlushFailures
     {
         get
@@ -161,4 +170,55 @@ public sealed class WorkerStats
     /// process start — never reset.
     /// </summary>
     public void RecordTwitchRebuildAttemptFailure() => Interlocked.Increment(ref _twitchRebuildAttemptFailureCount);
+
+    /// <summary>A reward observation refused because the queue was full (plan #486 2.1).</summary>
+    public void RecordRewardObservationOverflow() => Interlocked.Increment(ref _rewardObservationOverflows);
+
+    /// <summary>A reward observation refused because the queue was already closed for the shutdown (Sol-R2-P2-8).</summary>
+    public void RecordRewardObservationRejectedAtShutdown() =>
+        Interlocked.Increment(ref _rewardObservationsRejectedAtShutdown);
+
+    /// <summary>
+    /// A line with the reward tag that the splice sentinel flagged and that was therefore not evaluated (plan W23).
+    /// The same line also counts in <see cref="RecordSplicedIrcLine"/>.
+    /// </summary>
+    public void RecordSplicedRewardRedemption() => Interlocked.Increment(ref _splicedRewardRedemptions);
+
+    /// <summary>An exception inside the capture branch of the chat handler, swallowed there (plan 2.1).</summary>
+    public void RecordRewardCaptureFault() => Interlocked.Increment(ref _rewardCaptureFaults);
+
+    /// <summary>
+    /// A reward observation queued while the channel's emote snapshot was empty: the live proof that the capture
+    /// sits before the cache check (AK67, Sol-R2-P2-9, live step A7).
+    /// </summary>
+    public void RecordRewardObservationAtEmptySnapshot() =>
+        Interlocked.Increment(ref _rewardObservationsAtEmptySnapshot);
+
+    /// <summary>
+    /// Reads and zeroes the five reward capture counters, each in one step, for the capture worker's minute line.
+    /// </summary>
+    public RewardCaptureCounters TakeRewardCaptureCounters() => new(
+        Overflowed: Interlocked.Exchange(ref _rewardObservationOverflows, 0),
+        RejectedAtShutdown: Interlocked.Exchange(ref _rewardObservationsRejectedAtShutdown, 0),
+        SplicedRedemptions: Interlocked.Exchange(ref _splicedRewardRedemptions, 0),
+        CaptureFaults: Interlocked.Exchange(ref _rewardCaptureFaults, 0),
+        ObservedAtEmptySnapshot: Interlocked.Exchange(ref _rewardObservationsAtEmptySnapshot, 0));
+}
+
+/// <summary>The reward capture counters since the last <see cref="WorkerStats.TakeRewardCaptureCounters"/>.</summary>
+/// <param name="Overflowed">Observations refused at a full queue.</param>
+/// <param name="RejectedAtShutdown">Observations refused at a closed queue.</param>
+/// <param name="SplicedRedemptions">Reward lines not evaluated because they were spliced.</param>
+/// <param name="CaptureFaults">Exceptions swallowed in the capture branch.</param>
+/// <param name="ObservedAtEmptySnapshot">Observations queued while the channel's emote snapshot was empty.</param>
+public readonly record struct RewardCaptureCounters(
+    long Overflowed,
+    long RejectedAtShutdown,
+    long SplicedRedemptions,
+    long CaptureFaults,
+    long ObservedAtEmptySnapshot)
+{
+    /// <summary>Whether every counter is zero (the minute line is written only otherwise).</summary>
+    public bool IsZero => Overflowed == 0 && RejectedAtShutdown == 0 && SplicedRedemptions == 0
+        && CaptureFaults == 0 && ObservedAtEmptySnapshot == 0;
 }
