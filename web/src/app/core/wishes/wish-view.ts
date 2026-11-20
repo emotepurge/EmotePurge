@@ -64,10 +64,21 @@ export function canUnlink(
 
 /**
  * Approving a wish whose emote already runs for another wish books an extension of that one instead of
- * a new entry; the button then reads as an extension. That is the hint `already_running`.
+ * a new entry; the button then reads as an extension. That is the hint `already_running` on a wish
+ * that names its emote by id. A name wish with the hint has no id yet: the manager enters one, and
+ * whether it is the running emote only the server decides (`approveMayExtendRunning`).
  */
-export function approveExtendsRunning(wish: Pick<Wish, 'status' | 'statusReason'>): boolean {
-  return wish.status === 'pending' && wish.statusReason === 'already_running';
+export function approveExtendsRunning(
+  wish: Pick<Wish, 'status' | 'statusReason' | 'sevenTvEmoteId'>,
+): boolean {
+  return wish.status === 'pending' && wish.statusReason === 'already_running' && hasEmote(wish);
+}
+
+/** The hint `already_running` on a wish without an emote id: approving extends only if the id matches. */
+export function approveMayExtendRunning(
+  wish: Pick<Wish, 'status' | 'statusReason' | 'sevenTvEmoteId'>,
+): boolean {
+  return wish.status === 'pending' && wish.statusReason === 'already_running' && !hasEmote(wish);
 }
 
 function parseUtc(value: string | null | undefined): number | null {

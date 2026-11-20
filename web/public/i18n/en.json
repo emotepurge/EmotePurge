@@ -2857,7 +2857,8 @@
         "label": "Extension",
         "one": "{{ count }} day, the channel's default duration",
         "other": "{{ count }} days, the channel's default duration",
-        "unknown": "By the channel's default duration"
+        "unknown": "By the channel's default duration",
+        "ifRunning": "If the emote you enter is the running one, the running wish is extended by the channel's default duration instead."
       },
       "blocked": {
         "emoteMissing": "Without an emote the wish cannot be approved. The 7TV link or emote id is missing."

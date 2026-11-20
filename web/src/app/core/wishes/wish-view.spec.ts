@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { Wish } from './wish.model';
 import {
   approveExtendsRunning,
+  approveMayExtendRunning,
   canRemove,
   canUnlink,
   endedDate,
@@ -403,12 +404,23 @@ describe('canUnlink', () => {
 
 describe('approveExtendsRunning', () => {
   it.each([
-    ['pending', 'already_running', true],
-    ['pending', 'already_in_set', false],
-    ['pending', null, false],
-    ['presented', 'already_running', false],
-  ])('%s with hint %s -> %s', (status, statusReason, expected) => {
-    expect(approveExtendsRunning({ status, statusReason })).toBe(expected);
+    ['pending', 'already_running', 'e1', true],
+    ['pending', 'already_running', '', false],
+    ['pending', 'already_in_set', 'e1', false],
+    ['pending', null, 'e1', false],
+    ['presented', 'already_running', 'e1', false],
+  ])('%s with hint %s and emote "%s" -> %s', (status, statusReason, sevenTvEmoteId, expected) => {
+    expect(approveExtendsRunning({ status, statusReason, sevenTvEmoteId })).toBe(expected);
+  });
+});
+
+describe('approveMayExtendRunning', () => {
+  it.each([
+    ['pending', 'already_running', '', true],
+    ['pending', 'already_running', 'e1', false],
+    ['pending', null, '', false],
+  ])('%s with hint %s and emote "%s" -> %s', (status, statusReason, sevenTvEmoteId, expected) => {
+    expect(approveMayExtendRunning({ status, statusReason, sevenTvEmoteId })).toBe(expected);
   });
 });
 

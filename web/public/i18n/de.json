@@ -2857,7 +2857,8 @@
         "label": "Verlängerung",
         "one": "{{ count }} Tag, die Standardlaufzeit des Kanals",
         "other": "{{ count }} Tage, die Standardlaufzeit des Kanals",
-        "unknown": "Um die Standardlaufzeit des Kanals"
+        "unknown": "Um die Standardlaufzeit des Kanals",
+        "ifRunning": "Ist das eingetragene Emote das laufende, wird stattdessen der laufende Wunsch um die Standardlaufzeit des Kanals verlängert."
       },
       "blocked": {
         "emoteMissing": "Ohne Emote lässt sich der Wunsch nicht freigeben. Es fehlt der 7TV-Link oder die Emote-ID."

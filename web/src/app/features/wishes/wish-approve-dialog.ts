@@ -22,7 +22,11 @@ import {
 } from '../../core/wishes/wish-input';
 import type { ApproveWishBody, Wish } from '../../core/wishes/wish.model';
 import { wishConflict, WishService } from '../../core/wishes/wish.service';
-import { approveExtendsRunning, hasEmote } from '../../core/wishes/wish-view';
+import {
+  approveExtendsRunning,
+  approveMayExtendRunning,
+  hasEmote,
+} from '../../core/wishes/wish-view';
 import { Button } from '../../shared/ui/button';
 import { openAppDialog } from '../../shared/ui/dialog';
 import { DialogShell } from '../../shared/ui/dialog-shell';
@@ -225,12 +229,18 @@ type ApproveConflict =
             autocomplete="off"
             [value]="duration()"
             [attr.aria-invalid]="durationError() ? 'true' : null"
-            [attr.aria-describedby]="durationError() ? 'wish-approve-duration-error' : null"
+            [attr.aria-describedby]="durationDescribedBy()"
             (input)="setDuration($any($event.target).value)"
           />
           @if (durationError(); as key) {
             <p id="wish-approve-duration-error" class="text-sm text-danger-fg">
               {{ key | transloco: { max: durationMax } }}
+            </p>
+          }
+          @if (mayExtendRunning) {
+            <!-- A name wish: only the id entered above decides whether this books an extension. -->
+            <p id="wish-approve-duration-hint" class="text-xs text-fg-muted">
+              {{ 'wishes.approve.extension.ifRunning' | transloco }}
             </p>
           }
         </div>
@@ -329,8 +339,13 @@ export class WishApproveDialog {
     ? canonicalSevenTvEmoteId(this.data.wish.sevenTvEmoteId)
     : null;
 
-  /** A wish of the emote already runs: approving books its extension (plan 2.6 (1)). */
+  /**
+   * A wish of the wish's own emote already runs: approving books its extension (plan 2.6 (1)). Only a
+   * wish that names its emote by id; a name wish with the hint keeps the plain approval's duration and
+   * only says when the server would extend instead (`mayExtendRunning`, Sol review round 3).
+   */
   protected readonly extendsRunning = approveExtendsRunning(this.data.wish);
+  protected readonly mayExtendRunning = approveMayExtendRunning(this.data.wish);
   protected readonly titleKey = this.extendsRunning
     ? 'wishes.approve.titleExtend'
     : 'wishes.approve.title';
@@ -436,6 +451,14 @@ export class WishApproveDialog {
     return !result.ok && (this.aliasTouched() || this.aliasTyped() !== null)
       ? `wishes.entry.alias.${result.reason}`
       : null;
+  });
+
+  protected readonly durationDescribedBy = computed(() => {
+    const ids = [
+      ...(this.durationError() ? ['wish-approve-duration-error'] : []),
+      ...(this.mayExtendRunning ? ['wish-approve-duration-hint'] : []),
+    ];
+    return ids.length > 0 ? ids.join(' ') : null;
   });
 
   protected readonly durationError = computed(() => {

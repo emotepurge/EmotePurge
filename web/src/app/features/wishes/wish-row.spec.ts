@@ -462,12 +462,22 @@ describe('WishRow', () => {
       ['unparsed', [LABEL.approve, LABEL.adopt, LABEL.reject]],
       ['ambiguous_match', [LABEL.adopt, LABEL.approve, LABEL.reject]],
       ['already_in_set', [LABEL.adopt, LABEL.reject]],
-      ['already_running', [LABEL.approveExtend, LABEL.reject]],
+      // A name wish: only the id the manager enters decides whether approving extends (round 3).
+      ['already_running', [LABEL.approve, LABEL.reject]],
       ['something_new', [LABEL.approve, LABEL.adopt, LABEL.edit, LABEL.reject]],
     ])('offers, for the hint %s, the actions of the table', (hint, expected) => {
       render(open({ statusReason: hint }), { offered: K6_ACTIONS });
 
       expect(names()).toEqual(expected);
+    });
+
+    it('names approving an extension for a wish whose own emote already runs', () => {
+      render(open({ statusReason: 'already_running', sevenTvEmoteId: 'e1', matchKind: 'link' }), {
+        offered: K6_ACTIONS,
+      });
+
+      expect(names()).toContain(LABEL.approveExtend);
+      expect(names()).not.toContain(LABEL.approve);
     });
 
     it('names the action group after what the viewer typed while no emote is known', () => {

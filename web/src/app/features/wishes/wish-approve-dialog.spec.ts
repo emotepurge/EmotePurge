@@ -375,6 +375,34 @@ describe('WishApproveDialog', () => {
       });
     });
 
+    it('keeps the duration of a plain approval for a name wish the hint says may extend', () => {
+      // The hint already_running on a name wish: whether the id entered is the running emote only the
+      // server decides, so the dialog promises no extension and sends the duration (round 3).
+      create(open({ statusReason: 'already_running' }));
+
+      expect(fixture.nativeElement.textContent).toContain(de.wishes.approve.title);
+      expect(buttonNamed(de.wishes.actions.approveExtend)).toBeUndefined();
+      expect(element('#wish-approve-extension')).toBeNull();
+      const duration = element<HTMLInputElement>('#wish-approve-duration') as HTMLInputElement;
+      expect(duration.getAttribute('aria-describedby')).toBe('wish-approve-duration-hint');
+      expect(element('#wish-approve-duration-hint')?.textContent?.trim()).toBe(
+        de.wishes.approve.extension.ifRunning,
+      );
+      expect(settingsReads).toEqual([]);
+
+      type('wish-approve-emote', A);
+      vi.advanceTimersByTime(WISH_ENTRY_LOOKUP_DEBOUNCE_MS);
+      settleRead(0, { id: A, kind: 'found', name: 'catJAM', animated: true });
+      type('wish-approve-duration', '9');
+      submit().click();
+      expect(approves[0].body).toEqual({
+        sevenTvEmoteId: A,
+        emoteName: 'catJAM',
+        alias: 'catJAM',
+        durationDays: 9,
+      });
+    });
+
     it('asks for an alias when nothing can fill it in (a manager the redeemer data is hidden from)', () => {
       // A name wish as a manager not confirmed by Twitch ID sees it: the server leaves out what the
       // viewer typed, so neither the wish nor a nameless 7TV read can fill in the alias.
