@@ -137,8 +137,9 @@ public interface IWishCaptureService
     /// Stores closed gaps in one statement and returns how many rows were written. Skipped silently: a gap shorter
     /// than <see cref="Entities.WishLimits.MinCaptureGap"/>, and a gap of a channel that has no active reward at the
     /// time of writing (or no longer exists). An unknown reason throws <see cref="ArgumentException"/> before anything
-    /// is written. Publishes <c>wish.changed</c> once per channel that got a row. On a failure nothing is written, so
-    /// the caller may pass the same list again.
+    /// is written. Publishes <c>wish.changed</c> once per channel that got a row, best effort: once the insert has
+    /// committed, a failure of that announcement is only logged and the count is still returned. A failure that
+    /// escapes therefore means nothing was written, so the caller may pass the same list again.
     /// </summary>
     Task<int> RecordGapsAsync(IReadOnlyCollection<WishCaptureGapRecord> gaps, CancellationToken cancellationToken = default);
 }

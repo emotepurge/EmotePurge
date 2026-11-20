@@ -1,7 +1,12 @@
+using System.Data.Common;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.Services;
+using EmotePurge.Infrastructure.Tests.Fakes;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
@@ -238,6 +243,30 @@ public partial class WishCaptureServiceTests
         Assert.Empty(await GapsAsync(channel));
     }
 
+    // The insert commits on its own; the channel names for wish.changed are read afterwards. A failure of that read must
+    // not report the batch as unwritten: the worker would pass it again and store every interval twice.
+    [Fact]
+    public async Task RecordGaps_StillCountsTheStoredGaps_WhenTheNameReadForTheNotificationFails()
+    {
+        var channel = await SeedChannelAsync();
+        await SeedRewardAsync(channel, "tag-a");
+        var provider = new CapturingLoggerProvider();
+        using var factory = new LoggerFactory([provider], new LoggerFilterOptions { MinLevel = LogLevel.Trace });
+        var interceptor = new FailChannelNameReadInterceptor();
+        var from = Now.AddMinutes(-10);
+
+        var written = await Sut(fixture.CreateDbContext([interceptor]), logger: factory.CreateLogger<WishCaptureService>())
+            .RecordGapsAsync([new WishCaptureGapRecord(channel.Id, from, from.AddMinutes(5), WishCaptureGapReason.Disconnect)]);
+
+        Assert.Equal(1, written);
+        Assert.Equal(1, interceptor.Failures);
+        Assert.Single(await GapsAsync(channel));
+        AssertNothingPublished();
+        var warning = Assert.Single(provider.Lines, l => l.Level == LogLevel.Warning);
+        Assert.Null(warning.Exception);
+        Assert.Contains("NpgsqlException", warning.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task RecordGaps_WithNothingLongEnough_WritesAndPublishesNothing()
     {
@@ -304,5 +333,26 @@ public partial class WishCaptureServiceTests
     {
         await using var db = fixture.CreateDbContext();
         return await db.WishCaptureGaps.AsNoTracking().Where(g => g.ChannelId == channel.Id).ToListAsync();
+    }
+
+    // Fails the read of channel names, the one query RecordGapsAsync sends after its insert.
+    private sealed class FailChannelNameReadInterceptor : DbCommandInterceptor
+    {
+        private int _failures;
+
+        public int Failures => _failures;
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("FROM \"Channels\"", StringComparison.Ordinal)
+                && command.CommandText.Contains("\"ChannelName\"", StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref _failures);
+                throw new Npgsql.NpgsqlException("injected channel name read failure", innerException: null);
+            }
+
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
     }
 }

@@ -267,18 +267,34 @@ public sealed class WishCaptureService(
             return 0;
         }
 
-        var distinct = written.Distinct(StringComparer.Ordinal).ToArray();
-        var names = await db.Channels.AsNoTracking()
-            .Where(c => distinct.Contains(c.Id))
-            .OrderBy(c => c.ChannelName)
-            .Select(c => c.ChannelName)
-            .ToListAsync(cancellationToken);
-        foreach (var name in names)
-        {
-            await changedPublisher.PublishAsync(name, cancellationToken);
-        }
-
+        await NotifyGapChannelsAsync(written, cancellationToken);
         return written.Count;
+    }
+
+    // The insert has committed on its own, so from here on the batch counts as written: a failure of the name read
+    // for wish.changed must not make the worker pass the same gaps again and store every interval twice. The settings
+    // tab converges on its next fetch; the warning carries the error kind only (no message that may quote a key).
+    private async Task NotifyGapChannelsAsync(IReadOnlyCollection<string> channelIds, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var distinct = channelIds.Distinct(StringComparer.Ordinal).ToArray();
+            var names = await db.Channels.AsNoTracking()
+                .Where(c => distinct.Contains(c.Id))
+                .OrderBy(c => c.ChannelName)
+                .Select(c => c.ChannelName)
+                .ToListAsync(cancellationToken);
+            foreach (var name in names)
+            {
+                await changedPublisher.PublishAsync(name, cancellationToken);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                "Wish capture stored {Count} capture gaps but could not announce them ({ExceptionType}, SQLSTATE {SqlState}); clients converge on their next fetch.",
+                channelIds.Count, ex.GetType().Name, SqlStateOf(ex));
+        }
     }
 
     // Step 4: the candidate of the session read behind the lock, by the shared conditional statement.
@@ -495,6 +511,19 @@ public sealed class WishCaptureService(
             _ => value
         };
         return new DateTime(utc.Ticks - (utc.Ticks % (TimeSpan.TicksPerMillisecond / 1000)), DateTimeKind.Utc);
+    }
+
+    private static string? SqlStateOf(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is PostgresException postgres)
+            {
+                return postgres.SqlState;
+            }
+        }
+
+        return null;
     }
 
     private static bool IsIrcMessageConflict(DbUpdateException exception) =>
