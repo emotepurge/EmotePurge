@@ -140,3 +140,33 @@ export function captureLooksStopped(captureAliveAtUtc: string | null, now: Date)
   const alive = Date.parse(captureAliveAtUtc);
   return Number.isNaN(alive) ? true : now.getTime() - alive > CAPTURE_ALIVE_WARN_MS;
 }
+
+/**
+ * How long before the warning the section reads the stamp again, and the least time between two such
+ * reads (plan 2.7, Sol review). The worker stamps once a minute and its stamp writes send no
+ * `wish.changed`, so without this an open section on a quiet channel would warn falsely, and would not
+ * clear a warning once the worker is back.
+ */
+export const CAPTURE_STAMP_REFRESH_MS = 60 * 1000;
+
+/**
+ * Whether the section should read the rewards again for a fresher life stamp: the stamp is missing,
+ * unreadable or within `CAPTURE_STAMP_REFRESH_MS` of the warning (or past it), and the last read
+ * started at least `CAPTURE_STAMP_REFRESH_MS` ago. A stamp from the future counts as fresh.
+ */
+export function captureStampRefreshDue(
+  captureAliveAtUtc: string | null,
+  now: Date,
+  lastReadStartedAt: Date,
+): boolean {
+  if (now.getTime() - lastReadStartedAt.getTime() < CAPTURE_STAMP_REFRESH_MS) {
+    return false;
+  }
+  if (captureAliveAtUtc === null) {
+    return true;
+  }
+  const alive = Date.parse(captureAliveAtUtc);
+  return (
+    Number.isNaN(alive) || now.getTime() - alive >= CAPTURE_ALIVE_WARN_MS - CAPTURE_STAMP_REFRESH_MS
+  );
+}

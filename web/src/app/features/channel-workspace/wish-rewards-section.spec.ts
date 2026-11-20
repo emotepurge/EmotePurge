@@ -512,10 +512,72 @@ describe('WishRewardsSection', () => {
     });
 
     it('starts the warning once the stamp ages while the page is open', async () => {
+      // The worker stopped: every read brings the same old stamp.
       await create();
       await vi.advanceTimersByTimeAsync(3 * 60 * 1000);
       fixture.detectChanges();
       expect(el().textContent).toContain(T.captureStopped);
+    });
+
+    /** A worker that stamps once a minute: every read brings a stamp half a minute old. */
+    function healthyWorker(): void {
+      getRewards.mockImplementation(() =>
+        of(rewardsRead({ captureAliveAtUtc: new Date(Date.now() - 30_000).toISOString() })),
+      );
+    }
+
+    function setVisibility(state: DocumentVisibilityState): void {
+      Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }
+
+    it('reads the stamp again on a quiet channel, so a healthy worker never shows the warning', async () => {
+      healthyWorker();
+      await create();
+      for (let minute = 1; minute <= 10; minute++) {
+        await vi.advanceTimersByTimeAsync(60_000);
+        fixture.detectChanges();
+        expect(el().textContent).not.toContain(T.captureStopped);
+      }
+      // Not a per-second poll: at most one read a minute besides the first.
+      expect(getRewards.mock.calls.length).toBeGreaterThan(1);
+      expect(getRewards.mock.calls.length).toBeLessThanOrEqual(11);
+    });
+
+    it('clears the warning once the worker stamps again', async () => {
+      getRewards.mockReturnValue(of(rewardsRead({ captureAliveAtUtc: '2026-11-19T11:50:00Z' })));
+      await create();
+      expect(el().textContent).toContain(T.captureStopped);
+
+      healthyWorker();
+      await vi.advanceTimersByTimeAsync(60_000);
+      fixture.detectChanges();
+      expect(el().textContent).not.toContain(T.captureStopped);
+    });
+
+    it('does not read for the stamp while the window is hidden', async () => {
+      getRewards.mockReturnValue(of(rewardsRead({ captureAliveAtUtc: '2026-11-19T11:50:00Z' })));
+      await create();
+      setVisibility('hidden');
+      try {
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+        expect(getRewards).toHaveBeenCalledTimes(1);
+
+        setVisibility('visible');
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(getRewards).toHaveBeenCalledTimes(2);
+      } finally {
+        setVisibility('visible');
+      }
+    });
+
+    it('does not read for the stamp of an unbound channel, which shows no warning', async () => {
+      getRewards.mockReturnValue(
+        of(rewardsRead({ channelBound: false, captureAliveAtUtc: null, rewards: [] })),
+      );
+      await create();
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      expect(getRewards).toHaveBeenCalledTimes(1);
     });
 
     it('lists the gaps on demand, with the approximation said', async () => {

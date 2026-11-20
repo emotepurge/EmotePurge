@@ -20,6 +20,7 @@ import { toLocale } from '../../core/i18n/locale';
 import { pluralKey } from '../../core/i18n/plural';
 import { channelLiveUrl, LIVE_EVENT_TYPES } from '../../core/live/live-event.model';
 import { liveReload, liveReopened } from '../../core/live/live-reload';
+import { pageVisible } from '../../core/page-visibility/page-visibility';
 import { wishErrorKey } from '../../core/wishes/wish-error';
 import type { WishCaptureGap, WishReward, WishRewardsRead } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
@@ -33,6 +34,7 @@ import { openWishRewardDialog, type WishRewardDialogResult } from './wish-reward
 import {
   captureGapReasonKey,
   captureLooksStopped,
+  captureStampRefreshDue,
   formatRemaining,
   learningPhase,
   learningStartBlock,
@@ -423,6 +425,7 @@ export class WishRewardsSection {
   private readonly transloco = inject(TranslocoService);
   private readonly languageService = inject(LanguageService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly visible = pageVisible();
 
   /** The last rewards answer; `null` until the first one. */
   protected readonly read = signal<WishRewardsRead | null>(null);
@@ -489,6 +492,8 @@ export class WishRewardsSection {
   });
 
   private loadSubscription: Subscription | null = null;
+  /** When the latest read went out; the life-stamp refresh waits a minute after any read. */
+  private lastReadStartedAt = new Date(0);
   /** Number of the latest read; a successful write bumps it too, so no older answer undoes it. */
   private loadSeq = 0;
   private feedbackTimer: ReturnType<typeof setTimeout> | null = null;
@@ -523,7 +528,10 @@ export class WishRewardsSection {
     // A reopened stream may have swallowed one (the K3 catch-up).
     liveReopened(url).subscribe(() => this.reloadQuietly());
 
-    const timer = setInterval(() => this.now.set(new Date()), CLOCK_TICK_MS);
+    const timer = setInterval(() => {
+      this.now.set(new Date());
+      this.refreshStampIfDue();
+    }, CLOCK_TICK_MS);
     this.destroyRef.onDestroy(() => {
       clearInterval(timer);
       this.clearFeedbackTimer();
@@ -817,6 +825,33 @@ export class WishRewardsSection {
     }));
   }
 
+  /**
+   * The worker's stamp writes send no `wish.changed`: while the section is shown, a stamp nearing the
+   * three-minute warning (or past it, or missing) is read again, at most once a minute and never while
+   * the window is hidden or a read or write is under way (plan 2.7, Sol review). No warning without a
+   * bound channel, so no read for one either.
+   */
+  private refreshStampIfDue(): void {
+    const current = this.read();
+    if (
+      current === null ||
+      !current.channelBound ||
+      !this.visible() ||
+      this.loadState() !== 'ready' ||
+      this.busy() !== null ||
+      this.readInFlight()
+    ) {
+      return;
+    }
+    if (captureStampRefreshDue(current.captureAliveAtUtc, this.now(), this.lastReadStartedAt)) {
+      this.reloadQuietly();
+    }
+  }
+
+  private readInFlight(): boolean {
+    return this.loadSubscription !== null && !this.loadSubscription.closed;
+  }
+
   private reloadQuietly(): void {
     if (this.loadState() === 'unavailable') {
       return;
@@ -827,6 +862,7 @@ export class WishRewardsSection {
   private load(channel: string): void {
     this.loadSubscription?.unsubscribe();
     const seq = ++this.loadSeq;
+    this.lastReadStartedAt = new Date();
     this.loadSubscription = this.wishService.getRewards(channel).subscribe({
       next: (read) => {
         if (seq !== this.loadSeq) {

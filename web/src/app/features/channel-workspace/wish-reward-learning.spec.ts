@@ -4,6 +4,7 @@ import type { WishRewardLearning } from '../../core/wishes/wish.model';
 import {
   captureGapReasonKey,
   captureLooksStopped,
+  captureStampRefreshDue,
   confirmRewardBody,
   formatRemaining,
   learningPhase,
@@ -142,6 +143,30 @@ describe('captureLooksStopped', () => {
     ['garbage', true],
   ])('stamp %s -> warn %s', (stamp, warn) => {
     expect(captureLooksStopped(stamp, NOW)).toBe(warn);
+  });
+});
+
+describe('captureStampRefreshDue', () => {
+  const longAgo = new Date('2026-11-19T11:50:00Z');
+
+  it.each<[string | null, boolean]>([
+    // Fresh: two minutes and more to the warning.
+    ['2026-11-19T11:59:00Z', false],
+    ['2026-11-19T11:58:01Z', false],
+    // Within a minute of the warning, past it, missing or unreadable: read again.
+    ['2026-11-19T11:58:00Z', true],
+    ['2026-11-19T11:50:00Z', true],
+    [null, true],
+    ['garbage', true],
+    // From the future (clock skew): fresh.
+    ['2026-11-19T12:10:00Z', false],
+  ])('stamp %s -> read again %s', (stamp, due) => {
+    expect(captureStampRefreshDue(stamp, NOW, longAgo)).toBe(due);
+  });
+
+  it('waits a minute after the last read, whatever the stamp says', () => {
+    expect(captureStampRefreshDue(null, NOW, new Date('2026-11-19T11:59:01Z'))).toBe(false);
+    expect(captureStampRefreshDue(null, NOW, new Date('2026-11-19T11:59:00Z'))).toBe(true);
   });
 });
 
