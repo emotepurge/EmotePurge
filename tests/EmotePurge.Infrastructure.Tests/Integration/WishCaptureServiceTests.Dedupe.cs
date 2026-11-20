@@ -228,6 +228,30 @@ public partial class WishCaptureServiceTests
         Assert.Equal(WishCaptureOutcome.WishCreated, await Sut().ProcessAsync(Observation(channel, "tag-new", "msg-2")));
     }
 
+    // The candidate side of the same deadline (Sol review round 2): a line seen a minute before the session expires
+    // waits on the channel lock until after it. The locked decision reads the clock behind the lock, so the expired
+    // session takes no candidate and no receipt is kept.
+    [Fact]
+    public async Task ALineWaitingOnTheChannelLockPastTheSessionsExpiry_TakesNoCandidate()
+    {
+        var channel = await SeedChannelAsync();
+        await StartLearningAsync(channel);
+        _clock.Advance(WishLimits.LearningWindow - TimeSpan.FromMinutes(1));
+        await using var holder = fixture.CreateDbContext();
+        await using var holderTransaction = await holder.Database.BeginTransactionAsync();
+        await holder.LockChannelsByIdsAsync([channel.Id], CancellationToken.None);
+
+        await using var contender = fixture.CreateTaggedDbContext("wish-capture-candidate-deadline");
+        var waiting = Sut(contender).ProcessAsync(Observation(channel, "tag-new", "msg-1", sentAt: Now));
+        await fixture.WaitUntilBlockedOnLockAsync("wish-capture-candidate-deadline", waiting);
+        _clock.Advance(TimeSpan.FromMinutes(2));
+        await holderTransaction.CommitAsync();
+
+        Assert.Equal(WishCaptureOutcome.Discarded, await waiting);
+        Assert.Null((await LearningRowAsync(channel))!.CandidateId);
+        Assert.False(await ReceiptExistsAsync(channel, "msg-1"));
+    }
+
     // ------------------------------------------------------------------------------------ helpers
 
     private async Task<string> SeedUserAsync()

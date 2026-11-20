@@ -15,7 +15,8 @@ namespace EmotePurge.Infrastructure.Services;
 /// (<see cref="RowLocks.LockChannelsByIdsAsync"/>), like every other writer of channel-scoped rows: the capture sets a
 /// candidate and creates wishes under the same lock, the identity merge holds it while it moves or drops the rows.
 /// Only behind it does the write read the row's binding again, so an id the identity reconcile sets, changes or
-/// clears meanwhile is the one the write decides on. The learning row is never changed by key after a read; see
+/// clears meanwhile is the one the write decides on; the clock is read there too, so a write that waited past the
+/// session's expiry treats it as expired (AK50). The learning row is never changed by key after a read; see
 /// <see cref="WishRewardLearningStatements"/>. The read takes no lock: its one write, the cleanup of an expired
 /// session, is conditional on that session.
 /// </para>
@@ -99,7 +100,6 @@ public sealed class WishRewardService(
         ArgumentNullException.ThrowIfNull(access);
         ArgumentNullException.ThrowIfNull(actor);
 
-        var now = Now();
         var channelId = access.ChannelId;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var gate = await LockAndCheckAsync(access, cancellationToken);
@@ -107,6 +107,8 @@ public sealed class WishRewardService(
         {
             return WishRewardResult.Of(refusal);
         }
+
+        var now = Now();
 
         if (await db.ChannelWishRewards.CountAsync(r => r.ChannelId == channelId, cancellationToken) >= WishLimits.MaxRewardsPerChannel)
         {
@@ -153,7 +155,6 @@ public sealed class WishRewardService(
             return WishRewardResult.Of(WishRewardOutcome.DurationOutOfRange);
         }
 
-        var now = Now();
         var channelId = access.ChannelId;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var gate = await LockAndCheckAsync(access, cancellationToken);
@@ -161,6 +162,9 @@ public sealed class WishRewardService(
         {
             return WishRewardResult.Of(refusal);
         }
+
+        // The clock behind the lock: a write that waited past a deadline decides on the time it decides (AK50).
+        var now = Now();
 
         // The candidate's tag, read only to build the reward. The delete below names session and candidate id; the
         // capture draws a new candidate id with every candidate and never changes a set one, so a hit deletes exactly
@@ -234,7 +238,6 @@ public sealed class WishRewardService(
             return WishRewardResult.Of(WishRewardOutcome.RequestInvalid);
         }
 
-        var now = Now();
         var channelId = access.ChannelId;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var gate = await LockAndCheckAsync(access, cancellationToken);
@@ -242,6 +245,8 @@ public sealed class WishRewardService(
         {
             return WishRewardResult.Of(refusal);
         }
+
+        var now = Now();
 
         var deleted = await db.WishRewardLearnings
             .Where(l => l.ChannelId == channelId && l.SessionId == session)
@@ -292,7 +297,6 @@ public sealed class WishRewardService(
             return WishRewardResult.Of(WishRewardOutcome.DurationOutOfRange);
         }
 
-        var now = Now();
         var channelId = access.ChannelId;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var gate = await LockAndCheckAsync(access, cancellationToken);
@@ -300,6 +304,8 @@ public sealed class WishRewardService(
         {
             return WishRewardResult.Of(refusal);
         }
+
+        var now = Now();
 
         var reward = await db.ChannelWishRewards.FirstOrDefaultAsync(r => r.Id == rewardRowId && r.ChannelId == channelId, cancellationToken);
         if (reward is null)
@@ -345,7 +351,6 @@ public sealed class WishRewardService(
         ArgumentNullException.ThrowIfNull(access);
         ArgumentNullException.ThrowIfNull(actor);
 
-        var now = Now();
         var channelId = access.ChannelId;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var gate = await LockAndCheckAsync(access, cancellationToken);
@@ -353,6 +358,8 @@ public sealed class WishRewardService(
         {
             return WishRewardResult.Of(refusal);
         }
+
+        var now = Now();
 
         // The wishes of the reward stay; the foreign key's SET NULL clears their RewardId.
         var deleted = await db.ChannelWishRewards

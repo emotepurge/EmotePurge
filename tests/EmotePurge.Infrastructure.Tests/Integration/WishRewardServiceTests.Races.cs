@@ -174,6 +174,31 @@ public partial class WishRewardServiceTests
         }
     }
 
+    // AK50 at the locked decision point (Sol review round 2): the confirm arrives a minute before the deadline but
+    // waits on the channel lock until after it. The expiry is judged on the clock behind the lock, so the candidate
+    // is gone (no candidate), no reward is written, and the expired row is cleared.
+    [Fact]
+    public async Task Race_ConfirmWaitsOnTheChannelLockPastTheDeadline_IsNoCandidate_AndWritesNoReward()
+    {
+        var channel = await SeedChannelAsync();
+        var learning = await SeedLearningAsync(channel, withCandidate: true);
+        _clock.Advance(WishLimits.LearningWindow - TimeSpan.FromMinutes(1));
+        await using var holder = fixture.CreateDbContext();
+        await using var holderTransaction = await holder.Database.BeginTransactionAsync();
+        await holder.LockChannelsByIdsAsync([channel.Id], CancellationToken.None);
+
+        await using var contender = fixture.CreateTaggedDbContext("wish-reward-confirm-deadline");
+        var waiting = Sut(contender).ConfirmLearningAsync(
+            channel.Access, new ConfirmWishRewardLearningRequest(learning.SessionId, learning.CandidateId, "Label", 7), Actor);
+        await fixture.WaitUntilBlockedOnLockAsync("wish-reward-confirm-deadline", waiting);
+        _clock.Advance(TimeSpan.FromMinutes(2));
+        await holderTransaction.CommitAsync();
+
+        Assert.Equal(WishRewardOutcome.NoCandidate, (await waiting).Outcome);
+        Assert.Empty(await RewardsAsync(channel));
+        Assert.Null(await LearningRowAsync(channel));
+    }
+
     // ------------------------------------------------------------------------------------ binding under the lock
 
     // Plan 2.4: the binding is read again behind the channel lock. A second connection holds the lock and lets the

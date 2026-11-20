@@ -103,6 +103,9 @@ public sealed class WishCaptureService(
             return Decided(channel.Id, WishCaptureOutcome.Discarded);
         }
 
+        // The decision and the writes below take the clock behind the lock: a line that waited past the session's
+        // expiry is no candidate (AK50). The moment the line was seen stays the one from before the wait.
+        now = Now();
         var state = await ReadStateAsync(channel.Id, input.RewardId, cancellationToken);
         var step = Decide(state, seenAt, now);
         if (step == Step.Drop)
