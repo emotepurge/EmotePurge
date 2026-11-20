@@ -62,18 +62,41 @@ describe('WishEmotePreviewService', () => {
     expect(service.nameOf(C_HEX)).toBe('peepo');
   });
 
-  it('does not read again after an unknown emote or a failed read', () => {
+  it('does not read an unknown emote again', () => {
     service.request(A);
     answer(0, { id: A, kind: 'unknown' });
-    service.request(B);
-    answer(1, { id: B, kind: 'unreachable' });
     service.request(A);
-    service.request(B);
 
-    expect(reads).toHaveLength(2);
+    expect(reads).toHaveLength(1);
     expect(service.previewOf(A)).toEqual({ kind: 'unknown' });
-    expect(service.previewOf(B)).toEqual({ kind: 'unavailable' });
     expect(service.nameOf(A)).toBeNull();
+  });
+
+  it('reads a failed emote once more when it is asked for again, and keeps a second failure', () => {
+    service.request(B);
+    answer(0, { id: B, kind: 'unreachable' });
+    expect(service.previewOf(B)).toEqual({ kind: 'unavailable' });
+
+    service.request(B);
+    expect(reads.map((read) => read.id)).toEqual([B, B]);
+    // While the second read is on the way the emote counts as not read yet.
+    expect(service.previewOf(B)).toBeNull();
+    answer(1, { id: B, kind: 'unreachable' });
+
+    service.request(B);
+    expect(reads).toHaveLength(2);
+    expect(service.previewOf(B)).toEqual({ kind: 'unavailable' });
+  });
+
+  it('shows the emote once the second read after a failure finds it', () => {
+    service.request(C);
+    answer(0, { id: C, kind: 'unreachable' });
+    service.request(C_HEX);
+    answer(1, { id: C, kind: 'found', name: 'peepo', animated: false });
+
+    expect(service.nameOf(C)).toBe('peepo');
+    service.request(C);
+    expect(reads).toHaveLength(2);
   });
 
   it('skips a row that left the view before its turn', () => {

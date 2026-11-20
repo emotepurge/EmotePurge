@@ -8,7 +8,8 @@ import {
 
 /**
  * What the read of one emote found: its default name (`''` when 7TV sent none), or that 7TV does not
- * know it, or that the read failed. A failed read is not retried in this session either.
+ * know it, or that the read failed. A failed read is tried once more when the emote is asked for again;
+ * a second failure stays for the session.
  */
 export type WishEmotePreview =
   { kind: 'found'; name: string } | { kind: 'unknown' } | { kind: 'unavailable' };
@@ -21,12 +22,18 @@ export type WishEmotePreview =
  * for anything else.
  *
  * - **One read at a time**, in the order the rows asked, each id at most once per session (canonical
- *   form, so both id forms share the entry).
+ *   form, so both id forms share the entry). The one exception is a failed read (network, deadline, an
+ *   answer without data): the next `request` for that id reads it once more (`MAX_READ_FAILURES`), so
+ *   a single short failure does not leave a still emote without its picture for the whole session. An
+ *   unknown emote is an answer and is not read again.
  * - **Only rows in view ask** (`request`), and a row that leaves the view before its turn takes its
  *   request back (`withdraw`); a read already on the way finishes.
  * - **After a throttle** (a real 429 or 7TV's "429 as HTTP 200") it stops for the session: the queue is
  *   dropped and nothing more is read, so the rows stay without a name and with K3's plain picture rule.
  */
+/** Failed reads of one emote after which it is not read again in this session (plan 2.10, T19). */
+export const MAX_READ_FAILURES = 2;
+
 @Service()
 export class WishEmotePreviewService {
   private readonly lookup = inject(SevenTvEmoteLookup);
@@ -38,6 +45,8 @@ export class WishEmotePreviewService {
   private readonly queue: string[] = [];
   /** The id whose read is on the way. */
   private current: string | null = null;
+  /** Failed reads per canonical id; at `MAX_READ_FAILURES` the failure stays. */
+  private readonly failures = new Map<string, number>();
 
   /** A throttle stopped the reads for this session. */
   readonly stopped = this.stoppedState.asReadonly();
@@ -56,14 +65,29 @@ export class WishEmotePreviewService {
     return preview?.kind === 'found' && preview.name !== '' ? preview.name : null;
   }
 
-  /** A row with this emote is in view: read it, unless it was read, is waiting, or reads stopped. */
+  /**
+   * A row with this emote is in view: read it, unless it was read (a failed read only once more), is
+   * waiting, or reads stopped. Asking again for a known or waiting id costs nothing.
+   */
   request(sevenTvEmoteId: string): void {
     if (sevenTvEmoteId === '' || this.stoppedState()) {
       return;
     }
     const id = canonicalSevenTvEmoteId(sevenTvEmoteId);
-    if (this.results().has(id) || this.current === id || this.queue.includes(id)) {
+    if (this.current === id || this.queue.includes(id)) {
       return;
+    }
+    const known = this.results().get(id);
+    if (known !== undefined) {
+      if (known.kind !== 'unavailable' || (this.failures.get(id) ?? 0) >= MAX_READ_FAILURES) {
+        return;
+      }
+      // The retry is under way again: the entry reads "not yet read" until it answers.
+      this.results.update((results) => {
+        const next = new Map(results);
+        next.delete(id);
+        return next;
+      });
     }
     this.queue.push(id);
     this.next();
@@ -102,6 +126,9 @@ export class WishEmotePreviewService {
         : result.kind === 'unknown'
           ? { kind: 'unknown' }
           : { kind: 'unavailable' };
+    if (preview.kind === 'unavailable') {
+      this.failures.set(id, (this.failures.get(id) ?? 0) + 1);
+    }
     this.results.update((results) => new Map(results).set(id, preview));
     this.next();
   }

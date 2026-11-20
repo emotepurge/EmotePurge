@@ -57,6 +57,7 @@ import {
   hasEmote,
   isConfirmedAction,
   isSevenTvAction,
+  needsEmotePreview,
   WishAction,
   wishTitle,
 } from '../../core/wishes/wish-view';
@@ -612,6 +613,9 @@ export class ChannelWishesPage {
   /** Wishes whose action request is on the way; their row's buttons wait. */
   protected readonly pendingIds = signal<ReadonlySet<number>>(new Set());
 
+  /** Open rows that last reported "in view" (wish ids), asked for their preview again (plan 2.10). */
+  private readonly openRowsInView = new Set<number>();
+
   /** The target already focused once; a reload must not pull the focus back. */
   private focusedTarget: number | null = null;
 
@@ -740,6 +744,18 @@ export class ChannelWishesPage {
     effect(() => {
       const rows = this.usageRows();
       untracked(() => this.usageStore.sync(rows));
+    });
+
+    // Every list reload, and the window coming back, asks the preview again for the open rows that
+    // reported "in view" (T19): a read that did not start when the row came into view (its wish then
+    // needed none, or it was dropped) or that failed once gets its chance without the row having to
+    // leave and re-enter the view. `request` skips what is read or waiting, so this costs no second
+    // read. Nothing is asked while the window is hidden.
+    effect(() => {
+      const rows = this.usageRows();
+      if (this.visible()) {
+        untracked(() => this.requestPreviewsInView(rows));
+      }
     });
 
     // An add result says what it had to once its wish left `approved`; drop it then (plan 2.5a).
@@ -949,7 +965,12 @@ export class ChannelWishesPage {
       this.usageStore.setVisible(wish, visible);
       return;
     }
-    if (!hasEmote(wish) || (wish.imageUrl !== null && (wish.alias || wish.emoteName))) {
+    if (visible) {
+      this.openRowsInView.add(wish.id);
+    } else {
+      this.openRowsInView.delete(wish.id);
+    }
+    if (!needsEmotePreview(wish)) {
       return;
     }
     if (visible) {
@@ -1233,6 +1254,22 @@ export class ChannelWishesPage {
         }
       },
     });
+  }
+
+  /**
+   * The open rows in view ask for their preview again, with the wish as the reload brought it. A row
+   * whose wish is no longer shown, or no longer open, is forgotten: its row is gone or reports anew.
+   */
+  private requestPreviewsInView(rows: readonly Wish[]): void {
+    const shown = new Map(rows.map((row) => [row.id, row]));
+    for (const id of [...this.openRowsInView]) {
+      const wish = shown.get(id);
+      if (wish === undefined || wish.status !== 'pending') {
+        this.openRowsInView.delete(id);
+      } else if (needsEmotePreview(wish)) {
+        this.preview.request(wish.sevenTvEmoteId);
+      }
+    }
   }
 
   private reloadAfterGap(): void {

@@ -40,6 +40,21 @@ export function wishTitle(
   return known || wish.requestedName || wish.requestText || '';
 }
 
+/**
+ * Whether a row of this wish reads its emote from 7TV (`WishEmotePreviewService`, plan 2.10): an open
+ * wish that knows its emote but lacks a stored picture or a name. Every other wish has what it shows.
+ */
+export function needsEmotePreview(
+  wish: Pick<Wish, 'status' | 'sevenTvEmoteId' | 'imageUrl' | 'alias'> &
+    Partial<Pick<Wish, 'emoteName'>>,
+): boolean {
+  return (
+    wish.status === 'pending' &&
+    hasEmote(wish) &&
+    (wish.imageUrl === null || !(wish.alias || wish.emoteName))
+  );
+}
+
 /** An automatic chat link the manager may take back: `active`, from chat, linked by the system. */
 export function canUnlink(
   wish: Pick<Wish, 'status'> & Partial<Pick<Wish, 'source' | 'linkOrigin'>>,

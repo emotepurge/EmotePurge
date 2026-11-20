@@ -467,5 +467,44 @@ test.describe('wish emotes: chat capture (#486)', () => {
       await expect.poll(() => backend.of('update', 1).length).toBe(1);
       expect(backend.of('update', 1)[0].body).toEqual({ durationDays: 30 });
     });
+
+    test('E15: a live-added link wish whose first 7TV read failed gets its picture with the next reload', async ({
+      page,
+    }) => {
+      const id = wishUlid('E15');
+      const backend = await mockWishBackend(page, CHANNEL, { open: [] });
+      const reads = await mockSevenTvEmoteReads(page, { [id]: { name: 'dinoCry' } });
+      // The first read fails at 7TV; every later one goes to the stub above.
+      let failed = false;
+      await page.route('https://7tv.io/v4/gql', (route) => {
+        if (failed) {
+          return route.fallback();
+        }
+        failed = true;
+        return route.fulfill({ status: 503, body: '' });
+      });
+      await page.goto(URL_WISHES);
+      await expect(page.getByText('Gerade ist nichts zu entscheiden')).toBeVisible();
+
+      const link = pendingWish(1, {
+        sevenTvEmoteId: id,
+        matchKind: 'link',
+        requestText: `https://7tv.app/emotes/${id}`,
+        requestedName: null,
+      });
+      backend.open = [link];
+      await emitLive(page, { type: 'wish.changed', channel: CHANNEL });
+      const picture = row(page, 1).locator('img');
+      // Not proven still yet: only the rendition that cannot move.
+      await expect(picture).toHaveAttribute('src', /_static/);
+      await expect.poll(() => failed).toBe(true);
+      expect(reads.requests).toEqual([]);
+
+      // The next reload asks again for the row in view; the second read finds the still emote.
+      await emitLive(page, { type: 'wish.changed', channel: CHANNEL });
+      await expect.poll(() => reads.requests).toEqual([id]);
+      await expect(picture).not.toHaveAttribute('src', /_static/);
+      await expect(row(page, 1).getByText('dinoCry')).toBeVisible();
+    });
   });
 });

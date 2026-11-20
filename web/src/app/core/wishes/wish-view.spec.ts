@@ -13,6 +13,7 @@ import {
   isProbation,
   isSevenTvAction,
   needsAction,
+  needsEmotePreview,
   remainingTime,
   timeInSet,
   wishActions,
@@ -359,6 +360,27 @@ describe('wishTitle', () => {
 
   it('never takes a default name without an emote', () => {
     expect(wishTitle({ ...base, requestText: 'pls' }, 'catJAM')).toBe('pls');
+  });
+});
+
+describe('needsEmotePreview', () => {
+  const link = {
+    status: 'pending' as const,
+    sevenTvEmoteId: 'e1',
+    imageUrl: null,
+    alias: '',
+    emoteName: '',
+  };
+
+  it.each([
+    ['an open link wish without picture or name', {}, true],
+    ['an open wish with a stored picture but no name', { imageUrl: 'https://x/e1.webp' }, true],
+    ['an open wish with a name but no stored picture', { alias: 'dino' }, true],
+    ['an open wish with picture and name', { imageUrl: 'https://x/e1.webp', alias: 'dino' }, false],
+    ['an open wish without an emote', { sevenTvEmoteId: '' }, false],
+    ['an approved wish without a stored picture', { status: 'approved' as const }, false],
+  ])('%s -> %s', (_name, over, expected) => {
+    expect(needsEmotePreview({ ...link, ...over })).toBe(expected);
   });
 });
 

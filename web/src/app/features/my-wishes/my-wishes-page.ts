@@ -1,6 +1,17 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { NgTemplateOutlet } from '@angular/common';
-import { Component, computed, DestroyRef, inject, signal } from '@angular/core';
+import {
+  afterRenderEffect,
+  Component,
+  computed,
+  DestroyRef,
+  effect,
+  ElementRef,
+  inject,
+  signal,
+  untracked,
+  viewChildren,
+} from '@angular/core';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
 import { Router, RouterLink } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
@@ -8,9 +19,17 @@ import { EMPTY, interval, pairwise, filter, switchMap } from 'rxjs';
 
 import { apiErrorCode, apiErrorTranslationKey } from '../../core/i18n/api-error';
 import { pageVisible } from '../../core/page-visibility/page-visibility';
+import { SevenTvEmoteLookup } from '../../core/seven-tv/seven-tv-emote-lookup';
 import type { WishOverviewItem } from '../../core/wishes/wish.model';
 import { WishService } from '../../core/wishes/wish.service';
-import { groupWishes, hasEmote, isProbation, wishTitle } from '../../core/wishes/wish-view';
+import { WishEmotePreviewService } from '../../core/wishes/wish-emote-preview.service';
+import {
+  groupWishes,
+  hasEmote,
+  isProbation,
+  needsEmotePreview,
+  wishTitle,
+} from '../../core/wishes/wish-view';
 import { BackLink } from '../../shared/ui/back-link';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
@@ -35,6 +54,12 @@ const CLOCK_TICK_MS = 60_000;
  * (#485, plan T11, AK42). Read-only: each row is one stretched link into the channel's wishes tab with
  * the `wish` jump target (plan 2.4), where the actions live. The grouping and the time rules are
  * `core/wishes/wish-view.ts`; nothing here decides them.
+ *
+ * **Picture and name of an open wish's emote** follow the channel page's work list (plan 2.10): a row
+ * in view whose open wish knows its emote but lacks a stored picture or a name asks the session's
+ * `WishEmotePreviewService` (one read at a time, once per emote and session, stopped by a throttle),
+ * and asks again after every reload and when the window becomes visible again. The picture rule is
+ * K3's: the plain rendition only once a read of this session proved the emote still.
  */
 @Component({
   selector: 'app-my-wishes-page',
@@ -109,13 +134,15 @@ const CLOCK_TICK_MS = 60_000;
 
     <ng-template #row let-item>
       <li
+        #wishRow
         class="relative flex items-start gap-3 px-3 py-3 transition-colors hover:bg-surface-inset"
+        [attr.data-wish-key]="trackKey(item)"
       >
         @if (hasEmote(item)) {
           <app-wish-image
             [imageUrl]="item.wish.imageUrl"
             [sevenTvEmoteId]="item.wish.sevenTvEmoteId"
-            [knownStill]="false"
+            [knownStill]="isKnownStill(item)"
           />
         } @else {
           <!-- An open wish without an emote has no picture yet; the empty plate keeps the column. -->
@@ -153,7 +180,12 @@ const CLOCK_TICK_MS = 60_000;
 export class MyWishesPage {
   private readonly wishService = inject(WishService);
   private readonly router = inject(Router);
+  private readonly preview = inject(WishEmotePreviewService);
+  private readonly lookup = inject(SevenTvEmoteLookup);
   private readonly visible = pageVisible();
+  private readonly rowElements = viewChildren<ElementRef<HTMLElement>>('wishRow');
+  /** Rows (`trackKey`) that last reported "in view"; asked for their preview again on a reload. */
+  private readonly rowsInView = new Set<string>();
 
   protected readonly items = signal<WishOverviewItem[] | null>(null);
   protected readonly errorKey = signal<string | null>(null);
@@ -168,6 +200,31 @@ export class MyWishesPage {
 
   constructor() {
     this.reload();
+
+    // One observer for the rendered rows, made anew when they change; it reports every row once at
+    // the start. Without IntersectionObserver no row reports and nothing is read.
+    afterRenderEffect((onCleanup) => {
+      const rows = this.rowElements();
+      if (rows.length === 0 || typeof IntersectionObserver === 'undefined') {
+        return;
+      }
+      const observer = new IntersectionObserver((hits) => {
+        for (const hit of hits) {
+          this.onRowSeen((hit.target as HTMLElement).dataset['wishKey'] ?? '', hit.isIntersecting);
+        }
+      });
+      rows.forEach((row) => observer.observe(row.nativeElement));
+      onCleanup(() => observer.disconnect());
+    });
+
+    // Every reload, and the window coming back, asks again for the rows in view (as on the channel
+    // page, T19); `request` skips what is read or waiting. Nothing is asked while the window is hidden.
+    effect(() => {
+      const items = this.items() ?? [];
+      if (this.visible()) {
+        untracked(() => this.requestPreviewsInView(items));
+      }
+    });
 
     interval(CLOCK_TICK_MS)
       .pipe(takeUntilDestroyed())
@@ -228,9 +285,21 @@ export class MyWishesPage {
     return hasEmote(item.wish);
   }
 
-  /** The alias, else the emote name; an open wish without an emote by what the viewer typed (K6). */
+  /**
+   * The alias, else the emote name, else (an open link wish) the preview's default name; an open wish
+   * without an emote by what the viewer typed (K6).
+   */
   protected title(item: WishOverviewItem): string {
-    return wishTitle(item.wish);
+    const wish = item.wish;
+    return wishTitle(
+      wish,
+      wish.status === 'pending' && hasEmote(wish) ? this.preview.nameOf(wish.sevenTvEmoteId) : null,
+    );
+  }
+
+  /** A read of this session proved the emote still: the picture may be its plain rendition (K3). */
+  protected isKnownStill(item: WishOverviewItem): boolean {
+    return hasEmote(item.wish) && this.lookup.isKnownStill(item.wish.sevenTvEmoteId);
   }
 
   protected statusKey(item: WishOverviewItem): string {
@@ -251,5 +320,35 @@ export class MyWishesPage {
 
   protected remaining(item: WishOverviewItem): TextPart | null {
     return wishRemainingPart(item.wish, this.now());
+  }
+
+  private onRowSeen(key: string, visible: boolean): void {
+    if (visible) {
+      this.rowsInView.add(key);
+    } else {
+      this.rowsInView.delete(key);
+    }
+    const item = this.items()?.find((shown) => this.trackKey(shown) === key);
+    if (item === undefined || !needsEmotePreview(item.wish)) {
+      return;
+    }
+    if (visible) {
+      this.preview.request(item.wish.sevenTvEmoteId);
+    } else {
+      this.preview.withdraw(item.wish.sevenTvEmoteId);
+    }
+  }
+
+  /** The rows in view ask again, with the wish as the reload brought it; a row no longer listed is forgotten. */
+  private requestPreviewsInView(items: readonly WishOverviewItem[]): void {
+    const shown = new Map(items.map((item) => [this.trackKey(item), item]));
+    for (const key of [...this.rowsInView]) {
+      const item = shown.get(key);
+      if (item === undefined) {
+        this.rowsInView.delete(key);
+      } else if (needsEmotePreview(item.wish)) {
+        this.preview.request(item.wish.sevenTvEmoteId);
+      }
+    }
   }
 }

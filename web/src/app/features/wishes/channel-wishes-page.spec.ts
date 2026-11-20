@@ -20,6 +20,7 @@ import { SevenTvEmoteLookup } from '../../core/seven-tv/seven-tv-emote-lookup';
 import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import { WishAddRequest, WishAddService, WishAddState } from '../../core/wishes/wish-add.service';
+import { WishEmotePreviewService } from '../../core/wishes/wish-emote-preview.service';
 import {
   WishRemovalEnd,
   WishRemovalState,
@@ -1669,6 +1670,123 @@ describe('ChannelWishesPage', () => {
       buttonIn(section(fixture, 'running'), de.wishes.actions.unlink).click();
       close(dialogs[1], true);
       expect(actions).toEqual([expect.objectContaining({ name: 'unlink', id: 4 })]);
+    });
+  });
+
+  describe('preview of the open rows in view (plan 2.10, T19)', () => {
+    let asked: string[];
+
+    /** An open wish captured from a 7TV link: the emote is known, name and picture are not. */
+    function linked(id: number, emote: string, overrides: Partial<Wish> = {}): Wish {
+      return wish(id, {
+        status: 'pending',
+        source: 'irc',
+        linkOrigin: null,
+        sevenTvEmoteId: emote,
+        emoteName: '',
+        alias: '',
+        imageUrl: null,
+        approvedAtUtc: null,
+        startsAtUtc: null,
+        startsAtAuthoritative: false,
+        expiresAtUtc: null,
+        slotId: null,
+        slotAddedAtUtc: null,
+        requestText: `https://7tv.app/emotes/${emote}`,
+        requestedName: null,
+        matchKind: 'link',
+        ...overrides,
+      });
+    }
+
+    /** The row of this wish reports whether it is in view, as its IntersectionObserver would. */
+    function showRow(
+      fixture: ComponentFixture<ChannelWishesPage>,
+      id: number,
+      visible: boolean,
+    ): void {
+      const row = fixture.nativeElement.querySelector(`[data-wish-id="${id}"]`) as Element;
+      FakeIntersectionObserver.instances
+        .filter((observer) => [...observer.targets].some((target) => row.contains(target)))
+        .forEach((observer) => observer.show(visible));
+      fixture.detectChanges();
+    }
+
+    function liveReload(fixture: ComponentFixture<ChannelWishesPage>, open: Wish[]): void {
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      settle(fixture, open);
+    }
+
+    beforeEach(() => {
+      FakeIntersectionObserver.instances = [];
+      vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver);
+      asked = [];
+      vi.spyOn(TestBed.inject(WishEmotePreviewService), 'request').mockImplementation((id) => {
+        asked.push(id);
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('asks for a live-added row once it is in view, and again for it after every reload', () => {
+      const fixture = create();
+      settle(fixture);
+      liveReload(fixture, [linked(1, 'e1')]);
+      expect(asked).toEqual([]);
+
+      showRow(fixture, 1, true);
+      expect(asked).toEqual(['e1']);
+
+      liveReload(fixture, [linked(1, 'e1'), linked(2, 'e2')]);
+      // Row 2 has not reported "in view" yet: only row 1 is asked again.
+      expect(asked).toEqual(['e1', 'e1']);
+    });
+
+    it('asks for a row in view whose wish needed no read before, once a reload says it does', () => {
+      const fixture = create();
+      settle(fixture, [
+        linked(1, 'e1', { imageUrl: 'https://cdn.example/e1.webp', alias: 'dino' }),
+      ]);
+      showRow(fixture, 1, true);
+      expect(asked).toEqual([]);
+
+      liveReload(fixture, [linked(1, 'e1')]);
+      expect(asked).toEqual(['e1']);
+    });
+
+    it('does not ask again for a row that left the view, or whose wish is no longer open', () => {
+      const fixture = create();
+      settle(fixture, [linked(1, 'e1'), linked(2, 'e2')]);
+      showRow(fixture, 1, true);
+      showRow(fixture, 2, true);
+      showRow(fixture, 2, false);
+      asked = [];
+
+      liveReload(fixture, [linked(1, 'e1', { status: 'approved' }), linked(2, 'e2')]);
+      expect(asked).toEqual([]);
+
+      // The wish open again: its row reports anew, it is not remembered from before.
+      liveReload(fixture, [linked(1, 'e1'), linked(2, 'e2')]);
+      expect(asked).toEqual([]);
+    });
+
+    it('asks again when the window comes back, and not while it is hidden', () => {
+      const fixture = create();
+      settle(fixture, [linked(1, 'e1')]);
+      showRow(fixture, 1, true);
+      asked = [];
+
+      setVisibility('hidden');
+      fixture.detectChanges();
+      liveReload(fixture, [linked(1, 'e1')]);
+      expect(asked).toEqual([]);
+
+      setVisibility('visible');
+      fixture.detectChanges();
+      expect(asked).toEqual(['e1']);
     });
   });
 });
