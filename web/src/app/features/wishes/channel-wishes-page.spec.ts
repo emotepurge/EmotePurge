@@ -1628,6 +1628,40 @@ describe('ChannelWishesPage', () => {
       expect(closedByPage).toEqual([0]);
     });
 
+    it('hands focus to "Neu laden" when a 403 reload takes the approve trigger away', async () => {
+      const fixture = create();
+      settle(fixture, [pending(1)]);
+      const trigger = buttonIn(section(fixture, 'open'), de.wishes.actions.approve);
+      // The dialog has given focus back to the button that opened it, as CDK does on close.
+      trigger.focus();
+      trigger.click();
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('open').answer.error(new HttpErrorResponse({ status: 403 }));
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      expect(document.activeElement).toBe(
+        buttonIn(section(fixture, 'open'), de.wishes.page.reload),
+      );
+    });
+
+    it('leaves focus where it is when the 403 reload removed nothing it was on', async () => {
+      const fixture = create();
+      settle(fixture, [pending(1)], [wish(2)]);
+      const elsewhere = section(fixture, 'running').querySelector('button') as HTMLButtonElement;
+      elsewhere.focus();
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('open').answer.error(new HttpErrorResponse({ status: 403 }));
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      expect(document.activeElement).toBe(elsewhere);
+    });
+
     it('says an approve booked as an extension with the new expiry and the way to that wish', () => {
       const fixture = create();
       settle(fixture, [pending(1, { statusReason: 'already_running', sevenTvEmoteId: 'e1' })]);

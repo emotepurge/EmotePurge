@@ -756,6 +756,31 @@ describe('WishRewardsSection', () => {
       expect(button(T.pause)).toBeDefined();
     });
 
+    it('hands focus to the refusal when the control that had it goes with the block', async () => {
+      await create();
+      button(T.pause)!.focus();
+      expect(document.activeElement).toBe(button(T.pause));
+
+      getRewards.mockReturnValue(throwError(() => apiError(403)));
+      await nudge();
+      await fixture.whenStable();
+
+      expect(document.activeElement?.textContent?.trim()).toBe(T.forbidden);
+    });
+
+    it('hands focus to the refusal after closing the confirm dialog it opened', async () => {
+      getRewards.mockReturnValue(of(rewardsRead({ learning: session({ candidate: CANDIDATE }) })));
+      await create();
+      button(T.learning.confirm)!.focus();
+      button(T.learning.confirm)!.click();
+
+      getRewards.mockReturnValue(throwError(() => apiError(403)));
+      await nudge();
+      await fixture.whenStable();
+
+      expect(document.activeElement?.textContent?.trim()).toBe(T.forbidden);
+    });
+
     it('closes the confirm dialog with its candidate when a read is refused (403)', async () => {
       getRewards.mockReturnValue(of(rewardsRead({ learning: session({ candidate: CANDIDATE }) })));
       await create();

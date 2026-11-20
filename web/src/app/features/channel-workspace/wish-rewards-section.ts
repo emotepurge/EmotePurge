@@ -2,14 +2,18 @@ import { Dialog, DialogRef } from '@angular/cdk/dialog';
 import { NgTemplateOutlet } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import {
+  afterNextRender,
   Component,
   computed,
   DestroyRef,
   effect,
+  ElementRef,
   inject,
+  Injector,
   input,
   signal,
   untracked,
+  viewChild,
 } from '@angular/core';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { Subscription } from 'rxjs';
@@ -102,7 +106,10 @@ interface Feedback {
           >
             {{ 'wishes.settings.rewards.title' | transloco }}
           </h4>
-          <p class="text-sm text-fg-muted">{{ 'wishes.settings.rewards.forbidden' | transloco }}</p>
+          <!-- tabindex="-1": takes focus when a refusal removed the control that had it. -->
+          <p #forbiddenNotice tabindex="-1" class="text-sm text-fg-muted">
+            {{ 'wishes.settings.rewards.forbidden' | transloco }}
+          </p>
         </section>
       }
       @case ('failed') {
@@ -445,7 +452,10 @@ export class WishRewardsSection {
   private readonly transloco = inject(TranslocoService);
   private readonly languageService = inject(LanguageService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly injector = inject(Injector);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly visible = pageVisible();
+  private readonly forbiddenNotice = viewChild<ElementRef<HTMLElement>>('forbiddenNotice');
 
   /** The last rewards answer; `null` until the first one. */
   protected readonly read = signal<WishRewardsRead | null>(null);
@@ -953,12 +963,28 @@ export class WishRewardsSection {
   }
 
   private showForbidden(): void {
+    // The dialog hands focus back to "Bestätigen", and the block's controls go with the snapshot.
+    const focusAtRisk =
+      this.confirmDialog !== null || this.host.nativeElement.contains(document.activeElement);
     this.read.set(null);
     this.loadState.set('forbidden');
     this.noticeKey.set(null);
     this.clearFeedbackTimer();
     this.feedback.set(null);
     this.confirmDialog?.close(undefined);
+    if (focusAtRisk && !this.destroyRef.destroyed) {
+      // Once rendered, focus left on nothing goes to the sentence that took the block's place
+      // (web/.claude/CLAUDE.md, focus management); focus that landed elsewhere stays.
+      afterNextRender(
+        () => {
+          const active = document.activeElement;
+          if (active === null || active === document.body) {
+            this.forbiddenNotice()?.nativeElement.focus();
+          }
+        },
+        { injector: this.injector },
+      );
+    }
   }
 
   private showFeedback(feedback: Feedback): void {

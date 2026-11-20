@@ -426,7 +426,13 @@ type PinnedState =
       @if (section.loadError(); as key) {
         <app-notice-banner variant="error">
           {{ key | transloco }}
-          <button notice-action type="button" appButton="outline" (click)="retryLoad(section)">
+          <button
+            notice-action
+            type="button"
+            appButton="outline"
+            [attr.data-retry-view]="section.view"
+            (click)="retryLoad(section)"
+          >
             {{ 'wishes.page.reload' | transloco }}
           </button>
         </app-notice-banner>
@@ -1345,8 +1351,13 @@ export class ChannelWishesPage {
         if (error instanceof HttpErrorResponse && error.status === 403) {
           // No longer allowed to see this list: what it showed (the redeemers' texts and logins
           // among it) goes with it, and so does an approve dialog holding one of them.
+          const focusAtRisk =
+            this.approveDialog !== null || this.host.nativeElement.contains(document.activeElement);
           section.result.set(null);
           this.approveDialog?.close(undefined);
+          if (focusAtRisk) {
+            this.focusRetryWhenLost(section.view);
+          }
         }
       },
     });
@@ -1417,6 +1428,27 @@ export class ChannelWishesPage {
         );
       },
     });
+  }
+
+  /**
+   * The dialog hands focus back to its trigger and the cleared list takes that (or a focused row
+   * control) with it: once rendered, focus left on nothing goes to the list's "Neu laden" beside the
+   * refusal (web/.claude/CLAUDE.md, focus management). Focus that landed elsewhere stays.
+   */
+  private focusRetryWhenLost(view: WishListView): void {
+    if (this.destroyed) {
+      return;
+    }
+    afterNextRender(
+      () => {
+        const active = document.activeElement;
+        if (active !== null && active !== document.body) {
+          return;
+        }
+        this.host.nativeElement.querySelector<HTMLElement>(`[data-retry-view="${view}"]`)?.focus();
+      },
+      { injector: this.injector },
+    );
   }
 
   private focusOnce(id: number): void {
