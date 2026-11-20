@@ -93,7 +93,7 @@ bleiben als Nebenwege für Korrektur und Nachtrag.
 | E4 | **Bewertungsfenster des Schutzes:** Fensterbeginn = spätester von Start des Wunsches und (Bewertungszeitpunkt minus 7 Tage). Bewertungszeitpunkt ist der Lauf, der die Fälligkeit feststellt. Mittel je Tag = Summe der Nutzung über alle Slots desselben Emotes im Kanal an den UTC-Tagen vom Tag des Fensterbeginns bis zum Bewertungstag, geteilt durch die Fensterlänge in Tagen (Bruchteile erlaubt). **Ist das Fenster kürzer als 24 Stunden, gilt das wie eine Zähllücke.** | Betreiber-Korrektur: min(7 Tage, tatsächliche Zeit im Set), eine Regel ohne eigene Logik für kurze Laufzeiten. Bei 1 Tag Laufzeit ist das Fenster bei Fälligkeit genau 24 Stunden und damit gültig. |
 | E5 | **Zähllücke** (Entscheidung 2): `TrackedSince(kanal)` liegt nach dem Fensterbeginn, **oder** `DeactivatedAtUtc` ist gesetzt, **oder** `IsBotActive` ist falsch, **oder** E4-Fenster unter 24 Stunden. Die Lückenregel greift nur bei eingeschaltetem Schutz; ohne Schutz spielt die Nutzung für das Entfernen keine Rolle. | Eine Deaktivierung mit Reaktivierung im Fenster setzt `TrackingResumedAt` und fällt damit unter die erste Bedingung (`Channel.cs:23`). |
 | E6 | **Ablauf-Lauf alle 15 Minuten** (`Wishes:ExpiryIntervalMinutes`, 1 bis 1440), eigener Worker, erster Lauf 1 Minute nach Start, wartet nicht auf die Boot-Recovery. | Das Beobachtungsziel „binnen 24 h“ und Laufzeiten ab 1 Tag vertragen keinen Tagestakt. Der Lauf berührt keinen Kanal-Purge und braucht die Sperre der Retention nicht. |
-| E7 | **Bot-Token asymmetrisch versiegelt:** Die Api hält nur einen öffentlichen Schlüssel und kann damit setzen, aber nicht lesen. Der private Schlüssel liegt nur am Worker. Details in Abschnitt 7. | Erfüllt „nie zurücklesen“ kryptografisch statt per Disziplin. Vom Betreiber angenommen (W2). |
+| E7 | **Bot-Token asymmetrisch versiegelt:** Die Api hält nur einen öffentlichen Schlüssel und kann damit setzen, aber nicht lesen. Der private Schlüssel liegt nur am Worker. Details in Abschnitt 7. | Erfüllt „nie zurücklesen“ kryptografisch statt per Disziplin. Vom Betreiber angenommen (W2). Nachtrag 18.2: Die Twitch-Sitzung des Bot-Kontos liegt nie am Server, nur am Erneuerer-Host. |
 | E8 | **Pilot-Liste nur für den Bot-Modus, fail-closed beim Aktivieren und im Betrieb:** `Wishes:PilotChannelIds` (Twitch-Kanal-IDs, kommagetrennt, oder `*` für alle). In einem gelisteten Kanal darf jeder nach E24 Berechtigte den Bot-Modus aktivieren, in jedem anderen nur ein globaler Admin. **Leer heißt: nirgends, außer durch globale Admins.** Der Bot schreibt nur in Kanälen, die gelistet sind oder deren Aktivierung von einem Konto stammt, das zum Zeitpunkt des Schreibens globaler Admin ist. Fällt ein Kanal aus der Liste, schreibt der Bot dort ab dem nächsten Lauf nicht mehr; der Kanal läuft im manuellen Ablauf wie beim Notaus, die Aktivierung bleibt gespeichert, und der Bot nimmt ohne neuen Editor-Eintrag wieder auf, sobald der Kanal wieder gelistet ist. Der manuelle Modus hängt allein an `Wishes:Enabled`. | Entscheide W7 und X2. Der Bot-Modus ist der Teil mit serverseitigem Schreibzugriff; eine vergessene oder leere Variable darf ihn weder öffnen noch offen halten. Globale Admins bleiben ausgenommen, damit sich der Betrieb ohne Stack-Update prüfen lässt; `*` ist die bewusste, ausgeschriebene Öffnung. |
 | E9 | **Abgleich zustandsbasiert statt ereignisbasiert:** Nach jedem erfolgreichen Vollsync, Delta und manuellen Slot-Schreiben läuft `IWishReconcileService.ReconcileChannelAsync(channelId)`, der Wünsche gegen den aktuellen Slot-Bestand vergleicht. Idempotent; der Ablauf-Lauf ruft ihn als Sicherheitsnetz für jeden Kanal mit laufenden Wünschen. | Es gibt keinen Hook für „Slot angelegt/archiviert“ (Abschnitt 2). Ein Vergleich gegen den Ist-Stand heilt verpasste Ereignisse von selbst. |
 | E10 | **Übernahmefenster 6 Stunden** nach `extern entfernt` (Entwurf: „Größenordnung Stunden“). | Deckt Entfernen und Wieder-Hinzufügen über mehrere Sync-Läufe (R3-3), ohne ein späteres, unabhängiges Hinzufügen zu übernehmen. |
@@ -337,6 +337,8 @@ Zustand `pending` und den Treffer über den Namen.
 | `KillSwitch` | bool | Admin-Notaus |
 | `PausedUntilUtc` | timestamptz, null | Abkühlzeit nach 429, übersteht einen Worker-Neustart |
 
+Nachtrag 2026-11-20: weitere Spalten für Twitch-Sitzung und Erneuerung in 18.2.
+
 ### 6.5 Retention und Löschpfade
 
 | Regel | Konstante in `RetentionPolicy` | Wirkung |
@@ -396,7 +398,8 @@ soll einen später archivierten Slot überleben.
 ## 7. Vertrauensgrenze und Bot-Token (D8, Entscheidung 1)
 
 Geänderte Vertrauensgrenze, ausdrücklich benannt: Auf dem Server liegt genau ein 7TV-Token, das des
-eigenen Bot-Kontos, nie das eines Nutzers. Ein gestohlenes laufendes Token kann bis zum Notaus in
+eigenen Bot-Kontos, nie das eines Nutzers; die Twitch-Sitzung des Bot-Kontos liegt seit dem Nachtrag
+nicht am Server, sondern am Erneuerer-Host (18.3). Ein gestohlenes laufendes Token kann bis zum Notaus in
 allen Kanälen schreiben, in denen das Bot-Konto Editor ist, an Freigaben und Audit-Log vorbei. In
 Kauf genommen mit diesen Schutzmaßnahmen:
 
@@ -426,10 +429,13 @@ Kauf genommen mit diesen Schutzmaßnahmen:
    jedem Schreiben liest; wirkt ohne Stack-Update. (b) „Sign Out Everywhere“ in den
    7TV-Einstellungen des Bot-Kontos entwertet das Token bei 7TV. Dazu als harter Schalter
    `Wishes:BotMode:Enabled = false`. Bis geprüft ist, ob ein normaler Logout andere Sitzungen
-   beendet, gilt: mit dem Bot-Konto nirgends normal ausloggen.
-7. **Ablauf (F5):** Die Admin-Seite zeigt `exp`. Ab 7 Tagen vorher Hinweis auf der Seite und eine
-   Log-Warnung je Tag. Erneuert wird von Hand über die Admin-Seite, ohne Stack-Update. Eine
-   Automatik wie bei Fumobot ist Out of Scope.
+   beendet, gilt: mit dem Bot-Konto nirgends normal ausloggen. Mit der Erneuerung ist die
+   Reihenfolge aus 18.8 verbindlich: „Sign Out Everywhere“ allein beendet die Twitch-Sitzung nicht.
+7. **Ablauf (F5, geändert durch den Nachtrag 18):** Die Admin-Seite zeigt `exp`. Ab 21 Tagen vorher
+   (`Renewal:LeadDays`) erneuert der Erneuerer das JWT automatisch über einen Headless-Login mit der
+   Twitch-Sitzung des Bot-Kontos (18.4); Hinweis auf der Seite und Log-Warnung je Tag ab 7 Tagen
+   bleiben. Scheitert die Erneuerung, alarmiert `GET /api/health/wish-bot` über Uptime Kuma (18.7).
+   Die Handerneuerung über die Admin-Seite bleibt als Notweg, ohne Stack-Update.
 8. **Ausfall und Rückfall (R3-10, R3-11):** Token fehlt, ist `invalid` oder `expired`, Notaus aktiv,
    oder der Schalter ist aus: **alle** Bot-Kanäle laufen im manuellen Ablauf. Editor-Rechte in
    einem Kanal entzogen, oder der Kanal ist nicht mehr durch die Pilot-Liste gedeckt (E8):
@@ -548,9 +554,19 @@ Freigabe 1 (manueller Modus mit Erfassung):
 
 Freigabe 2 (Bot-Modus):
 
-7. K4 und K5 gemergt, Zweitmeinung je Branch; Migration `AddWishBot` auf Prod.
-8. `Wishes:BotMode:Enabled` an, `Wishes:PilotChannelIds` auf die Bot-Pilot-Kanäle gesetzt.
-9. Bot-Modus in mindestens einem Kanal aktiv; die Live-Proben AK86 bis AK91 und AK108 dokumentiert.
+7. K4 (mit dem Erneuerer, PR 3 aus Plan-487) und K5 gemergt, Zweitmeinung je Branch; Migration
+   `AddWishBot` auf Prod. **Stufe 0 (AK120), noch ohne Pilot-Kanal:** alle Images, Bot-Modus und
+   Erneuerung an, `Wishes:PilotChannelIds` leer und kein Kanal aktiviert (so schreibt der Bot nirgends),
+   Token gesetzt und `valid`, Maschinengeheimnis gesetzt, Erneuerer am Host läuft, „Jetzt erneuern“
+   tauscht über die Maschinenroute; Kuma-Monitor auf `GET /api/health/wish-bot` eingerichtet, eine
+   Testmeldung (ein eindeutiger Fehlschlag mit einer Kopie der Cookie-Datei mit verfälschtem
+   `auth-token` über den Eingang, danach Original und „Jetzt erneuern“) und die Entwarnung sind beim Betreiber
+   angekommen (18.7, keine Vertretung); bei angehaltenem Kuma hat der unabhängige Heartbeat den Betreiber per E-Mail
+   erreicht, samt Entwarnung; nach dem Tausch hat der Worker binnen 15 Minuten genau die neue `CredentialVersion`
+   geprüft (AK120). Ein Tausch an der Api allein öffnet das Tor nicht.
+8. Erst danach `Wishes:PilotChannelIds` auf die Bot-Pilot-Kanäle gesetzt.
+9. Bot-Modus in mindestens einem Kanal aktiv; die Live-Proben AK86 bis AK91, AK108 und AK116
+   dokumentiert.
 10. Ein Wunsch mit 7 Tagen Laufzeit hat den Bot-Weg live durchlaufen: Erfassung, Freigabe,
     Bot-Hinzufügen, Bestätigung, Probezeit, Bot-Entfernung oder Vorlage.
 
@@ -612,6 +628,12 @@ Schalter (alle Default `false` bzw. leer, also aus für andere Betreiber):
 | `Wishes:BotMode:TokenPublicKey` | nur am Dienst `api` | E7 |
 | `Wishes:BotMode:TokenPrivateKey` | nur am Dienst `worker` | E7 |
 | `Wishes:BotMode:WriteDelaySeconds` | keine | Abstand zwischen zwei Schreibzugriffen, Default 2 |
+| `Wishes:BotMode:Renewal:Enabled` | `WISHES_BOT_RENEWAL_ENABLED`, nur `api` | 18.5: Maschinenroute, Alarmzeilen zu Erneuerung, Sitzung und Lebenszeichen |
+| `Wishes:BotMode:Renewal:LeadDays` | keine | 18.4, Default 21, 7 bis 28 |
+| `Wishes:BotMode:Renewal:SilenceAlertHours` | keine | 18.7, Default 26, 1 bis 168 |
+
+Der Erneuerer gehört nicht in die Compose-Dateien des Servers; seine Konfiguration (Api-Adresse,
+Maschinengeheimnis, Pfad der Cookie-Datei) beschreibt `docs/Operations.md` generisch (18.2).
 
 Reihenfolge je Auslieferung: Migration von Hand über den Tunnel (`list`, `update`, `list`), dann
 Images, dann Schalter. Additive Migrationen stören das laufende alte Image nicht. Den Deploy-Hinweis
@@ -621,8 +643,13 @@ gegen **alle** ausstehenden Migrationen prüfen, nicht nur gegen die eigene.
 Bot-Schalter folgt erst mit Freigabe 2.
 
 Rollback: Schalter aus genügt in jedem Fall; die Tabellen bleiben liegen und stören kein älteres
-Image. Bot-Notaus in dieser Reihenfolge: Admin-Schalter, dann „Sign Out Everywhere“, dann
-`WISHES_BOT_MODE_ENABLED=false`, dann Token löschen. Nach einem Notaus gilt der Rückfall aus
+Image (präzisiert in Plan-487, Abschnitt 6: nach einer Aktivierung braucht ein Image-Downgrade die
+Prüfabfrage). Bot-Notaus in der Reihenfolge aus 18.8: Admin-Schalter, Maschinengeheimnis widerrufen,
+Erneuerer am Host stoppen (wenn erreichbar), Twitch-Sitzungen des Bot-Kontos beenden, „Sign Out Everywhere“, nach
+15 Minuten ein zweites, Token löschen; die Löschrouten bleiben auch bei ausgeschalteten Schaltern erreichbar. Nach einem
+Restore gilt der SQL-Schritt aus 18.8 vor dem Start von Api und Worker. Rückweg nur für den
+Erneuerer: Container am Host stoppen, Geheimnis widerrufen, danach darf `WISHES_BOT_RENEWAL_ENABLED`
+aus; dann gilt die Handerneuerung. Nach einem Notaus gilt der Rückfall aus
 Abschnitt 7 Punkt 8; nichts geht verloren, alles Offene steht als Handlungsbedarf in der Übersicht.
 
 ## 15. Out of Scope
@@ -642,7 +669,10 @@ Abschnitt 7 Punkt 8; nichts geht verloren, alles Offene steht als Handlungsbedar
 - **EventSub** mit Streamer-Login und `channel.chat.message` als Erfassungsquelle.
 - Chat-Antworten oder Whisper des Bots, Discord-Webhook, E-Mail. Erinnerung nur in der Oberfläche.
 - „Einer rein, einer raus“ (A1/A15), Bestenliste der Wünsche.
-- Automatische Erneuerung des Bot-JWT (F5, zweiter Teil).
+- ~~Automatische Erneuerung des Bot-JWT (F5, zweiter Teil).~~ Aufgehoben am 2026-11-20 durch den
+  Betreiber, s. Abschnitt 18.
+- Automatischer Twitch-Login des Bot-Kontos mit Passwort oder 2FA: Am Server liegt nur die
+  Sitzung, nie ein Passwort (18.3).
 - Ein zweiter Alias desselben Emotes als eigener Wunsch (E13).
 - Auflösen des Twitch-Logins beim Handeintrag über Helix.
 - Wiederverwendung der Import-Kollisionslogik (#368) für Wünsche: Ein Wunsch ist ein einzelner
@@ -666,6 +696,10 @@ Abschnitt 7 Punkt 8; nichts geht verloren, alles Offene steht als Handlungsbedar
 | RR12 | Ein Treffer über den Namen kann ein anderes Emote gleichen Namens treffen, das zufällig im Fenster hinzugefügt wurde | nur eindeutige Treffer; Karte zeigt Bild und Einlösetext; „Zuordnung lösen“ in K6 |
 | RR13 | Der eingelöste Text ist Freitext eines Zuschauers und kann Personenbezug oder Anstößiges enthalten | nur für Verwalter sichtbar, nie im Audit-Log, Löschung nach 6.5 |
 | RR14 | K3, hingenommene Lücke: Zwischen der letzten Beobachtung eines Eintrags (höchstens 5 s alt) und 7TVs unbedingtem `removeEmote` liegen bis zu 5 s plus die Antwortzeit der Mutation; ein Set-Wechsel direkt nach der Set-Prüfung bleibt unsichtbar. Dazu: `complete-removal` sieht einen Ersatz, den noch kein Sync geschrieben hat, nicht (R15); der Set-Wechsel steht vor der Inventursperre im Protokoll (R19); ein Read, der den Eintrag weg findet, bucht ihn als Entfernen des Verwalters auch dann, wenn ein anderer Editor ihn entfernt hat (R20, `evidence = absent` markiert es) | clientseitig nicht schließbar; jede Abweichung ist ein Überspringen ohne Anfrage; `complete-removal` lehnt mit 409 ab, wenn ein Ersatz sichtbar ist |
+| RR15 | Die Twitch-Sitzung des Bot-Kontos am Erneuerer-Host erlaubt, das Konto zu übernehmen und beliebig viele 7TV-JWTs auszustellen (18.3) | nie am Server, Isolation 18.6, Notaus 18.8, Bot-Konto ohne weiteren Wert |
+| RR16 | Die Erneuerung ist für Twitch und 7TV inoffiziell; Login-Flow, Token-Ablage, Captcha oder eine Sitzungsbindung können sie jederzeit brechen | Fehlerklassen nur über positive Merkmale, Alarm 18.7, Rückfall und Handerneuerung; G0b am Erneuerer-Host vor T1, Stufe 0 vor dem ersten Pilot-Kanal |
+| RR17 | Mit dem Maschinengeheimnis lassen sich Lebenszeichen fälschen (Alarm bleibt aus) und ein formgültiges, falsches JWT einspielen (globaler Rückfall bis Hand-`PUT`) | Geheimnis nur am Erneuerer-Host, widerrufbar; Totmann und JWT-Ablauf hängen nicht am Lebenszeichen; hingenommen ([B] N2) |
+| RR18 | Ohne erreichbaren Betreiber wird keine Störung der Erneuerung behoben (keine Vertretung, [B] N1) | 21 Tage Vorlauf als Zeit zum Beheben; danach sicherer Rückfall auf den manuellen Ablauf (18.1) |
 
 ## 17. Entschieden (Betreiber, 2026-11-17)
 
@@ -733,6 +767,428 @@ Zuordnung, Zuordnung ohne Toleranz, Idempotenz des Ablauf-Laufs, DTO-Felder, Pil
 
 Dazu: Die Live-Probe zur Einlösung ohne Mod-Status ist bestanden (K6, erstes Akzeptanzkriterium),
 und der Link-Parser nimmt beide 7TV-ID-Formate an.
+
+## 18. Nachtrag 2026-11-20: automatische Token-Erneuerung
+
+Stand 2026-11-20: Betreiberentscheid, zwei Proben vom selben Tag, drei unabhängige Reviews (Fable, Sol
+`gpt-6.2-sol`, Astra `gpt-6.2-astra`) und die Betreiberentscheidungen danach. Der Nachtrag hebt die Zeile
+„Automatische Erneuerung des Bot-JWT“ in Abschnitt 15 auf und ändert Abschnitt 7 Punkt 7, 6.4, 12 und 14;
+die Stellen verweisen hierher. Kennzeichnung wie in Abschnitt 4: **[E]** Festlegung des Nachtrags (der
+Betreiber kann widersprechen), **[B]** entschieden, **[N*n*]** Betreiberfrage (18.12, beide entschieden). Umgesetzt in
+Plan-487, Revision 5 (Endstand des Nachtrags): dazu die letzte Sol-Runde über Revision 4 (drei P1, sechs P2, alle
+übernommen) und die Betreiberentscheidungen vom 2026-11-20 abends (Helfer für die Cookie-Datei, keine Vertretung, N2).
+
+### 18.1 Ausgangslage
+
+- **[B] Betreiber:** Handerneuerung alle 30 Tage ist ausgeschlossen. Kanäle verlassen sich auf den
+  Bot-Modus; der Betrieb darf nicht davon abhängen, dass der Betreiber erreichbar ist (Krankheit,
+  Urlaub).
+- **[B] Grenze, ehrlich benannt (2026-11-20, N1):** Die Automatik nimmt dem Betreiber das **Erneuern** ab, nicht das
+  **Beheben von Störungen**. Es gibt **keine Vertretung**: Klemmt etwas (Login verlangt, Captcha, Erneuerer-Host aus) und ist
+  der Betreiber nicht erreichbar, entsteht kein neues Token, und der Bot fällt beim Ablauf des JWT sicher in den manuellen
+  Ablauf (Abschnitt 7 Punkt 8). Deshalb wird ab 21 Tagen vor Ablauf erneuert (18.4): Der Vorlauf ist die Zeit, in der der
+  Betreiber eine Störung beheben kann, bevor ein Kanal etwas merkt.
+- **7TV kennt keine Verlängerung** (Quellcode, bereinigter Spiegel von `SevenTV/SevenTV`): jede
+  Sitzung gilt fest 30 Tage (`login_finish`, v3 `handle_callback`), `parse_session` schiebt nur
+  `last_used_at`, es gibt keine Refresh-Route, `userSessions.create` verlangt Staff-Recht. Ein
+  v3-Login widerruft die alte Sitzung, ein v4-Login laut Live-Messung (P2) nicht. **Eine Automatik
+  geht also nur über einen neuen v4-Login.**
+- **Probe 1 (reines HTTP) verworfen:** `GET /v4/auth/login?platform=twitch&return_to=/` → 303
+  `id.twitch.tv/oauth2/authorize` → 302 `auth.twitch.tv/authorize` → HTTP 200 mit einer JS-Seite;
+  ohne Browser entsteht kein `code`.
+- **Probe 2 (Headless-Chromium, Devbox) bestanden:** frischer, nicht persistenter Kontext, darin die 15
+  Cookies von `twitch.tv` des Bot-Kontos → `7tv.app/` → Login-URL → `7tv.app/login/callback` → die
+  Website ruft `/v4/auth/login/finish` → `localStorage["7tv-token"]` hält ein JWT (225 Zeichen, `exp =
+  iat + 30 Tage`, `sub` = 7TV-ID des Bots, `users.me` = Bot-Konto). Keine Zustimmungsseite, kein 2FA,
+  wenige Sekunden. Ohne die Sperren des späteren Dienstes (Host-Liste, Bild-/Schrift-Abbruch, Sandbox).
+- **Probe 3 (Vorlauf G0b, NAS des Betreibers, 2026-11-20 gegen 21:15 UTC) bestanden:** Wegwerf-Container
+  `mcr.microsoft.com/playwright:v1.63.0-noble` im eigenen Bridge-Netz (privates Netz und NAS gesperrt, Internet erreichbar,
+  geprüft), DNS 1.1.1.1, 1 GB, 1 CPU, `cap_drop: ALL`, `no-new-privileges`, `read_only`, `tmpfs` für `/tmp`, Nicht-Root,
+  Host-Liste im Browser, Bild-/Schrift-/Medien-Abbruch, die volle Menge der 15 Cookies. Ergebnis: neues JWT von der
+  Heim-IP in 5,6 s gesamt, 30 Tage gültig, `sub` = Bot-ID, `users.me` = Bot-Konto; abgebrochen wurde nur
+  `www.googletagmanager.com` (nicht nötig). **Nicht belegt** und deshalb weiter Teil von G0b: (1) die Chromium-Sandbox lief
+  nicht (Playwright-Default `chromiumSandbox = false`); (2) die Speicherzahl ist unbrauchbar: `memory.peak` der cgroup stand
+  am Limit (1024 MiB), weil sie Seitencache und das `tmpfs` (Paketinstallation nach `/tmp`) mitzählt, bei 171 MiB RSS des
+  Treibers; kein OOM-Kill; (3) mit den beiden Läufen auf der Devbox bestehen seit dem 2026-11-20 drei parallele 7TV-Sitzungen
+  des Bots, deren fortdauernde Gültigkeit (Überlappung) noch zu prüfen ist; (4) die kleinste Cookie-Menge ist offen.
+- **Vorbedingung [E]:** Die App-Freigabe für 7TV besteht bei Twitch, bis sie unter Einstellungen →
+  Verbindungen widerrufen wird. Fehlt sie, landet der Lauf auf der Zustimmungsseite; der Erneuerer
+  erkennt das an positiven Merkmalen der Seite, meldet es und klickt **nie**.
+- **Twitch-Sitzung:** `auth-token` lief am 2026-11-20 gegen 20:40 UTC bis 2027-05-19T20:36:09Z, also
+  rund 180 Tage. **[E] Ausgelegt wird auf den schlechtesten Fall:** die Sitzung endet fest rund 180 Tage
+  nach dem letzten interaktiven Login; Gleiten ist eine Hypothese für G0b und AK116. Endet die Sitzung,
+  braucht es einen Login des Betreibers mit Passwort und 2FA über den Helfer (18.2).
+
+**Folge für den Betreiber:** im schlechtesten Fall etwa alle 150 Tage ein Login, mit 30 Tagen Vorwarnung
+über die Alarmkette (18.7). Gleitet die Sitzung nachweislich, entfällt auch das.
+
+### 18.2 Ort und Ablage [B]
+
+- **[B] Der Erneuerer läuft nicht auf dem Internet-Server.** Beim Betreiber läuft er auf dessen NAS im
+  Heimnetz. Im Repo ist er ein host-agnostisches Projekt mit eigenem GHCR-Image; `docs/Operations.md`
+  beschreibt ihn generisch und empfiehlt einen Host außerhalb des aus dem Internet erreichbaren Servers.
+  Die NAS-Einrichtung des Betreibers steht in `infra-docs`, nicht im Repo. Deploy und jeder Handgriff am
+  NAS sind Sache des Betreibers; keine Session verbindet sich dorthin.
+- **[B] Die Cookies des Bot-Kontos liegen nur am Erneuerer-Host:** eine Datei auf einem Volume (Rechte
+  600, Eigentümer der Dienstnutzer), vom Betreiber dort abgelegt; rotierte Cookies bleiben dort. Sie
+  erreichen nie den VPS, die Api, die Prod-Datenbank oder ein Backup. Die Prod-Datenbank hält wie bisher
+  nur das versiegelte 7TV-JWT (Abschnitt 7) und den geheimnisfreien Erneuerungszustand.
+- **Format [E, G0b]:** eine JSON-Liste in der Form von Playwrights `cookies()` (`name`, `value`,
+  `domain`, `path`, `expires`, `httpOnly`, `secure`, `sameSite`), nur mit den Namen, die G0b als
+  mindestens nötig bestimmt. Die Attribute bleiben, wie Twitch sie gesetzt hat; kein Umbau auf ein
+  Domain-Cookie für `.twitch.tv`. Formprüfung beim Start und vor
+  jedem Lauf: höchstens 16 KB, nur Domains unter `twitch.tv`, jeder Pflichtname genau einmal und nicht
+  leer, jeder Ablauf in der Zukunft; sonst kein Lauf, Sitzungszustand `malformed` (18.4).
+- **Gewinnung über einen Helfer [B] (2026-11-20, ersetzt die Profilkopie):** Chrome-Cookies einer Profilkopie sind
+  verschlüsselt und betriebssystemabhängig. Stattdessen startet ein eigener Modus des Erneuerer-Projekts (Form:
+  `capture-session --out <Datei>`) auf einem Rechner des Betreibers (Devbox oder Desktop) einen **sichtbaren** Browser mit
+  frischem, flüchtigem Profil. Der Betreiber meldet sich bei Twitch an (Passwort, 2FA) und bestätigt die 7TV-Verbindung auf
+  7tv.app; sobald dort das positive Merkmal des Erfolgs erscheint (18.4), schreibt der Helfer `cookies()` des Kontexts,
+  gefiltert auf die Pflichtnamen unter `twitch.tv`, mit allen Attributen und dem konservativen Ablauf als JSON-Datei
+  (Rechte 600, unter Windows nur der eigene Nutzer), verwirft das 7TV-JWT ungelesen und schließt den Browser. Er nutzt
+  dieselbe Formprüfung wie der Erneuerer (eine Implementierung in Core); scheitert sie, schreibt er nichts. Die Datei kommt
+  per `scp` in den **Eingang** am Host (nächster Punkt). Diese Sitzung gehört nur dem Erneuerer; kein Browser benutzt sie
+  danach. Das ersetzt die frühere Betriebsregel „Bot-Profil nicht mehr benutzen“.
+- **Eingang statt Überschreiben [E] (Sol über Revision 4):** Der Betreiber legt eine neue Datei nie über die aktive, sondern
+  als `incoming.json` neben sie. Einziger Schreiber der aktiven Datei ist der Erneuerer: Zu Beginn eines Takts, nie während
+  eines Laufs, übernimmt er eine formgültige Eingangsdatei, die seit mindestens einer Minute unverändert ist (atomar, dann
+  Eingang gelöscht; eine ungültige wird nach zehn Minuten zu `incoming.rejected` und gemeldet). Liegt beim Zurückschreiben nach
+  einem Lauf eine Eingangsdatei, wird nicht zurückgeschrieben: die frische Datei gewinnt.
+- **Konservativer Ablauf [E]:** gemeldet wird der früheste Ablauf der Pflicht-Cookies beim Ablegen.
+  Verkürzt oder löscht Twitch ein Pflicht-Cookie, gilt der neue Wert sofort; verlängert es, bleibt der
+  gemeldete Wert beim alten, bis ein Lauf **nach** dem alten Ablauf gelingt (dann ist Gleiten belegt). Der
+  Wert steht als Metadatum in derselben Datei.
+- **Neuer Login:** Nach Ablauf oder Notaus erzeugt der Helfer eine neue Sitzung und eine neue Datei; eine alte Datei wird
+  nicht wiederverwendet.
+- **Spalten an `WishBotCredentials`** (6.4, alle additiv, Zähler mit Default 0, sonst nullbar; kein
+  Geheimnis außer einem Hash): `IdentityVersion` (nur `PUT`/`DELETE /token` erhöhen sie),
+  `KillSwitchVersion` (bigint, jede Änderung des Notaus erhöht sie, monoton), `TokenKeyFingerprint`
+  (SHA-256 des öffentlichen Token-Schlüssels, geschrieben bei `PUT /token`), `RenewalRequestedAtUtc`,
+  `RenewalRunId` (uuid, offener Lauf), `RenewalRunStartedAtUtc`, `RenewalRunRequestedAtUtc`,
+  `RenewalRunCredentialVersion`, `RenewalRunKillSwitchVersion`, `LastRenewalSucceededAtUtc`,
+  `NextRenewalAttemptAtUtc`, `RenewalFailureCount`, `LastRenewalErrorCode`, `RenewerSeenAtUtc`,
+  `RenewerSecretHash`, `RenewerSecretSetAtUtc`, `TwitchSessionExpiresAtUtc` (gemeldet). **Revision 5:**
+  `LastRenewalRunId` (uuid) und `LastRenewalRunOutcome` (Quittung des zuletzt abgeschlossenen Laufs, 18.4),
+  `TwitchSessionState` (`valid`, `malformed`, `lost`; leer = nie gemeldet; getrennt vom Ergebnis der Erneuerung, 18.4),
+  `LastVerifiedCredentialVersion` (die `CredentialVersion`, die der Worker zuletzt geprüft hat, 18.7). Dazu die Spalten
+  aus Plan-487 Revision 2 (`CredentialVersion`, `RunnerEpoch`), die 6.4 noch nicht nennt.
+
+### 18.3 Vertrauensgrenze, ausdrücklich benannt
+
+- **VPS, Api, Prod-Datenbank:** wie Abschnitt 7, dazu nur der SHA-256-Hash des Maschinengeheimnisses.
+  Ein kompromittierter VPS erhält die Twitch-Sitzung nicht.
+- **Erneuerer-Host:** die Twitch-Sitzung des Bot-Kontos und das Maschinengeheimnis. Wer die Sitzung hat,
+  handelt auf Twitch als Bot-Konto und kann bei 7TV beliebig viele Bot-JWTs ausstellen lassen, bis die
+  Sitzung beendet ist; ein Notaus bei 7TV allein beendet das nicht (18.8). Der Rechner, auf dem der Helfer lief
+  (18.2), hält die Datei nur bis zum `scp`; danach wird sie dort gelöscht (Runbook). Das Geheimnis erlaubt nur, was
+  die Maschinenroute (18.5) annimmt: Lebenszeichen, Ergebnisse und JWTs, die die Api prüft. Neu dadurch
+  sind zwei Missbräuche (RR17): eine gefälschte Entwarnung (Lebenszeichen ohne Lauf) und ein gefälschtes
+  JWT mit gültiger Form und passendem `sub`, das nach dem Tausch beim ersten Read des Workers 401 liefert
+  und damit den globalen Rückfall auslöst, bis ein Admin das Token von Hand setzt.
+- In Kauf genommen mit: kein Passwort und kein 2FA-Geheimnis am Host, Bot-Konto ohne weiteren Wert,
+  Isolation 18.6, Widerruf und Rotation des Geheimnisses, Notaus 18.8. DECISIONS benennt das als
+  Erweiterung der Vertrauensgrenze aus Abschnitt 7 und nennt den Ort außerhalb des Internet-Servers.
+
+### 18.4 Erneuerungslauf [E]
+
+- **Zustand und Politik an der Api, der Erneuerer ist bis auf die Cookie-Datei zustandslos.** Takt 5
+  Minuten: `tick` meldet das Lebenszeichen; die Api antwortet „nichts zu tun“ oder mit einem Lauf-Auftrag.
+  Mehrere Instanzen sind harmlos, weil nur die Api Aufträge vergibt.
+- **Fällig** ist ein Lauf, wenn alle drei Schalter an der Api an sind, `KillSwitch` aus,
+  `BotSevenTvUserId` bekannt, `Status` `valid` oder `expired` und entweder `ExpiresAtUtc − jetzt ≤
+  Renewal:LeadDays` (Default **21**, 7 bis 28; ein Lauf etwa alle 9 Tage, bei Ausfall bleiben rund drei
+  Wochen) oder `RenewalRequestedAtUtc` gesetzt („Jetzt erneuern“), `NextRenewalAttemptAtUtc` erreicht,
+  der eben gemeldete Sitzungszustand `valid` und kein Lauf offen (Lease 5 Minuten ab `RenewalRunStartedAtUtc`). **`invalid` wird nie erneuert und bleibt
+  bis zur Admin-Aktion** (`PUT` oder `DELETE /token`): der Worker setzt aus `invalid` nie `expired`.
+- **Anmeldung unter der Sperre (Revision 5):** `tick` und Ergebnis prüfen nach dem Filter **unter derselben
+  Zeilensperre**, mit der sie schreiben, den Hash des vorgelegten Geheimnisses erneut gegen `RenewerSecretHash`; weicht er
+  ab (inzwischen rotiert oder widerrufen), 401 ohne jede Schreibung. Setzen und Widerrufen des Geheimnisses schließen im
+  selben Commit einen offenen Lauf (Laufspalten leer, Quittung `run_revoked`, zählt für keinen Alarm), sodass kein Ergebnis
+  aus der alten Generation mehr trifft.
+- **Beanspruchen, vor jedem Browserstart (eine Transaktion, Zeilensperre):** ein offener Lauf mit
+  abgelaufener Lease wird als `run_interrupted` gebucht; dann neue `RenewalRunId`, `RenewalRunStartedAtUtc
+  = jetzt`, `RenewalRunRequestedAtUtc = RenewalRequestedAtUtc`, `RenewalRunCredentialVersion`,
+  `RenewalRunKillSwitchVersion`, `RenewalFailureCount + 1` und `NextRenewalAttemptAtUtc` nach dem Rückzug
+  1, 2, 4, 8, dann alle 12 Stunden. Ein Absturz mitten im Lauf zählt damit als Fehlversuch; erst ein
+  Erfolg setzt Zähler und nächsten Versuch zurück. Der Auftrag trägt nur Laufkennung und Bot-ID.
+- **Lauf am Erneuerer:** frischer, nicht persistenter Browserkontext mit den Cookies samt Attributen;
+  Aufruf der 7TV-Website und der Login-URL, **keine Klicks, keine Eingaben**; Erfolg, sobald auf
+  `7tv.app` ein Token erscheint (Ausweichweg nach G0b: Antwort von `/v4/auth/login/finish`);
+  Gesamtbudget 90 s, danach wird der Browser samt Prozessbaum beendet. Anfragen nur an die Host-Liste aus
+  G0b, Bilder, Medien und Schriften abgebrochen; kein Trace, kein HAR, kein Screenshot.
+- **Prüfung am Erneuerer, alles muss gelten:** Form wie AK73, `exp` 29 bis 31 Tage nach `iat`, `sub` =
+  Bot-ID des Auftrags, `users.me` mit dem neuen Token liefert dieselbe ID.
+- **Cookies zurückschreiben, dann melden:** nur nach einem Lauf mit gültigem JWT, nur wenn die Datei
+  seit Laufbeginn unverändert ist und kein Eingang liegt (18.2, die frische Datei gewinnt); atomar (temporäre Datei, dann
+  Umbenennen), nur die Pflichtnamen mit ihren Attributen, Verkürzung und Löschung übernommen, Ablauf nach 18.2. Erst
+  danach geht das JWT an die Api: so verliert ein Abbruch zwischen beiden Schritten nie die rotierte
+  Sitzung. Fehlt danach ein Pflicht-Cookie, wird das JWT trotzdem gemeldet, **zusammen** mit dem Sitzungszustand `lost`
+  (getrennte Felder, 18.5). Nach einem Fehlschlag bleibt die Datei unverändert.
+- **Zaun vor jeder Wirkung (Revision 5, Sol P1):** Unter der Zeilensperre wirkt ein Ergebnis nur, wenn `RenewalRunId` =
+  gemeldete Kennung **und** die Lease noch läuft (`jetzt < RenewalRunStartedAtUtc + 5 min`). Sonst ist es wirkungslos (kein
+  Tausch, keine Buchung, kein Zähler, kein Audit, das JWT verworfen): gleicht die Kennung `LastRenewalRunId`, antwortet die
+  Api 204 (Wiederholung nach verlorener Antwort, die Quittung `LastRenewalRunOutcome` steht schon), sonst 409 ohne Körper.
+  Jede wirksame Buchung schreibt `LastRenewalRunId` und `LastRenewalRunOutcome` und leert die Laufspalten im selben Commit;
+  das Schließen nach abgelaufener Lease beim nächsten `tick` ebenso (`run_interrupted`).
+- **Tausch an der Api (Ergebnisroute, eine Transaktion, Zeile `FOR UPDATE`), nach dem Zaun, alles muss gelten:**
+  `CredentialVersion = RenewalRunCredentialVersion` (damit auch
+  `IdentityVersion` unverändert, denn jede Erhöhung von `IdentityVersion` erhöht `CredentialVersion` mit),
+  `KillSwitchVersion = RenewalRunKillSwitchVersion` und `KillSwitch = false` (ein zwischenzeitlich an- und
+  wieder ausgeschalteter Notaus fällt so auf), `Status IN (valid, expired)` (ein inzwischen gebuchtes 401
+  bleibt `invalid`), Form, `exp` 29 bis 31 Tage nach `iat` und nach dem gespeicherten `ExpiresAtUtc`, `sub`
+  = `BotSevenTvUserId`, `TokenKeyFingerprint` = Fingerprint des eigenen öffentlichen Schlüssels. Dann
+  versiegeln; `SealedToken`, `ExpiresAtUtc`, `SetAtUtc = jetzt`, `Status = valid`, `LastErrorCode = null`, `LastVerifiedAtUtc =
+  null` (der Worker prüft das neue Token im nächsten Takt; `Status` bleibt `valid`, bis eine Prüfung
+  scheitert), `CredentialVersion + 1`, `IdentityVersion` bleibt; Audit `wishBot.renewed` (alter und neuer
+  Ablauf); Ergebnis: Zähler 0, `NextRenewalAttemptAtUtc` und `RenewalRunId` leer,
+  `LastRenewalSucceededAtUtc`, `LastRenewalErrorCode = null`; der gemeldete Sitzungszustand und -ablauf werden im selben
+  Commit gebucht (ein `lost` bleibt so auch dann stehen, wenn der Erneuerer danach verstummt); **Quittung:** `RenewalRequestedAtUtc` wird
+  nur geleert, wenn es gleich `RenewalRunRequestedAtUtc` ist (ein späterer Klick bleibt offen). Commit,
+  dann `WISHBOT:`. Trifft eine Bedingung nicht, wird das JWT verworfen (nie gespeichert) und
+  `swap_rejected` gebucht. Klartext des JWT existiert in der Api nur während dieser Anfrage.
+- **Fehlerklassen, nur über positive Merkmale** (Merkmal je Seite aus G0b, im Protokoll und im Code als
+  Tabelle): **eindeutig**, sofortiger Alarm: `twitch_login_required` (Anmeldeformular von Twitch),
+  `consent_required` (Zustimmungsseite mit Freigabeknopf), `challenge_required` (Captcha oder
+  Gerätebestätigung), `identity_mismatch`, `key_mismatch`
+  (Tausch); **Revision 5:** `twitch_session_lost` und `session_malformed` sind keine Laufergebnisse mehr, sondern die
+  Sitzungszustände `lost` und `malformed` (Alarm über 18.7, unabhängig vom Ergebnis der Erneuerung); **vorübergehend**, Alarm nach drei in Folge: `navigation_timeout` (Budget erschöpft ohne
+  Merkmal), `callback_without_token` (Callback von 7TV erreicht, kein Token), `unexpected_page` (geladene
+  Seite ohne bekanntes Merkmal), `unavailable` (Netz, DNS, 5xx), `run_interrupted`, `swap_rejected` (außer
+  den beiden eindeutigen Gründen). Eine Adresse allein oder eine Wartezeit entscheidet nie auf
+  „eindeutig“. Jedes Ergebnis lässt das gespeicherte Token unverändert. „Jetzt erneuern“ wird bei Erfolg
+  und bei eindeutigem Fehler quittiert; neue Cookies setzen nichts zurück, der Betreiber stößt danach mit
+  „Jetzt erneuern“ an. Audit `wishBot.renewalFailed` nur beim Wechsel in den Alarmzustand (18.7).
+- **Kein Rückfall durch die Erneuerung:** Die Erneuerung wechselt das Token, nicht das Konto. Der
+  Editor-Nachweis je Kanal bleibt über einen Tausch gültig, weil er an `IdentityVersion` und Bot-ID hängt
+  (Plan-487 R2-5 bleibt für Hand-`PUT` wirksam). **Gebucht** wird ein Editor-Ergebnis aus dem
+  unauthentifizierten `editor_of` (`SevenTvApiClient.cs:466-475`, nur die 7TV-ID) auf `IdentityVersion` und
+  Bot-ID; wählt G0 einen authentifizierten Editor-Read, zusätzlich auf die `CredentialVersion` des
+  lesenden Tokens, solange nicht belegt ist, dass das Ergebnis vom Token unabhängig ist. Ein Tausch lässt
+  keinen Kanal in den Rückfall fallen und löst keinen Rückfall-Lauf aus.
+- **429 gilt dem Konto:** die Pause nach 429 wird auf `IdentityVersion` gebucht, nicht auf
+  `CredentialVersion`, und übersteht damit einen Tausch.
+- **Rückfall bleibt der Normalpfad:** Gelingt bis zum `exp` keine Erneuerung, setzt der Worker
+  `expired`, und alle Bot-Kanäle laufen im manuellen Ablauf (Abschnitt 7 Punkt 8). Die Handerneuerung über
+  `PUT /token` bleibt als Notweg.
+
+### 18.5 Maschinenroute [B]
+
+- **Nur ausgehend, Erneuerer → Api über HTTPS** am öffentlichen Hostnamen; der VPS verbindet sich nie
+  ins Heimnetz. Gruppe `/api/internal/wish-bot/renewal`: `POST tick` (Körper: Sitzungszustand `valid`,
+  `malformed` oder `lost`, gemeldeter Sitzungsablauf, Version des Erneuerers; Antwort 204 oder 200 mit
+  `runId` und Bot-ID) und `POST runs/{runId}` (Körper: das JWT **oder** ein Fehlercode, **getrennt davon** Sitzungszustand
+  und -ablauf, Revision 5; Antwort 204 oder 409 ohne Körper nach dem Zaun in 18.4). Keine Route liefert Token, Siegel, Geheimnis oder
+  Cookies; die Körper enthalten außer dem JWT nur Codes und Zeitpunkte.
+- **Anmeldung:** eigener `IEndpointFilter`, Kopf `Authorization: Bearer <Maschinengeheimnis>`. Die Api
+  hält nur `RenewerSecretHash` (SHA-256; das Geheimnis sind 32 zufällige Byte, ein langsamer Hash bringt
+  nichts) und vergleicht in konstanter Zeit. Keine Cookie- oder Sitzungsanmeldung: eine Anfrage mit
+  gültigem Sitzungs-Cookie und ohne Kopf → 401. Die Api hat keine CORS-Middleware (`Program.cs`); die
+  Gruppe bekommt keine. 401 ohne Körper; ein Fehlversuch schreibt eine Logzeile ohne Kopfwert, kein
+  Audit je Versuch. Der Filter ist die billige Vorprüfung; maßgeblich ist die erneute Prüfung unter der Zeilensperre
+  (18.4), sodass ein Widerruf auch eine schon angemeldete, auf die Sperre wartende Anfrage trifft.
+- **Geheimnis:** vom Betreiber lokal erzeugt, auf der Admin-Seite gesetzt (`PUT /api/admin/wish-bot/
+  renewer-secret`, Passwortfeld, die Api speichert nur den Hash, Audit `wishBot.renewerSecretSet`) und
+  dort widerrufbar (`DELETE`, Audit). Rotation = neues setzen; das alte gilt sofort nicht mehr [E] (ein
+  ausgelassener Takt ist harmlos); beides schließt einen offenen Lauf (18.4).
+- **Rate-Limit [E] (Revision 5, Sol P1):** Die Rate-Limit-Middleware läuft vor jedem Endpoint-Filter
+  (`Program.cs`: `UseRateLimiter` vor den Routen); ein gemeinsamer Topf wäre also von unangemeldetem Verkehr leerzuräumen.
+  Deshalb zwei Töpfe in einer Policy: Der Partitionierer vergleicht den SHA-256 des vorgelegten Bearer-Werts in konstanter
+  Zeit mit einem In-Process-Halter des aktuellen Hashes (befüllt beim Start und bei jeder Änderung über die Admin-Routen;
+  die Api läuft als eine Instanz). Treffer → eigener, reservierter Topf (30 je Minute); alles andere → je Quell-IP wie
+  `PublicHealth` (10 je Minute). Die Einordnung entscheidet nur über den Topf, nie über die Anmeldung.
+- **Schalter:** 404 ohne Körper, sobald `Wishes:Enabled`, `Wishes:BotMode:Enabled` oder
+  `Wishes:BotMode:Renewal:Enabled` aus ist. Der Erneuerer hängt damit an allen Schaltern.
+- **Lebenszeichen:** jeder `tick` schreibt `RenewerSeenAtUtc` und `TwitchSessionExpiresAtUtc` (leer, wenn
+  keine gültige Datei vorliegt).
+
+### 18.6 Erneuerer-Host und Isolation [B]
+
+- **Projekt `EmotePurge.WishBotRenewer`** nur mit Core und Microsoft.Playwright (nur
+  Chromium-Headless-Shell): keine Datenbank, kein Redis, kein Siegel-Schlüssel. Eigenes GHCR-Image.
+- **Container:** eigenes Docker-Netz ohne Route ins LAN (nur Internet; private Adressbereiche am Host
+  gesperrt), Nicht-Root, `read_only` mit `tmpfs` für `/tmp` und das Browserprofil, `cap_drop: ALL`,
+  `no-new-privileges`, Speicherlimit 1 GB, `pids`-Limit; einziges beschreibbares Volume ist das mit der
+  Cookie-Datei.
+- **Chromium-Sandbox an** (Playwrights Default ist aus). Im Container braucht sie ein seccomp-Profil, das
+  Namensräume zulässt; G0b prüft das. Läuft sie nicht, ist `--no-sandbox` nur als benannte
+  DECISIONS-Entscheidung mit Begründung zulässig.
+- **Browser mit leerer Umgebung** (nur `HOME` und `TMPDIR`; Playwrights Default ist die Umgebung des
+  Prozesses); das Maschinengeheimnis kennt nur der .NET-Prozess. Eine Trennung von Browser und Koordinator
+  in Prozesse oder Container ist nicht nötig: am Host liegen weder Datenbankzugang noch Schlüssel.
+  Restrisiko: ein vollständig kompromittierter Browserprozess desselben Nutzers kann das Geheimnis lesen
+  (RR17).
+- **Ressourcen:** Planwert Spitze 500 bis 700 MB je Lauf, idle nur der .NET-Dienst; Limit 1 GB; Playwright
+  je Lauf neu, danach entsorgt; glibc-Basis (Debian oder Ubuntu wie das Playwright-Image), nicht Alpine. Gemessen wird der
+  anonyme Speicher aus `memory.stat` der cgroup mit im Image vorinstalliertem Browser, nicht `memory.peak` (zählt Seitencache
+  und `tmpfs` mit, Probe 3); das `tmpfs` ist klein bemessen, weil es auf dasselbe Limit zählt. Der VPS trägt nichts davon.
+- **Pflege:** monatlicher Neubau dieses Images per Zeitplan; Microsoft.Playwright kommt als eigener
+  Dependabot-PR (ein Sprung wechselt den Browser und braucht einen Live-Kurzlauf).
+- **Verworfen:** (a) Chromium im Worker-Image (512-MB-Limit, Chat-Erfassung und Token-Schlüssel daneben);
+  (b) eigener Dienst auf dem VPS (vom Betreiber am 2026-11-20 zunächst gewählt und am selben Tag ersetzt:
+  die Sitzung läge neben Prod-Datenbank und Backup und bräuchte eigene Rolle, Prozess-Abtrennung und
+  Backup-Ausschluss; der VPS hat 3,7 GiB ohne Swap); (c) CI-Zeitplan (Sitzung bei einem Dritten).
+
+### 18.7 Alarmierung ohne Anwesenheit [B]
+
+`GET /api/health` bleibt unverändert und wird durch den Bot-Zustand **nie** 503 (DECISIONS 2026-08-05).
+Ein zweiter payloadfreier Endpunkt `GET /api/health/wish-bot`, anonym, Policy wie `PublicHealth`, ist ein
+eigener Monitor in Uptime Kuma (Telegram, Meldung täglich wiederholt). 404, wenn `Wishes:BotMode:Enabled`
+aus ist; dann pausiert der Betreiber den Monitor (404 wird nicht als „gesund“ eingetragen). Sonst 200,
+außer ein Alarmgrund gilt, dann 503 (Zeilen ab „Totmann“ nur bei `Renewal:Enabled`):
+
+| Grund | Schwelle |
+|---|---|
+| 7TV-JWT läuft ab | `ExpiresAtUtc − jetzt < 3 Tage`, oder `Status` `invalid`/`expired` |
+| Token ungeprüft | `Status = unverified` oder (Revision 5) `LastVerifiedCredentialVersion ≠ CredentialVersion`, jeweils länger als 15 Minuten nach `SetAtUtc` (auch nach einem Tausch: die Api allein beweist nicht, dass der Worker das neue Token benutzt) |
+| Totmann | fällig seit über 24 h ohne Erfolg; „fällig seit“ = früherer von `ExpiresAtUtc − LeadDays` und `RenewalRequestedAtUtc` |
+| Erneuerung gescheitert | letztes Ergebnis eindeutig, oder drei vorübergehende in Folge |
+| Twitch-Sitzung endet | gemeldeter Ablauf `− jetzt < 30 Tage`, oder `TwitchSessionState` `malformed` oder `lost` (Revision 5) |
+| Erneuerer still | `RenewerSeenAtUtc` älter als `Renewal:SilenceAlertHours` (Default 26); leer zählt, sobald `RenewerSecretSetAtUtc` länger als dieselbe Frist zurückliegt |
+
+Kein Alarm bei `Status = none` (Token bewusst gelöscht) und bei gesetztem `KillSwitch` (bewusster Notaus).
+Der Grund steht nur auf der Admin-Seite. **Zustellung gilt erst als eingerichtet**, wenn eine Testmeldung
+des echten Monitors und die Entwarnung beim Betreiber angekommen sind (Abschnitt 12, Punkt 7). Es gibt keine
+Vertretung ([B] N1, 18.1); Zustellnachweise gelten nur für den Betreiber.
+
+**Ausfall des Beobachters (Revision 5, Sol P2):** Kuma läuft beim Betreiber auf demselben NAS wie der Erneuerer. Fällt das
+NAS oder sein Uplink aus, sieht Kuma weder das 503 noch kann es Telegram senden. Diesen Fall deckt der bestehende,
+unabhängige Heartbeat von Kuma bei healthchecks.io mit E-Mail-Alarm (DECISIONS 2026-08-05, S3-36). Er ist Teil von Stufe 0
+(Abschnitt 12, Punkt 7); `docs/Operations.md` verlangt generisch: Läuft der Monitor auf dem Erneuerer-Host, braucht er
+selbst einen unabhängigen Heartbeat mit eigenem Zustellweg.
+
+Verworfen: Alarm über `/api/health`, Admin-Route mit Schlüsselwort-Monitor, Telegram direkt aus der App.
+
+### 18.8 Notaus, neue Reihenfolge (ersetzt die in Abschnitt 14) [B]
+
+Ziel: Weder der Erneuerer noch ein Dieb der Cookies kann nach dem Notaus ein neues JWT holen oder einspielen.
+
+Revision 5 (Sol P2): serverseitige Sperren zuerst, unabhängig davon, ob der Erneuerer-Host erreichbar ist; die zweite
+Abmeldung bei 7TV gehört in den Vorfall, nicht in den Wiederanlauf.
+
+1. **`KillSwitch` an** (Admin-Seite): `KillSwitchVersion + 1`; die Api vergibt keinen Auftrag und lehnt
+   jeden Tausch ab, der Worker schreibt nicht mehr.
+2. **Maschinengeheimnis widerrufen** (Admin-Seite, auch bei ausgeschalteten Schaltern erreichbar): schließt einen offenen
+   Lauf; jeder spätere `tick` und jedes Ergebnis endet mit 401 (18.4).
+3. **Erneuerer-Container am Host stoppen** (Betreiber), wenn der Host erreichbar ist. Ist er es nicht, geht es ohne
+   Warten mit Schritt 4 weiter; Container stoppen und Cookie-Datei löschen folgen, sobald er erreichbar ist, vor jedem
+   Neustart des Containers.
+4. **Twitch-Sitzungen des Bot-Kontos beenden:** Passwort ändern, „von allen Geräten abmelden“, unter
+   Verbindungen fremde App-Freigaben prüfen und entfernen (die von 7TV bleibt).
+5. **„Sign Out Everywhere“ bei 7TV:** entwertet alle Bot-JWTs.
+6. **Abklingen, dann zweites „Sign Out Everywhere“ [E]:** frühestens 15 Minuten nach Schritt 4, noch im Vorfall.
+   Restfenster dazwischen: ein Twitch-Code, den ein Dieb vor Schritt 4 erhalten hat und erst nach Schritt 5 einlöst. Erst nach
+   diesem Schritt gilt der Vorfall als eingedämmt, und erst danach werden neue Zugänge ausgestellt.
+7. **`DELETE /token`** (erreichbar auch bei ausgeschalteten Schaltern, 14) und die Cookie-Datei am Host
+   löschen (bei unerreichbarem Host nach Schritt 3). Danach dürfen die Schalter aus.
+
+Wiederanlauf, erst nach Schritt 6: neue Sitzung über den Helfer (18.2), Datei in den Eingang, neues Maschinengeheimnis,
+neues Token per `PUT`, Notaus aus, „Jetzt erneuern“ als Probe.
+
+**Restore (Revision 5, Sol P1):** Ein Dump von vor einem Notaus oder Widerruf brächte alten Geheimnis-Hash, Token und einen
+ausgeschalteten Notaus zurück, und beide Restore-Wege in `docs/Operations.md` starten Api und Worker direkt nach dem
+Einspielen. Deshalb läuft in **beiden** Wegen vor dem Start ein fester SQL-Schritt: `KillSwitch` an (`KillSwitchVersion +
+1`), Geheimnis-Hash und -Zeitpunkt, Laufspalten, `RenewalRequestedAtUtc` und `TwitchSessionState` leer. Danach bleiben
+Maschinenroute (kein Hash → 401) und Bot-Schreiben (Notaus) zu, bis der Betreiber geprüft hat, ob nach dem Dump ein Notaus
+oder Widerruf lag (dann `DELETE /token` und Wiederanlauf wie oben), das Token vom Worker nach dem Restore geprüft ist und ein
+neues Geheimnis gesetzt ist; erst dann Notaus aus.
+
+### 18.9 Inoffiziell
+
+DECISIONS ergänzt den Satz aus Abschnitt 7 um „automated re-login via headless browser with the bot
+account's Twitch session, on a host outside the internet-facing server; unofficial for both Twitch and
+7TV; may break at any change“. Das widerspricht dem Eintrag „Kein Third-Party-Login bei 7TV“
+(2026-09-01) nicht: `return_to` bleibt auf dem Ursprung von 7tv.app, der Erneuerer bedient die eigene
+Website von 7TV als Bot-Konto. Ein Bruch endet als Fehlerklasse, Alarm und schließlich Rückfall, nie als
+Schreiben ohne gültiges Token.
+
+### 18.10 Akzeptanzkriterien (fortlaufend nach AK108)
+
+109. **AK109** Maschinenroute: ohne, mit falschem oder widerrufenem Geheimnis → 401 ohne Körper; mit
+     gültigem Sitzungs-Cookie und ohne Kopf → 401; einer der drei Schalter aus → 404; Rate-Limit greift;
+     ist der unangemeldete Topf erschöpft, gelingen ein gültiger `tick` und ein gültiges Ergebnis trotzdem (Revision 5);
+     Rotation und Widerruf, während eine angemeldete Anfrage auf die Zeilensperre wartet → 401 ohne Schreibung;
+     keine CORS-Kopfzeilen. `PUT`/`DELETE /api/admin/wish-bot/renewer-secret`: kein Admin → 403, nur der
+     Hash wird gespeichert, keine Antwort enthält das Geheimnis, Audit ohne Wert.
+110. **AK110** Trennung: das Erneuerer-Projekt referenziert nur Core (Strukturtest wie
+     `CoreAssemblyReferenceTests`) und kennt weder Connection-String noch Schlüssel; weder Api noch Worker
+     kennen Cookies; keine Route liefert Token, Siegel oder Geheimnis.
+111. **AK111** Tausch: Erfolg nach 18.4 mit `CredentialVersion + 1`, unveränderter `IdentityVersion`,
+     kein Kanal nach `fallback`, kein Rückfall-Lauf, keine Einreihung verloren. Kein Tausch, wenn während
+     des Laufs `PUT /token`, `DELETE /token`, Notaus an, Notaus an und wieder aus, ein 401 (`invalid`) oder
+     ein neuer Lauf dazwischen kam, oder der Fingerprint abweicht (`key_mismatch`); `invalid` bleibt nach
+     `exp` `invalid`. **Zaun (Revision 5):** ein Ergebnis nach abgelaufener Lease (auch vor dem nächsten `tick`) oder mit
+     fremder Kennung ist wirkungslos; die Wiederholung eines gebuchten Ergebnisses (verlorene Antwort) antwortet 204 und
+     ändert nichts, auch nicht nach einem Erfolg; ein JWT mit Sitzungszustand `lost` wird getauscht, und der Alarm „Twitch-
+     Sitzung endet“ steht im selben Commit, auch wenn der Erneuerer danach verstummt.
+112. **AK112** Fehlerklassen: jede Klasse aus 18.4 an einer bereinigten Testseite nur über ihr positives
+     Merkmal; eine langsame Zustimmungsseite ohne Merkmal ist `navigation_timeout`, nicht
+     `consent_required`; ohne Klick, binnen 90 s, Browser samt Prozessbaum beendet; das gespeicherte Token
+     bleibt.
+113. **AK113** Cookies am Host: zurückgeschrieben nur nach gültigem JWT, unveränderter Datei und leerem Eingang, vor der
+     Meldung an die Api, atomar, mit erhaltenen Attributen; Verkürzung und Löschung sofort, Verlängerung erst
+     nach belegtem Gleiten; ein Fehlschlag lässt die Datei unverändert. Eine Eingangsdatei, die unmittelbar vor dem
+     Zurückschreiben erscheint, gewinnt; übernommen wird sie nur formgültig, außerhalb eines Laufs und nach einer Minute Ruhe.
+114. **AK114** `GET /api/health/wish-bot` ist payloadfrei und folgt der Tabelle in 18.7 (je Grund ein Fall
+     mit eigenem Ausgangszustand, `none` und `KillSwitch` → 200, Schalter aus → 404). `GET /api/health`
+     antwortet in jedem dieser Fälle wie ohne Bot.
+115. **AK115** Notaus: mit `KillSwitch` kein Auftrag und kein Tausch; der Ablauf 18.8 (Widerruf vor dem Host, zweite
+     Abmeldung im Vorfall, Weg bei unerreichbarem Host) steht im Runbook; der Live-Lauf zeigt, dass nach dem Beenden der
+     Twitch-Sitzungen ein Lauf mit `twitch_login_required` endet.
+116. **AK116** G0b (vor T1, am Erneuerer-Host, Betreiber führt aus): Login über den Helfer-Prototyp (sichtbarer Browser,
+     flüchtiges Profil) gelingt; kleinste funktionierende Cookie-Menge
+     samt Attributen; zwei Läufe mit der jeweils zurückgeschriebenen Datei; Gleiten; das alte JWT bleibt
+     nach einem neuen Login gültig (Überlappung); 7TV duldet drei bis vier gleichzeitig gültige Sitzungen;
+     positive Merkmale je Seite; Host-Liste; Sandbox im Container; Spitzen-Speicher; ein ungültiger
+     `auth-token` endet als `twitch_login_required`; widerrufene Verbindung → Zustimmungsseite; nach „Sign
+     Out Everywhere“ holt ein Lauf ein neues JWT. Ergebnis in DECISIONS. Der Vorlauf (Probe 3, 18.1) belegt den Login
+     vom Host aus mit Isolation; offen sind Sandbox, Speicher, Überlappung der drei Sitzungen und kleinste Menge.
+117. **AK117** Ressourcen: Image-Größe, anonymer Speicher idle und Spitze (`memory.stat`, Browser im Image
+     vorinstalliert), Dauer gemessen und im PR genannt; Limit gesetzt; Worker-Image und Worker-Limit unverändert.
+118. **AK118** DECISIONS (Vertrauensgrenze 18.3, Ort, „unofficial for both Twitch and 7TV“) im selben
+     Commit wie die Maschinenroute (Regel 3); im selben PR das Operations-Runbook (generisch: Host-Wahl,
+     Isolation, Cookie-Datei mit dem Helfer gewinnen und über den Eingang ablegen, Geheimnis, Kuma-Monitor samt
+     unabhängigem Heartbeat, Notaus 18.8, Wiederanmeldung, Restore-Schritt in beiden Wegen) und
+     Architectur.md (Erneuerer außerhalb des Stacks).
+119. **AK119** Lauf-Buchhaltung: der Fehlversuch ist vor dem Browserstart gebucht; ein Lauf ohne
+     Ergebnis wird nach der Lease `run_interrupted`; zwei Instanzen bekommen nie gleichzeitig einen
+     Auftrag; „Jetzt erneuern“ wird genau einmal quittiert (Klick, zwei weitere Takte ohne Lauf; zweiter
+     Klick während eines Laufs bleibt offen); Totmann nach 24 h; Quittung `LastRenewalRunId`/`LastRenewalRunOutcome` je
+     wirksam abgeschlossenem Lauf, auch für `run_interrupted` und `run_revoked`.
+120. **AK120** Freigabe-Stufe 0 (Abschnitt 12, Punkt 7) ist durchlaufen und protokolliert: Test- und Entwarnungsmeldung
+     beim Betreiber zugestellt; bei angehaltenem Kuma (NAS oder Uplink unterbrochen) hat der unabhängige Heartbeat den
+     Betreiber per E-Mail erreicht, samt Entwarnung; nach „Jetzt erneuern“ hat der Worker binnen 15 Minuten genau die neue
+     `CredentialVersion` geprüft (`LastVerifiedCredentialVersion`); ein Tausch allein lässt das Tor offen.
+121. **AK121** Helfer (Revision 5): sichtbarer Browser mit flüchtigem Profil, schreibt nur die Pflichtnamen unter
+     `twitch.tv` mit allen Attributen und Rechten 600, nie das 7TV-JWT, nichts bei gescheiterter Formprüfung; dieselbe
+     Formprüfung wie der Erneuerer (Test); der Browser ist danach geschlossen.
+122. **AK122** Restore (Revision 5): ein lokal eingespielter Dump von vor einem Widerruf mit dem SQL-Schritt aus 18.8
+     → altes Geheimnis 401, Notaus an, Worker schreibt nichts, bis Geheimnis und Prüfung neu sind; beide Restore-Wege im
+     Runbook enthalten den Schritt vor dem Start von Api und Worker.
+
+### 18.11 Entschieden (Betreiber, 2026-11-20)
+
+- **[FT1] Wo läuft der Browser?** [B] Außerhalb des Internet-Servers, beim Betreiber auf dem NAS (18.2,
+  18.6). Ersetzt den ersten Entscheid desselben Tages (eigener Container auf dem VPS).
+- **[FT2] Alarm?** [B] Eigener payloadfreier Endpunkt, ergänzt um Totmann, Startfrist des
+  Lebenszeichens und Zustellnachweis (18.7).
+- **[FT3] Eigene Datenbankrolle?** [B] Entfällt: der Erneuerer hat keinen Datenbankzugang; die
+  Maschinenroute führt an der Api nur die fest definierten Operationen aus (18.5).
+- **[FT4] PR-Schnitt:** [B] alle Spalten in `AddWishBot` (PR 1), weil G0b vor T1 liegt; [E] Maschinenroute,
+  Alarm-Endpunkt und Image in PR 3 (Plan-487, Abschnitt 9).
+- Alle Befunde der drei Reviews sind übernommen (Plan-487, Tabelle „Revision 4“).
+- **Abends, nach Sol über Revision 4 [B]:** alle neun Befunde übernommen (Plan-487, Tabelle „Revision 5“); Cookie-Datei über
+  den Helfer statt aus einer Profilkopie (18.2); N1 und N2 entschieden (18.12). Revision 5 ist der Endstand des Nachtrags;
+  weitere Prüfung nur noch als Code-Review je PR.
+
+### 18.12 Betreiberfragen des Nachtrags (entschieden 2026-11-20)
+
+- **[N1] Vertretung?** [B] Es gibt **keine** Vertretung. Ist der Betreiber nicht erreichbar und klemmt etwas, entsteht kein
+  neues Token; der Bot fällt beim Ablauf sicher in den manuellen Ablauf. Alle Stellen, die eine benannte Vertretung oder
+  eine Zustellung an sie verlangten (12, 18.7, AK120), sind gestrichen; Zustellnachweise gelten nur für den Betreiber. Die
+  Grenze steht in 18.1.
+- **[N2] Gefälschtes JWT über das Maschinengeheimnis (RR17)?** [B] Hingenommen als bekanntes Risiko, kein Schritt mit
+  einem vorläufigen Token. Ein Dieb der Cookies kann ohnehin echte JWTs ausstellen; das Geheimnis liegt am selben Host; der
+  Fall endet mit Alarm und einem Hand-`PUT`.
 
 ---
 
@@ -1877,6 +2333,8 @@ Löschen mit `typed-confirm-dialog`, Notaus-Schalter, Warteschlangentiefe, Zahl 
     und das Operations-Runbook sind im selben Commit wie die Token-Ablage geändert (Regel 3).
 96. **AK96** Der Worker hat siebzehn Hosted Services; bei `Wishes:BotMode:Enabled = false`
     beendet sich `WishBotWorker` nach einer Logzeile und öffnet nie das Token.
+
+AK109 bis AK118 (automatische Erneuerung, Nachtrag 2026-11-20) stehen in Abschnitt 18.9.
 
 ## Testplan
 
