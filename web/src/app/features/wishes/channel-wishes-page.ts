@@ -1,4 +1,4 @@
-import { Dialog } from '@angular/cdk/dialog';
+import { Dialog, DialogRef } from '@angular/cdk/dialog';
 import { NgTemplateOutlet } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import {
@@ -619,6 +619,9 @@ export class ChannelWishesPage {
   /** The target already focused once; a reload must not pull the focus back. */
   private focusedTarget: number | null = null;
 
+  /** The open approve dialog; it shows the redeemer's text and login, so a 403 reload closes it. */
+  private approveDialog: DialogRef<WishApproveDialogResult | undefined> | null = null;
+
   /** Set once the page is gone; a 7TV start that is still deciding then aborts (plan 2.5, 3b i). */
   private destroyed = false;
 
@@ -1031,13 +1034,16 @@ export class ChannelWishesPage {
   protected openApprove(wish: Wish, sectionId: SectionId = 'open'): void {
     const channel = this.channel();
     this.mergedNotice.set(null);
-    openWishApproveDialog(this.dialog, { channelName: channel, wish }).closed.subscribe(
-      (result) => {
-        if (channel === this.channel()) {
-          this.onApproveClosed(wish, sectionId, result);
-        }
-      },
-    );
+    const ref = openWishApproveDialog(this.dialog, { channelName: channel, wish });
+    this.approveDialog = ref;
+    ref.closed.subscribe((result) => {
+      if (this.approveDialog === ref) {
+        this.approveDialog = null;
+      }
+      if (channel === this.channel()) {
+        this.onApproveClosed(wish, sectionId, result);
+      }
+    });
   }
 
   protected openReAdd(wish: Wish, sectionId: SectionId = 'open'): void {
@@ -1329,8 +1335,15 @@ export class ChannelWishesPage {
         section.loadError.set(null);
       },
       error: (error: unknown) => {
-        if (current()) {
-          section.loadError.set(errorKey(error));
+        if (!current()) {
+          return;
+        }
+        section.loadError.set(errorKey(error));
+        if (error instanceof HttpErrorResponse && error.status === 403) {
+          // No longer allowed to see this list: what it showed (the redeemers' texts and logins
+          // among it) goes with it, and so does an approve dialog holding one of them.
+          section.result.set(null);
+          this.approveDialog?.close(undefined);
         }
       },
     });

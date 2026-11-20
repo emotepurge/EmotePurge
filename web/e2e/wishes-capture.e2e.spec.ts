@@ -126,6 +126,46 @@ test.describe('wish emotes: chat capture (#486)', () => {
       await expect(rewards(page).getByText('Emote wünschen 2', { exact: true })).toBeVisible();
     });
 
+    test('E18: a later read refused with 403 removes the rewards and the candidate from the page', async ({
+      page,
+    }) => {
+      await mockWishBackend(page, CHANNEL, {
+        rewards: {
+          rewards: [buildWishReward(1, { label: 'Emote wünschen' })],
+          learning: {
+            sessionId: 'session-1',
+            startedAtUtc: wishInstant(0),
+            expiresAtUtc: new Date(Date.now() + 8 * 60_000).toISOString(),
+            candidate: {
+              candidateId: 'candidate-1',
+              text: 'catJAM bitte!',
+              login: 'viewer_one',
+              seenAtUtc: wishInstant(0),
+            },
+          },
+        },
+      });
+      await page.goto(URL_SETTINGS);
+      await expect(rewards(page).getByText('viewer_one', { exact: false }).first()).toBeVisible();
+
+      // Twitch no longer confirms the manager for the channel: the read answers 403 without a body.
+      await page.route(
+        (url) => url.pathname === `/api/channels/${CHANNEL}/wishes/rewards`,
+        (route) => route.fulfill({ status: 403, body: '' }),
+      );
+      await emitLive(page, { type: 'wish.changed', channel: CHANNEL });
+
+      await expect(
+        rewards(page).getByText('Die Belohnungen dieses Kanals kannst du nicht sehen.', {
+          exact: false,
+        }),
+      ).toBeVisible();
+      await expect(rewards(page).getByText('viewer_one', { exact: false })).toHaveCount(0);
+      await expect(rewards(page).getByText('catJAM bitte!', { exact: false })).toHaveCount(0);
+      await expect(rewards(page).getByText('Emote wünschen', { exact: true })).toHaveCount(0);
+      await expect(rewards(page).getByRole('button', { name: 'Bestätigen' })).toHaveCount(0);
+    });
+
     test('E2: a session that runs out says so, allows a new start and never sends a confirm', async ({
       page,
     }) => {

@@ -179,6 +179,8 @@ describe('ChannelWishesPage', () => {
   let getCalls: GetCall[];
   let actions: { name: string; id: number; answer: Subject<Wish> }[];
   let dialogs: Subject<boolean>[];
+  /** Index of each dialog the page closed itself (`DialogRef.close`). */
+  let closedByPage: number[];
   let openDialog: ReturnType<typeof vi.fn>;
   let stillIds: Set<string>;
   let addRequests: WishAddRequest[];
@@ -201,6 +203,7 @@ describe('ChannelWishesPage', () => {
     getCalls = [];
     actions = [];
     dialogs = [];
+    closedByPage = [];
     stillIds = new Set();
     addRequests = [];
     addStates = signal<ReadonlyMap<number, WishAddState>>(new Map());
@@ -213,8 +216,14 @@ describe('ChannelWishesPage', () => {
     prunedRemovals = [];
     openDialog = vi.fn(() => {
       const closed = new Subject<boolean>();
-      dialogs.push(closed);
-      return { closed };
+      const index = dialogs.push(closed) - 1;
+      return {
+        closed,
+        close: (result?: unknown) => {
+          closedByPage.push(index);
+          (closed as Subject<unknown>).next(result);
+        },
+      };
     });
     // jsdom has no layout, so the pager's reposition on a page change needs a stand-in.
     Element.prototype.scrollIntoView = vi.fn();
@@ -1573,6 +1582,47 @@ describe('ChannelWishesPage', () => {
       closeWith(0, { kind: 'approved', wish: { ...open, status: 'approved' } });
       expect(calls('open')).toHaveLength(2);
       expect(summaryRefresh).toHaveBeenCalledOnce();
+    });
+
+    it("drops the rows with the redeemers' texts when a later reload is refused (403)", () => {
+      const fixture = create();
+      settle(fixture, [pending(1, { requesterLogin: 'viewer_one' })]);
+      expect(section(fixture, 'open').textContent).toContain('wish 1 pls');
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('open').answer.error(new HttpErrorResponse({ status: 403 }));
+      fixture.detectChanges();
+
+      expect(rowIds(fixture, 'open')).toEqual([]);
+      expect(section(fixture, 'open').textContent).not.toContain('wish 1 pls');
+      expect(section(fixture, 'open').textContent).not.toContain('viewer_one');
+      expect(alerts(fixture, 'open')).toHaveLength(1);
+    });
+
+    it('keeps the rows when a later reload fails for another reason', () => {
+      const fixture = create();
+      settle(fixture, [pending(1)]);
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('open').answer.error(new HttpErrorResponse({ status: 500 }));
+      fixture.detectChanges();
+
+      expect(rowIds(fixture, 'open')).toEqual([1]);
+    });
+
+    it('closes an open approve dialog when a reload is refused (403)', () => {
+      const fixture = create();
+      settle(fixture, [pending(1)]);
+      buttonIn(section(fixture, 'open'), de.wishes.actions.approve).click();
+
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('open').answer.error(new HttpErrorResponse({ status: 403 }));
+      fixture.detectChanges();
+
+      expect(closedByPage).toEqual([0]);
     });
 
     it('says an approve booked as an extension with the new expiry and the way to that wish', () => {

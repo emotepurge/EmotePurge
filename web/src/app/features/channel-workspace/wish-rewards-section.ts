@@ -1,4 +1,4 @@
-import { Dialog } from '@angular/cdk/dialog';
+import { Dialog, DialogRef } from '@angular/cdk/dialog';
 import { NgTemplateOutlet } from '@angular/common';
 import { HttpErrorResponse } from '@angular/common/http';
 import {
@@ -517,6 +517,8 @@ export class WishRewardsSection {
   /** Number of the latest read; a successful write bumps it too, so no older answer undoes it. */
   private loadSeq = 0;
   private feedbackTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The open confirm dialog; it shows a viewer's redemption text and login, so a 403 read closes it. */
+  private confirmDialog: DialogRef<WishRewardDialogResult | undefined> | null = null;
 
   constructor() {
     effect((onCleanup) => {
@@ -627,12 +629,17 @@ export class WishRewardsSection {
     const channel = this.channelName();
     this.noticeKey.set(null);
     // The dialog holds the candidate as shown now; a live reload behind it changes nothing in it.
-    openWishRewardDialog(this.dialog, {
+    const ref = openWishRewardDialog(this.dialog, {
       mode: 'confirm',
       channelName: channel,
       learning: phase.learning,
       defaultDurationDays: this.defaultDurationDays(),
-    }).closed.subscribe((result) => {
+    });
+    this.confirmDialog = ref;
+    ref.closed.subscribe((result) => {
+      if (this.confirmDialog === ref) {
+        this.confirmDialog = null;
+      }
       if (channel !== this.channelName()) {
         return;
       }
@@ -920,13 +927,27 @@ export class WishRewardsSection {
           this.loadState.set('unavailable');
           return;
         }
+        if (error instanceof HttpErrorResponse && error.status === 403) {
+          // Not (any longer) confirmed by Twitch for this channel: nothing read before may stay on
+          // screen, least of all a viewer's redemption text and login (plan 2.4a).
+          this.showForbidden();
+          return;
+        }
         // A failed background read keeps what is on screen; only a section without data says so.
         if (this.read() === null) {
-          const forbidden = error instanceof HttpErrorResponse && error.status === 403;
-          this.loadState.set(forbidden ? 'forbidden' : 'failed');
+          this.loadState.set('failed');
         }
       },
     });
+  }
+
+  private showForbidden(): void {
+    this.read.set(null);
+    this.loadState.set('forbidden');
+    this.noticeKey.set(null);
+    this.clearFeedbackTimer();
+    this.feedback.set(null);
+    this.confirmDialog?.close(undefined);
   }
 
   private showFeedback(feedback: Feedback): void {

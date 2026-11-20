@@ -91,6 +91,8 @@ interface OpenedDialog {
   component: unknown;
   data: unknown;
   closed: Subject<unknown>;
+  /** The section closed it itself (`DialogRef.close`), with this result. */
+  closedBySection: unknown[];
 }
 
 describe('WishRewardsSection', () => {
@@ -134,8 +136,20 @@ describe('WishRewardsSection', () => {
           useValue: {
             open: (component: unknown, config: { data: unknown }) => {
               const closed = new Subject<unknown>();
-              opened.push({ component, data: config.data, closed });
-              return { closed };
+              const entry: OpenedDialog = {
+                component,
+                data: config.data,
+                closed,
+                closedBySection: [],
+              };
+              opened.push(entry);
+              return {
+                closed,
+                close: (result?: unknown) => {
+                  entry.closedBySection.push(result);
+                  closed.next(result);
+                },
+              };
             },
           },
         },
@@ -676,6 +690,39 @@ describe('WishRewardsSection', () => {
 
       expect(el().textContent).toContain(T.forbidden);
       expect(button(T.learning.start)).toBeUndefined();
+    });
+
+    it('drops everything it showed when a later read is refused (403)', async () => {
+      getRewards.mockReturnValue(of(rewardsRead({ learning: session({ candidate: CANDIDATE }) })));
+      await create();
+      expect(el().textContent).toContain(CANDIDATE.login);
+
+      getRewards.mockReturnValue(throwError(() => apiError(403)));
+      await nudge();
+
+      expect(el().textContent).toContain(T.forbidden);
+      expect(el().textContent).not.toContain(CANDIDATE.text);
+      expect(el().textContent).not.toContain(CANDIDATE.login);
+      expect(el().textContent).not.toContain('Emote-Wunsch');
+      expect(button(T.learning.confirm)).toBeUndefined();
+      expect(button(T.pause)).toBeUndefined();
+
+      // Confirmed again later: the next read shows the block once more.
+      getRewards.mockReturnValue(of(rewardsRead()));
+      await nudge();
+      expect(button(T.pause)).toBeDefined();
+    });
+
+    it('closes the confirm dialog with its candidate when a read is refused (403)', async () => {
+      getRewards.mockReturnValue(of(rewardsRead({ learning: session({ candidate: CANDIDATE }) })));
+      await create();
+      button(T.learning.confirm)!.click();
+
+      getRewards.mockReturnValue(throwError(() => apiError(403)));
+      await nudge();
+
+      expect(opened[0].closedBySection).toEqual([undefined]);
+      expect(confirmLearning).not.toHaveBeenCalled();
     });
   });
 });
