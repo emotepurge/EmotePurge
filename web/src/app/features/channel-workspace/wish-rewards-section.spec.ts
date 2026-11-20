@@ -334,6 +334,49 @@ describe('WishRewardsSection', () => {
       expect(button(T.learning.start)).toBeDefined();
     });
 
+    it('keeps a newer session a live read showed before the confirmation answered', async () => {
+      getRewards.mockReturnValue(of(rewardsRead({ learning: session({ candidate: CANDIDATE }) })));
+      await create();
+      button(T.learning.confirm)!.click();
+
+      // The confirmation committed, and another manager started anew before its answer arrived.
+      getRewards.mockReturnValue(
+        of(rewardsRead({ learning: session({ sessionId: 'session-b' }) })),
+      );
+      await nudge();
+      closeDialog({ kind: 'saved', reward: reward({ id: 2, label: 'Neue Belohnung' }) });
+
+      expect(el().textContent).toContain('Neue Belohnung');
+      expect(button(T.learning.cancel)).toBeDefined();
+      expect(button(T.learning.start)).toBeUndefined();
+    });
+
+    it('reads again when a live read was still on its way as the confirmation answered', async () => {
+      getRewards.mockReturnValue(of(rewardsRead({ learning: session({ candidate: CANDIDATE }) })));
+      await create();
+      button(T.learning.confirm)!.click();
+
+      // The reload after the other manager's start is under way when the dialog closes saved.
+      const onItsWay = new Subject<WishRewardsRead>();
+      getRewards.mockReturnValueOnce(onItsWay);
+      getRewards.mockReturnValue(
+        of(
+          rewardsRead({
+            rewards: [reward(), reward({ id: 2, label: 'Neue Belohnung' })],
+            learning: session({ sessionId: 'session-b' }),
+          }),
+        ),
+      );
+      await nudge();
+      closeDialog({ kind: 'saved', reward: reward({ id: 2, label: 'Neue Belohnung' }) });
+      await vi.advanceTimersByTimeAsync(0);
+      fixture.detectChanges();
+
+      expect(getRewards).toHaveBeenCalledTimes(3);
+      expect(button(T.learning.cancel)).toBeDefined();
+      expect(el().textContent).toContain('Neue Belohnung');
+    });
+
     it('reloads after a stale dialog and names a vanished candidate', async () => {
       getRewards.mockReturnValue(of(rewardsRead({ learning: session({ candidate: CANDIDATE }) })));
       await create();

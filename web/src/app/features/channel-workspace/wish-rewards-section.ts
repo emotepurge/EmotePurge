@@ -645,10 +645,14 @@ export class WishRewardsSection {
       }
       if (result?.kind === 'saved') {
         const reward = result.reward;
-        this.loadSeq++;
+        const confirmed = phase.learning.sessionId;
+        // Like the end of a write: an older read may not undo the confirmation, and one dropped
+        // on its way is read again (another manager may have started anew meanwhile).
+        this.supersedeReads(channel);
+        // Only the confirmed session ends: a newer one a live read already shows stays.
         this.patch((current) => ({
           ...current,
-          learning: null,
+          learning: current.learning?.sessionId === confirmed ? null : current.learning,
           rewards: [...current.rewards.filter((r) => r.id !== reward.id), reward],
         }));
         this.showFeedback({
@@ -844,18 +848,25 @@ export class WishRewardsSection {
       return false;
     }
     this.busy.set(null);
+    this.supersedeReads(channel);
+    return true;
+  }
+
+  /**
+   * A write's answer (or the confirm dialog's) is applied next: an older read must not undo it. A read
+   * still on its way is dropped and read again right after the caller's synchronous patch, unless
+   * something has read since (an error path reloads itself).
+   */
+  private supersedeReads(channel: string): void {
     const dropped = this.readInFlight();
-    // An older read must not undo what this write's answer says.
     const seq = ++this.loadSeq;
     if (dropped) {
-      // After the caller's synchronous patch, and only if nothing has read since (an error path reloads).
       queueMicrotask(() => {
         if (seq === this.loadSeq && channel === this.channelName()) {
           this.reloadQuietly();
         }
       });
     }
-    return true;
   }
 
   private patch(change: (current: WishRewardsRead) => WishRewardsRead): void {
