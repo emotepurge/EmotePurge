@@ -218,8 +218,10 @@ type LoadMode = 'initial' | 'quiet' | 'discard';
         }
 
         @if (captureEnabled()) {
+          <!-- A sub-block of this section, not a section of its own: no rule above it (the page
+               draws one per section), a small step of extra space and an h4 in the label type. -->
           <app-wish-rewards-section
-            class="border-t border-border pt-4"
+            class="mt-2"
             [channelName]="channelName()"
             [defaultDurationDays]="current.defaultDurationDays"
           />

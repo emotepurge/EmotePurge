@@ -88,8 +88,12 @@ const STATUS_TONES: Record<BackfillRunStatus, StatusBadgeTone> = {
   imports: [StatusBadge, TranslocoPipe],
   template: `
     <section class="flex flex-col gap-1.5 text-sm" [attr.aria-labelledby]="headingId()">
-      <h4 [id]="headingId()" class="flex items-center gap-2 font-medium">
-        {{ (kind() === 'active' ? 'backfill.activeRun' : 'backfill.lastRun') | transloco }}
+      <h4 [id]="headingId()" class="flex items-center gap-2">
+        <!-- The title carries the label type on its own, so the badge keeps its own look; the
+             trailing space keeps the two words apart in the heading's accessible name. -->
+        <span class="text-[11px] font-semibold tracking-[0.13em] text-fg-secondary uppercase"
+          >{{ (kind() === 'active' ? 'backfill.activeRun' : 'backfill.lastRun') | transloco }}
+        </span>
         <app-status-badge [tone]="tone()">{{ statusKey() | transloco }}</app-status-badge>
       </h4>
 

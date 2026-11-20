@@ -212,6 +212,16 @@ describe('WishSettingsSection', () => {
       });
     });
 
+    it('nests the rewards as a sub-block: an h4 region inside the h3 region of the wishes', async () => {
+      const fixture = await create(true);
+      const wishes = el(fixture).querySelector('section[aria-labelledby="wish-settings-heading"]');
+      const rewards = wishes?.querySelector('section[aria-labelledby="wish-rewards-heading"]');
+
+      expect(el(fixture).querySelector('#wish-settings-heading')?.tagName).toBe('H3');
+      expect(rewards).not.toBeNull();
+      expect(rewards!.querySelector('#wish-rewards-heading')?.tagName).toBe('H4');
+    });
+
     it('names an expiry outside 1 to 90 at the field and keeps Save locked', async () => {
       const fixture = await create(true);
 

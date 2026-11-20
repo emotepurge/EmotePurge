@@ -1018,6 +1018,21 @@ describe('BackfillSection', () => {
       });
     }
 
+    it('is a sub-block of the backfill section: an h4 region inside the h3 region', async () => {
+      getStatus.mockReturnValue(of(status({ coverage: COVERAGE })));
+      const fixture = await create();
+      const imported = importedSection(fixture);
+
+      expect(imported).not.toBeNull();
+      expect(imported!.parentElement?.closest('section')?.getAttribute('aria-labelledby')).toBe(
+        'backfill-heading',
+      );
+      expect(
+        (fixture.nativeElement as HTMLElement).querySelector('#backfill-heading')?.tagName,
+      ).toBe('H3');
+      expect(imported!.querySelector('#backfill-imported-heading')?.tagName).toBe('H4');
+    });
+
     it('shows the section only while the status lists coverage, one line per interval', async () => {
       const without = await create();
       expect(without.componentInstance.importedIntervals()).toEqual([]);

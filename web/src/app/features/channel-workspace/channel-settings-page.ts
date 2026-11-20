@@ -16,14 +16,16 @@ import { WishSettingsSection } from './wish-settings-section';
   template: `
     <div class="flex flex-col gap-6">
       <h2 class="text-lg font-semibold">{{ 'channelWorkspace.settings.title' | transloco }}</h2>
+      <!-- Section stack (UI-Designsprache §2.1): one rule above each section, none inside. -->
       @if (wishesEnabled()) {
         <app-wish-settings-section
+          class="border-t border-border pt-4"
           [channelName]="channelName()"
           [captureEnabled]="wishCaptureEnabled()"
         />
       }
       @if (chatLogBackfillEnabled()) {
-        <app-backfill-section [channelName]="channelName()" />
+        <app-backfill-section class="border-t border-border pt-4" [channelName]="channelName()" />
       }
     </div>
   `,

@@ -96,7 +96,10 @@ interface Feedback {
       }
       @case ('forbidden') {
         <section class="flex flex-col gap-2" aria-labelledby="wish-rewards-heading">
-          <h4 id="wish-rewards-heading" class="text-sm font-semibold">
+          <h4
+            id="wish-rewards-heading"
+            class="text-[11px] font-semibold tracking-[0.13em] text-fg-secondary uppercase"
+          >
             {{ 'wishes.settings.rewards.title' | transloco }}
           </h4>
           <p class="text-sm text-fg-muted">{{ 'wishes.settings.rewards.forbidden' | transloco }}</p>
@@ -104,7 +107,10 @@ interface Feedback {
       }
       @case ('failed') {
         <section class="flex flex-col gap-2" aria-labelledby="wish-rewards-heading">
-          <h4 id="wish-rewards-heading" class="text-sm font-semibold">
+          <h4
+            id="wish-rewards-heading"
+            class="text-[11px] font-semibold tracking-[0.13em] text-fg-secondary uppercase"
+          >
             {{ 'wishes.settings.rewards.title' | transloco }}
           </h4>
           <app-notice-banner variant="error">
@@ -117,7 +123,10 @@ interface Feedback {
       }
       @case ('loading') {
         <section class="flex flex-col gap-2" aria-labelledby="wish-rewards-heading">
-          <h4 id="wish-rewards-heading" class="text-sm font-semibold">
+          <h4
+            id="wish-rewards-heading"
+            class="text-[11px] font-semibold tracking-[0.13em] text-fg-secondary uppercase"
+          >
             {{ 'wishes.settings.rewards.title' | transloco }}
           </h4>
           <app-skeleton-rows [count]="2" />
@@ -126,7 +135,10 @@ interface Feedback {
       @case ('ready') {
         @if (read(); as current) {
           <section class="flex flex-col gap-3" aria-labelledby="wish-rewards-heading">
-            <h4 id="wish-rewards-heading" class="text-sm font-semibold">
+            <h4
+              id="wish-rewards-heading"
+              class="text-[11px] font-semibold tracking-[0.13em] text-fg-secondary uppercase"
+            >
               {{ 'wishes.settings.rewards.title' | transloco }}
               @if (current.channelBound) {
                 <span class="font-normal text-fg-muted">
@@ -161,9 +173,11 @@ interface Feedback {
                   [description]="'wishes.settings.rewards.emptyHint' | transloco"
                 />
               } @else {
-                <ul class="-mx-3 divide-y divide-border border-y border-border">
+                <!-- No -mx-3 breakout: the rows are static (no hover wipe to make room for), so
+                     their rules keep the edges of the wishes section they belong to. -->
+                <ul class="divide-y divide-border border-y border-border">
                   @for (reward of current.rewards; track reward.id) {
-                    <li class="flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-start">
+                    <li class="flex flex-col gap-2 py-3 sm:flex-row sm:items-start">
                       <div class="flex min-w-0 flex-1 flex-col gap-1">
                         <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
                           <span
@@ -332,7 +346,10 @@ interface Feedback {
           @if (current.channelBound) {
             <section class="flex flex-col gap-2" aria-labelledby="wish-gaps-heading">
               @if (current.gaps.length === 0) {
-                <h4 id="wish-gaps-heading" class="text-sm font-semibold">
+                <h4
+                  id="wish-gaps-heading"
+                  class="text-[11px] font-semibold tracking-[0.13em] text-fg-secondary uppercase"
+                >
                   {{ 'wishes.settings.rewards.gaps.title' | transloco }}
                 </h4>
                 <p class="text-sm text-fg-muted">
@@ -340,10 +357,13 @@ interface Feedback {
                 </p>
               } @else {
                 <!-- Details on demand: the gaps matter when looking for a lost redemption. -->
-                <h4 id="wish-gaps-heading" class="text-sm font-semibold">
+                <h4
+                  id="wish-gaps-heading"
+                  class="text-[11px] font-semibold tracking-[0.13em] text-fg-secondary uppercase"
+                >
                   <button
                     type="button"
-                    class="inline-flex min-h-6 items-center gap-2"
+                    class="inline-flex min-h-6 items-center gap-2 tracking-[0.13em] uppercase"
                     [attr.aria-expanded]="gapsOpen()"
                     aria-controls="wish-gaps-list"
                     (click)="gapsOpen.set(!gapsOpen())"
@@ -364,9 +384,9 @@ interface Feedback {
                   <p class="text-sm text-fg-secondary">
                     {{ 'wishes.settings.rewards.gaps.hint' | transloco }}
                   </p>
-                  <ul class="-mx-3 divide-y divide-border border-y border-border">
+                  <ul class="divide-y divide-border border-y border-border">
                     @for (gap of current.gaps; track gap.fromUtc + gap.reason) {
-                      <li class="flex flex-wrap gap-x-3 px-3 py-2 text-sm">
+                      <li class="flex flex-wrap gap-x-3 py-2 text-sm">
                         <span class="text-fg-body">{{ formatGap(gap) }}</span>
                         <span class="text-fg-muted">{{
                           gapReasonKey(gap.reason) | transloco
