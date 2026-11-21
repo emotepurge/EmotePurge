@@ -3072,6 +3072,22 @@
         "wish_state_conflict": "Der Wunsch hat sich inzwischen geändert.",
         "wish_not_found": "Den Wunsch gibt es nicht mehr.",
         "reselect": "Die Einträge sind neu geladen, wähle erneut."
+      },
+      "summary": {
+        "durationOnly": {
+          "one": "{{ count }} Tag",
+          "other": "{{ count }} Tage"
+        },
+        "added": {
+          "one": "{{ count }} Tag ab Hinzufügedatum · endet {{ date }}",
+          "other": "{{ count }} Tage ab Hinzufügedatum · endet {{ date }}"
+        },
+        "now": {
+          "one": "{{ count }} Tag ab jetzt · endet {{ date }}",
+          "other": "{{ count }} Tage ab jetzt · endet {{ date }}"
+        },
+        "change": "Ändern",
+        "changeLabel": "Laufzeit und Beginn der Frist ändern"
       }
     },
     "entry": {

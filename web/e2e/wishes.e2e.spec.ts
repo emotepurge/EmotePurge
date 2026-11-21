@@ -428,6 +428,60 @@ test.describe('wish emotes: the manager page (#485)', () => {
       }
     });
 
+    test('the action row summarises duration and start for an entry picked at the top of a long list, and "Ändern" brings the fields into view', async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: 1280, height: 600 });
+      await mockWishBackend(page, CHANNEL, {
+        slots: Array.from({ length: 50 }, (_, i) =>
+          buildWishSlot(`slot-${String(i).padStart(2, '0')}`, {
+            alias: `Entry${i}`,
+            // Relative to now: a fixed date would tip into "ab jetzt" once 14 days have passed.
+            addedAtUtc: wishInstant(-1),
+          }),
+        ),
+      });
+      await page.goto(URL_WISHES);
+      await page.getByRole('button', { name: 'Bestand übernehmen' }).click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog.getByRole('radio', { name: 'Entry0', exact: true })).toBeVisible();
+      const summary = dialog.locator('#wish-adopt-summary');
+      await expect(summary).toContainText('Tage');
+      await expect(summary).not.toContainText('endet');
+
+      await dialog.getByText('Entry0', { exact: true }).click();
+      await expect(summary).toContainText('ab Hinzufügedatum · endet');
+      await expect(summary).toBeInViewport();
+
+      // The duration field lies far below the fold; "Ändern" brings it clear of the sticky row.
+      const duration = dialog.getByLabel('Laufzeit in Tagen');
+      await expect(duration).not.toBeInViewport();
+      await dialog.getByRole('button', { name: 'Laufzeit und Beginn der Frist ändern' }).click();
+      await expect(duration).toBeFocused();
+      await expect(duration).toBeInViewport({ ratio: 1 });
+      // The start radios below it are in view too, above the footer, without having been clicked.
+      for (const name of ['Ab dem Hinzufügedatum', 'Ab jetzt']) {
+        const radio = dialog.getByRole('radio', { name });
+        await expect(radio).toBeInViewport({ ratio: 1 });
+        const radioBottom = await radio.evaluate((el) => el.getBoundingClientRect().bottom);
+        const footerTop = await page.evaluate(
+          () =>
+            document
+              .querySelector('[role="dialog"] [dialog-actions]')!
+              .parentElement!.getBoundingClientRect().top,
+        );
+        expect(radioBottom, name).toBeLessThanOrEqual(footerTop);
+      }
+      const clearance = (await focusClearance(page))!;
+      expect(clearance.controlBottom).toBeLessThanOrEqual(clearance.footerTop);
+
+      // The summary follows the field.
+      await duration.fill('365');
+      await expect(summary).toContainText('365 Tage ab Hinzufügedatum');
+      await dialog.getByRole('radio', { name: 'Ab jetzt' }).click();
+      await expect(summary).toContainText('365 Tage ab jetzt · endet');
+    });
+
     test('keyboard focus in a long entry list always lands clear of the sticky action row (WCAG 2.4.11)', async ({
       page,
     }) => {
