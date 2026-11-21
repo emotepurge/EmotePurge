@@ -486,6 +486,73 @@ describe('WishAdoptDialog', () => {
     expect(blockedReason()).toBe(t('wishes.dialog.blocked.duration'));
   });
 
+  describe('summary in the action row', () => {
+    function summaryText(): string | null {
+      const line = fixture.nativeElement.querySelector('#wish-adopt-summary');
+      return line === null
+        ? null
+        : (line.firstChild?.textContent ?? '').replace(/\s+/g, ' ').trim();
+    }
+
+    function dateOf(ms: number): string {
+      const locale = toLocale(TestBed.inject(LanguageService).lang());
+      return new Date(ms).toLocaleDateString(locale, { dateStyle: 'medium' });
+    }
+
+    it('names only the duration before an entry is picked', () => {
+      open();
+      answerSlots([slot('a')]);
+      answerSettings(30);
+      expect(summaryText()).toBe('30 Tage');
+    });
+
+    it('adds the start and the expiry once an entry is picked, and follows the start choice', () => {
+      open();
+      answerSettings(14);
+      answerSlots([slot('a')]);
+      pick('a');
+      const added = Date.parse('2026-11-15T10:00:00.123Z');
+      expect(summaryText()).toBe(`14 Tage ab Hinzufügedatum · endet ${dateOf(added + 14 * DAY)}`);
+      startRadio(t('wishes.adopt.start.now')).click();
+      fixture.detectChanges();
+      expect(summaryText()).toBe(`14 Tage ab jetzt · endet ${dateOf(NOW + 14 * DAY)}`);
+    });
+
+    it('uses the singular for one day', () => {
+      open();
+      answerSettings(1);
+      answerSlots([slot('a')]);
+      expect(summaryText()).toBe('1 Tag');
+    });
+
+    it('shows nothing while the duration is unusable, so the blocked reason stands alone', () => {
+      open();
+      answerSettings(14);
+      answerSlots([slot('a')]);
+      pick('a');
+      setDuration('0');
+      expect(summaryText()).toBeNull();
+      expect(blockedReason()).toBe(t('wishes.dialog.blocked.duration'));
+    });
+
+    it('"Ändern" focuses the duration field', () => {
+      open();
+      answerSettings(14);
+      answerSlots([slot('a')]);
+      pick('a');
+      document.body.appendChild(fixture.nativeElement); // focus needs a connected element
+      const scrolled = vi.fn(); // jsdom has no layout and no scrollIntoView
+      Element.prototype.scrollIntoView = scrolled;
+      const change = button(t('wishes.adopt.summary.change'));
+      expect(change.getAttribute('aria-label')).toBe(t('wishes.adopt.summary.changeLabel'));
+      change.click();
+      expect(scrolled).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).toBe(
+        fixture.nativeElement.querySelector('#wish-adopt-duration'),
+      );
+    });
+  });
+
   describe('stale situation', () => {
     it.each([
       [404, 'wish_slot_not_found', undefined],
