@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ACTION_KEYS,
+  AUDIT_ACTION_GROUPS,
+  groupAuditActions,
   CHANNEL_SCOPED_ACTIONS,
   CHANNELLESS_ACTIONS,
   DETAIL_KEYS,
