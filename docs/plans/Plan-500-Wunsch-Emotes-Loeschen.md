@@ -6,7 +6,9 @@ Stand gelesen.
 **Status: Revision 1 (2026-11-21), nach Sol adversarial Runde 1 über Revision 0 (Commit `62e81704`; 2 × P1, 4 × P2,
 2 × P3). Jeder Befund ist am Code nachgeprüft; fünf sind voll eingearbeitet, zwei P1/P2 eingegrenzt (begründet), einer
 betrifft nur den Plan-Schnitt. Die Spec ist mit Revision 5 nachgezogen (Block „Plan-Runde 1“ ihrer Prüfbefunde), die
-Betreiberantworten auf die offenen Fragen aus Revision 0 sind eingearbeitet. Nichts implementiert.**
+Betreiberantworten auf die offenen Fragen aus Revision 0 sind eingearbeitet, die drei Fragen aus Abschnitt 8 hat der
+Betreiber am selben Tag entschieden. Nächster Schritt: zweite Sol-Runde über diesen Plan, danach Umsetzung. Nichts
+implementiert.**
 Quellen: [Spec](../superpowers/specs/2026-11-17-wunsch-emotes-spec.md), Nachtrag „K7“, Teil „K7a: Löschen beendeter Wünsche“
 (E32, E34 bis E41, E44, E46, AK109 bis AK119, AK133, AK134, Testplan, Files Reference, Auslieferung, RR15 bis RR18) samt
 Betreiberentscheidungen Y2, Y3, O1, O2 und der Tabelle „Prüfbefunde K7“; [Plan-483](Plan-483-Wunsch-Emotes-Backend-Kern.md)
@@ -29,7 +31,7 @@ er schreibt. Vor jeder UI-Arbeit `docs/UI-Designsprache.md` §11 und `DESIGN.md`
 | Befund | Prüfung am Code | Urteil und Ort |
 |---|---|---|
 | PR1-1 (P1) Eine Entfernung in einer 429-Pause übersteht Behalten → Löschen → Übernehmen | hält: das Tor vor jedem Versuch (`seven-tv-delete.service.ts:935-1001`) prüft Token, Set, Generation; die Wunschprüfung (`wishDeviation`, `wish-run-start.ts:218-243`) läuft nur beim Start; `adopt` behält die Generation; die Engine fragt das Tor vor jedem Wiederholungsversuch erneut (`seven-tv-delete.service.ts:790-812`) | **voll:** Spec E46, Vertrag 2.7, neuer Task T5, E2E mit zwei Verwaltern in T7 (AK133) |
-| PR1-2 (P1) Zwischengespeicherte Moderatorrechte (10 min) erlauben nach dem Entzug ein hartes Löschen | hält: `ModeratedChannelsProvider.cs:33-51` liest den Cache ohne Prüfung, TTL `Auth:ModCheckCacheTtlMinutes` 10 | **eingegrenzt (Empfehlung):** dieselbe Liste berechtigt heute `DELETE` Abstimmung (`VoteSessionEndpoints.cs:114`), `DELETE` Tag (`EmoteTagEndpoints.cs:112`) und das Entfernen importierter Backfill-Daten (`ChannelEndpoints.cs:417`); K7a löscht nur beendete Wünsche ohne 7TV-Wirkung, das Audit nennt den Akteur, „Rollen-Cache invalidieren“ leert `modlist:` sofort (`ModRoleCache.cs:105`). Frisch fragen hieße je Löschen eine Helix-Pagination und für fail-closed einen neuen Fehlercode (Regel-7-Kette) — für K7a allein unverhältnismäßig. Spec E39 „Grenze“, RR16, #496 H6 (gemeinsam für alle harten Aktionen). Frage 1 in Abschnitt 8 |
+| PR1-2 (P1) Zwischengespeicherte Moderatorrechte (10 min) erlauben nach dem Entzug ein hartes Löschen | hält: `ModeratedChannelsProvider.cs:33-51` liest den Cache ohne Prüfung, TTL `Auth:ModCheckCacheTtlMinutes` 10 | **eingegrenzt (Empfehlung):** dieselbe Liste berechtigt heute `DELETE` Abstimmung (`VoteSessionEndpoints.cs:114`), `DELETE` Tag (`EmoteTagEndpoints.cs:112`) und das Entfernen importierter Backfill-Daten (`ChannelEndpoints.cs:417`); K7a löscht nur beendete Wünsche ohne 7TV-Wirkung, das Audit nennt den Akteur, „Rollen-Cache invalidieren“ leert `modlist:` sofort (`ModRoleCache.cs:105`). Frisch fragen hieße je Löschen eine Helix-Pagination und für fail-closed einen neuen Fehlercode (Regel-7-Kette) — für K7a allein unverhältnismäßig. Spec E39 „Grenze“, RR16, #496 H6 (gemeinsam für alle harten Aktionen). Vom Betreiber hingenommen (Abschnitt 8, Entscheid 1) |
 | PR1-3 (P2) `EndedAtUtc` als Episodenmarke kann kollidieren | geprüft: kein neues Ende verwendet einen alten Wert (`ArchivedAt` nur, wenn nicht vor `SlotConfirmedAtUtc`, `WishReconcileService.cs:366-369`; jede Rückkehr setzt `SlotConfirmedAtUtc` auf jetzt, `:715-720`); offen nur ein Uhrsprung auf dieselbe Mikrosekunde | **eingegrenzt:** ein Episodenzähler bräuchte Migration und Schreibstellen im Worker; Folge im Restfall begrenzt (ein weiterhin beendeter Wunsch wird gelöscht). Spec E44 „Grenze“, RR17; T1 bekommt den Test „altes `ArchivedAt` nach Rückkehr wird nicht wiederverwendet“ |
 | PR1-4 (P2) Die Sperre der Wunschzeile wählt global nach ID | hält: `RowLocks.cs:134-146` | **voll:** neue Sperreinträge mit `ChannelId` (2.2a), Test mit zwei Verbindungen (AK134) in T1; die bestehenden Befehle haben dieselbe Eigenschaft → #496 H5, nicht K7a |
 | PR1-5 (P2) T1 kann sein Gate nicht bestehen | hält: `EveryOutcome_HasAMappingCase_InThisTheory` (`WishEndpointsTests.cs:415-422`) verlangt jede `WishOutcome`-Zeile, die Theorie liest immer einen JSON-Rumpf, das Inventar zählt 26 Routen (`:781-792`) | **voll:** T1 trägt `AccessDenied`, seinen `MapResult`-Fall und einen eigenen Test ohne Rumpf; T3 hebt das Inventar auf 27 und prüft 204 getrennt |
@@ -105,7 +107,7 @@ Bereich „Beendet“ und an der angehefteten Zeile, die Bestätigung in zwei Va
 übernehmen“ und Vorauswahl, die neuen Texte im Übernahme- und Eintrag-Dialog, der eigene Grund im Entfernungsbericht (N3);
 Tests auf allen Ebenen, Live-Verifikation, Doku-Zeilen.
 
-**Draußen:** K7b „Erneut auf Zeit“ (Y3) samt `decisionVersion` (E42; Frage 2 in Abschnitt 8); die allgemeine
+**Draußen:** K7b „Erneut auf Zeit“ (Y3); `decisionVersion` im Vergleich der Entfernung (eigenes Issue #505, Abschnitt 8 Entscheid 2); die allgemeine
 Moderatorprüfung über die ID (#496 Punkt 2 / H3), die Kanalbedingung in den bestehenden Befehlen (H5), eine frische
 Rollenprüfung für harte Aktionen (H6); jede Migration, jeder Schalter, jede Änderung an Worker, Compose, Runbook, Retention;
 Löschen in `my-wishes`, „Handlungsbedarf“ oder „Laufend“.
@@ -168,7 +170,7 @@ Erfassungsschalter und ohne die GET-Ausnahme: `Wishes:Enabled` aus → 404 `wish
 Prinzipal → 401; Zugriff null → 404 `channel_not_found`; Zeile ohne ID → 409 `wish_channel_unbound`; nicht bestätigt →
 403 ohne Rumpf; sonst Zugriff in `HttpContext.Items`. Gemeinsame Teile dürfen in einen internen Helfer wandern; das
 Verhalten von `WishCaptureAccessFilter` bleibt bitgleich. Kein `WishSettingsAuthorizationFilter` (E39). Der Filter fragt
-dieselbe zwischengespeicherte Liste der moderierten Kanäle wie alle Verwalter-Routen (RR16, Abschnitt 8 Frage 1).
+dieselbe zwischengespeicherte Liste der moderierten Kanäle wie alle Verwalter-Routen (RR16, vom Betreiber hingenommen, Abschnitt 8 Entscheid 1).
 
 ### 2.5 Client-Verträge
 
@@ -571,16 +573,15 @@ gelöschte Wünsche kommen nur aus dem Backup zurück, E46 fällt mit dem Image 
 
 ---
 
-## 8. Offene Fragen an den Betreiber
+## 8. Betreiberentscheide zu den offenen Fragen (2026-11-21)
 
-1. **RR16 so hinnehmen?** Empfehlung: ja, für K7a keine frische Twitch-Abfrage, weil dieselbe Liste alle harten
-   Verwalter-Aktionen berechtigt; eine gemeinsame frische Prüfung mit fail-closed wäre ein eigenes Thema (#496 H6, braucht
-   einen Fehlercode und kostet je Aktion eine Helix-Pagination).
-2. **#496 H1 („Verlängern während der Pause“) gleich mitnehmen?** Nach E46 fehlt dafür nur `decisionVersion` im
-   `WishDto` und im Vergleich von `wishDeviation` (etwa ein Viertel Tag, kein Fehlercode, keine Migration). Empfehlung:
-   nein, K7a schmal halten; als kleines eigenes Issue danach.
-3. **Aufwand 2,5 Tage** statt 1,5: einverstanden, oder E46 als eigenes Issue vor K7a ausliefern? Empfehlung: in K7a lassen,
-   weil der Leitfall ohne E46 einen frisch übernommenen Eintrag verlieren kann.
+Alle drei Fragen aus Revision 1 sind entschieden, jeweils wie empfohlen; offen ist keine.
+
+1. **RR16 hingenommen.** Für K7a keine frische Twitch-Abfrage; dieselbe Regel wie für die übrigen harten
+   Verwalter-Aktionen. Eine gemeinsame frische Prüfung mit fail-closed bleibt ein eigenes Thema (#496 H6).
+2. **#496 H1 nicht in K7a.** `decisionVersion` im `WishDto` und im Vergleich von `wishDeviation` („Verlängern während der
+   Pause“) ist ein eigenes kleines Issue: #505 (P3, etwa ein Viertel Tag, baut auf E46 auf).
+3. **2,5 Tage angenommen, E46 bleibt in K7a.** Umsetzung nach einer zweiten Sol-Runde über diesen Plan.
 
 ---
 
