@@ -104,6 +104,57 @@ public class WishTextParserTests
 
     // The example table of spec K6.
     [Theory]
+    [InlineData(Ulid)]
+    [InlineData("01ezphaj3r000c438200a44f19")]
+    [InlineData(Hex)]
+    [InlineData("603CB17BC20D020014423C29")]
+    [InlineData("bitte " + Ulid + " danke!")]
+    [InlineData(Ulid + ".")]
+    [InlineData("\"" + Ulid + "\"")]
+    [InlineData("KEKW " + Ulid)]
+    [InlineData("  " + Hex + "\n")]
+    public void BareId_StandaloneIdShapedToken_IsALinkMatch(string text) => AssertLink(text);
+
+    [Fact]
+    public void BareId_BeatsAnEarlierNameToken() => AssertLink("please add this catJAM " + Ulid);
+
+    [Fact]
+    public void BareId_TheFirstIdShapedTokenCounts() => AssertLink(Ulid + " 01FC4W70J80005D6HG0ANTP023");
+
+    [Fact]
+    public void BareId_ALinkBeatsABareId() =>
+        AssertLink("01FC4W70J80005D6HG0ANTP023 https://7tv.app/emotes/" + Ulid);
+
+    [Theory]
+    [InlineData("01EZPHAJ3R000C438200A44F1")] // 25
+    [InlineData("01EZPHAJ3R000C438200A44F199")] // 27
+    [InlineData("01EZPHAJ3R000C438200A44F1I")] // I
+    [InlineData("01EZPHAJ3R000C438200A44F1L")] // L
+    [InlineData("01EZPHAJ3R000C438200A44F1O")] // O
+    [InlineData("01EZPHAJ3R000C438200A44F1U")] // U
+    [InlineData("81EZPHAJ3R000C438200A44F19")] // first character above 7
+    [InlineData("Z1EZPHAJ3R000C438200A44F19")]
+    [InlineData("603cb17bc20d020014423c2")] // 23 hex
+    [InlineData("603cb17bc20d020014423c299")] // 25 hex
+    [InlineData("603cb17bc20d020014423cZZ")] // 24, not hex
+    [InlineData("abcdefghijklmnopqrstuvwx")] // 24-character name
+    [InlineData("01EZPHAJ3R000C438200A44F1\u017F")] // long s folds to S under ToUpperInvariant
+    [InlineData("01EZPHAJ3R000C438200A44F1\u212A")] // Kelvin sign
+    [InlineData("01EZPHAJ3R000C438200A44F1\u0131")] // dotless i
+    [InlineData("\uFF10\uFF11EZPHAJ3R000C438200A44F19")] // fullwidth digits
+    [InlineData("\uFF16\uFF10\uFF13cb17bc20d020014423c29")] // fullwidth digits in a 24-character token
+    public void BareId_NotIdShaped_StaysAName(string token) => AssertName(token, token);
+
+    [Theory]
+    [InlineData("@" + Ulid)]
+    [InlineData("https://example.com/" + Ulid)]
+    [InlineData("www." + Ulid)]
+    public void BareId_AnAddressOrMention_IsNotAnId(string text) => AssertNone(text);
+
+    [Fact]
+    public void BareId_InsideALongerWord_IsNotAnId() => AssertName("x" + Ulid, "x" + Ulid);
+
+    [Theory]
     [InlineData("KEKW", "KEKW")]
     [InlineData("kekw bitte", "kekw")]
     [InlineData("bitte KEKW", "bitte")]

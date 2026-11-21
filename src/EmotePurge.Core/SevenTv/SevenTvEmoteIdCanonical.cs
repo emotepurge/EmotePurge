@@ -49,7 +49,8 @@ public static class SevenTvEmoteIdCanonical
     {
         foreach (var c in id)
         {
-            if (UlidAlphabet.IndexOf(char.ToUpperInvariant(c)) < 0)
+            // ASCII first: ToUpperInvariant folds non-ASCII letters (U+017F long s) onto the alphabet.
+            if (!char.IsAscii(c) || UlidAlphabet.IndexOf(char.ToUpperInvariant(c)) < 0)
                 return false;
         }
 

@@ -15,7 +15,8 @@ public readonly record struct WishTextParseResult(string MatchKind, string? Seve
 
 /// <summary>
 /// Reads the text a viewer typed into a wish reward (spec K6 "Text auswerten"): a 7TV emote link anywhere in
-/// the text wins, otherwise the first token that can be an emote name. Pure and BCL only. The text is
+/// the text wins, then a standalone token that is exactly id-shaped, otherwise the first token that can be an
+/// emote name. Pure and BCL only. The text is
 /// viewer-controlled, so the scan is a linear walk (no regular expression, nothing that backtracks), and no
 /// 7TV request is made.
 /// </summary>
@@ -24,6 +25,9 @@ public static class WishTextParser
     private const string LinkPath = "7tv.app/emotes/";
     private const int NameMinLength = 2;
     private const string EdgePunctuation = ".,;!?\"'";
+    private const int ObjectIdLength = 24;
+    private const int UlidLength = 26;
+    private const string UlidAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
     public static WishTextParseResult Parse(string? text)
     {
@@ -33,6 +37,10 @@ public static class WishTextParser
         var id = FindLinkId(text);
         if (id is not null)
             return new WishTextParseResult(WishMatchKind.Link, SevenTvEmoteIdCanonical.Canonicalize(id), null);
+
+        var bareId = FindBareId(text);
+        if (bareId is not null)
+            return new WishTextParseResult(WishMatchKind.Link, SevenTvEmoteIdCanonical.Canonicalize(bareId), null);
 
         var name = FindName(text);
         return name is null
@@ -102,22 +110,59 @@ public static class WishTextParser
         return true;
     }
 
+    /// <summary>
+    /// A standalone token (same address and mention filtering and edge punctuation as the name grammar) that is
+    /// exactly an id: 24 hex characters, or 26 characters of the ULID alphabet whose first character is 0 to 7
+    /// (a ULID's 48-bit time cannot start higher). The first such token anywhere wins over any name, because an
+    /// id is far more specific than a word. Everything else, including 25 or 27 characters, stays a name.
+    /// </summary>
+    private static string? FindBareId(string text)
+    {
+        var index = 0;
+        while (NextToken(text, ref index, out var token))
+        {
+            if (IsAddressOrMention(token))
+                continue;
+
+            var candidate = token.Trim(EdgePunctuation);
+            if (IsBareId(candidate))
+                return candidate.ToString();
+        }
+
+        return null;
+    }
+
+    private static bool IsBareId(ReadOnlySpan<char> candidate)
+    {
+        if (candidate.Length == ObjectIdLength)
+        {
+            foreach (var c in candidate)
+            {
+                if (!char.IsAsciiHexDigit(c))
+                    return false;
+            }
+
+            return true;
+        }
+
+        if (candidate.Length != UlidLength || candidate[0] is < '0' or > '7')
+            return false;
+
+        foreach (var c in candidate)
+        {
+            // ASCII first: ToUpperInvariant folds non-ASCII letters (U+017F long s) onto the alphabet.
+            if (!char.IsAscii(c) || UlidAlphabet.IndexOf(char.ToUpperInvariant(c)) < 0)
+                return false;
+        }
+
+        return true;
+    }
+
     private static string? FindName(string text)
     {
         var index = 0;
-        while (index < text.Length)
+        while (NextToken(text, ref index, out var token))
         {
-            while (index < text.Length && char.IsWhiteSpace(text[index]))
-                index++;
-
-            var start = index;
-            while (index < text.Length && !char.IsWhiteSpace(text[index]))
-                index++;
-
-            if (index == start)
-                break;
-
-            var token = text.AsSpan(start, index - start);
             if (IsAddressOrMention(token))
                 continue;
 
@@ -127,6 +172,20 @@ public static class WishTextParser
         }
 
         return null;
+    }
+
+    /// <summary>The next whitespace-delimited token from <paramref name="index"/>; false at the end.</summary>
+    private static bool NextToken(string text, ref int index, out ReadOnlySpan<char> token)
+    {
+        while (index < text.Length && char.IsWhiteSpace(text[index]))
+            index++;
+
+        var start = index;
+        while (index < text.Length && !char.IsWhiteSpace(text[index]))
+            index++;
+
+        token = text.AsSpan(start, index - start);
+        return index > start;
     }
 
     private static bool IsAddressOrMention(ReadOnlySpan<char> token) =>
