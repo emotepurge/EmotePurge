@@ -62,6 +62,8 @@ public partial class WishCaptureServiceTests(PostgresFixture fixture)
     [Theory]
     [InlineData("https://7tv.app/emotes/01ARZ3NDEKTSV4RRFFQ69G5FAV")]
     [InlineData("bitte das hier 7tv.app/emotes/01arz3ndektsv4rrffq69g5fav danke")]
+    [InlineData("01ARZ3NDEKTSV4RRFFQ69G5FAV")]
+    [InlineData("bitte 01arz3ndektsv4rrffq69g5fav danke!")]
     public async Task ALink_CarriesTheCanonicalId_ButNoNameYet(string text)
     {
         var channel = await SeedChannelAsync();

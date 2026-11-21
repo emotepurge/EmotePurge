@@ -36,6 +36,7 @@ public class SevenTvEmoteIdCanonicalTests
     [InlineData("01EZPHAJ3R000C438200A44F1U")]    // 26 characters with U, outside Crockford base32
     [InlineData("01EZPHAJ3R000C438200A44F190")]   // 27 characters
     [InlineData(" 01EZPHAJ3R000C438200A44F19")]
+    [InlineData("01ezphaj3r000c438200a44f1\u017F")] // long s must not fold onto S
     public void Anything_Else_ComesBackUnchanged(string input) =>
         Assert.Equal(input, SevenTvEmoteIdCanonical.Canonicalize(input));
 }

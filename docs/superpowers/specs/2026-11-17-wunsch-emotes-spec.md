@@ -1387,7 +1387,17 @@ mit 24 Zeichen. Nach der ID dürfen Query-String, Fragment, Schrägstrich und Sa
 davor und danach beliebiger Text. Eine ID anderer Länge ist kein Link. Bei mehreren Links zählt
 der erste.
 
-Ohne Link gilt diese Grammatik für den Namen, in dieser Reihenfolge:
+**Bloße ID (Betreiberentscheidung 2026-11-21):** Ohne Link gilt auch ein eigenständiges Token, das
+genau eine ID ist, als `MatchKind = link` mit kanonisierter ID, denn ein Zuschauer löst die Belohnung
+auch mit der nackten ID ein. Das Token wird wie in der Namensgrammatik gebildet (Leerraum-Split,
+Adressen und Erwähnungen verworfen, Randzeichen `. , ; ! ? " '` entfernt) und gilt als ID nur, wenn
+es entweder 24 Hex-Zeichen hat oder 26 Zeichen aus dem ULID-Alphabet (Ziffern und Buchstaben ohne
+`I`, `L`, `O`, `U`, ohne Rücksicht auf Groß- und Kleinschreibung) mit erstem Zeichen `0` bis `7`.
+Alles andere (25 oder 27 Zeichen, ein verbotener Buchstabe, erstes Zeichen `8` bis `Z`, ein ID-Stück
+in einem längeren Wort) bleibt ein Name. Das erste ID-förmige Token irgendwo im Text schlägt jeden
+Namen, auch einen früheren; ein Link schlägt weiterhin die bloße ID.
+
+Ohne Link und ohne bloße ID gilt diese Grammatik für den Namen, in dieser Reihenfolge:
 
 1. Den Text an Leerraum in Tokens teilen.
 2. Tokens verwerfen, die eine Adresse sind (enthalten `://` oder beginnen mit `www.`) oder eine
