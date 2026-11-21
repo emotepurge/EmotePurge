@@ -242,4 +242,65 @@ test.describe('channel activity tab', () => {
     expect(overflow).toBeLessThanOrEqual(0);
     await expect(group.getByText('Abstimmungen', { exact: true })).toBeAttached();
   });
+
+  test('on a short landscape phone the open menu ends inside the viewport and every option is reachable', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 844, height: 390 });
+    await mockChannelPermissions(page, 'sensitron');
+    await mockChannelAuditLog(page, 'sensitron', {
+      1: Array.from({ length: 25 }, (_, i) => ({ id: 100 - i, action: 'channel.join' })),
+    });
+
+    await page.goto('/channels/sensitron/activity');
+    await openActionMenu(page);
+
+    const group = page.getByRole('radiogroup', { name: 'Nach Aktion filtern' });
+    const box = await group.boundingBox();
+    expect(box!.y + box!.height).toBeLessThanOrEqual(390);
+
+    const last = group.getByRole('radio').last();
+    await last.scrollIntoViewIfNeeded();
+    await expect(last).toBeInViewport();
+  });
+
+  test('a long selected label truncates instead of widening the page at 345 px', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 345, height: 700 });
+    await mockChannelPermissions(page, 'sensitron');
+    await mockChannelAuditLog(page, 'sensitron', {
+      1: [{ id: 1, action: 'wish.autoLink' }],
+    });
+
+    await page.goto('/channels/sensitron/activity?action=wish.autoLink');
+    await expect(page.getByRole('button', { name: /Nach Aktion filtern/ })).toBeVisible();
+
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+
+  test('an unknown ?action= is no filter: trigger says "Alle", the request carries none, the URL is cleaned', async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron');
+    await mockChannelAuditLog(page, 'sensitron', {
+      1: [{ id: 1, action: 'channel.join' }],
+    });
+    const requests: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/audit-log')) {
+        requests.push(request.url());
+      }
+    });
+
+    await page.goto('/channels/sensitron/activity?action=typo');
+
+    await expect(page.getByRole('listitem')).toHaveCount(1);
+    await expect(page.getByRole('button', { name: /Nach Aktion filtern: Alle/ })).toBeVisible();
+    await expect(page).not.toHaveURL(/action=/);
+    expect(requests.every((url) => !url.includes('action='))).toBe(true);
+  });
 });
