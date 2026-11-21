@@ -2820,6 +2820,10 @@
         "entry": "Add by hand",
         "adopt": "Take over from the set"
       },
+      "settingsHint": {
+        "text": "Reward, duration and bot mode are set under",
+        "link": "Settings"
+      },
       "setFull": "The wish is filed, but the set is full. A slot has to be freed before the emote can go in."
     },
     "confirm": {

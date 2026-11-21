@@ -662,6 +662,17 @@ test.describe('wish emotes: the manager page (#485)', () => {
       await expect(page).toHaveURL(new RegExp(`${URL_WISHES}$`));
       await expect(section(page, 'open')).toBeVisible();
     });
+
+    test('the quiet settings hint on the page leads to the settings tab', async ({ page }) => {
+      await mockWishBackend(page, CHANNEL);
+      await page.goto(URL_WISHES);
+      // Scoped to the hint paragraph: the tab bar has a link of the same name.
+      const hint = page.locator('p', { hasText: 'Belohnung, Laufzeit und Bot-Modus' });
+      await expect(hint).toBeVisible();
+      await hint.getByRole('link', { name: 'Einstellungen' }).click();
+      await expect(page).toHaveURL(new RegExp(`/channels/${CHANNEL}/settings$`));
+      await expect(page.getByRole('heading', { level: 2, name: 'Einstellungen' })).toBeVisible();
+    });
   });
 
   test.describe('live, validity and usage (AK39)', () => {

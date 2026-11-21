@@ -2820,6 +2820,10 @@
         "entry": "Nachtragen",
         "adopt": "Bestand übernehmen"
       },
+      "settingsHint": {
+        "text": "Belohnung, Laufzeit und Bot-Modus stellst du unter",
+        "link": "Einstellungen"
+      },
       "setFull": "Der Wunsch ist angelegt, aber das Set ist voll. Bevor das Emote hinein kann, muss ein Platz frei werden."
     },
     "confirm": {
