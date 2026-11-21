@@ -1,6 +1,6 @@
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, DestroyRef, inject, signal } from '@angular/core';
+import { Component, computed, DestroyRef, ElementRef, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { interval } from 'rxjs';
@@ -441,10 +441,29 @@ interface StaleNotice {
         <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
       }
 
-      @if (blockedReason(); as reason) {
-        <p dialog-actions id="wish-adopt-blocked" class="mr-auto text-xs text-fg-muted">
-          {{ reason | transloco }}
-        </p>
+      <!-- One wrapping text line, not inputs, so the sheet's row stays compact. No live region: it
+           changes with every keystroke in the duration field, and the blocked reason already speaks. -->
+      @if (blockedReason() || summary()) {
+        <div dialog-actions class="mr-auto flex min-w-0 flex-col gap-0.5 text-xs text-fg-muted">
+          @if (blockedReason(); as reason) {
+            <p id="wish-adopt-blocked">{{ reason | transloco }}</p>
+          }
+          @if (summary(); as text) {
+            <p id="wish-adopt-summary" class="text-fg-secondary">
+              {{ text.key | transloco: text.params }}
+              <button
+                type="button"
+                appButton="outline"
+                class="ml-1 align-middle"
+                [attr.aria-label]="'wishes.adopt.summary.changeLabel' | transloco"
+                [disabled]="saving()"
+                (click)="focusDuration()"
+              >
+                {{ 'wishes.adopt.summary.change' | transloco }}
+              </button>
+            </p>
+          }
+        </div>
       }
       <button
         dialog-actions
@@ -477,6 +496,7 @@ export class WishAdoptDialog {
   private readonly lookup = inject(SevenTvEmoteLookup);
   private readonly languageService = inject(LanguageService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   protected readonly maxDays = WISH_DURATION_DAYS_MAX;
   protected readonly pluralKey = pluralKey;
@@ -591,6 +611,28 @@ export class WishAdoptDialog {
     return expiry === null ? null : this.formatDate(new Date(expiry).toISOString());
   });
 
+  /**
+   * The line in the sticky action row: duration, and with an entry picked also the start and the
+   * expiry (`expiryText` is the one date computation). `null` while the duration is unusable: the
+   * blocked reason already says so, and two messages about it would only compete.
+   */
+  protected readonly summary = computed<{
+    key: string;
+    params: { count: number; date?: string };
+  } | null>(() => {
+    const days = this.durationDays();
+    if (days === null) {
+      return null;
+    }
+    const date = this.expiryText();
+    if (this.selected() === null || date === null) {
+      return { key: pluralKey(days, 'wishes.adopt.summary.durationOnly'), params: { count: days } };
+    }
+    const base =
+      this.startChoice() === 'added' ? 'wishes.adopt.summary.added' : 'wishes.adopt.summary.now';
+    return { key: pluralKey(days, base), params: { count: days, date } };
+  });
+
   /** The first reason the request cannot go out yet, as a translation key; `null` when it can. */
   protected readonly blockedReason = computed(() => {
     if (this.disabledFeature()) {
@@ -698,6 +740,17 @@ export class WishAdoptDialog {
         this.prefillDuration(fallback);
       }
     }
+  }
+
+  /** "Ändern": brings the duration field (with its label) into view and focuses it. */
+  protected focusDuration(): void {
+    const input = this.host.nativeElement.querySelector<HTMLInputElement>('#wish-adopt-duration');
+    if (input === null) {
+      return;
+    }
+    // The pane's scroll-padding (`--dialog-clear-bottom`) keeps it clear of the sticky row.
+    (input.parentElement ?? input).scrollIntoView({ block: 'nearest' });
+    input.focus({ preventScroll: true });
   }
 
   protected chooseStart(choice: AdoptStartChoice): void {
