@@ -662,6 +662,22 @@ test.describe('wish emotes: the manager page (#485)', () => {
       await expect(page).toHaveURL(new RegExp(`${URL_WISHES}$`));
       await expect(section(page, 'open')).toBeVisible();
     });
+
+    test('the quiet settings hint on the page leads to the settings tab', async ({ page }) => {
+      // Settings would otherwise ask for the backfill state, which nothing stubs here.
+      await mockChannelPermissions(page, CHANNEL, {
+        wishesEnabled: true,
+        chatLogBackfillEnabled: false,
+      });
+      await mockWishBackend(page, CHANNEL);
+      await page.goto(URL_WISHES);
+      // The tab bar carries a link of the same name (first in DOM order); the hint is the last.
+      const links = page.getByRole('link', { name: 'Einstellungen' });
+      await expect(links).toHaveCount(2);
+      await links.last().click();
+      await expect(page).toHaveURL(new RegExp(`/channels/${CHANNEL}/settings$`));
+      await expect(page.getByRole('heading', { level: 2, name: 'Einstellungen' })).toBeVisible();
+    });
   });
 
   test.describe('live, validity and usage (AK39)', () => {
