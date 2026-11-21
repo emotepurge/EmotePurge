@@ -2272,8 +2272,9 @@ verlassen (Plan-Runde 1, PR1-1).
      aus dem Kandidatenstand gebaut und getaggt und läuft aus dem Compose-Projekt des Haupt-Checkouts ohne
      Neubau; der Worker ist aus einem ausdrücklich genannten Stand von `main` gebaut (wie die Auslieferung „nur
      Api“). Beide Image-IDs werden beim Bauen notiert und vor dem ersten Schritt mit denen der laufenden Container
-     verglichen; der geprüfte Arbeitsstand ist über den Hash seines Baums festgehalten, dem der Baum der späteren
-     Commits nachweislich gleicht (Regel 16: live vor dem Commit).
+     verglichen; der geprüfte Stand ist als `HEAD` des ungepushten Feature-Branches festgehalten, und vor Push und PR wird
+     geprüft, dass `HEAD` sich seitdem nicht geändert hat (Regel 16 wie bei K6: Commits je Task auf dem
+     ungepushten Branch, Live-Gate vor Push und PR; Betreiber 2026-11-21).
 133. **AK133** Wunschprüfung vor jedem Entfernversuch (E46): Vitest an der Lösch-Engine und am Bindungs-Haken —
      ein Versuch nach einer 429-Pause sendet kein `REMOVE`, wenn die frische Lesung des Wunsches 404 liefert,
      einen anderen Zustand (`kept`), einen anderen Slot oder eine andere Generation zeigt oder scheitert
@@ -2335,7 +2336,7 @@ eines Server-Wächters: Deploy in einer ruhigen Zeit ohne laufende Entfernung au
 die Seite neu, und in den ersten 10 Minuten nach dem Deploy wird kein behaltener Wunsch gelöscht, dessen Emote gerade
 entfernt wurde (die alte Engine wartet höchstens fünf Pausen von je bis zu 60 s). Die Regel steht in der
 PR-Beschreibung und im Deploy-Hinweis des Betreibers, nicht in `docs/Operations.md`, weil sie nur für diesen einen
-Wechsel gilt. **Aufwand: 2,75 Tage** (Revision 4: 1,5 Tage; Revision 5:
+Wechsel gilt. Vom Betreiber am 2026-11-21 so angenommen, ohne technischen Wächter. **Aufwand: 2,75 Tage** (Revision 4: 1,5 Tage; Revision 5:
 2,5 Tage für E46 samt E2E mit zwei Verwaltern, die Sperre im eigenen Kanal und die schärferen Nebenläufigkeitstests;
 Revision 6: plus ein Viertel Tag für die Frischeprüfung nach der Wunschlesung und die Testschranke der Retention).
 
@@ -2568,7 +2569,7 @@ Code nachgeprüft; Branch auf `origin/main` @ `ac7982eb` neu aufgesetzt.
 | PR2-3 (P2) | AK112 war über die ID-Reihenfolge nicht garantiert und lief in der geteilten Datenbank | angenommen, bestätigt (`DataRetentionService.cs:468-487`, `:508-533`) | K7a | AK112: eigene Datenbank der Retention-Tests, Testschranke aus `AFTER`-Zeilen-Trigger und Advisory-Sperre, Pflicht der späteren Kategorien |
 | PR2-4 (P2) | Der nach dem Löschen angestoßene Abgleich kann mit dem Leeren der Einlöser-Daten verklemmen | bestätigt (`WishReconcileService.cs:157-166`), **eingegrenzt** | K7a | E32/E35: Zusage auf die Transaktion des Löschens begrenzt; RR19; besteht für jeden Abgleich schon heute (#496 H7) |
 | PR2-5 (P3) | AK133 verlangte den Grund an der gelöschten Zeile | angenommen | K7a | AK133: alter Wunsch aus Detail und Listen, Grund im Dock, kein weiteres `REMOVE`/`complete-removal` |
-| PR2-6 (P3) | Commits vor dem Live-Gate widersprechen Regel 16 | angenommen | K7a (Plan) | AK119 und Plan: keine Commits vor bestandenem Live-Gate, Baum-Hash des geprüften Stands |
+| PR2-6 (P3) | Commits vor dem Live-Gate widersprechen Regel 16 | angenommen | K7a (Plan) | AK119 und Plan: Commits je Task auf dem ungepushten Feature-Branch, Live-Gate vor Push und PR, geprüfter `HEAD` festgehalten (Lesart wie bei K6, Betreiber 2026-11-21) |
 | PR2-7 (P3) | Herkunft des Worker-Images unbelegt | angenommen | K7a | AK119: beide Images aus genannten Ständen gebaut, IDs vor L1 verglichen |
 | PR2-8 (P3) | T5 fehlte die Erweiterung von `SkipReasonKey` | angenommen, bestätigt (`seven-tv-delete.service.ts:1687`, `seven-tv-run-engine.ts:145-160`) | K7a (Plan) | Plan T5; die Texte `wishes.start.wishChanged`/`wishUnverified` gibt es schon |
 

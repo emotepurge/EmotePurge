@@ -2,10 +2,13 @@
 
 Erstellt am 2026-11-21 im Worktree `agent-a9d73614672ee1285` (Branch `feat/wish-renew-delete`, Basis `origin/main` @
 `ac7982eb`, darin #499, #501, #504; darauf nur die Doku-Commits des Nachtrags K7). Revision 0 und 1 sind an `dbc24973`
-gelesen; die von #501/#504 berührten Dateien (`WishTextParser`, Hinweis im Wünsche-Tab) betreffen K7a nicht.
-**Status: Revision 2 (2026-11-21), nach Sol adversarial Runde 2 über Revision 1 (1 × P1, 3 × P2, 4 × P3; Tabelle
-„Revision 2“). Runde 1 (Revision 1) und die Betreiberentscheide zu Abschnitt 8 sind eingearbeitet. Die Spec ist mit
-Revision 6 nachgezogen (Block „Plan-Runde 2“ ihrer Prüfbefunde). Nichts implementiert.**
+gelesen; die von #501/#502/#504 berührten Dateien (`WishTextParser`, Hinweis im Wünsche-Tab, Filtermenü der
+Audit-Seiten) betreffen K7a nicht. Basis seit Revision 2a: `origin/main` @ `b51066ee`.
+**Status: bereit zur Umsetzung.** Revision 2a (2026-11-21): nach Sol adversarial Runde 2 über Revision 1 (1 × P1, 3 × P2,
+4 × P3; Tabelle „Revision 2“) und der Freigabe des Betreibers am selben Tag (Umstellungsregel PR2-2 wie geschrieben,
+Regel 16 wie bei K6: Commits je Task auf dem ungepushten Feature-Branch, Live-Gate T9 vor Push und PR). Runde 1
+(Revision 1) und die Betreiberentscheide zu Abschnitt 8 sind eingearbeitet; die Spec ist mit Revision 6 nachgezogen
+(Block „Plan-Runde 2“ ihrer Prüfbefunde). Nichts implementiert.
 Quellen: [Spec](../superpowers/specs/2026-11-17-wunsch-emotes-spec.md), Nachtrag „K7“, Teil „K7a: Löschen beendeter Wünsche“
 (E32, E34 bis E41, E44, E46, AK109 bis AK119, AK133, AK134, Testplan, Files Reference, Auslieferung, RR15 bis RR18) samt
 Betreiberentscheidungen Y2, Y3, O1, O2 und der Tabelle „Prüfbefunde K7“; [Plan-483](Plan-483-Wunsch-Emotes-Backend-Kern.md)
@@ -32,7 +35,7 @@ er schreibt. Vor jeder UI-Arbeit `docs/UI-Designsprache.md` §11 und `DESIGN.md`
 | PR2-3 (P2) AK112 über ID-Reihenfolge nicht garantiert, geteilte Datenbank | hält: `DataRetentionService.cs:468-487`, `:508-533` (ungeordnete `ExecuteDelete`/`ExecuteUpdate`) | **voll:** T2 legt die beiden Retention-Fälle in die eigene Datenbank der Retention-Tests (`DataRetentionServiceTests`, Fixture-Muster mit Trigger-Helfern) und hält das Kind über einen nur im Test angelegten `AFTER`-Zeilen-Trigger mit Advisory-Sperre; spätere Kategorien Pflicht; kein Rückfall auf nachgestellte Anweisungen |
 | PR2-4 (P2) Der nach dem Löschen angestoßene Abgleich kann mit dem Leeren der Einlöser-Daten verklemmen | hält: `WishReconcileService.cs:157-166` sperrt mehrere Zeilen wartend; der Worker fängt einen Abbruch (`DataRetentionWorker.cs:151`) | **eingegrenzt (einfacher Weg):** Zusage auf die Transaktion des Löschens begrenzt, RR19; besteht für jeden Abgleich nach einem Sync schon heute (#496 H7). Kein nachgebender Abgleich in K7a |
 | PR2-5 (P3) AK133-Prüfung an einer verschwindenden Zeile | hält: Seite lädt bei Ende der Entfernung und bei `wish.changed` neu (`channel-wishes-page.ts:815-839`) | **voll:** T7 entfernt den alten Wunsch aus Detail und Listen, prüft den Grund im abgeschlossenen Dock und null weitere `REMOVE`/`complete-removal` |
-| PR2-6 (P3) Commits vor dem Live-Gate widersprechen Regel 16 | hält: `CLAUDE.md` Regel 16 „vor dem Commit live … verifizieren“ | **voll, wörtliche Lesart:** kein Task committet; Sicherungspunkte als Baum- und Commit-Objekt über einen temporären Index (berührt weder Branch noch den geteilten Stash-Stapel); nach bestandenem T9 entstehen die Commits je Task, deren Baum den in T9 festgehaltenen Baum trifft (Abschnitt 3, T9, T10) |
+| PR2-6 (P3) Commits vor dem Live-Gate widersprechen Regel 16 | hält: `CLAUDE.md` Regel 16 „vor dem Commit live … verifizieren“ | **voll, Lesart wie bei K6 (#486), Betreiber 2026-11-21:** jeder Task committet auf dem **ungepushten** Feature-Branch `feat/wish-renew-delete`; das Live-Gate T9 liegt vor Push und PR, T9 hält den geprüften `HEAD` fest, T10 prüft, dass `HEAD` sich seitdem nicht geändert hat (Abschnitt 3, T9, T10) |
 | PR2-7 (P3) Herkunft des Worker-Images unbelegt | hält: `docker-compose.yml:139-143` baut den Worker aus dem Checkout | **voll:** T9 baut Api aus dem Arbeitsstand und Worker aus `origin/main` (genannter Commit), notiert beide IDs beim Bauen, vergleicht vor L1 mit den laufenden Containern |
 | PR2-8 (P3) T5 ohne `SkipReasonKey` | hält: `WISH_BINDING_SKIP_KEY` ist auf `SkipReasonKey` typisiert (`seven-tv-delete.service.ts:1687`, `seven-tv-run-engine.ts:145-160`) | **voll:** T5 erweitert `SkipReasonKey` um `wishes.start.wishChanged` und `wishes.start.wishUnverified` (beide Texte gibt es schon) |
 
@@ -257,17 +260,11 @@ Frontend-Task mit `npm --prefix web test -- --watch=false`, `npm --prefix web ru
 `npm --prefix web run format:check`. Test zuerst: Jeder Task schreibt seine Tests, sieht sie rot, implementiert, sieht
 sie grün. **Nie `docker compose` aus dem Worktree.** Kommentare, Logs, Commit-Texte englisch.
 
-**Commits erst nach dem Live-Gate (Regel 16, PR2-6).** `CLAUDE.md` verlangt die Live-Verifikation von Backend-Features
-**vor dem Commit**; die wörtliche Lesart gilt. Kein Task committet. Jeder Task meldet seine Dateiliste und legt am Ende
-einen Sicherungspunkt an: Baum des Arbeitsstands samt neuer Dateien über einen temporären Index (`GIT_INDEX_FILE` auf
-eine Datei im Scratchpad, `git add -A`, `git write-tree`, `git commit-tree` mit `HEAD` als Eltern). Das erzeugt nur
-Objekte, berührt weder den echten Index noch den Branch noch den mit anderen Sitzungen geteilten Stash-Stapel
-(`git stash create` schiede aus, weil es neue Dateien nicht mitnimmt); der Orchestrator führt die SHAs in seinem
-Protokoll. Nach bestandenem T9 erstellt T10 aus dem
-geprüften Arbeitsstand die Commits **je Task** in der Reihenfolge T1 bis T8 mit den unten genannten Texten (Regel 2:
-logisch getrennt), dateigenau gestagt; Dateien, die zwei Tasks ändern (Locale-Dateien, `WishEndpointsTests.cs`), landen
-vollständig im Commit des späteren Tasks, der sie ändert [E] (Teilstände aus dem Sicherungspunkt zu rekonstruieren wäre
-fehleranfällig). Der Baum des letzten Commits muss dem in T9 festgehaltenen Baum gleichen.
+**Commits und Live-Gate (Regel 16, PR2-6; Betreiber 2026-11-21, wie bei K6/#486).** Jeder Task endet mit seinem eigenen
+Conventional Commit (Text unten je Task, dateigenau gestagt) auf dem **ungepushten** Feature-Branch
+`feat/wish-renew-delete`. Das Live-Gate T9 liegt vor Push und PR: Nichts verlässt die Maschine, bevor T9 bestanden ist.
+T9 hält den geprüften `HEAD` fest; T10 prüft vor dem Push, dass `HEAD` noch derselbe ist, und wiederholt sonst die
+betroffenen Schritte von T9.
 
 | Task | Inhalt | Modell |
 |---|---|---|
@@ -330,7 +327,7 @@ und darf vor T6 laufen; ein Befund dort ändert sonst spät die Seite.
 - **Grenzfälle:** Kanalzeile während des Wartens gelöscht → `ChannelNotFound`; Wunsch nach einer Kanal-Zusammenführung beim
   Überlebenden, der Zugriff nennt den Verlierer → `ChannelNotFound` oder `WishNotFound`, nie ein Löschen am falschen Kanal.
 - **AKs:** AK109, AK110, AK111 (zweiter Satz), AK114 (ohne Rennen), AK115 (zweiter Teil), AK134, AK113 (Abbildung).
-- **Commit-Text (nach T9):** `feat: delete an ended wish in the wish service`
+- **Commit:** `feat: delete an ended wish in the wish service`
 
 ### T2: Sperren und Rennen
 
@@ -371,7 +368,7 @@ und darf vor T6 laufen; ein Befund dort ändert sonst spät die Seite.
 - **Grenzfälle:** keine Kinder (keine Anweisung); viele Kinder (eine Anweisung); ein Kind zwischen ID-Lesen und Sperre von
   der Retention gelöscht (fehlt im Ergebnis, kein Fehler).
 - **AKs:** AK111 (erster Satz), AK112, AK114.
-- **Commit-Text (nach T9):** `feat: lock merged children without waiting when deleting a wish`
+- **Commit:** `feat: lock merged children without waiting when deleting a wish`
 
 ### T3: Api
 
@@ -396,7 +393,7 @@ und darf vor T6 laufen; ein Befund dort ändert sonst spät die Seite.
     derselbe String plus eine Mikrosekunde → ein abweichender Zeitpunkt (AK109).
 - **Gate zusätzlich:** `api-error-locales.spec.ts` grün (AK117).
 - **AKs:** AK113.
-- **Commit-Text (nach T9):** `feat: expose deleting an ended wish`
+- **Commit:** `feat: expose deleting an ended wish`
 
 ### T4: Web-Kern
 
@@ -415,7 +412,7 @@ und darf vor T6 laufen; ein Befund dort ändert sonst spät die Seite.
 - **Nebenwirkung prüfen:** `wish-entry-dialog.ts` und `wish-adopt-dialog.ts` fragen `wishActions(...).includes(...)`;
   `delete` ändert daran nichts.
 - **AKs:** AK116 (Aktionsliste, Entfernungsbericht), AK117.
-- **Commit-Text (nach T9):** `feat(web): add the delete action and its client contract`
+- **Commit:** `feat(web): add the delete action and its client contract`
 
 ### T5: Lösch-Engine, Wunschprüfung vor jedem Versuch (E46)
 
@@ -442,7 +439,7 @@ und darf vor T6 laufen; ein Befund dort ändert sonst spät die Seite.
   Laufs (gibt es bei der Karte nicht, aber das Tor ist je Zeile); die Api antwortet 429 auf die Wunschlesung →
   `wishUnverified`, kein Pausieren.
 - **AKs:** AK133 (Vitest-Teil).
-- **Commit-Text (nach T9):** `fix(web): check the wish again before every removal attempt`
+- **Commit:** `fix(web): check the wish again before every removal attempt`
 
 ### T6: Web-Seite
 
@@ -471,7 +468,7 @@ und darf vor T6 laufen; ein Befund dort ändert sonst spät die Seite.
   `wish.changed` während der Bestätigung entfernt die Zeile schon (Senden → 404 → still erledigt).
 - **UI-Prüfliste** „Neue UI bauen“ (`web/.claude/CLAUDE.md`) abarbeiten; der Hinweis folgt der Form von `mergedNotice`.
 - **AKs:** AK116 (Bestätigung, Ende, 404, Hinweis, Vorauswahl, Fokus, Eintrag-Dialog-Text über T4).
-- **Commit-Text (nach T9):** `feat(web): delete ended wishes from the wishes page`
+- **Commit:** `feat(web): delete ended wishes from the wishes page`
 
 ### T7: E2E und UI-Audit
 
@@ -501,7 +498,7 @@ und darf vor T6 laufen; ein Befund dort ändert sonst spät die Seite.
   ansehen.
 - **Gate:** `npm --prefix web run e2e` grün, **ohne** Api auf `:5151`.
 - **AKs:** AK118, AK133, AK116 (Live-Ereignisse).
-- **Commit-Text (nach T9):** `test(web): e2e for deleting ended wishes and the removal re-check`
+- **Commit:** `test(web): e2e for deleting ended wishes and the removal re-check`
 
 ### T8: Doku und Coverage
 
@@ -512,7 +509,7 @@ und darf vor T6 laufen; ein Befund dort ändert sonst spät die Seite.
   ansehen, nicht nur die Dateiquote (die Näherung zählt ganze Dateien; Sonar zählt Zeilen und schließt die Playwright-Mocks
   aus). Schwerpunkte: jede Ablehnung von `WishIdAccessFilter`, die `55P03`-Rücknahme, die Aufteilung von 404 nach Code im
   Client (Löschen und Entfernungsbericht), die beiden neuen Gründe im Tor. Fehlende Zeilen gezielt mit einem Test decken.
-- **Commit-Text (nach T9):** `docs: record wish deletion (child 7a)`
+- **Commit:** `docs: record wish deletion (child 7a)`
 
 ---
 
@@ -544,9 +541,8 @@ K1 = Konto des Betreibers, Twitch-Mod und 7TV-Editor im Probe-Kanal; K2 = Testko
 
 **Geprüfter Stand und Images (Orchestrator, PR1-8, PR2-6, PR2-7):**
 
-1. **Fingerabdruck:** Basis-Commit (`git rev-parse HEAD`) und der Baum des uncommitteten Arbeitsstands über einen
-   temporären Index wie bei den Sicherungspunkten (`git write-tree`) ins Protokoll.
-2. **Api aus dem geprüften Stand:** im Worktree `docker build -f src/EmotePurge.Api/Dockerfile -t emote-purge-dev-api .`
+1. **Geprüfter Stand:** `git rev-parse HEAD` des Feature-Branches (alle Task-Commits, Arbeitsbaum sauber) ins Protokoll.
+2. **Api aus diesem `HEAD`:** im Worktree `docker build -f src/EmotePurge.Api/Dockerfile -t emote-purge-dev-api .`
    (ein `docker build` ist kein `docker compose`); die Image-ID beim Bauen notieren.
 3. **Worker aus `main`:** `git archive` des genannten `origin/main`-Commits als Build-Kontext an `docker build -f
    src/EmotePurge.Worker/Dockerfile -t emote-purge-dev-worker -`; Commit und Image-ID notieren. So läuft das Paar, das
@@ -573,16 +569,16 @@ K1 = Konto des Betreibers, Twitch-Mod und 7TV-Editor im Probe-Kanal; K2 = Testko
 
 **Nicht live** (durch Tests gedeckt): der Wettlauf mit der Retention, der Identitätswechsel, die Entfernung in einer
 429-Pause gegen Behalten/Löschen/Übernehmen (AK133; eine 429 lässt sich live nicht gezielt erzeugen), `complete-removal`
-gegen ein gleichzeitiges Löschen. Bestanden ist AK119, wenn L1 bis L8 und L10 halten und Fingerabdruck und Image-IDs
-stehen; L9 darf als „teilweise“ stehen, wenn nur emuliert. Ändert ein Befund aus dem Live-Lauf Code, wird der Fingerabdruck
-neu genommen und der betroffene Teil erneut live geprüft.
+gegen ein gleichzeitiges Löschen. Bestanden ist AK119, wenn L1 bis L8 und L10 halten und der geprüfte `HEAD` und die
+Image-IDs stehen; L9 darf als „teilweise“ stehen, wenn nur emuliert. Ändert ein Befund aus dem Live-Lauf Code, folgt ein
+neuer Commit, und die betroffenen Schritte laufen auf dem neuen `HEAD` erneut.
 
 ---
 
 ## 6. Gates, Commits, Zweitmeinung, Auslieferung (T10)
 
-0. **Commits** aus dem in T9 geprüften Stand, je Task wie in Abschnitt 3 beschrieben; danach muss `git rev-parse
-   HEAD^{tree}` dem Baum aus T9 gleichen. Die Gates unter 1 laufen auf dem committeten Stand erneut.
+0. **Stand seit T9 unverändert:** `git rev-parse HEAD` gleicht dem in T9 festgehaltenen Wert; sonst die betroffenen
+   Schritte von T9 auf dem neuen `HEAD` wiederholen. Erst danach Push und PR.
 1. `dotnet test EmotePurge.slnx` (Docker), `npm --prefix web test -- --watch=false`, `npm --prefix web run e2e` (ohne Api auf
    `:5151`), `npm --prefix web run lint`, `npm --prefix web run format:check`, `dotnet format EmotePurge.slnx
    --verify-no-changes`.
@@ -610,7 +606,8 @@ einer ruhigen Zeit, ohne laufende Entfernung aus der Karte; (b) die Verwalter la
 Mod-Kanal); (c) in den ersten 10 Minuten nach dem Deploy wird kein behaltener Wunsch gelöscht, dessen Emote gerade
 entfernt wurde. Die Regel steht in der PR-Beschreibung und im Deploy-Hinweis an den Betreiber; nicht in
 `docs/Operations.md`, weil sie nur für diesen einen Wechsel gilt. Ein Server-Wächter (Versionsvertrag zwischen Browser und
-Api) wäre für einen einmaligen Wechsel unverhältnismäßig.
+Api) wäre für einen einmaligen Wechsel unverhältnismäßig. Vom Betreiber am 2026-11-21 so angenommen, ohne technischen
+Wächter.
 
 ---
 
@@ -628,7 +625,6 @@ Api) wäre für einen einmaligen Wechsel unverhältnismäßig.
 | RR18 höchstens 5 s plus Mutation zwischen Wunschprüfung und `REMOVE` | Frischeprüfung nach der Wunschlesung (PR2-1); Rest Klasse RR14 |
 | RR19 Abgleich nach dem Löschen eines `kept` gegen das Leeren der Einlöser-Daten | eingegrenzt (PR2-4), besteht für jeden Abgleich schon heute; Worker fängt den Abbruch, nächster Lauf holt nach; #496 H7 |
 | Alte Tabs ohne E46 nach dem Deploy | Umstellungsregel (Abschnitt 6) |
-| Uncommittete Arbeit über viele Tasks | Sicherungspunkte je Task über einen temporären Index, SHAs im Protokoll des Orchestrators |
 | RR15 Login-Nachtrag der ID | hingenommen (Spec), #496 H4 |
 
 ---
@@ -656,7 +652,8 @@ Alle drei Fragen aus Revision 1 sind entschieden, jeweils wie empfohlen; offen i
   `deleteWish`, Aktion `delete`, Mock-Art `delete`, `verifyWish`, Gründe `wishChanged`/`wishUnverified`, Schlüssel aus 2.6.
 - **Jeder Task besteht sein Gate allein:** T1 trägt die Abbildung von `AccessDenied` mit (PR1-5); T3 hebt das Inventar;
   T4 legt alle Schlüssel an, bevor T5 und T6 sie nutzen; T5 erweitert `SkipReasonKey` selbst (PR2-8).
-- **Regel 16 wörtlich:** kein Commit vor T9; der Fingerabdruck verbindet den live geprüften Stand mit den Commits.
+- **Regel 16 wie bei K6:** Commits je Task auf dem ungepushten Branch, Live-Gate T9 vor Push und PR, `HEAD`-Abgleich in
+  T10.
 - **Regel 7:** kein neuer Fehlercode; Regel 11/12 je Task genannt.
 - **Umfang:** acht Implementer-Tasks für 2,75 Tage, T9/T10 ohne Implementer. Der Plan ist länger als der Spec-Teil, weil er
   Testabsichten je Task und den Live-Ablauf ausschreibt; Code enthält er keinen.
