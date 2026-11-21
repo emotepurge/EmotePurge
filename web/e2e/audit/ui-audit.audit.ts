@@ -2447,6 +2447,22 @@ const SCENARIOS: Scenario[] = [
   },
 ];
 
+// The action filter's popover open: the panel is the tallest thing either audit page can show, so
+// the overflow, locale and contrast checks run against it and not only against the closed trigger.
+SCENARIOS.push(
+  ...['admin-audit-log', 'channel-activity'].map((slug): Scenario => {
+    const base = SCENARIOS.find((scenario) => scenario.slug === slug)!;
+    return {
+      ...base,
+      slug: `${slug}-action-menu`,
+      afterLoad: async (page) => {
+        await page.locator('app-audit-action-menu button[aria-haspopup="dialog"]').click();
+        await page.locator('app-audit-action-menu [role="radiogroup"]').waitFor();
+      },
+    };
+  }),
+);
+
 // --- metrics ---------------------------------------------------------------
 
 async function collectMetrics(page: Page) {

@@ -1031,6 +1031,15 @@
     }
   },
   "audit": {
+    "groups": {
+      "channel": "Channel",
+      "votes": "Abstimmungen",
+      "emotes": "Emotes",
+      "tags": "Tags",
+      "backfill": "Backfill",
+      "wishes": "Wünsche",
+      "users": "Nutzer"
+    },
     "actor": "von {{actor}}",
     "actions": {
       "channelJoin": "Channel beigetreten",
