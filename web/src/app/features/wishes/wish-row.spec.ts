@@ -298,6 +298,7 @@ describe('WishRow', () => {
       windowToUtc: '2026-11-18T12:00:00Z',
       total: 234,
       perDayMean: 17,
+      perDayMeanWithheld: false,
       rank: 3,
       rankOf: 12,
       coverageGap: false,
@@ -323,6 +324,18 @@ describe('WishRow', () => {
       expect(text).toContain('Rang 3 von 12');
       expect(text).toContain('letzte 7 Tage');
       expect(line()).not.toBeNull();
+    });
+
+    it('omits the mean when the server flags it as withheld, keeping sum, rank and the gap note', () => {
+      render(wish({ startsAtUtc: usage.windowFromUtc }), {
+        usage: { state: 'ready', usage: { ...usage, perDayMeanWithheld: true, coverageGap: true } },
+      });
+
+      const text: string = fixture.nativeElement.textContent;
+      expect(text).toContain('234 Nutzungen');
+      expect(text).not.toContain('pro Tag');
+      expect(text).toContain('Rang 3 von 12');
+      expect(text).toContain('Die Zählung deckt dieses Fenster nicht ganz ab.');
     });
 
     it('says "since the start" when the window opens at the wish start', () => {

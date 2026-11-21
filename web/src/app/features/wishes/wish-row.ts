@@ -355,11 +355,14 @@ export class WishRow {
         key: pluralKey(usage.total, 'wishes.usage.total'),
         params: { count: usage.total.toLocaleString(locale) },
       },
-      {
+    ];
+    // The server flags a window under 24 hours; no per-day mean is shown then (spec E4).
+    if (!usage.perDayMeanWithheld) {
+      parts.push({
         key: 'wishes.usage.mean',
         params: { mean: usage.perDayMean.toLocaleString(locale, { maximumFractionDigits: 1 }) },
-      },
-    ];
+      });
+    }
     if (usage.rank !== null && usage.rankOf !== null) {
       parts.push({ key: 'wishes.usage.rank', params: { rank: usage.rank, of: usage.rankOf } });
     }

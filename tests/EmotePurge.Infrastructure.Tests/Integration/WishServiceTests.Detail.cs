@@ -38,6 +38,22 @@ public partial class WishServiceTests
     }
 
     [Fact]
+    public async Task Detail_FlagsTheMeanAsWithheld_ForAWindowUnderTwentyFourHours()
+    {
+        var channel = await SeedHealthyChannelAsync();
+        var emote = await SeedEmoteAsync(channel);
+        var slot = await SeedSlotAsync(emote, "Kappa", Now.AddMinutes(-5));
+        var wishId = await SeedLinkedWishAsync(channel, emote, slot, startsAt: Now.AddMinutes(-5), expiresAt: Now.AddDays(30));
+        await SeedUsageAsync(emote, slot, Day(0), 1);
+
+        var usage = (await Sut().GetAsync(channel.Name, wishId))!.Usage!;
+
+        Assert.Equal(1, usage.Total);
+        Assert.True(usage.PerDayMeanWithheld);
+        Assert.True(usage.CoverageGap);
+    }
+
+    [Fact]
     public async Task Detail_Window_IsCappedAtSevenDays_ForAnOlderWish()
     {
         var channel = await SeedHealthyChannelAsync();
@@ -53,6 +69,7 @@ public partial class WishServiceTests
         Assert.Equal(Now.AddDays(-7), usage.WindowFromUtc);
         Assert.Equal(7, usage.Total);
         Assert.Equal(1m, usage.PerDayMean);
+        Assert.False(usage.PerDayMeanWithheld);
         Assert.False(usage.CoverageGap);
     }
 

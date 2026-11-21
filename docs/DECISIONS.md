@@ -10,6 +10,14 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-11-21 — Wish usage: no per-day mean for a window under 24 hours (#496 item 5)
+
+**Betrifft:** `src/EmotePurge.Core/Services/WishUsageWindow.cs` · `src/EmotePurge.Core/Services/IWishService.cs` · `src/EmotePurge.Infrastructure/Persistence/WishUsageQueries.cs` · `src/EmotePurge.Infrastructure/Services/WishService.cs` · `web/src/app/core/wishes/wish.model.ts` · `web/src/app/features/wishes/wish-row.ts` · `docs/superpowers/specs/2026-11-17-wunsch-emotes-spec.md` (E4)
+
+A wish running for five minutes showed "1 use · Ø 287.4 per day", because the mean divided by the window length in fractional days. Operator decision: below 24 hours the mean is not shown at all; use count, rank and the coverage-gap note stay. The rule lives at the source: `WishUsageWindow.IsMeanWithheld` (Core) is true for a window shorter than 24 hours (exactly 24 hours shows the mean). The DTO change is additive, not nullable: `WishUsageDto` gains `PerDayMeanWithheld` (JSON `perDayMeanWithheld`) and `perDayMean` stays a number, because a wishes tab left open across the deploy runs the old row code, refetches usage and would throw on a null mean; it keeps showing the old value until reload. The wish row omits the mean part when the flag is true, so the new frontend cannot show it by accident. The expiry run is unaffected: a window under 24 hours is always a coverage gap, which the policy presents before it looks at the mean.
+
+---
+
 ### 2026-11-21 — Sticky filter toolbars stay bounded in height; the audit action filter becomes a popover menu
 
 **Betrifft:** `docs/UI-Designsprache.md` · `DESIGN.md` · `web/src/app/shared/audit/audit-action-menu.ts` · `web/src/app/shared/audit/audit-actions.ts` · `web/src/app/features/channel-workspace/channel-activity-page.ts` · `web/src/app/features/admin/admin-audit-log-page.ts`
@@ -25,6 +33,7 @@ Records the decision shipped in 4cee6356. §8.5 used to say a filter toolbar "ma
 A viewer redeemed the wish reward with only an emote id as text, and the id became the requested name. Operator decision: a standalone token that is exactly id-shaped is read as the emote id. Parse order is now (1) a 7TV link anywhere, (2) the first standalone id-shaped token, (3) the name grammar. Id-shaped is strict: 24 hex characters, or 26 characters of the ULID Crockford alphabet (no `I`, `L`, `O`, `U`, any case) with first character `0` to `7`; the token is formed like in the name grammar (whitespace split, addresses and mentions dropped, edge punctuation trimmed), so an id inside a longer word is not an id. An id-shaped token anywhere beats a name, even an earlier one, because an id is far more specific than a word; a link still beats a bare id. The result reuses `MatchKind = link` (no new persisted value): every consumer (`WishSlotMatcher`, the CHECK on `MatchKind`, the web model) only distinguishes `name` from the rest and works off the canonical id, so the wish is matched and shown exactly like a link wish. The scan stays linear, no regular expression. The links' own length-only check is unchanged; only the bare path applies the alphabet and first-character rule. The manual entry in the web UI (`parseEmoteInput`) already accepted bare ids.
 
 ---
+
 
 ### 2026-11-19 — Wish emotes, child 6: chat capture (#486, epic #481)
 

@@ -397,7 +397,9 @@ public sealed record WishDetailDto : WishDto
 
 /// <summary>
 /// Usage over the window of E4: <see cref="Total"/> is the sum over all slots of the emote on the UTC days of the
-/// window, <see cref="PerDayMean"/> that sum over the window length in fractional days. <see cref="Rank"/> of
+/// window, <see cref="PerDayMean"/> that sum over the window length in fractional days. <see cref="PerDayMeanWithheld"/> is true while the window is
+/// shorter than 24 hours (E4): the number is still sent, so a client from before the flag keeps working, but a client
+/// that knows the flag does not show it. <see cref="Rank"/> of
 /// <see cref="RankOf"/> places the total among the active slots of the channel (E16, ties share the better
 /// rank); both are null while the emote has no active slot to rank (an ended wish). <see cref="CoverageGap"/>
 /// is the E5 rule: counting did not cover the whole window. <see cref="Daily"/> is the same sum per UTC day,
@@ -409,6 +411,7 @@ public sealed record WishUsageDto(
     DateTime WindowToUtc,
     long Total,
     decimal PerDayMean,
+    bool PerDayMeanWithheld,
     int? Rank,
     int? RankOf,
     bool CoverageGap,
