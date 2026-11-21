@@ -203,11 +203,13 @@ type PinnedState =
         <!-- Quiet pointer to where the wish settings live. Always mounted, no async state: the page
              is only reachable for managers with the wish switch on, which is exactly who the
              settings tab lets in (channelSettingsGuard), so the link never leads nowhere. -->
+        <!-- Underline in the text colour (a border-strong underline fails 3:1). The ::after widens
+             the hit area to 24px height without moving the line (§10 touch targets). -->
         <p class="text-sm text-fg-muted">
           {{ 'wishes.page.settingsHint.text' | transloco }}
           <a
             [routerLink]="['/channels', channel(), 'settings']"
-            class="underline decoration-border-strong underline-offset-2 hover:text-fg-secondary hover:decoration-accent"
+            class="relative text-fg-secondary underline underline-offset-2 after:absolute after:-inset-y-1 after:inset-x-0 after:content-[''] hover:text-fg"
             >{{ 'wishes.page.settingsHint.link' | transloco }}</a
           >.
         </p>

@@ -664,12 +664,17 @@ test.describe('wish emotes: the manager page (#485)', () => {
     });
 
     test('the quiet settings hint on the page leads to the settings tab', async ({ page }) => {
+      // Settings would otherwise ask for the backfill state, which nothing stubs here.
+      await mockChannelPermissions(page, CHANNEL, {
+        wishesEnabled: true,
+        chatLogBackfillEnabled: false,
+      });
       await mockWishBackend(page, CHANNEL);
       await page.goto(URL_WISHES);
-      // Scoped to the hint paragraph: the tab bar has a link of the same name.
-      const hint = page.locator('p', { hasText: 'Belohnung, Laufzeit und Bot-Modus' });
-      await expect(hint).toBeVisible();
-      await hint.getByRole('link', { name: 'Einstellungen' }).click();
+      // The tab bar carries a link of the same name (first in DOM order); the hint is the last.
+      const links = page.getByRole('link', { name: 'Einstellungen' });
+      await expect(links).toHaveCount(2);
+      await links.last().click();
       await expect(page).toHaveURL(new RegExp(`/channels/${CHANNEL}/settings$`));
       await expect(page.getByRole('heading', { level: 2, name: 'Einstellungen' })).toBeVisible();
     });
