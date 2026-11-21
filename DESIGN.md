@@ -303,7 +303,7 @@ page carry the same width — they move together or not at all.
 
 Three layers stay put while scrolling and have fixed heights, because `sticky` needs exact offsets
 for stacked layers: header 3.5rem at `top-0`, tab bars 2.5rem at `top-14`, filter toolbars
-variable at `top-24` (= 14 + 10). These numbers are a basis for calculation, not an aesthetic.
+variable but bounded at `top-24` (= 14 + 10); a control whose option count grows with features belongs in a popover, not in the toolbar. These numbers are a basis for calculation, not an aesthetic.
 
 The spacing rhythm is tight and repeats: rows `px-3 py-3`, sections `gap-3` above a hairline with
 `pt-4`, page roots `gap-4` to `gap-8`, dialogs `p-6`. Groups are set with `gap`, not with margins
