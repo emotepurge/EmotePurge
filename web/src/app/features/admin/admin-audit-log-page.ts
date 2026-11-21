@@ -1,5 +1,5 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, effect, inject } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
@@ -10,7 +10,11 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { PagedResult } from '../../core/models/paged-result.model';
 import { listQueryState } from '../../core/routing/list-query-state';
-import { ACTION_KEYS, CHANNELLESS_ACTIONS } from '../../shared/audit/audit-actions';
+import {
+  ACTION_KEYS,
+  CHANNELLESS_ACTIONS,
+  normalizeActionFilter,
+} from '../../shared/audit/audit-actions';
 import { AuditActionMenu } from '../../shared/audit/audit-action-menu';
 import { AuditLogList } from '../../shared/audit/audit-log-list';
 import { toAuditRows } from '../../shared/audit/audit-row';
@@ -166,7 +170,6 @@ export class AdminAuditLogPage {
   // The action segments are clicks, so they go straight into the URL. The two text filters keep a
   // local draft updated per keystroke — same feel as the emote grid's filter — and reach the URL
   // only once the typing settles; the URL value is then also what the request reads.
-  protected readonly actionFilter = computed(() => this.query.params().action);
   protected readonly channelFilter = this.query.textFilter('channel', FILTER_DEBOUNCE_MS);
   protected readonly actorFilter = this.query.textFilter('actor', FILTER_DEBOUNCE_MS);
 
@@ -180,6 +183,11 @@ export class AdminAuditLogPage {
    *  can name. */
   protected readonly actionOptions = Object.keys(ACTION_KEYS);
 
+  // An unknown `?action=` counts as no filter, in the request and (see the constructor) in the URL.
+  protected readonly actionFilter = computed(() =>
+    normalizeActionFilter(this.query.params().action, this.actionOptions),
+  );
+
   protected readonly hasActiveFilters = computed(
     () => this.actionFilter() !== '' || this.channelFilter() !== '' || this.actorFilter() !== '',
   );
@@ -192,6 +200,7 @@ export class AdminAuditLogPage {
     params: () => ({
       page: this.page(),
       ...this.query.params(),
+      action: this.actionFilter(),
     }),
     stream: ({ params }) =>
       this.adminService.listAuditLog(params.page, PAGE_SIZE, {
@@ -217,6 +226,14 @@ export class AdminAuditLogPage {
     const error = this.auditLogResource.error();
     return error instanceof HttpErrorResponse ? apiErrorTranslationKey(error) : null;
   });
+
+  constructor() {
+    effect(() => {
+      if (this.query.params().action !== this.actionFilter()) {
+        this.query.setParams({ action: '' });
+      }
+    });
+  }
 
   protected reload(): void {
     this.auditLogResource.reload();

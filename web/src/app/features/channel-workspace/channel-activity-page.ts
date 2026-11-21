@@ -1,5 +1,5 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, inject, input } from '@angular/core';
+import { Component, computed, effect, inject, input } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
@@ -10,7 +10,7 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { PagedResult } from '../../core/models/paged-result.model';
 import { listQueryState } from '../../core/routing/list-query-state';
-import { CHANNEL_SCOPED_ACTIONS } from '../../shared/audit/audit-actions';
+import { CHANNEL_SCOPED_ACTIONS, normalizeActionFilter } from '../../shared/audit/audit-actions';
 import { AuditActionMenu } from '../../shared/audit/audit-action-menu';
 import { AuditLogList } from '../../shared/audit/audit-log-list';
 import { toAuditRows } from '../../shared/audit/audit-row';
@@ -154,7 +154,6 @@ export class ChannelActivityPage {
 
   protected readonly page = this.query.page;
 
-  protected readonly actionFilter = computed(() => this.query.params().action);
   protected readonly actorFilter = this.query.textFilter('actor', FILTER_DEBOUNCE_MS);
 
   /**
@@ -162,6 +161,11 @@ export class ChannelActivityPage {
    * table: the user-scoped actions are global and would be options that can only return nothing.
    */
   protected readonly actionOptions = CHANNEL_SCOPED_ACTIONS;
+
+  // An unknown `?action=` counts as no filter, in the request and (see the constructor) in the URL.
+  protected readonly actionFilter = computed(() =>
+    normalizeActionFilter(this.query.params().action, this.actionOptions),
+  );
 
   protected readonly hasActiveFilters = computed(
     () => this.actionFilter() !== '' || this.actorFilter() !== '',
@@ -174,6 +178,7 @@ export class ChannelActivityPage {
       channel: this.channelName(),
       page: this.page(),
       ...this.query.params(),
+      action: this.actionFilter(),
     }),
     stream: ({ params }) =>
       this.channelAuditService.listAuditLog(params.channel, params.page, PAGE_SIZE, {
@@ -198,6 +203,14 @@ export class ChannelActivityPage {
     const error = this.auditLogResource.error();
     return error instanceof HttpErrorResponse ? apiErrorTranslationKey(error) : null;
   });
+
+  constructor() {
+    effect(() => {
+      if (this.query.params().action !== this.actionFilter()) {
+        this.query.setParams({ action: '' });
+      }
+    });
+  }
 
   protected reload(): void {
     this.auditLogResource.reload();

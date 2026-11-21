@@ -1,6 +1,8 @@
 import { DOCUMENT } from '@angular/common';
 import {
   Component,
+  Injector,
+  afterNextRender,
   ElementRef,
   computed,
   inject,
@@ -28,20 +30,20 @@ let nextMenuId = 0;
   selector: 'app-audit-action-menu',
   imports: [Button, Popover, TranslocoPipe],
   template: `
-    <div class="relative" data-popover-anchor>
+    <div class="relative min-w-0" data-popover-anchor (focusout)="onFocusOut($event)">
       <button
         #trigger
         type="button"
         appButton="neutral"
-        class="max-w-full truncate whitespace-nowrap"
+        class="max-w-full min-w-0 whitespace-nowrap"
         aria-haspopup="dialog"
         [attr.aria-expanded]="isOpen()"
         [attr.aria-label]="ariaLabel() + ': ' + (currentLabelKey() | transloco)"
         [attr.title]="ariaLabel()"
         (click)="toggle()"
       >
-        {{ currentLabelKey() | transloco }}
-        <span aria-hidden="true" class="ml-1 text-fg-muted">▾</span>
+        <span class="min-w-0 truncate">{{ currentLabelKey() | transloco }}</span>
+        <span aria-hidden="true" class="ml-1 shrink-0 text-fg-muted">▾</span>
       </button>
 
       @if (isOpen()) {
@@ -50,6 +52,7 @@ let nextMenuId = 0;
             role="radiogroup"
             [attr.aria-label]="ariaLabel()"
             class="flex max-h-[min(60dvh,28rem)] flex-col gap-0.5 overflow-y-auto p-1"
+            [style.max-height.px]="listMaxHeight()"
           >
             @for (option of flatOptions(); track option.value; let index = $index) {
               @if (option.groupLabelKey !== null) {
@@ -102,11 +105,14 @@ export class AuditActionMenu {
   readonly valueChange = output<string>();
 
   private readonly document = inject(DOCUMENT);
+  private readonly injector = inject(Injector);
   private readonly elementRef = inject(ElementRef<HTMLElement>);
   private readonly trigger = viewChild<ElementRef<HTMLButtonElement>>('trigger');
 
   protected readonly menuId = `audit-action-menu-${nextMenuId++}`;
   protected readonly isOpen = signal(false);
+  /** Room below the trigger, in px, measured once the panel is open; `null` until then. */
+  protected readonly listMaxHeight = signal<number | null>(null);
   // Roving tabindex: null means "follow the selection".
   private readonly focusedIndex = signal<number | null>(null);
 
@@ -140,6 +146,7 @@ export class AuditActionMenu {
       return;
     }
     this.isOpen.set(true);
+    afterNextRender(() => this.fitToViewport(), { injector: this.injector });
   }
 
   protected close(): void {
@@ -149,8 +156,20 @@ export class AuditActionMenu {
     const hadFocus = this.elementRef.nativeElement.contains(this.document.activeElement);
     this.isOpen.set(false);
     this.focusedIndex.set(null);
+    this.listMaxHeight.set(null);
     if (hadFocus) {
       this.trigger()?.nativeElement.focus();
+    }
+  }
+
+  /** Keyboard focus moved to something outside the menu: the panel must not stay open over it
+   *  (it would hide the newly focused field). Focus is not pulled back to the trigger. */
+  protected onFocusOut(event: FocusEvent): void {
+    const next = event.relatedTarget as Node | null;
+    if (this.isOpen() && next && !this.elementRef.nativeElement.contains(next)) {
+      this.isOpen.set(false);
+      this.focusedIndex.set(null);
+      this.listMaxHeight.set(null);
     }
   }
 
@@ -184,6 +203,24 @@ export class AuditActionMenu {
     this.focusedIndex.set(next);
     const group = (event.currentTarget as HTMLElement).closest('[role="radiogroup"]');
     group?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
+  }
+
+  /** Caps the list to the room below the trigger. On a short viewport the trigger first scrolls up
+   *  (the toolbar is sticky, so it stays reachable) until a usable minimum fits. */
+  private fitToViewport(): void {
+    const trigger = this.trigger()?.nativeElement;
+    const view = this.document.defaultView;
+    if (!trigger || !view) {
+      return;
+    }
+    const margin = 24;
+    const minList = 176;
+    const overshoot = trigger.getBoundingClientRect().bottom + margin + minList - view.innerHeight;
+    if (overshoot > 0) {
+      view.scrollBy({ top: overshoot });
+    }
+    const available = view.innerHeight - trigger.getBoundingClientRect().bottom - margin;
+    this.listMaxHeight.set(Math.max(minList, Math.min(448, available)));
   }
 
   private selectedIndex(): number {

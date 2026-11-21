@@ -132,4 +132,35 @@ describe('AuditActionMenu', () => {
     expect(emitted).toEqual([]);
     fixture.nativeElement.remove();
   });
+
+  it('closes without stealing focus when keyboard focus moves to something outside', () => {
+    const { fixture, trigger, radios, open } = render('');
+    const outside = document.createElement('input');
+    document.body.appendChild(fixture.nativeElement);
+    document.body.appendChild(outside);
+    open();
+    radios()[0].focus();
+
+    outside.focus();
+    fixture.detectChanges();
+
+    expect(radios()).toHaveLength(0);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+    fixture.nativeElement.remove();
+  });
+
+  it('stays open while focus moves between its own options', () => {
+    const { fixture, radios, open } = render('');
+    document.body.appendChild(fixture.nativeElement);
+    open();
+    radios()[0].focus();
+
+    radios()[1].focus();
+    fixture.detectChanges();
+
+    expect(radios()).toHaveLength(5);
+    fixture.nativeElement.remove();
+  });
 });

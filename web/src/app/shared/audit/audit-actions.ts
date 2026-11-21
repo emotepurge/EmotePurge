@@ -93,6 +93,15 @@ export interface AuditActionGroup {
 }
 
 /**
+ * An action filter taken from the URL, reduced to what this list can actually offer. A hand-typed
+ * or outdated `?action=` that no option matches is treated as no filter at all: the trigger says
+ * "all", so the request must not silently filter by something else.
+ */
+export function normalizeActionFilter(raw: string, allowed: readonly string[]): string {
+  return allowed.includes(raw) ? raw : '';
+}
+
+/**
  * Splits `actions` into the families of {@link AUDIT_ACTION_GROUPS}, in that order, keeping the
  * order of `actions` inside a group. Families with no action in the list are left out, so the
  * channel feed never shows an empty "users" heading. An action whose prefix matches no family is
