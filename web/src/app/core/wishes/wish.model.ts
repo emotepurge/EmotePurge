@@ -65,6 +65,8 @@ export interface WishUsage {
   windowToUtc: string;
   total: number;
   perDayMean: number;
+  /** True while the window is shorter than 24 hours: the mean is not shown then (spec E4). */
+  perDayMeanWithheld: boolean;
   /** `null` together with `rankOf` while the emote has no active slot to rank. */
   rank: number | null;
   rankOf: number | null;

@@ -5,7 +5,7 @@ namespace EmotePurge.Infrastructure.Persistence;
 
 /// <summary>
 /// What the wish usage window reads of one emote in one channel: the window, the sum and mean over all slots
-/// of the emote, and the coverage-gap flag. <see cref="OwnSlotIds"/> is handed back for the caller's rank.
+/// of the emote (flagged as withheld for a window under 24 hours, E4), and the coverage-gap flag. <see cref="OwnSlotIds"/> is handed back for the caller's rank.
 /// <see cref="Daily"/> is the sum per UTC day of the window, every day from the window's first to the evaluation
 /// day in order, zero-filled; <see cref="Total"/> is its sum (plan #485 2.1a).
 /// </summary>
@@ -14,6 +14,7 @@ public sealed record WishUsageRead(
     DateTime EvaluatedAtUtc,
     long Total,
     decimal MeanPerDay,
+    bool MeanWithheld,
     bool HasCoverageGap,
     IReadOnlyList<string> OwnSlotIds,
     IReadOnlyList<WishUsageDayDto> Daily);
@@ -74,6 +75,7 @@ public static class WishUsageQueries
             TrackingCoverage.TrackedSince(channel.TrackingResumedAt, channel.CreatedAt), channel.DeactivatedAtUtc, channel.IsBotActive);
         var mean = WishUsageWindow.MeanPerDay(total, WishUsageWindow.LengthInDays(windowStart, evaluatedAtUtc));
         return new WishUsageRead(
-            windowStart, evaluatedAtUtc, total, mean, WishUsageWindow.HasCoverageGap(facts, windowStart, evaluatedAtUtc), ownSlotIds, daily);
+            windowStart, evaluatedAtUtc, total, mean, WishUsageWindow.IsMeanWithheld(windowStart, evaluatedAtUtc),
+            WishUsageWindow.HasCoverageGap(facts, windowStart, evaluatedAtUtc), ownSlotIds, daily);
     }
 }

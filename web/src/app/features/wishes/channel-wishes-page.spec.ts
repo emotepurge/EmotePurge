@@ -105,6 +105,7 @@ function usageOf(total: number): WishUsage {
     windowToUtc: '2026-11-18T12:00:00Z',
     total,
     perDayMean: 1,
+    perDayMeanWithheld: false,
     rank: null,
     rankOf: null,
     coverageGap: false,

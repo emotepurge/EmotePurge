@@ -1140,7 +1140,7 @@ public sealed class WishService(
             rankOf = activeSlotIds.Count;
         }
 
-        return new WishUsageDto(read.WindowStartUtc, evaluatedAtUtc, read.Total, read.MeanPerDay, rank, rankOf, read.HasCoverageGap, read.Daily);
+        return new WishUsageDto(read.WindowStartUtc, evaluatedAtUtc, read.Total, read.MeanPerDay, read.MeanWithheld, rank, rankOf, read.HasCoverageGap, read.Daily);
     }
 
     private Task<string?> ResolveChannelIdAsync(string channelName, CancellationToken cancellationToken)
