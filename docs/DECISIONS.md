@@ -10,11 +10,21 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-11-21 — Sticky filter toolbars stay bounded in height; the audit action filter becomes a popover menu
+
+**Betrifft:** `docs/UI-Designsprache.md` · `DESIGN.md` · `web/src/app/shared/audit/audit-action-menu.ts` · `web/src/app/shared/audit/audit-actions.ts` · `web/src/app/features/channel-workspace/channel-activity-page.ts` · `web/src/app/features/admin/admin-audit-log-page.ts`
+
+Records the decision shipped in 4cee6356. §8.5 used to say a filter toolbar "may wrap to any height". With the audit action filter as a segmented control (39 segments in a channel's feed, 41 in the admin log) that became false on a phone: the wrapped grid was taller than the viewport, the sticky bar covered it, and the audit rows scrolled underneath it unseen. The contract is now that a sticky filter toolbar stays bounded in height, and a control whose option count grows with features belongs in a popover menu (the existing `Popover` plus `role="radiogroup"` pattern of `EmoteSetMenu`), at every breakpoint — no desktop fallback to the grid. The audit action filter is `AuditActionMenu`, options grouped by the action key prefix (`AUDIT_ACTION_GROUPS`; a spec fails when an action has no group). An unknown `?action=` value is treated as no filter in the request and the URL. The open menu is part of the UI audit harness (`*-action-menu` scenarios).
+
+---
+
 ### 2026-11-21 — Wish text: a bare 7TV emote id counts as a link match
 
 **Betrifft:** `src/EmotePurge.Core/Services/WishTextParser.cs` · `tests/EmotePurge.Infrastructure.Tests/Unit/WishTextParserTests.cs` · `tests/EmotePurge.Infrastructure.Tests/Integration/WishCaptureServiceTests.cs` · `docs/superpowers/specs/2026-11-17-wunsch-emotes-spec.md`
 
 A viewer redeemed the wish reward with only an emote id as text, and the id became the requested name. Operator decision: a standalone token that is exactly id-shaped is read as the emote id. Parse order is now (1) a 7TV link anywhere, (2) the first standalone id-shaped token, (3) the name grammar. Id-shaped is strict: 24 hex characters, or 26 characters of the ULID Crockford alphabet (no `I`, `L`, `O`, `U`, any case) with first character `0` to `7`; the token is formed like in the name grammar (whitespace split, addresses and mentions dropped, edge punctuation trimmed), so an id inside a longer word is not an id. An id-shaped token anywhere beats a name, even an earlier one, because an id is far more specific than a word; a link still beats a bare id. The result reuses `MatchKind = link` (no new persisted value): every consumer (`WishSlotMatcher`, the CHECK on `MatchKind`, the web model) only distinguishes `name` from the rest and works off the canonical id, so the wish is matched and shown exactly like a link wish. The scan stays linear, no regular expression. The links' own length-only check is unchanged; only the bare path applies the alphabet and first-character rule. The manual entry in the web UI (`parseEmoteInput`) already accepted bare ids.
+
+---
 
 ### 2026-11-19 — Wish emotes, child 6: chat capture (#486, epic #481)
 
