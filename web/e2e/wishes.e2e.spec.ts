@@ -434,7 +434,11 @@ test.describe('wish emotes: the manager page (#485)', () => {
       await page.setViewportSize({ width: 1280, height: 600 });
       await mockWishBackend(page, CHANNEL, {
         slots: Array.from({ length: 50 }, (_, i) =>
-          buildWishSlot(`slot-${String(i).padStart(2, '0')}`, { alias: `Entry${i}` }),
+          buildWishSlot(`slot-${String(i).padStart(2, '0')}`, {
+            alias: `Entry${i}`,
+            // Relative to now: a fixed date would tip into "ab jetzt" once 14 days have passed.
+            addedAtUtc: wishInstant(-1),
+          }),
         ),
       });
       await page.goto(URL_WISHES);
@@ -455,6 +459,19 @@ test.describe('wish emotes: the manager page (#485)', () => {
       await dialog.getByRole('button', { name: 'Laufzeit und Beginn der Frist ändern' }).click();
       await expect(duration).toBeFocused();
       await expect(duration).toBeInViewport({ ratio: 1 });
+      // The start radios below it are in view too, above the footer, without having been clicked.
+      for (const name of ['Ab dem Hinzufügedatum', 'Ab jetzt']) {
+        const radio = dialog.getByRole('radio', { name });
+        await expect(radio).toBeInViewport({ ratio: 1 });
+        const radioBottom = await radio.evaluate((el) => el.getBoundingClientRect().bottom);
+        const footerTop = await page.evaluate(
+          () =>
+            document
+              .querySelector('[role="dialog"] [dialog-actions]')!
+              .parentElement!.getBoundingClientRect().top,
+        );
+        expect(radioBottom, name).toBeLessThanOrEqual(footerTop);
+      }
       const clearance = (await focusClearance(page))!;
       expect(clearance.controlBottom).toBeLessThanOrEqual(clearance.footerTop);
 

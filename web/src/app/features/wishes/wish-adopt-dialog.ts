@@ -373,69 +373,76 @@ interface StaleNotice {
         }
       }
 
-      <div class="flex flex-col gap-1">
-        <label for="wish-adopt-duration" class="text-sm text-fg-secondary">
-          {{ 'wishes.dialog.duration' | transloco }}
-        </label>
-        <input
-          id="wish-adopt-duration"
-          type="text"
-          inputmode="numeric"
-          class="app-input"
-          autocomplete="off"
-          [value]="duration()"
-          [attr.aria-invalid]="durationError() ? 'true' : null"
-          [attr.aria-describedby]="durationError() ? 'wish-adopt-duration-error' : null"
-          (input)="setDuration($any($event.target).value)"
-        />
-        @if (durationError(); as key) {
-          <p id="wish-adopt-duration-error" class="text-sm text-danger-fg">
-            {{ key | transloco: { max: maxDays } }}
-          </p>
-        }
-      </div>
+      <!-- One block, so "Ändern" brings the duration and the start choice into view together. -->
+      <div id="wish-adopt-fields" class="flex flex-col gap-4">
+        <div class="flex flex-col gap-1">
+          <label for="wish-adopt-duration" class="text-sm text-fg-secondary">
+            {{ 'wishes.dialog.duration' | transloco }}
+          </label>
+          <input
+            id="wish-adopt-duration"
+            type="text"
+            inputmode="numeric"
+            class="app-input"
+            autocomplete="off"
+            [value]="duration()"
+            [attr.aria-invalid]="durationError() ? 'true' : null"
+            [attr.aria-describedby]="durationError() ? 'wish-adopt-duration-error' : null"
+            (input)="setDuration($any($event.target).value)"
+          />
+          @if (durationError(); as key) {
+            <p id="wish-adopt-duration-error" class="text-sm text-danger-fg">
+              {{ key | transloco: { max: maxDays } }}
+            </p>
+          }
+        </div>
 
-      @if (selected(); as entry) {
-        <fieldset class="flex flex-col gap-1">
-          <legend class="mb-1 text-sm text-fg-secondary">
-            {{ 'wishes.adopt.start.legend' | transloco }}
-          </legend>
-          @if (startOptions().canStartAtAdded) {
+        @if (selected(); as entry) {
+          <fieldset class="flex flex-col gap-1">
+            <legend class="mb-1 text-sm text-fg-secondary">
+              {{ 'wishes.adopt.start.legend' | transloco }}
+            </legend>
+            @if (startOptions().canStartAtAdded) {
+              <label class="flex items-center gap-2 py-1 text-sm">
+                <input
+                  type="radio"
+                  name="wish-adopt-start"
+                  class="h-6 w-6 accent-accent-solid"
+                  [checked]="startChoice() === 'added'"
+                  [disabled]="saving()"
+                  (change)="chooseStart('added')"
+                />
+                {{ 'wishes.adopt.start.added' | transloco }}
+              </label>
+            }
             <label class="flex items-center gap-2 py-1 text-sm">
               <input
                 type="radio"
                 name="wish-adopt-start"
                 class="h-6 w-6 accent-accent-solid"
-                [checked]="startChoice() === 'added'"
+                [checked]="startChoice() === 'now'"
                 [disabled]="saving()"
-                (change)="chooseStart('added')"
+                (change)="chooseStart('now')"
               />
-              {{ 'wishes.adopt.start.added' | transloco }}
+              {{ 'wishes.adopt.start.now' | transloco }}
             </label>
-          }
-          <label class="flex items-center gap-2 py-1 text-sm">
-            <input
-              type="radio"
-              name="wish-adopt-start"
-              class="h-6 w-6 accent-accent-solid"
-              [checked]="startChoice() === 'now'"
-              [disabled]="saving()"
-              (change)="chooseStart('now')"
-            />
-            {{ 'wishes.adopt.start.now' | transloco }}
-          </label>
-          @if (!startOptions().canStartAtAdded) {
-            <p class="text-xs text-fg-muted">{{ 'wishes.adopt.start.undatedHint' | transloco }}</p>
-          } @else if (startOptions().addedExpired) {
-            <p class="text-xs text-fg-muted">{{ 'wishes.adopt.start.expiredHint' | transloco }}</p>
-          }
-          @if (expiryText(); as date) {
-            <p class="text-sm text-fg-body">
-              {{ 'wishes.adopt.start.expires' | transloco: { date } }}
-            </p>
-          }
-        </fieldset>
-      }
+            @if (!startOptions().canStartAtAdded) {
+              <p class="text-xs text-fg-muted">
+                {{ 'wishes.adopt.start.undatedHint' | transloco }}
+              </p>
+            } @else if (startOptions().addedExpired) {
+              <p class="text-xs text-fg-muted">
+                {{ 'wishes.adopt.start.expiredHint' | transloco }}
+              </p>
+            }
+            @if (expiryText(); as date) {
+              <p class="text-sm text-fg-body">
+                {{ 'wishes.adopt.start.expires' | transloco: { date } }}
+              </p>
+            }
+          </fieldset>
+        }
+      </div>
 
       @if (errorKey(); as key) {
         <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
@@ -449,8 +456,8 @@ interface StaleNotice {
             <p id="wish-adopt-blocked">{{ reason | transloco }}</p>
           }
           @if (summary(); as text) {
-            <p id="wish-adopt-summary" class="text-fg-secondary">
-              {{ text.key | transloco: text.params }}
+            <p class="text-fg-secondary">
+              <span id="wish-adopt-summary">{{ text.key | transloco: text.params }}</span>
               <button
                 type="button"
                 appButton="outline"
@@ -470,6 +477,7 @@ interface StaleNotice {
         type="button"
         appButton="outline"
         buttonSize="lg"
+        cdkFocusInitial
         [disabled]="saving()"
         (click)="dialogRef.close(undefined)"
       >
@@ -742,14 +750,16 @@ export class WishAdoptDialog {
     }
   }
 
-  /** "Ändern": brings the duration field (with its label) into view and focuses it. */
+  /** "Ändern": brings the duration field and the start choice into view and focuses it. */
   protected focusDuration(): void {
-    const input = this.host.nativeElement.querySelector<HTMLInputElement>('#wish-adopt-duration');
+    const host = this.host.nativeElement;
+    const input = host.querySelector<HTMLInputElement>('#wish-adopt-duration');
     if (input === null) {
       return;
     }
-    // The pane's scroll-padding (`--dialog-clear-bottom`) keeps it clear of the sticky row.
-    (input.parentElement ?? input).scrollIntoView({ block: 'nearest' });
+    // Duration and start choice sit in one block; its top goes to the pane's top edge, so the start
+    // radios below follow into view (the pane's scroll-padding keeps the top clear of the handle).
+    (host.querySelector('#wish-adopt-fields') ?? input).scrollIntoView({ block: 'start' });
     input.focus({ preventScroll: true });
   }
 

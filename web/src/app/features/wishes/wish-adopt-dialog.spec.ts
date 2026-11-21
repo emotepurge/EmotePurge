@@ -489,9 +489,7 @@ describe('WishAdoptDialog', () => {
   describe('summary in the action row', () => {
     function summaryText(): string | null {
       const line = fixture.nativeElement.querySelector('#wish-adopt-summary');
-      return line === null
-        ? null
-        : (line.firstChild?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      return line === null ? null : (line.textContent ?? '').replace(/\s+/g, ' ').trim();
     }
 
     function dateOf(ms: number): string {
