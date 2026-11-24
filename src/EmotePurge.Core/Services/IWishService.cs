@@ -195,6 +195,28 @@ public interface IWishService
         string channelName, long wishId, AuditActor actor, WishCaptureAccess? access = null, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// K7a: deletes an ended wish for good (spec E32, E34 to E36, E41, E44). Works on <see cref="WishCaptureAccess.ChannelId"/>
+    /// of the required <paramref name="access"/> and, in one transaction: locks that channel row (gone:
+    /// <see cref="WishOutcome.ChannelNotFound"/>); checks behind the lock that the caller is still confirmed on the row's
+    /// current Twitch id (else <see cref="WishOutcome.AccessDenied"/>, before the wish is looked up, so a refused caller
+    /// does not learn whether the id exists); locks the wish row only within that channel, waiting (missing or of
+    /// another channel: <see cref="WishOutcome.WishNotFound"/>, without ever locking or waiting for a foreign row); then
+    /// <see cref="WishOutcome.StateConflict"/> unless the state is one of <see cref="Entities.WishStatus.Ended"/> and the
+    /// stored <c>EndedAtUtc</c> equals <paramref name="expectedEndedAtUtc"/> at database precision (the episode the
+    /// confirmation showed). On success the row is removed with a <c>wish.delete</c> audit entry; the database clears
+    /// <c>MergedIntoWishId</c> of the wishes merged into it and drops its slot exclusions. Success carries neither a
+    /// wish nor settings. After the commit one <c>wish.changed</c> (best effort) and, for a <c>kept</c> wish that held a
+    /// slot, the reconcile, which may hand the freed entry to an open or approved wish.
+    /// </summary>
+    Task<WishCommandResult> DeleteAsync(
+        string channelName,
+        long wishId,
+        DateTime expectedEndedAtUtc,
+        AuditActor actor,
+        WishCaptureAccess access,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// One page of the channel's wishes in a view; null when the channel is unknown. <see cref="WishListView.Open"/>
     /// lists <c>pending</c> first, oldest first, then the rest by expiry as the other views.
     /// </summary>
@@ -293,6 +315,13 @@ public enum WishOutcome
 
     /// <summary>The wish is not in a state the command accepts, or changed under it.</summary>
     StateConflict,
+
+    /// <summary>
+    /// K7a <c>delete</c> (spec E41): behind the channel lock the caller is no longer confirmed on the row's current
+    /// Twitch id (it changed after the access filter decided). Nothing is written; the handler answers 403 without a
+    /// body, in the form of the manager filter.
+    /// </summary>
+    AccessDenied,
 
     /// <summary>The <c>mode</c> of a re-add is neither <c>timed</c> nor <c>permanent</c>.</summary>
     ModeInvalid,

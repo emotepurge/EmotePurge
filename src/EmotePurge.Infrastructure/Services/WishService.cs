@@ -29,7 +29,10 @@ namespace EmotePurge.Infrastructure.Services;
 /// wish rows as well (<see cref="SupersedeActiveDecisionsAsync"/>, plan #484 2.6). The K6 commands on an open wish
 /// (<see cref="ApproveAsync"/>, <see cref="RejectAsync"/>, <see cref="UnlinkAsync"/>) take the channel row first and
 /// then the wish row(s); an approval that becomes an extension locks both wish rows in one ascending call
-/// (plan #486 2.6, Sol-P2-9), the same row lock <see cref="ExtendAsync"/> and the expiry run take.
+/// (plan #486 2.6, Sol-P2-9), the same row lock <see cref="ExtendAsync"/> and the expiry run take. Deleting an ended
+/// wish (<see cref="DeleteAsync"/>, K7a, spec E32) takes the channel row, checks the caller's Twitch id behind it, and
+/// then locks the wish row only within that channel (<see cref="RowLocks.LockChannelWishesByIdsAsync"/>), so it never
+/// locks or waits for a row of a channel it has not locked.
 /// </para>
 /// </summary>
 public sealed class WishService(
@@ -946,6 +949,78 @@ public sealed class WishService(
         return new WishCommandResult(WishOutcome.Success, Wish: await ResponseDtoAsync(wish, settings, imageUrl, scope, cancellationToken));
     }
 
+    public async Task<WishCommandResult> DeleteAsync(
+        string channelName,
+        long wishId,
+        DateTime expectedEndedAtUtc,
+        AuditActor actor,
+        WishCaptureAccess access,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channelName);
+        ArgumentNullException.ThrowIfNull(actor);
+        ArgumentNullException.ThrowIfNull(access);
+
+        var channelId = access.ChannelId;
+
+        // Spec E32, plan #500 2.2: the channel row first, like every writer that changes who holds a slot.
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        if ((await db.LockChannelsByIdsAsync([channelId], cancellationToken)).Count == 0)
+        {
+            return WishCommandResult.Of(WishOutcome.ChannelNotFound);
+        }
+
+        // E41 behind the lock: the row's Twitch id as it is now, checked before the wish is looked up, so a refused
+        // caller does not learn whether the id exists.
+        var channel = await db.Channels.AsNoTracking()
+            .Where(c => c.Id == channelId)
+            .Select(c => new { c.ChannelName, c.TwitchChannelId })
+            .SingleAsync(cancellationToken);
+        if (!IsConfirmedOn(access, channel.TwitchChannelId))
+        {
+            return WishCommandResult.Of(WishOutcome.AccessDenied);
+        }
+
+        // The wish row only within the locked channel (2.2a): a row of another channel is never locked or waited for.
+        if ((await db.LockChannelWishesByIdsAsync(channelId, [wishId], cancellationToken)).Count == 0)
+        {
+            return WishCommandResult.Of(WishOutcome.WishNotFound);
+        }
+
+        var wish = await db.Wishes.FirstOrDefaultAsync(w => w.Id == wishId && w.ChannelId == channelId, cancellationToken);
+        if (wish is null)
+        {
+            return WishCommandResult.Of(WishOutcome.WishNotFound);
+        }
+
+        // E34 and E44: only an end state, and only the episode the confirmation showed.
+        if (!WishStatus.IsEnded(wish.Status) || !SameInstant(wish.EndedAtUtc, expectedEndedAtUtc))
+        {
+            db.ChangeTracker.Clear();
+            return WishCommandResult.Of(WishOutcome.StateConflict);
+        }
+
+        // E35: the merged children and the slot exclusions are never loaded, so the database's ON DELETE SET NULL and
+        // CASCADE do the rest; a tracked child would have its reference cleared by EF instead.
+        var heldSlot = wish.Status == WishStatus.Kept && wish.SlotId is not null;
+        StageWishAudit(
+            actor, AuditActions.WishDelete, channel.ChannelName, wish, auditDurationDays: null, previousExpiresAtUtc: null, removal: null,
+            fromStatus: wish.Status);
+        db.Wishes.Remove(wish);
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+
+        // E36: best effort after the commit. A freed entry is the reconcile's to hand on (an open or approved wish of
+        // the emote may take it); a failure there heals with the next sync.
+        await changedPublisher.PublishAsync(channel.ChannelName, cancellationToken);
+        if (heldSlot)
+        {
+            await TriggerReconcileAsync(channelId, cancellationToken);
+        }
+
+        return WishCommandResult.Of(WishOutcome.Success);
+    }
+
     public async Task<PagedResult<WishDto>?> ListAsync(
         string channelName,
         WishListView view,
@@ -1546,10 +1621,11 @@ public sealed class WishService(
         Wish wish,
         int? auditDurationDays,
         DateTime? previousExpiresAtUtc,
-        RemovalReport? removal)
+        RemovalReport? removal,
+        string? fromStatus = null)
     {
         // previousExpiresAtUtc only on a late decision (contract 2.7), the reported entry only on a booked removal
-        // (plan #485 2.1a); the details stay free of alias, name and login.
+        // (plan #485 2.1a), fromStatus only on a delete (plan #500 2.3); the details stay free of alias, name and login.
         var details = new Dictionary<string, object>(StringComparer.Ordinal)
         {
             ["wishId"] = wish.Id,
@@ -1559,6 +1635,11 @@ public sealed class WishService(
         if (previousExpiresAtUtc is { } previous)
         {
             details["previousExpiresAtUtc"] = previous;
+        }
+
+        if (fromStatus is not null)
+        {
+            details["fromStatus"] = fromStatus;
         }
 
         if (removal is not null)

@@ -368,7 +368,9 @@ public static class WishEndpoints
     /// <see cref="WishOutcome.ModeInvalid"/> and <see cref="WishOutcome.RequestInvalid"/> are <c>invalid_request_body</c>.
     /// The conflicts that concern another wish name it as <c>wishId</c> (plan #485 2.1a, and K6's
     /// <c>wish_running_not_extendable</c>; null when
-    /// <c>wish_emote_already_in_set</c> has no running wish).
+    /// <c>wish_emote_already_in_set</c> has no running wish). <see cref="WishOutcome.AccessDenied"/> (K7a, spec E41) is a
+    /// 403 without a body in the form of the manager filter, like <see cref="WishRewardOutcome.AccessDenied"/>: the
+    /// service's second wall when the channel row's Twitch id changed after the access filter decided.
     /// </summary>
     internal static IResult MapResult(WishCommandResult result, int successStatus)
     {
@@ -427,6 +429,8 @@ public static class WishEndpoints
                 return Results.BadRequest(new { errorCode = ApiErrorCodes.WishEmoteRequired });
             case WishOutcome.RunningNotExtendable:
                 return Results.Conflict(new { errorCode = ApiErrorCodes.WishRunningNotExtendable, wishId = result.ConflictingWishId });
+            case WishOutcome.AccessDenied:
+                return Results.Forbid();
             default:
                 throw new UnreachableException($"Unexpected {nameof(WishOutcome)} value: {result.Outcome}.");
         }
