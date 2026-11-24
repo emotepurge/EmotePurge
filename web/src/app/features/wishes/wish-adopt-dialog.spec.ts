@@ -680,4 +680,60 @@ describe('WishAdoptDialog', () => {
     expect(submitButton().disabled).toBe(true);
     expect(blockedReason()).toBe(t('wishes.dialog.blocked.disabled'));
   });
+  describe('preselected entry (K7a, the entry a deleted kept wish freed)', () => {
+    it('picks the freed entry when it is free, and still lists every entry of the emote', () => {
+      open({ sevenTvEmoteId: 'emote-x', preselectSlotId: 'b' });
+      answerSettings(14);
+      answerSlots([slot('a'), slot('b')]);
+      expect(radio('b').checked).toBe(true);
+      expect(radio('a').checked).toBe(false);
+      expect(radio('a').disabled).toBe(false);
+      expect(blockedReason()).toBeNull();
+      submitButton().click();
+      expect(adoptCalls[0].body).toMatchObject({ slotId: 'b', durationDays: 14 });
+      expect(adoptCalls[0].body.wishId).toBeUndefined();
+    });
+
+    it('picks a linkable entry and loads the running wish it goes to', () => {
+      open({ sevenTvEmoteId: 'emote-x', preselectSlotId: 'a' });
+      answerSlots([slot('a', { runningWishId: 4, runningWishAdoptable: true })]);
+      expect(radio('a').checked).toBe(true);
+      expect(getCalls.map((call) => call.id)).toEqual([4]);
+    });
+
+    it('picks nothing when the entry is held meanwhile, and the entry shows its lock reason', () => {
+      open({ sevenTvEmoteId: 'emote-x', preselectSlotId: 'a' });
+      answerSettings(14);
+      answerSlots([slot('a', { heldByWishId: 3 }), slot('b')]);
+      expect(radio('a').checked).toBe(false);
+      expect(radio('a').disabled).toBe(true);
+      expect(noteOf('a')).toContain(t('wishes.adopt.locked.held'));
+      expect(blockedReason()).toBe(t('wishes.adopt.blocked.noSelection'));
+    });
+
+    it('picks nothing when the list no longer has the entry', () => {
+      open({ sevenTvEmoteId: 'emote-x', preselectSlotId: 'gone' });
+      answerSettings(14);
+      answerSlots([slot('a')]);
+      expect(radio('a').checked).toBe(false);
+      expect(blockedReason()).toBe(t('wishes.adopt.blocked.noSelection'));
+    });
+
+    it('picks again after a failed first load, but never after a refusal reloaded the list', () => {
+      open({ sevenTvEmoteId: 'emote-x', preselectSlotId: 'a' });
+      answerSettings(14);
+      slotCalls[0].answer.error(new HttpErrorResponse({ status: 500 }));
+      fixture.detectChanges();
+      button(t('wishes.page.reload')).click();
+      fixture.detectChanges();
+      answerSlots([slot('a')]);
+      expect(radio('a').checked).toBe(true);
+
+      submitButton().click();
+      adoptCalls[0].answer.error(apiError(409, { errorCode: 'wish_slot_already_linked' }));
+      fixture.detectChanges();
+      answerSlots([slot('a')]);
+      expect(radio('a').checked).toBe(false);
+    });
+  });
 });

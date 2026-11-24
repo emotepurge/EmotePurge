@@ -54,6 +54,11 @@ export interface WishAdoptDialogData {
   slotIds?: readonly string[];
   /** The wish to link ("Mit Eintrag verknüpfen", or the 409 of the manual entry): `adopt` sends its id. */
   wish?: Wish;
+  /**
+   * The entry to pick on opening (K7a: the one a deleted kept wish freed). Picked only when the first
+   * list shows it pickable; otherwise nothing is picked and the entry shows its lock reason.
+   */
+  preselectSlotId?: string;
 }
 
 /** `adopted`: the wish the server answered with. `jump`: the manager asked to go to that wish. */
@@ -527,6 +532,8 @@ export class WishAdoptDialog {
   /** The states of holders looked up to name a locked entry's reason. */
   private readonly holderStatus = signal<ReadonlyMap<number, WishStatus>>(new Map());
   private readonly holderAsked = new Set<number>();
+  /** The preselection is tried on the first list that arrives; a reload after a refusal never re-picks. */
+  private preselectTried = false;
   protected readonly stale = signal<StaleNotice | null>(null);
   protected readonly errorKey = signal<string | null>(null);
   private readonly durationServerError = signal(false);
@@ -718,6 +725,9 @@ export class WishAdoptDialog {
         }
         this.entries.set({ kind: 'ready', slots });
         this.lookUpHolders(slots);
+        if (!this.preselectTried) {
+          this.applyPreselection();
+        }
       },
       error: (error: unknown) => {
         if (seq !== this.entriesSeq) {
@@ -895,6 +905,15 @@ export class WishAdoptDialog {
         }
       },
     });
+  }
+
+  /** Picks `preselectSlotId` when the list shows it pickable (free or linkable); never a locked one. */
+  private applyPreselection(): void {
+    this.preselectTried = true;
+    const slotId = this.data.preselectSlotId;
+    if (slotId !== undefined && this.listed().some((line) => line.key === slotId)) {
+      this.select(slotId);
+    }
   }
 
   private prefillDuration(days: number): void {
