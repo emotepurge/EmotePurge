@@ -282,7 +282,8 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
             {
                 429 => SevenTvWriteResult.RateLimited(
                     SevenTvGqlReply.ClampRetryAfter(ProviderRequestTelemetryHandler.ReadRetryAfterSeconds(response))),
-                401 or 403 => SevenTvWriteResult.Unauthorized(),
+                401 => SevenTvWriteResult.Unauthorized(),
+                403 => null,
                 < 200 or > 299 => SevenTvWriteResult.Unavailable(),
                 _ => null,
             };
@@ -293,6 +294,17 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
             }
 
             body = await response.Content.ReadAsStringAsync(cancellationToken);
+
+            if ((int)status == 403)
+            {
+                // Orchestrator decision at T3: only a 403 with 7TV's own error shape (a numeric error_code) means the
+                // token is dead; a CDN or WAF 403 must not mark it invalid and trigger the global fallback.
+                var result = HasSevenTvErrorShape(body)
+                    ? SevenTvWriteResult.Unauthorized()
+                    : SevenTvWriteResult.Unavailable();
+                LogOutcome(operation, result, status, null);
+                return Exchange.Failed(result, status);
+            }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -316,6 +328,21 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
         }
 
         return new Exchange(reply, null, status);
+    }
+
+    private static bool HasSevenTvErrorShape(string body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            return document.RootElement is { ValueKind: JsonValueKind.Object } root
+                && root.TryGetProperty("error_code", out var code)
+                && code.ValueKind == JsonValueKind.Number;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private SevenTvWriteResult<T> Failed<T>(string operation, HttpStatusCode? status, IReadOnlyList<SevenTvGqlError> errors)

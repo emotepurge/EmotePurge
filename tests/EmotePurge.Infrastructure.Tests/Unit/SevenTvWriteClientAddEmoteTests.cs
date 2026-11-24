@@ -242,9 +242,35 @@ public class SevenTvWriteClientAddEmoteTests
     }
 
     [Fact]
-    public async Task RealHttp403_IsUnauthorized()
+    public async Task Http403_WithTheSevenTvBody_IsUnauthorized()
     {
-        var handler = new ScriptedHttpHandler().Then(HttpStatusCode.Forbidden, string.Empty);
+        var handler = new ScriptedHttpHandler().Then(HttpStatusCode.Forbidden, UnauthorizedBody);
+
+        var result = await Client(handler).AddEmoteAsync(Token, SetId, EmoteId, Alias);
+
+        Assert.Equal(SevenTvWriteOutcome.Unauthorized, result.Outcome);
+    }
+
+    [Theory]
+    [InlineData("<html><body>Forbidden</body></html>")]
+    [InlineData("")]
+    [InlineData("{\"error\":\"blocked\"}")]
+    [InlineData("{\"error_code\":\"1000\"}")]
+    public async Task Http403_WithAnyOtherBody_IsUnavailable(string body)
+    {
+        var handler = new ScriptedHttpHandler().Then(HttpStatusCode.Forbidden, body);
+
+        var result = await Client(handler).AddEmoteAsync(Token, SetId, EmoteId, Alias);
+
+        Assert.Equal(SevenTvWriteOutcome.Unavailable, result.Outcome);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("<html>nope</html>")]
+    public async Task Http401_WithAnyBody_IsUnauthorized(string body)
+    {
+        var handler = new ScriptedHttpHandler().Then(HttpStatusCode.Unauthorized, body);
 
         var result = await Client(handler).AddEmoteAsync(Token, SetId, EmoteId, Alias);
 

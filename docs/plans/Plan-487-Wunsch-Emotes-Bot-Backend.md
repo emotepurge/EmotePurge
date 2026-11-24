@@ -487,7 +487,7 @@ Nutzer, kein Platzhalter. K4 sorgt nur dafür, dass die Namen den Weg nicht verb
   ein Upsert auf `Id = 1`. Additiv; das laufende Image liest die Tabelle nie.
 - **`CredentialVersion` (int, Default 0) [E, W20] (Sol-P1-3):** jedes `PUT /token` und `DELETE /token` erhöht sie im selben
   Upsert. Der Worker merkt sich zum geöffneten Token dessen Version; **jedes** Zurückschreiben aus dem Worker (Prüfergebnis,
-  `BotSevenTvUserId`, `invalid` nach 401/403, `expired`) ist ein bedingtes Update mit
+  `BotSevenTvUserId`, `invalid` nach 401 oder einem 403 mit 7TV-Körper, `expired`) ist ein bedingtes Update mit
   `CredentialVersion = <geöffnete Version>`; trifft es keine Zeile, wird das Ergebnis verworfen und das neue Siegel im nächsten
   Takt geöffnet. Vor jedem 7TV-Schreiben vergleicht die Nachprüfung (2.5a (c)) die Version des geöffneten Tokens mit der frisch
   gelesenen; `KillSwitch` hängt nicht an der Version.
@@ -596,10 +596,13 @@ Nutzer, kein Platzhalter. K4 sorgt nur dafür, dass die Namen den Weg nicht verb
   A5: `OK`); ein ungeklärtes Ergebnis ist dort `Unavailable` und läuft über den Annahmeversuch (2.5b). `RemoveEmoteAsync` braucht
   keinen eigenen Nachweis, weil dort immer der Nach-Read entscheidet (2.7).
 - **Ergebnis je Aufruf (eine geschlossene Form [E]):** `Ok`, `RateLimited(retryAfter)` (HTTP 429 mit `Retry-After`, oder HTTP
-  200 mit `extensions.status = 429`; Default 60 s, Kappe 6 h, AK76), `Unauthorized` (HTTP 401/403), `LackingPrivileges`
+  200 mit `extensions.status = 429`; Default 60 s, Kappe 6 h, AK76), `Unauthorized` (HTTP 401, oder HTTP 403 mit 7TV-Körper, s. Orchestrator-Entscheidung bei T3), `LackingPrivileges`
   (`extensions.code = LACKING_PRIVILEGES`), `Rejected(reason)` mit `alias_conflict` (`extensions.status = 409`), `set_full`,
   `emote_gone`, `unknown` (Zuordnung der beiden mittleren nach AK91; nicht herstellbar → `unknown`), `Timeout` und
   `Unavailable` (Netz, 5xx, unlesbar). **Kein Fehlertext von 7TV geht in ein Log oder in die Datenbank** (nur Code und Status).
+  **Orchestrator-Entscheidung bei T3:** `Unauthorized` nur bei HTTP 401 (jeder Körper) oder HTTP 403, dessen JSON-Körper die
+  gemessene 7TV-Form hat (Objekt mit numerischem `error_code`); jedes andere HTTP 403 (CDN/WAF, HTML) ist `Unavailable`, damit es
+  das Token nicht auf `invalid` setzt und keinen globalen Rückfall auslöst.
   **Revision 6 (G0):** `Unauthorized` ist das echte HTTP 401 mit Körper außerhalb des Schemas (P9); ein `extensions.status = 403`
   in einer HTTP-200-Antwort ist `LackingPrivileges`, nie `Unauthorized`. `LackingPrivileges` hängt **nur** am Code: beide Meldungen
   (kein Editor, Einladung offen, P7, A5) ergeben dasselbe Ergebnis; der Client liest den Text nicht, ob eine Einladung offen ist,
@@ -1305,7 +1308,7 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
 - **Revision 6 (G0):** liefert zusätzlich `AcceptEditorInvitationAsync` (2.4, nur `ACCEPT`), die Rückgabe-Auswahl an `addEmote`
   und `VerifyAsync` über `users.me { id }`. Grenzfälle dazu: `LACKING_PRIVILEGES` mit **jeder** der beiden Meldungen und mit einer
   unbekannten Meldung → `LackingPrivileges` (Zuordnung nie über den Text); `extensions.status = 403` in HTTP 200 → nie
-  `Unauthorized`; echtes 401 mit dem gemessenen Körper `{status, error_code, error}` → `Unauthorized`; Konflikt mit `code =
+  `Unauthorized`; echtes 401 mit dem gemessenen Körper `{status, error_code, error}` → `Unauthorized` (401 mit jedem Körper ebenso; 403 mit 7TV-Körper → `Unauthorized`, 403 mit HTML oder anderem Körper → `Unavailable`, Orchestrator-Entscheidung bei T3); Konflikt mit `code =
   BAD_REQUEST` und `status = 409` → `alias_conflict`; unbekannter GraphQL-Fehler → `Rejected(unknown)`; `addEmote` `Ok` mit
   Rückgabe samt Eintrag, mit Rückgabe ohne den Eintrag, ohne Rückgabe, mit unlesbarer Rückgabe (alle `Ok`); Annahme `Ok`,
   `LACKING_PRIVILEGES`, 401, verkleidetes 429, Timeout; der Anfragekörper der Annahme enthält als Zustand nur `ACCEPT`, Bot-ID und

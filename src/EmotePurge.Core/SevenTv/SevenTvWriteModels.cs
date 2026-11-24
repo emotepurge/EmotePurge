@@ -20,7 +20,7 @@ public enum SevenTvWriteOutcome
     /// <summary>HTTP 429, or HTTP 200 with <c>extensions.status = 429</c>. <see cref="SevenTvWriteResult.RetryAfter"/> says how long to wait.</summary>
     RateLimited,
 
-    /// <summary>A real HTTP 401 or 403: the token no longer opens a session. Never derived from a GraphQL error.</summary>
+    /// <summary>A real HTTP 401, or an HTTP 403 with 7TV's own error body (numeric <c>error_code</c>): the token no longer opens a session. Any other 403 is Unavailable. Never derived from a GraphQL error.</summary>
     Unauthorized,
 
     /// <summary>

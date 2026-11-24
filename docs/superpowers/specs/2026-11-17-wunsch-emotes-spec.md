@@ -2218,7 +2218,7 @@ typisierter HttpClient gegen den v4-GraphQL-Endpunkt, 10 s Timeout, nur im Worke
 Operationen: Set-Einträge lesen mit `alias`, `addedAt`, `addedById`, Emote-ID (alle Seiten, sonst
 Fehler, fail-closed); `addEmote(id: { emoteId, alias })`; `removeEmote(id: { emoteId, alias })`
 (Alias immer gesetzt); Token prüfen und eigene 7TV-ID lesen. Fehlerformen wie im Lesepfad:
-verkleidetes 429 (HTTP 200, `extensions.status`), HTTP 429 mit `Retry-After`, 401/403, Timeout.
+verkleidetes 429 (HTTP 200, `extensions.status`), HTTP 429 mit `Retry-After`, 401 oder 403 mit 7TV-Körper (anderes 403 = nicht erreichbar, Orchestrator-Entscheidung bei T3), Timeout.
 Telemetrie über den vorhandenen Provider-Handler mit eigener Aufrufquelle.
 **Gemessen in G0 (2026-11-24, Protokoll `docs/nachtlaeufe/live-487-probe-2026-11-24.md`):** Prüfabfrage
 `users.me { id }` (Claim `sub` = dieselbe ID, Laufzeit 30 Tage); `addEmote` nimmt die Rückgabe-Auswahl
