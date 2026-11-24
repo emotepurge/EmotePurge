@@ -1,5 +1,6 @@
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Xunit;
@@ -40,6 +41,17 @@ public partial class WishServiceTests
         await AssertGoneAsync(wishId);
         Assert.Equal(1, await CountAuditsAsync(channel, AuditActions.WishDelete));
         AssertPublishedOnce(channel);
+    }
+
+    [Fact]
+    public async Task ChannelScopedWishLock_WithNoIds_LocksNothingAndReturnsNothing()
+    {
+        var channel = await SeedChannelAsync();
+        await using var db = fixture.CreateDbContext();
+        await using var tx = await db.Database.BeginTransactionAsync();
+
+        Assert.Empty(await db.LockChannelWishesByIdsAsync(channel.Id, [], CancellationToken.None));
+        Assert.Empty(await db.LockChannelWishesByIdsNoWaitAsync(channel.Id, [], CancellationToken.None));
     }
 
     // ------------------------------------------------------------------------------------ merged children without waiting (E32)

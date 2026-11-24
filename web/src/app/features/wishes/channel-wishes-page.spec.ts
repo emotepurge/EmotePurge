@@ -2164,6 +2164,19 @@ describe('ChannelWishesPage', () => {
       expect(fixture.nativeElement.querySelector('[data-deleted-notice]')).toBeNull();
     });
 
+    it('shows the generic error when the delete fails without an HTTP answer', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [ended(1)]);
+
+      remove(fixture, rowOf(fixture, 1));
+      deletes[0].answer.error(new Error('boom'));
+      fixture.detectChanges();
+
+      expect(alerts(fixture, 'ended')).toHaveLength(1);
+      expect(fixture.nativeElement.querySelector('[data-deleted-notice]')).toBeNull();
+    });
+
     it('waits on a delete under way: the row takes no second one', () => {
       const fixture = create();
       settle(fixture);
