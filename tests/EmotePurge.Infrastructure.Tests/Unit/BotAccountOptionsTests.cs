@@ -16,6 +16,7 @@ public class BotAccountOptionsTests
         Assert.Equal("BotAccount", BotAccountOptions.SectionName);
         Assert.False(options.Enabled);
         Assert.Equal(2, options.WriteDelaySeconds);
+        Assert.Equal(300, options.EditorVisibilitySeconds);
         Assert.False(options.Renewal.Enabled);
         Assert.Equal(21, options.Renewal.LeadDays);
         Assert.Equal(26, options.Renewal.SilenceAlertHours);
@@ -35,6 +36,21 @@ public class BotAccountOptionsTests
     [InlineData(0)]
     [InlineData(60)]
     public void WriteDelaySeconds_AtTheBoundsIsValid(int value) => new BotAccountOptions { WriteDelaySeconds = value }.Validate();
+
+    [Theory]
+    [InlineData(59)]
+    [InlineData(1801)]
+    public void EditorVisibilitySeconds_OutsideSixtyToEighteenHundredThrows_NamingTheKey(int value)
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => new BotAccountOptions { EditorVisibilitySeconds = value }.Validate());
+
+        Assert.Contains("BotAccount:EditorVisibilitySeconds", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(60)]
+    [InlineData(1800)]
+    public void EditorVisibilitySeconds_AtTheBoundsIsValid(int value) => new BotAccountOptions { EditorVisibilitySeconds = value }.Validate();
 
     [Theory]
     [InlineData(6)]

@@ -133,12 +133,12 @@ public class BotAccountSchemaTests(PostgresFixture fixture) : IAsyncLifetime
         var settings = await db.Database
             .SqlQueryRaw<string>("""
                 SELECT column_name AS "Value" FROM information_schema.columns
-                WHERE table_name = 'ChannelWishSettings' AND column_name = 'BotEditorCheckedIdentityVersion' AND is_nullable = 'YES'
+                WHERE table_name = 'ChannelWishSettings' AND column_name IN ('BotEditorCheckedIdentityVersion', 'BotConsentSevenTvUserId', 'BotInvitationAttemptAtUtc', 'BotInvitationRetryAtUtc') AND is_nullable = 'YES'
                 """)
             .ToListAsync();
 
         Assert.Equal(7, nullable.Count);
-        Assert.Single(settings);
+        Assert.Equal(4, settings.Count);
         Assert.False(db.Database.HasPendingModelChanges());
     }
 

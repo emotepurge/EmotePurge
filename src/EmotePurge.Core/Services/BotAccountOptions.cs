@@ -17,12 +17,20 @@ public sealed class BotAccountOptions
     public const int LeadDaysMax = 28;
     public const int SilenceAlertHoursMin = 1;
     public const int SilenceAlertHoursMax = 168;
+    public const int EditorVisibilitySecondsMin = 60;
+    public const int EditorVisibilitySecondsMax = 1800;
 
     /// <summary>The hard account-wide switch. <c>false</c> by default.</summary>
     public bool Enabled { get; set; }
 
     /// <summary>Seconds between two 7TV writes of the bot (0 to 60, default 2).</summary>
     public int WriteDelaySeconds { get; set; } = 2;
+
+    /// <summary>
+    /// Seconds a fresh invitation may stay invisible in the editor read before it counts as <c>not_editor</c>
+    /// (60 to 1800, default 300; no compose mapping).
+    /// </summary>
+    public int EditorVisibilitySeconds { get; set; } = 300;
 
     /// <summary>The automatic token renewal, <c>BotAccount:Renewal:*</c>.</summary>
     public BotAccountRenewalOptions Renewal { get; set; } = new();
@@ -31,6 +39,7 @@ public sealed class BotAccountOptions
     public void Validate()
     {
         RequireRange($"{SectionName}:WriteDelaySeconds", WriteDelaySeconds, WriteDelaySecondsMin, WriteDelaySecondsMax);
+        RequireRange($"{SectionName}:EditorVisibilitySeconds", EditorVisibilitySeconds, EditorVisibilitySecondsMin, EditorVisibilitySecondsMax);
         RequireRange($"{SectionName}:Renewal:LeadDays", Renewal.LeadDays, LeadDaysMin, LeadDaysMax);
         RequireRange($"{SectionName}:Renewal:SilenceAlertHours", Renewal.SilenceAlertHours, SilenceAlertHoursMin, SilenceAlertHoursMax);
     }

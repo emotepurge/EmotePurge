@@ -49,7 +49,10 @@ public class AddBotAccountMigrationTests(PostgresFixture fixture)
         Assert.Empty(before.Except(after));
         string[] added =
         [
+            "ChannelWishSettings.BotConsentSevenTvUserId:text:YES:",
             "ChannelWishSettings.BotEditorCheckedIdentityVersion:integer:YES:",
+            "ChannelWishSettings.BotInvitationAttemptAtUtc:timestamp with time zone:YES:",
+            "ChannelWishSettings.BotInvitationRetryAtUtc:timestamp with time zone:YES:",
             "Wishes.BotAddAckAtUtc:timestamp with time zone:YES:",
             "Wishes.BotAttemptVersion:integer:YES:",
             "Wishes.BotConfirmDeadlineAtUtc:timestamp with time zone:YES:",
@@ -77,14 +80,17 @@ public class AddBotAccountMigrationTests(PostgresFixture fixture)
         Assert.Equal(
             (null, null, null, null, null, null, null),
             (wish.BotSetId, wish.BotAttemptVersion, wish.BotRemoveAtUtc, wish.BotRemoveEvidence, wish.BotAddAckAtUtc, wish.BotConfirmDeadlineAtUtc, wish.BotRepairAtUtc));
-        Assert.Null((await db.ChannelWishSettings.AsNoTracking().SingleAsync(s => s.ChannelId == channelId)).BotEditorCheckedIdentityVersion);
+        var kept = await db.ChannelWishSettings.AsNoTracking().SingleAsync(s => s.ChannelId == channelId);
+        Assert.Equal(
+            (null, null, null, null),
+            (kept.BotEditorCheckedIdentityVersion, kept.BotConsentSevenTvUserId, kept.BotInvitationAttemptAtUtc, kept.BotInvitationRetryAtUtc));
 
         // The old image, still running after the manual migration, inserts without naming any new column.
         var later = await InsertChannelAsync(db, "botaccountafter");
         await db.Database.ExecuteSqlRawAsync(InsertOldWishSql, later, "emoteafter");
         await db.Database.ExecuteSqlRawAsync(InsertOldSettingsSql, later);
         Assert.True(await db.Wishes.AnyAsync(w => w.ChannelId == later && w.BotSetId == null));
-        Assert.True(await db.ChannelWishSettings.AnyAsync(s => s.ChannelId == later && s.BotEditorCheckedIdentityVersion == null));
+        Assert.True(await db.ChannelWishSettings.AnyAsync(s => s.ChannelId == later && s.BotEditorCheckedIdentityVersion == null && s.BotConsentSevenTvUserId == null));
     }
 
     [Fact]
@@ -114,7 +120,7 @@ public class AddBotAccountMigrationTests(PostgresFixture fixture)
         Assert.Empty(await QueryAsync(db, """
             SELECT column_name AS "Value" FROM information_schema.columns
             WHERE (table_name = 'Wishes' AND column_name IN ('BotSetId', 'BotAttemptVersion', 'BotRemoveAtUtc', 'BotRemoveEvidence', 'BotAddAckAtUtc', 'BotConfirmDeadlineAtUtc', 'BotRepairAtUtc'))
-               OR (table_name = 'ChannelWishSettings' AND column_name = 'BotEditorCheckedIdentityVersion')
+               OR (table_name = 'ChannelWishSettings' AND column_name IN ('BotEditorCheckedIdentityVersion', 'BotConsentSevenTvUserId', 'BotInvitationAttemptAtUtc', 'BotInvitationRetryAtUtc'))
             """));
 
         await MigrateAsync(db, null);

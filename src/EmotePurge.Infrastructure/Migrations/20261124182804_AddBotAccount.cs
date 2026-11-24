@@ -54,10 +54,28 @@ namespace EmotePurge.Infrastructure.Migrations
                 maxLength: 32,
                 nullable: true);
 
+            migrationBuilder.AddColumn<string>(
+                name: "BotConsentSevenTvUserId",
+                table: "ChannelWishSettings",
+                type: "text",
+                nullable: true);
+
             migrationBuilder.AddColumn<int>(
                 name: "BotEditorCheckedIdentityVersion",
                 table: "ChannelWishSettings",
                 type: "integer",
+                nullable: true);
+
+            migrationBuilder.AddColumn<DateTime>(
+                name: "BotInvitationAttemptAtUtc",
+                table: "ChannelWishSettings",
+                type: "timestamp with time zone",
+                nullable: true);
+
+            migrationBuilder.AddColumn<DateTime>(
+                name: "BotInvitationRetryAtUtc",
+                table: "ChannelWishSettings",
+                type: "timestamp with time zone",
                 nullable: true);
 
             migrationBuilder.CreateTable(
@@ -142,7 +160,19 @@ namespace EmotePurge.Infrastructure.Migrations
                 table: "Wishes");
 
             migrationBuilder.DropColumn(
+                name: "BotConsentSevenTvUserId",
+                table: "ChannelWishSettings");
+
+            migrationBuilder.DropColumn(
                 name: "BotEditorCheckedIdentityVersion",
+                table: "ChannelWishSettings");
+
+            migrationBuilder.DropColumn(
+                name: "BotInvitationAttemptAtUtc",
+                table: "ChannelWishSettings");
+
+            migrationBuilder.DropColumn(
+                name: "BotInvitationRetryAtUtc",
                 table: "ChannelWishSettings");
         }
     }
