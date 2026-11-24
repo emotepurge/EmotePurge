@@ -103,7 +103,7 @@ const CLOCK_TICK_MS = 60_000;
  * The actions this page carries out — every one of the action table. `adopt`, `edit`, `reAdd` and
  * `approve` open a dialog instead of sending a command (T6, T7, K6); `add7tv` starts the wish add (T8),
  * `remove` the removal (T9). `reject` and `unlink` (K6) are confirmed commands; none of the K6 actions
- * writes to 7TV.
+ * writes to 7TV. `delete` (K7a) is confirmed too and removes an ended wish for good, nothing in 7TV.
  */
 const OFFERED_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
   'add7tv',
@@ -118,6 +118,7 @@ const OFFERED_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
   'approve',
   'reject',
   'unlink',
+  'delete',
 ]);
 
 /** An approve the server booked as an extension of the running wish, said once at the page top. */
@@ -125,6 +126,54 @@ interface MergedNotice {
   runningWishId: number | null;
   /** The running wish's new expiry; `null` when the answer did not carry one. */
   expiresAtUtc: string | null;
+}
+
+/**
+ * What the page says after its own delete (K7a, plan 2.6). `kept`: a kept wish with an entry was
+ * deleted, so the entry is free again and "Bestand übernehmen" opens the take-over for its whole emote
+ * with that entry preselected. `done`: the pinned row was deleted without such a way back.
+ */
+type DeletedNotice = { kind: 'kept'; sevenTvEmoteId: string; slotId: string } | { kind: 'done' };
+
+/**
+ * The notice a delete leaves, from the wish as the confirmation showed it and where it stood: a kept
+ * wish with an entry always gets the way back, the pinned row at least "Wunsch gelöscht" (its row is
+ * gone and the focus needs a place), a row of a list nothing (the next row takes the focus).
+ */
+export function deletedNoticeFor(wish: Wish, pinned: boolean): DeletedNotice | null {
+  if (wish.status === 'kept' && wish.slotId !== null && hasEmote(wish)) {
+    return { kind: 'kept', sevenTvEmoteId: wish.sevenTvEmoteId, slotId: wish.slotId };
+  }
+  return pinned ? { kind: 'done' } : null;
+}
+
+/**
+ * The confirmation text of a delete (PR1-6): only a kept wish that still names its entry promises the
+ * way back through "Bestand übernehmen"; a kept one the reconcile released, and every other ended
+ * state, get the general text.
+ */
+export function deleteConfirmKey(wish: Wish): string {
+  return wish.status === 'kept' && wish.slotId !== null
+    ? 'wishes.confirm.deleteKept'
+    : 'wishes.confirm.delete';
+}
+
+/**
+ * Where the focus goes once a row of a list is deleted (plan 2.6): the row after it, else the one
+ * before, else `null` for the section heading. `ids` is the list as shown before the delete;
+ * `stillShown` says which rows are still on screen now.
+ */
+export function focusAfterDelete(
+  ids: readonly number[],
+  deletedId: number,
+  stillShown: (id: number) => boolean,
+): number | null {
+  const index = ids.indexOf(deletedId);
+  if (index < 0) {
+    return null;
+  }
+  const candidates = [...ids.slice(index + 1), ...ids.slice(0, index).reverse()];
+  return candidates.find((id) => id !== deletedId && stillShown(id)) ?? null;
 }
 
 /** Id of the page's one status line that names a blocking 7TV run (plan 2.7). */
@@ -196,7 +245,7 @@ type PinnedState =
           <button type="button" appButton="primary" (click)="openEntry()">
             {{ 'wishes.page.header.entry' | transloco }}
           </button>
-          <button type="button" appButton="neutral" (click)="openAdopt({})">
+          <button type="button" appButton="neutral" data-header-adopt (click)="openAdopt({})">
             {{ 'wishes.page.header.adopt' | transloco }}
           </button>
         </div>
@@ -228,13 +277,13 @@ type PinnedState =
         <!-- A removal whose booking was refused: said here as well as at its row, which the reload
              may move out of sight (plan 2.6). Same pair of regions as the set-full hint. -->
         <p role="status" class="sr-only">
-          @if (removalNotice()) {
-            {{ 'wishes.remove.notBooked' | transloco }}
+          @if (removalNotice(); as key) {
+            {{ key | transloco }}
           }
         </p>
-        @if (removalNotice()) {
+        @if (removalNotice(); as key) {
           <app-notice-banner variant="info" aria-hidden="true">{{
-            'wishes.remove.notBooked' | transloco
+            key | transloco
           }}</app-notice-banner>
         }
         <!-- An approve the server booked as an extension of the running wish (plan 2.6 (1)): said
@@ -266,6 +315,50 @@ type PinnedState =
                 {{ 'wishes.dialog.toWish' | transloco }}
               </button>
             }
+          </app-notice-banner>
+        }
+        <!-- What the page's own delete left (K7a, plan 2.6). When the focus moves onto the notice (the
+             pinned row went) the focus says it, through the text or as the button's description;
+             otherwise the mounted region does (§4.4). Never both, so it is not read twice. -->
+        <p role="status" class="sr-only">
+          @if (deletedNotice(); as notice) {
+            @if (!deletedNoticeFocused()) {
+              {{ deletedTextKey(notice) | transloco }}
+            }
+          }
+        </p>
+        @if (deletedNotice(); as notice) {
+          <app-notice-banner variant="info">
+            <!-- Text and buttons stacked in the content slot, not in [notice-action]: two buttons
+                 there squeeze the text into a narrow column on a phone (the #217 pattern of
+                 import-target-dialog.ts). The text is read through the focus when it moved here,
+                 else hidden: the region above speaks it. -->
+            <div class="flex flex-col gap-3">
+              <p
+                id="wishes-deleted-text"
+                data-deleted-notice
+                [attr.tabindex]="deletedNoticeFocused() ? -1 : null"
+                [attr.aria-hidden]="deletedNoticeFocused() ? null : 'true'"
+              >
+                {{ deletedTextKey(notice) | transloco }}
+              </p>
+              <div class="flex flex-wrap gap-2">
+                @if (notice.kind === 'kept') {
+                  <button
+                    type="button"
+                    appButton="outline"
+                    data-deleted-adopt
+                    aria-describedby="wishes-deleted-text"
+                    (click)="adoptFreedEntry(notice)"
+                  >
+                    {{ 'wishes.page.header.adopt' | transloco }}
+                  </button>
+                }
+                <button type="button" appButton="outline" (click)="dismissDeletedNotice()">
+                  {{ 'wishes.deleted.dismiss' | transloco }}
+                </button>
+              </div>
+            </div>
           </app-notice-banner>
         }
       </div>
@@ -611,9 +704,15 @@ export class ChannelWishesPage {
   /** A wish filed by hand landed in a full set (`setFull`); stays until the next filing. */
   protected readonly setFullNotice = signal(false);
 
-  /** A removal of this channel left 7TV but was not booked (`notBooked`, plan 2.6); stays until the
-   *  next removal starts or the channel changes. */
-  protected readonly removalNotice = signal(false);
+  /** A removal of this channel left 7TV but was not booked (`notBooked`, plan 2.6), as the key of what
+   *  to say (moved on, or deleted meanwhile, K7a); stays until the next removal starts or the channel
+   *  changes. */
+  protected readonly removalNotice = signal<string | null>(null);
+
+  /** What the page's own last delete left (K7a); goes with the channel, its dialog or the next delete. */
+  protected readonly deletedNotice = signal<DeletedNotice | null>(null);
+  /** The focus was moved onto the deleted notice, which then speaks through the focus alone. */
+  protected readonly deletedNoticeFocused = signal(false);
 
   /** The last approve was booked as an extension of the running wish; stays until the next approve. */
   protected readonly mergedNotice = signal<MergedNotice | null>(null);
@@ -638,6 +737,12 @@ export class ChannelWishesPage {
 
   /** The target already focused once; a reload must not pull the focus back. */
   private focusedTarget: number | null = null;
+
+  /**
+   * The jump target whose wish this page deleted: it is not fetched again (it would only say "no
+   * longer there") while the query parameter is being cleared.
+   */
+  private clearedTarget: number | null = null;
 
   /** The open approve dialog; it shows the redeemer's text and login, so a 403 reload closes it. */
   private approveDialog: DialogRef<WishApproveDialogResult | undefined> | null = null;
@@ -833,7 +938,9 @@ export class ChannelWishesPage {
     this.removals.ended.pipe(takeUntilDestroyed()).subscribe((end) => {
       if (end.channelName === this.channel()) {
         if (end.state.kind === 'notBooked') {
-          this.removalNotice.set(true);
+          this.removalNotice.set(
+            end.state.deleted ? 'wishes.remove.notBookedDeleted' : 'wishes.remove.notBooked',
+          );
         }
         this.reloadAfterChange();
       }
@@ -930,6 +1037,10 @@ export class ChannelWishesPage {
       this.openReAdd(wish, sectionId);
       return;
     }
+    if (action === 'delete') {
+      this.confirmDelete(sectionId, wish);
+      return;
+    }
     if (!isConfirmedAction(action)) {
       this.runAction(sectionId, wish, action);
       return;
@@ -1002,6 +1113,30 @@ export class ChannelWishesPage {
     }
   }
 
+  protected deletedTextKey(notice: DeletedNotice): string {
+    return notice.kind === 'kept' ? 'wishes.deleted.kept' : 'wishes.deleted.done';
+  }
+
+  /**
+   * "Bestand übernehmen" of the deleted notice (B3): the take-over for the whole emote, all its entries
+   * and aliases, with the freed entry preselected while it is still pickable. No wish: a new one.
+   */
+  protected adoptFreedEntry(notice: DeletedNotice): void {
+    if (notice.kind !== 'kept') {
+      return;
+    }
+    this.clearDeletedNotice();
+    this.openAdopt(
+      { sevenTvEmoteId: notice.sevenTvEmoteId, preselectSlotId: notice.slotId },
+      { refocusWhenLost: true },
+    );
+  }
+
+  protected dismissDeletedNotice(): void {
+    this.clearDeletedNotice();
+    this.focusHeaderAdoptWhenLost();
+  }
+
   /** "Zum Wunsch" of the extension notice: the jump target of plan 2.4. */
   protected goToWish(id: number): void {
     this.jumpTo(id);
@@ -1024,13 +1159,24 @@ export class ChannelWishesPage {
     });
   }
 
-  /** The take-over dialog: from the header (all entries), a row (that wish) or the 409 of the entry. */
-  protected openAdopt(options: Omit<WishAdoptDialogData, 'channelName'>): void {
+  /**
+   * The take-over dialog: from the header (all entries), a row (that wish), the 409 of the entry or
+   * the deleted notice. `refocusWhenLost`: its trigger is gone once it closes (the notice), so the
+   * focus goes to the header's "Bestand übernehmen" unless it landed elsewhere.
+   */
+  protected openAdopt(
+    options: Omit<WishAdoptDialogData, 'channelName'>,
+    behaviour: { refocusWhenLost?: boolean } = {},
+  ): void {
     const channel = this.channel();
     openWishAdoptDialog(this.dialog, { channelName: channel, ...options }).closed.subscribe(
       (result) => {
-        if (channel === this.channel()) {
-          this.onAdoptClosed(result);
+        if (channel !== this.channel()) {
+          return;
+        }
+        this.onAdoptClosed(result);
+        if (behaviour.refocusWhenLost && result?.kind !== 'jump') {
+          this.focusHeaderAdoptWhenLost();
         }
       },
     );
@@ -1119,7 +1265,7 @@ export class ChannelWishesPage {
       return;
     }
     this.actionErrorOf(sectionId).set(null);
-    this.removalNotice.set(false);
+    this.removalNotice.set(null);
     startWishRemovalFlow(this.removalDeps, {
       channelName: channel,
       wish,
@@ -1128,6 +1274,164 @@ export class ChannelWishesPage {
         openSevenTvTokenPromptDialog(this.dialog).closed.pipe(map((done) => done === true)),
       progress: this.removals.progressFor(channel, wish.id),
     });
+  }
+
+  /**
+   * "Löschen" (K7a, plan 2.6): the confirmation, then `DELETE` with the end of the row it showed —
+   * captured when it opens, the DTO string unchanged, even when a reload replaced the row meanwhile.
+   */
+  private confirmDelete(sectionId: SectionId, wish: Wish): void {
+    const channel = this.channel();
+    const name =
+      wishTitle(wish, this.previewNameOf(wish)) ||
+      this.transloco.translate('wishes.pending.untitled');
+    openConfirmDialog(this.dialog, {
+      message: this.transloco.translate(deleteConfirmKey(wish), { name }),
+      confirmLabel: this.transloco.translate('wishes.actions.delete'),
+    }).closed.subscribe((confirmed) => {
+      // A channel switch while it was open: the row is no longer this page's.
+      if (confirmed && channel === this.channel() && !this.pendingIds().has(wish.id)) {
+        this.runDelete(sectionId, wish);
+      }
+    });
+  }
+
+  /**
+   * Sends the delete. 204, and 404 `wish_not_found` (gone already, by another manager or the
+   * retention), are both done: no error, the lists reload (E38). Every other refusal shows at the
+   * row's section like any command; 409 `wish_state_conflict` also reloads (the wish changed, or a
+   * merged child was locked).
+   */
+  private runDelete(sectionId: SectionId, wish: Wish): void {
+    const channel = this.channel();
+    const actionError = this.actionErrorOf(sectionId);
+    // The list as shown when the delete went out: the focus goes to a neighbour of the row.
+    const shownIds =
+      sectionId === 'pinned'
+        ? []
+        : (this.sectionOf(sectionId)?.result()?.items ?? []).map((w) => w.id);
+    actionError.set(null);
+    this.clearDeletedNotice();
+    this.setPending(wish.id, true);
+    // Every ended state carries its end (E44); an empty value would come back as a refusal (400).
+    this.wishService.deleteWish(channel, wish.id, wish.endedAtUtc ?? '').subscribe({
+      next: () => {
+        this.setPending(wish.id, false);
+        this.onDeleted(channel, sectionId, wish, shownIds);
+      },
+      error: (error: unknown) => {
+        this.setPending(wish.id, false);
+        if (channel !== this.channel()) {
+          return;
+        }
+        if (!(error instanceof HttpErrorResponse)) {
+          actionError.set(GENERIC_ERROR_TRANSLATION_KEY);
+          return;
+        }
+        const code = apiErrorCode(error);
+        if (error.status === 404 && code === 'wish_not_found') {
+          this.onDeleted(channel, sectionId, wish, shownIds);
+          return;
+        }
+        actionError.set(wishErrorKey(error, 'action'));
+        if (code === 'wish_state_conflict') {
+          this.reloadAfterChange();
+        }
+      },
+    });
+  }
+
+  /**
+   * The wish is gone: the notice, the pin, the focus (B2), and the lists. A pinned row's pin is
+   * cleared (no "no longer there") and the focus goes onto the notice, its "Bestand übernehmen" when
+   * there is one; a row of a list hands the focus to its neighbour, else to the section heading.
+   */
+  private onDeleted(
+    channel: string,
+    sectionId: SectionId,
+    wish: Wish,
+    shownIds: readonly number[],
+  ): void {
+    if (channel !== this.channel() || this.destroyed) {
+      return;
+    }
+    const pinned = sectionId === 'pinned';
+    const notice = deletedNoticeFor(wish, pinned);
+    this.deletedNotice.set(notice);
+    this.deletedNoticeFocused.set(pinned && notice !== null);
+    if (pinned) {
+      this.clearPin(wish.id);
+    }
+    this.reloadAfterChange();
+    if (pinned) {
+      // Its way back when there is one, else the notice's text itself.
+      const host = this.host.nativeElement;
+      this.focusAfterRender(
+        () =>
+          host.querySelector<HTMLElement>('[data-deleted-adopt]') ??
+          host.querySelector<HTMLElement>('[data-deleted-notice]'),
+      );
+      return;
+    }
+    const view = sectionId as WishListView;
+    const next = focusAfterDelete(shownIds, wish.id, (id) => this.rowOf(view, id) !== null);
+    this.focusAfterRender(() =>
+      next !== null
+        ? this.rowOf(view, next)
+        : this.host.nativeElement.querySelector<HTMLElement>(
+            view === 'ended' ? '#wishes-ended-title button' : `#wishes-${view}-title`,
+          ),
+    );
+  }
+
+  /** The pinned wish was deleted here: drop the pin and the query parameter that named it. */
+  private clearPin(id: number): void {
+    this.clearedTarget = id;
+    this.focusedTarget = null;
+    this.pinnedSeq++;
+    this.pinned.set(null);
+    this.pinnedActionError.set(null);
+    if (this.targetId() === id) {
+      void this.router.navigate([], {
+        relativeTo: this.route,
+        queryParams: { wish: null },
+        queryParamsHandling: 'merge',
+      });
+    }
+  }
+
+  private clearDeletedNotice(): void {
+    this.deletedNotice.set(null);
+    this.deletedNoticeFocused.set(false);
+  }
+
+  /** The row of a wish in a list section, while it is on screen. */
+  private rowOf(view: WishListView, id: number): HTMLElement | null {
+    return this.host.nativeElement.querySelector<HTMLElement>(
+      `section[aria-labelledby="wishes-${view}-title"] [data-wish-id="${id}"]`,
+    );
+  }
+
+  /** Focuses what `target` finds once the page has rendered the change. */
+  private focusAfterRender(target: () => HTMLElement | null): void {
+    afterNextRender(() => target()?.focus(), { injector: this.injector });
+  }
+
+  /** The trigger went with the notice: focus left on nothing goes to the header's "Bestand übernehmen". */
+  private focusHeaderAdoptWhenLost(): void {
+    if (this.destroyed) {
+      return;
+    }
+    afterNextRender(
+      () => {
+        const active = document.activeElement;
+        if (active !== null && active !== document.body) {
+          return;
+        }
+        this.host.nativeElement.querySelector<HTMLElement>('[data-header-adopt]')?.focus();
+      },
+      { injector: this.injector },
+    );
   }
 
   /** The row showed a state the server no longer has: say so at its section and show the current one. */
@@ -1207,6 +1511,7 @@ export class ChannelWishesPage {
    */
   private jumpTo(id: number): void {
     this.focusedTarget = null;
+    this.clearedTarget = null;
     if (this.targetId() === id) {
       this.resolveTarget(id, this.loadedIds(), this.listsSettled(), this.pinned());
       return;
@@ -1233,8 +1538,10 @@ export class ChannelWishesPage {
     this.setFullNotice.set(false);
     this.mergedNotice.set(null);
     this.focusedTarget = null;
+    this.clearedTarget = null;
     this.usageStore.reset();
-    this.removalNotice.set(false);
+    this.removalNotice.set(null);
+    this.clearDeletedNotice();
     if (channel) {
       this.load(this.open);
       this.load(this.running);
@@ -1385,10 +1692,15 @@ export class ChannelWishesPage {
   ): void {
     if (id === null) {
       this.focusedTarget = null;
+      this.clearedTarget = null;
       if (pinned !== null) {
         this.pinnedSeq++;
         this.pinned.set(null);
       }
+      return;
+    }
+    if (id === this.clearedTarget) {
+      // Deleted here; the query parameter is on its way out.
       return;
     }
     if (this.focusedTarget !== null && this.focusedTarget !== id) {
@@ -1527,6 +1839,19 @@ export class ChannelWishesPage {
       default:
         // Unreachable: onAction lets through only what OFFERED_ACTIONS names.
         throw new Error(`Wish action ${action} is not offered on this page.`);
+    }
+  }
+
+  private sectionOf(sectionId: SectionId): ListSection | null {
+    switch (sectionId) {
+      case 'open':
+        return this.open;
+      case 'running':
+        return this.running;
+      case 'ended':
+        return this.ended;
+      default:
+        return null;
     }
   }
 
