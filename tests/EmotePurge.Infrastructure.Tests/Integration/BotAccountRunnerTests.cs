@@ -432,6 +432,32 @@ public class BotAccountRunnerTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal(swap ? Now.AddSeconds(90) : (DateTime?)null, (await ReadRowAsync()).PausedUntilUtc);
     }
 
+    // A pause booked for the old identity is gone after a hand-set token (PUT), and survives a renewal swap.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ABookedPause_IsGoneAfterAPut_ButSurvivesARenewalSwap(bool swap)
+    {
+        var tokenA = Jwt(Now.AddDays(30), "a");
+        var tokenB = Jwt(Now.AddDays(60), "b");
+        await SeedAsync(BotAccountStatus.Unverified, tokenA, Now.AddDays(30));
+        await using (var db = CreateDb())
+        {
+            await db.Database.ExecuteSqlInterpolatedAsync($"""UPDATE "BotAccountCredentials" SET "PausedUntilUtc" = {Now.AddSeconds(90)}""");
+        }
+
+        if (swap)
+        {
+            await SwapAsync(tokenB, Now.AddDays(60));
+        }
+        else
+        {
+            await SetTokenThroughTheAdminRouteAsync(tokenB);
+        }
+
+        Assert.Equal(swap ? Now.AddSeconds(90) : (DateTime?)null, (await ReadRowAsync()).PausedUntilUtc);
+    }
+
     // AK: at most one warning per UTC day from seven days before exp, again right after midnight.
     [Fact]
     public async Task TheExpiryWarning_ComesOncePerUtcDay_AndAgainAfterMidnight()

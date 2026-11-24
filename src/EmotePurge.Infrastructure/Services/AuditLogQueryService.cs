@@ -103,7 +103,7 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
                 r.ChannelName,
                 r.TargetType,
                 r.TargetId,
-                ProjectDetail(r.DetailsJson)))
+                ProjectDetail(r.Action, r.DetailsJson)))
             .ToList();
 
         return new PagedResult<AuditLogEntryDto>(items, page, pageSize, totalCount);
@@ -161,7 +161,7 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     /// where the emotes came from (R1 in the #71 import plan).
     /// </para>
     /// </summary>
-    private static AuditLogDetail? ProjectDetail(string? detailsJson)
+    private static AuditLogDetail? ProjectDetail(string action, string? detailsJson)
     {
         if (!TryParseDetailsObject(detailsJson, out var root))
         {
@@ -205,7 +205,9 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
             return new AuditLogDetail(AuditLogDetail.Kinds.BackfillRemovedDays, backfillRemovedDays, null);
         }
 
-        if (TryProjectBotAccountDetail(root, out var botDetail))
+        // Action-gated: `enabled` and `status` are generic keys, and only these two actions write them as bot flags.
+        if (action is AuditActions.BotAccountKillSwitch or AuditActions.BotAccountTokenState
+            && TryProjectBotAccountDetail(root, out var botDetail))
         {
             return botDetail;
         }

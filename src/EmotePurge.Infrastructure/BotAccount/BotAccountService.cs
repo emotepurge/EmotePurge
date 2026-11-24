@@ -104,6 +104,9 @@ public sealed class BotAccountService(
             row.CredentialVersion++;
             row.IdentityVersion++;
 
+            // The pause is bound to the identity (IBotAccountSession.BookPauseAsync); a hand-set token is a new one.
+            row.PausedUntilUtc = null;
+
             db.AddAuditEntry(actor, AuditActions.BotAccountTokenSet, targetType: TargetType, details: new { expiresAtUtc = expiresAt });
             await db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
@@ -137,6 +140,7 @@ public sealed class BotAccountService(
             row.TokenKeyFingerprint = null;
             row.CredentialVersion++;
             row.IdentityVersion++;
+            row.PausedUntilUtc = null;
 
             db.AddAuditEntry(actor, AuditActions.BotAccountTokenDelete, targetType: TargetType);
             await db.SaveChangesAsync(cancellationToken);

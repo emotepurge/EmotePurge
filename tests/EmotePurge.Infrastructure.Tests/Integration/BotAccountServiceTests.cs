@@ -107,7 +107,8 @@ public class BotAccountServiceTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal(((string?)null, (DateTime?)null, (string?)null), (row.BotSevenTvUserId, row.LastVerifiedAtUtc, row.LastErrorCode));
         Assert.Equal((5, 3), (row.CredentialVersion, row.IdentityVersion));
         Assert.Equal(_sealer.KeyFingerprint, row.TokenKeyFingerprint);
-        Assert.Equal((true, 3L, pausedUntil, 7L), (row.KillSwitch, row.KillSwitchVersion, row.PausedUntilUtc, row.RunnerEpoch));
+        Assert.Equal((true, 3L, 7L), (row.KillSwitch, row.KillSwitchVersion, row.RunnerEpoch));
+        Assert.Null(row.PausedUntilUtc);
 
         var entry = Assert.Single(await AuditAsync());
         Assert.Equal((AuditActions.BotAccountTokenSet, Actor.TwitchUserId, Actor.Login, (string?)null), (entry.Action, entry.ActorTwitchUserId, entry.ActorLogin, entry.ChannelName));
@@ -234,6 +235,7 @@ public class BotAccountServiceTests(PostgresFixture fixture) : IAsyncLifetime
             TokenKeyFingerprint = "abc",
             KillSwitch = true,
             KillSwitchVersion = 1,
+            PausedUntilUtc = Now.AddMinutes(5),
             CredentialVersion = 3,
             IdentityVersion = 2,
             RunnerEpoch = 5,
@@ -251,6 +253,7 @@ public class BotAccountServiceTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Null(row.LastVerifiedAtUtc);
         Assert.Null(row.LastErrorCode);
         Assert.Null(row.TokenKeyFingerprint);
+        Assert.Null(row.PausedUntilUtc);
         Assert.Equal((true, 1L, 4, 3, 5L), (row.KillSwitch, row.KillSwitchVersion, row.CredentialVersion, row.IdentityVersion, row.RunnerEpoch));
 
         var entry = Assert.Single(await AuditAsync());
