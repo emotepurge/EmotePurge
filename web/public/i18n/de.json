@@ -2842,8 +2842,8 @@
       "close": "Wunsch „{{ name }}“ schließen? Er endet, ohne dass in 7TV etwas geändert wird.",
       "reject": "Wunsch „{{ name }}“ ablehnen? In 7TV wird nichts geändert.\nDie Kanalpunkte erstattest du in Twitch, in der Warteschlange der Einlösungen.",
       "unlink": "Zuordnung von „{{ name }}“ lösen? Der Wunsch ist danach wieder offen, und dieser Eintrag im Set wird ihm nicht noch einmal automatisch zugeordnet. In 7TV wird nichts geändert.",
-      "delete": "Wunsch „{{ name }}“ endgültig löschen? Der Wunsch verschwindet samt Wünschendem und Einlösetext. Das Aktivitätsprotokoll behält die Aktionen. In 7TV ändert sich nichts.",
-      "deleteKept": "Wunsch „{{ name }}“ endgültig löschen? Der Wunsch verschwindet samt Wünschendem und Einlösetext. Das Aktivitätsprotokoll behält die Aktionen. Das Emote bleibt im Set; den Eintrag kannst du danach in der Regel mit „Bestand übernehmen“ und neuer Laufzeit neu verknüpfen (ordnet der Abgleich ihn vorher einem offenen Wunsch zu, zeigt der Dialog das)."
+      "delete": "Wunsch „{{ name }}“ endgültig löschen? Wünschender und Einlösetext werden mitgelöscht.",
+      "deleteKept": "Wunsch „{{ name }}“ endgültig löschen? Wünschender und Einlösetext werden mitgelöscht. Das Emote bleibt im Set, und du kannst es danach über „Bestand übernehmen“ mit neuer Laufzeit wieder auf Zeit setzen."
     },
     "pending": {
       "title": "Offen",

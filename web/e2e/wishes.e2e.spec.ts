@@ -678,7 +678,7 @@ test.describe('wish emotes: the manager page (#485)', () => {
       dialog = page.getByRole('dialog');
       await expect(dialog).toContainText('Wunsch „Kept7“ endgültig löschen?');
       await expect(dialog).toContainText(
-        'mit „Bestand übernehmen“ und neuer Laufzeit neu verknüpfen',
+        'über „Bestand übernehmen“ mit neuer Laufzeit wieder auf Zeit setzen',
       );
       await confirmDelete(page);
 
