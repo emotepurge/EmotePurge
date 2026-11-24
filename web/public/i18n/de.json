@@ -1068,8 +1068,8 @@
       "killSwitch": {
         "heading": "Notaus",
         "help": "Stoppt sofort jeden Schreibzugriff des Bots auf 7TV, ohne das Token anzufassen.",
-        "running": "Bot läuft",
-        "stopped": "Bot gestoppt",
+        "off": "Notaus aus",
+        "on": "Notaus an",
         "engage": "Bot stoppen",
         "release": "Bot freigeben",
         "engageMessage": "Bot stoppen? Er schreibt nichts mehr nach 7TV, bis du ihn freigibst.",
@@ -1190,8 +1190,8 @@
         "one": "{{count}} Tag",
         "other": "{{count}} Tage"
       },
-      "killSwitchOn": "Notaus an, Bot gestoppt",
-      "killSwitchOff": "Notaus aus, Bot läuft",
+      "killSwitchOn": "Notaus an",
+      "killSwitchOff": "Notaus aus",
       "tokenInvalid": "Token ungültig",
       "tokenExpired": "Token abgelaufen",
       "leaderboardSort": {

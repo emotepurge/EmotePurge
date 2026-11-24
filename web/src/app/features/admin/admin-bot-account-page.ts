@@ -21,6 +21,7 @@ import {
 import {
   BOT_TOKEN_DELETE_CONFIRM_TEXT,
   botTokenExpiryNotice,
+  botTokenStatus,
   canSubmitBotToken,
 } from './admin-bot-account-view';
 
@@ -46,8 +47,13 @@ import {
       @if (errorMessage(); as error) {
         <app-notice-banner variant="error">{{ error | transloco }}</app-notice-banner>
       }
+      <!-- Permanently mounted: a live region that appears together with its text announces nothing
+           (UI-Designsprache 4.5). The visible banner is the aria-hidden twin. -->
+      <span class="sr-only" role="status">{{
+        saved() ? ('admin.botAccount.tokenSaved' | transloco) : ''
+      }}</span>
       @if (saved()) {
-        <app-notice-banner variant="info">{{
+        <app-notice-banner variant="info" aria-hidden="true">{{
           'admin.botAccount.tokenSaved' | transloco
         }}</app-notice-banner>
       }
@@ -78,8 +84,8 @@ import {
           <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
             <dt class="text-fg-muted">{{ 'admin.botAccount.status.label' | transloco }}</dt>
             <dd>
-              <app-state-dot [tone]="account.status === 'valid' ? 'on' : 'off'">
-                {{ 'admin.botAccount.status.' + account.status | transloco }}
+              <app-state-dot [tone]="status() === 'valid' ? 'on' : 'off'">
+                {{ 'admin.botAccount.status.' + status() | transloco }}
               </app-state-dot>
             </dd>
             <dt class="text-fg-muted">{{ 'admin.botAccount.expires' | transloco }}</dt>
@@ -158,8 +164,8 @@ import {
             <app-state-dot [tone]="account.killSwitch ? 'off' : 'on'">
               {{
                 (account.killSwitch
-                  ? 'admin.botAccount.killSwitch.stopped'
-                  : 'admin.botAccount.killSwitch.running'
+                  ? 'admin.botAccount.killSwitch.on'
+                  : 'admin.botAccount.killSwitch.off'
                 ) | transloco
               }}
             </app-state-dot>
@@ -227,6 +233,10 @@ export class AdminBotAccountPage {
   protected readonly expiryNotice = computed(() => {
     const state = this.state();
     return state ? botTokenExpiryNotice(state) : null;
+  });
+  protected readonly status = computed(() => {
+    const state = this.state();
+    return state ? botTokenStatus(state) : 'none';
   });
 
   /** The token field's value — the only place the token lives, emptied on every send. */

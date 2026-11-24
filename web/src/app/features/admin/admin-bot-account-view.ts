@@ -10,12 +10,26 @@ export const BOT_TOKEN_DELETE_CONFIRM_TEXT = 'bot-account';
 
 export type BotTokenExpiryNotice = 'expired' | 'soon' | null;
 
-/** `expired` once the status says so or no whole day is left; `soon` inside the warning window. */
-export function botTokenExpiryNotice(state: BotAccountState): BotTokenExpiryNotice {
+/** The status to show: the server's, except that a token whose `expiresAtUtc` is at or before `now`
+ *  reads as `expired` even while the server still says `valid` (the worker that flips the status
+ *  does not run while wishes are off). */
+export function botTokenStatus(state: BotAccountState, now: Date = new Date()): string {
+  if (state.tokenPresent && isPastExpiry(state, now)) {
+    return 'expired';
+  }
+  return state.status;
+}
+
+/** `expired` once the status says so, `expiresAtUtc` is at or before now, or no whole day is left;
+ *  `soon` inside the warning window. */
+export function botTokenExpiryNotice(
+  state: BotAccountState,
+  now: Date = new Date(),
+): BotTokenExpiryNotice {
   if (!state.tokenPresent) {
     return null;
   }
-  if (state.status === 'expired') {
+  if (botTokenStatus(state, now) === 'expired') {
     return 'expired';
   }
   if (state.expiresInDays !== null && state.expiresInDays <= BOT_TOKEN_EXPIRY_WARNING_DAYS) {
@@ -28,4 +42,12 @@ export function botTokenExpiryNotice(state: BotAccountState): BotTokenExpiryNoti
  *  request is in flight. */
 export function canSubmitBotToken(token: string, busy: boolean): boolean {
   return !busy && token.trim().length > 0;
+}
+
+function isPastExpiry(state: BotAccountState, now: Date): boolean {
+  if (!state.expiresAtUtc) {
+    return false;
+  }
+  const expires = Date.parse(state.expiresAtUtc);
+  return !Number.isNaN(expires) && expires <= now.getTime();
 }

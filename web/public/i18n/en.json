@@ -1068,8 +1068,8 @@
       "killSwitch": {
         "heading": "Kill switch",
         "help": "Stops every bot write to 7TV at once, without touching the token.",
-        "running": "Bot running",
-        "stopped": "Bot stopped",
+        "off": "Kill switch off",
+        "on": "Kill switch on",
         "engage": "Stop bot",
         "release": "Release bot",
         "engageMessage": "Stop the bot? It will not write anything to 7TV until you release it.",
@@ -1190,8 +1190,8 @@
         "one": "{{count}} day",
         "other": "{{count}} days"
       },
-      "killSwitchOn": "Kill switch on, bot stopped",
-      "killSwitchOff": "Kill switch off, bot running",
+      "killSwitchOn": "Kill switch on",
+      "killSwitchOff": "Kill switch off",
       "tokenInvalid": "Token invalid",
       "tokenExpired": "Token expired",
       "leaderboardSort": {

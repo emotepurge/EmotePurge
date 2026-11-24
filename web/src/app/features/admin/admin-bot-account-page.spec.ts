@@ -1,7 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ApplicationRef } from '@angular/core';
-import { TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { TranslocoTestingModule } from '@jsverse/transloco';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -29,6 +29,7 @@ const STATE: BotAccountState = {
 describe('AdminBotAccountPage — the token field', () => {
   let httpMock: HttpTestingController;
   let page: AdminBotAccountPage;
+  let fixture: ComponentFixture<AdminBotAccountPage>;
   // The protected members are the page's behaviour; reach them without widening the class.
   type Internals = {
     tokenInput: { set(v: string): void; (): string };
@@ -51,7 +52,7 @@ describe('AdminBotAccountPage — the token field', () => {
       providers: [provideHttpClient(), provideHttpClientTesting()],
     });
     httpMock = TestBed.inject(HttpTestingController);
-    const fixture = TestBed.createComponent(AdminBotAccountPage);
+    fixture = TestBed.createComponent(AdminBotAccountPage);
     page = fixture.componentInstance;
     fixture.detectChanges();
     httpMock.expectOne('/api/admin/bot-account').flush(STATE);
@@ -105,6 +106,29 @@ describe('AdminBotAccountPage — the token field', () => {
     httpMock.expectOne('/api/admin/bot-account').flush(STATE);
 
     expect(internals().saved()).toBe(false);
+  });
+
+  it('announces the success through a status region that was mounted before the text', async () => {
+    const region = () =>
+      fixture.nativeElement.querySelector('span[role="status"]') as HTMLElement | null;
+    const before = region();
+    expect(before).not.toBeNull();
+    expect(before?.textContent?.trim()).toBe('');
+
+    internals().tokenInput.set('a.b.c');
+    internals().submitToken(new Event('submit'));
+    httpMock
+      .expectOne('/api/admin/bot-account/token')
+      .flush(null, { status: 204, statusText: 'No Content' });
+    TestBed.tick();
+    httpMock.expectOne('/api/admin/bot-account').flush(STATE);
+    await fixture.whenStable();
+
+    expect(region()).toBe(before);
+    expect(region()?.textContent?.trim()).toBe('admin.botAccount.tokenSaved');
+    expect(
+      fixture.nativeElement.querySelector('app-notice-banner[aria-hidden="true"]'),
+    ).not.toBeNull();
   });
 
   it('drops a failed action error on a manual refresh', async () => {
