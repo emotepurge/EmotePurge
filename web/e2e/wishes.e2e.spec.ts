@@ -626,6 +626,210 @@ test.describe('wish emotes: the manager page (#485)', () => {
     });
   });
 
+  // K7a (#500): deleting an ended wish. The entry a kept wish held becomes free in the take-over dialog.
+  test.describe('deleting an ended wish (AK116, AK118)', () => {
+    const emote = wishUlid('D1');
+    const ENDED_AT = wishInstant(-2);
+
+    const keptWish = (id: number, overrides: Record<string, unknown> = {}) =>
+      buildWish(id, {
+        status: 'kept',
+        alias: `Kept${id}`,
+        sevenTvEmoteId: emote,
+        slotId: 'slot-a',
+        endedAtUtc: ENDED_AT,
+        ...overrides,
+      });
+
+    const heldSlot = (holder: number | null) =>
+      buildWishSlot('slot-a', { sevenTvEmoteId: emote, alias: 'KeptAlias', heldByWishId: holder });
+
+    async function openEnded(page: Page): Promise<void> {
+      await section(page, 'ended').getByRole('button', { name: 'Beendet' }).click();
+    }
+
+    /** The confirmation of a delete: scoped to the dialog, confirmed with its "Löschen". */
+    async function confirmDelete(page: Page): Promise<Locator> {
+      const dialog = page.getByRole('dialog');
+      await dialog.getByRole('button', { name: 'Löschen' }).click();
+      return dialog;
+    }
+
+    test('a kept wish holding its entry: the entry is locked, deleting frees it, "Bestand übernehmen" preselects it and a new wish with another id runs (AK118, PR1-7)', async ({
+      page,
+    }) => {
+      const backend = await mockWishBackend(page, CHANNEL, {
+        ended: [keptWish(7)],
+        slots: [heldSlot(7)],
+      });
+      await page.goto(URL_WISHES);
+      await openEnded(page);
+      await expect(row(page, 7)).toBeVisible();
+
+      // Before the deletion the entry is held by the kept wish: shown, locked, with the way described.
+      await page.getByRole('button', { name: 'Bestand übernehmen' }).click();
+      let dialog = page.getByRole('dialog');
+      await expect(dialog.locator('#wish-adopt-entry-slot-a')).toBeDisabled();
+      await expect(dialog.getByText('Ist als behaltener Wunsch geführt.')).toBeVisible();
+      await dialog.getByRole('button', { name: 'Abbrechen' }).click();
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+
+      await row(page, 7).getByRole('button', { name: 'Löschen' }).click();
+      dialog = page.getByRole('dialog');
+      await expect(dialog).toContainText('Wunsch „Kept7“ endgültig löschen?');
+      await expect(dialog).toContainText(
+        'mit „Bestand übernehmen“ und neuer Laufzeit neu verknüpfen',
+      );
+      await confirmDelete(page);
+
+      await expect.poll(() => backend.of('delete').length).toBe(1);
+      expect(backend.of('delete')[0]).toMatchObject({ id: 7, endedAtUtc: ENDED_AT });
+      await expect(row(page, 7)).toHaveCount(0);
+      const adoptNotice = page.locator('[data-deleted-adopt]');
+      await expect(adoptNotice).toBeVisible();
+      await expect(page.locator('#wishes-deleted-text')).toContainText('Wunsch gelöscht.');
+
+      await adoptNotice.click();
+      dialog = page.getByRole('dialog');
+      await expect
+        .poll(() => backend.of('slots').map((call) => call.sevenTvEmoteId))
+        .toContain(emote);
+      const radio = dialog.locator('#wish-adopt-entry-slot-a');
+      await expect(radio).toBeEnabled();
+      await expect(radio).toBeChecked();
+
+      await dialog.getByLabel('Laufzeit in Tagen').fill('7');
+      await dialog.getByRole('button', { name: 'Übernehmen' }).click();
+
+      await expect.poll(() => backend.of('adopt').length).toBe(1);
+      const body = backend.of('adopt')[0].body;
+      expect(body).toMatchObject({ slotId: 'slot-a', durationDays: 7 });
+      expect(body).not.toHaveProperty('wishId');
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+      const created = section(page, 'running').locator('[data-wish-id]').first();
+      await expect(created).toBeVisible();
+      const newId = Number(await created.getAttribute('data-wish-id'));
+      expect(newId).not.toBe(7);
+    });
+
+    test('a pinned kept wish only in the collapsed "Beendet": deleting clears the pin and puts the focus on the notice button', async ({
+      page,
+    }) => {
+      const backend = await mockWishBackend(page, CHANNEL, {
+        ended: [keptWish(7)],
+        slots: [heldSlot(7)],
+      });
+      await page.goto(`${URL_WISHES}?wish=7`);
+      await expect(section(page, 'pinned').locator('[data-wish-id="7"]')).toBeVisible();
+
+      await row(page, 7).getByRole('button', { name: 'Löschen' }).click();
+      await confirmDelete(page);
+
+      await expect.poll(() => backend.of('delete').length).toBe(1);
+      await expect(page).not.toHaveURL(/wish=/);
+      await expect(section(page, 'pinned')).toHaveCount(0);
+      await expect(page.getByText('Diesen Wunsch gibt es nicht mehr.')).toHaveCount(0);
+      await expect(page.locator('[data-deleted-adopt]')).toBeFocused();
+    });
+
+    test('a pinned wish without an entry to take over: the focus lands on the notice text', async ({
+      page,
+    }) => {
+      const backend = await mockWishBackend(page, CHANNEL, {
+        ended: [
+          buildWish(8, {
+            status: 'closed',
+            alias: 'Closed8',
+            slotId: null,
+            slotAddedAtUtc: null,
+            endedAtUtc: ENDED_AT,
+          }),
+        ],
+      });
+      await page.goto(`${URL_WISHES}?wish=8`);
+      await expect(section(page, 'pinned').locator('[data-wish-id="8"]')).toBeVisible();
+
+      await row(page, 8).getByRole('button', { name: 'Löschen' }).click();
+      await confirmDelete(page);
+
+      await expect.poll(() => backend.of('delete').length).toBe(1);
+      await expect(page).not.toHaveURL(/wish=/);
+      await expect(page.getByText('Diesen Wunsch gibt es nicht mehr.')).toHaveCount(0);
+      await expect(page.locator('#wishes-deleted-text')).toBeFocused();
+      await expect(page.locator('[data-deleted-adopt]')).toHaveCount(0);
+    });
+
+    test('a second page that deletes nothing drops the row on wish.changed (AK116)', async ({
+      page,
+    }) => {
+      const backend = await mockWishBackend(page, CHANNEL, {
+        ended: [keptWish(7), keptWish(9, { slotId: null, alias: 'Other9' })],
+        slots: [heldSlot(7)],
+      });
+      const other = await page.context().newPage();
+      await mockAuthMe(other, AUTH_USER);
+      await mockWorkerHealth(other, 'connected');
+      await installLiveStub(other);
+      await mockChannelPermissions(other, CHANNEL, { wishesEnabled: true });
+      await mockVoteSessionList(other, CHANNEL, []);
+      const otherBackend = await mockWishBackend(other, CHANNEL, {
+        ended: [keptWish(7), keptWish(9, { slotId: null, alias: 'Other9' })],
+        slots: [heldSlot(7)],
+      });
+
+      await page.goto(URL_WISHES);
+      await other.goto(URL_WISHES);
+      await openEnded(page);
+      await other
+        .locator('section[aria-labelledby="wishes-ended-title"]')
+        .getByRole('button', { name: 'Beendet' })
+        .click();
+      await expect(row(other, 7)).toBeVisible();
+
+      // The manager of the first page deletes; the server tells every page, and the second one only reloads.
+      await row(page, 7).getByRole('button', { name: 'Löschen' }).click();
+      await confirmDelete(page);
+      await expect.poll(() => backend.of('delete').length).toBe(1);
+      otherBackend.ended = otherBackend.ended.filter((w) => w.id !== 7);
+      await emitLive(other, { type: 'wish.changed', channel: CHANNEL });
+
+      await expect(row(other, 7)).toHaveCount(0);
+      await expect(row(other, 9)).toBeVisible();
+      expect(otherBackend.of('delete')).toHaveLength(0);
+      await other.close();
+    });
+
+    test.describe('on a phone (360 px, coarse pointer)', () => {
+      test.use({ viewport: { width: 360, height: 800 }, hasTouch: true, isMobile: true });
+
+      test('"Löschen" sits in the row and its confirmation opens as a sheet above the action row', async ({
+        page,
+      }) => {
+        const backend = await mockWishBackend(page, CHANNEL, {
+          ended: [keptWish(7)],
+          slots: [heldSlot(7)],
+        });
+        await page.goto(URL_WISHES);
+        await openEnded(page);
+
+        const button = row(page, 7).getByRole('button', { name: 'Löschen' });
+        await expect(button).toBeVisible();
+        await button.tap();
+
+        const dialog = page.getByRole('dialog');
+        await expect(dialog.getByRole('button', { name: 'Löschen' })).toBeVisible();
+        const pane = page.locator('.cdk-overlay-pane.app-dialog-panel');
+        const box = (await pane.boundingBox())!;
+        expect(box.width).toBe(360);
+        expect(box.y + box.height).toBeGreaterThanOrEqual(800 - 1);
+        await expect(dialog.getByRole('button', { name: 'Löschen' })).toBeInViewport();
+        await dialog.getByRole('button', { name: 'Löschen' }).tap();
+        await expect.poll(() => backend.of('delete').length).toBe(1);
+        await expect(page.locator('[data-deleted-adopt]')).toBeVisible();
+      });
+    });
+  });
+
   test.describe('switch and role gates (AK32)', () => {
     test('switch off: no tab, a direct visit lands on the votings, no wish route is asked', async ({
       page,
