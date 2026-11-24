@@ -26,7 +26,8 @@ namespace EmotePurge.Infrastructure.Persistence;
 /// Across tables the order is always <c>Channels</c>, then <c>Emotes</c>, then
 /// <c>EmoteSetLeaveObservations</c>; the wish emotes work (<see cref="LockWishesByIdsAsync"/>) takes the channel row
 /// before the <c>Wishes</c> rows, and the wish rows by <c>Id</c> ascending; deleting a wish (K7a) takes its row only within
-/// the channel it locked (<see cref="LockChannelWishesByIdsAsync"/>). The one shared entry, <see cref="LockEmotesForShareByIdsAsync"/>
+/// the channel it locked (<see cref="LockChannelWishesByIdsAsync"/>), and the wishes merged into it after that row without
+/// waiting (<see cref="LockChannelWishesByIdsNoWaitAsync"/>). The one shared entry, <see cref="LockEmotesForShareByIdsAsync"/>
 /// (plan #373 E11a), sits in the <c>Emotes</c> position of that order like every other emote entry.
 /// </summary>
 internal static class RowLocks
@@ -170,6 +171,32 @@ internal static class RowLocks
         var ids = wishIds.Distinct().ToArray();
         return await db.Database
             .SqlQuery<long>($"""SELECT "Id" AS "Value" FROM "Wishes" WHERE "Id" = ANY({ids}) AND "ChannelId" = {channelId} ORDER BY "Id" FOR UPDATE""")
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The non-waiting twin of <see cref="LockChannelWishesByIdsAsync"/>: locks the <c>Wishes</c> rows with the given ids
+    /// <b>of one channel</b> <c>FOR UPDATE NOWAIT</c>, ascending, and returns the ids found and locked (K7a, spec E32, plan
+    /// #500 2.2a). If any matching row is locked by another transaction, Postgres does not wait but fails the statement
+    /// at once with SQLSTATE <c>55P03</c> (<see cref="Npgsql.PostgresErrorCodes.LockNotAvailable"/>), a
+    /// <see cref="Npgsql.PostgresException"/> that leaves the transaction aborted; the caller rolls it back and gives way.
+    /// <c>NOWAIT</c> is only for rows taken <i>after</i> a wish row the caller already holds (the wishes merged into the
+    /// one being deleted): a command that never waits for a second wish row while it holds one cannot be part of a
+    /// deadlock with a writer that takes wish rows in another order, such as the retention's unordered batches. An id
+    /// that is not returned does not exist (any more) or belongs to another channel. Same rules as the other entries.
+    /// </summary>
+    public static async Task<IReadOnlyList<long>> LockChannelWishesByIdsNoWaitAsync(
+        this AppDbContext db, string channelId, IReadOnlyCollection<long> wishIds, CancellationToken cancellationToken)
+    {
+        RequireTransaction(db);
+        if (wishIds.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = wishIds.Distinct().ToArray();
+        return await db.Database
+            .SqlQuery<long>($"""SELECT "Id" AS "Value" FROM "Wishes" WHERE "Id" = ANY({ids}) AND "ChannelId" = {channelId} ORDER BY "Id" FOR UPDATE NOWAIT""")
             .ToListAsync(cancellationToken);
     }
 

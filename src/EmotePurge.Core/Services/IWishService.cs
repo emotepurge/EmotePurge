@@ -203,7 +203,9 @@ public interface IWishService
     /// another channel: <see cref="WishOutcome.WishNotFound"/>, without ever locking or waiting for a foreign row); then
     /// <see cref="WishOutcome.StateConflict"/> unless the state is one of <see cref="Entities.WishStatus.Ended"/> and the
     /// stored <c>EndedAtUtc</c> equals <paramref name="expectedEndedAtUtc"/> at database precision (the episode the
-    /// confirmation showed). On success the row is removed with a <c>wish.delete</c> audit entry; the database clears
+    /// confirmation showed); then locks the wishes merged into it, within the channel and without waiting (held by
+    /// another transaction, such as the retention pass: <see cref="WishOutcome.StateConflict"/> at once, nothing written,
+    /// the client may retry). On success the row is removed with a <c>wish.delete</c> audit entry; the database clears
     /// <c>MergedIntoWishId</c> of the wishes merged into it and drops its slot exclusions. Success carries neither a
     /// wish nor settings. After the commit one <c>wish.changed</c> (best effort) and, for a <c>kept</c> wish that held a
     /// slot, the reconcile, which may hand the freed entry to an open or approved wish.

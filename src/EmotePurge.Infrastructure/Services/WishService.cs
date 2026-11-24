@@ -32,7 +32,9 @@ namespace EmotePurge.Infrastructure.Services;
 /// (plan #486 2.6, Sol-P2-9), the same row lock <see cref="ExtendAsync"/> and the expiry run take. Deleting an ended
 /// wish (<see cref="DeleteAsync"/>, K7a, spec E32) takes the channel row, checks the caller's Twitch id behind it, and
 /// then locks the wish row only within that channel (<see cref="RowLocks.LockChannelWishesByIdsAsync"/>), so it never
-/// locks or waits for a row of a channel it has not locked.
+/// locks or waits for a row of a channel it has not locked; the wishes merged into it follow without waiting
+/// (<see cref="RowLocks.LockChannelWishesByIdsNoWaitAsync"/>, SQLSTATE <c>55P03</c> gives way as a state conflict), so it
+/// never waits for a second wish row while it holds one.
 /// </para>
 /// </summary>
 public sealed class WishService(
@@ -1000,6 +1002,29 @@ public sealed class WishService(
             return WishCommandResult.Of(WishOutcome.StateConflict);
         }
 
+        // E32: the wishes merged into this one, within the channel, ascending and without waiting. The delete's ON DELETE
+        // SET NULL writes them, so their locks are taken here, before anything is written. Never waiting for a second
+        // wish row while holding this one rules out a deadlock with the retention's unordered batches: if the pass (or
+        // anyone) holds a child, the click gives way with a state conflict and the client offers a retry. No child can
+        // appear meanwhile: wishes are merged only into running ones, and this one has ended. A child that went between
+        // the read and the lock is simply not returned.
+        var childIds = await db.Wishes.AsNoTracking()
+            .Where(w => w.MergedIntoWishId == wishId)
+            .Select(w => w.Id)
+            .ToListAsync(cancellationToken);
+        try
+        {
+            await db.LockChannelWishesByIdsNoWaitAsync(channelId, childIds, cancellationToken);
+        }
+        catch (Exception exception) when (IsLockNotAvailable(exception))
+        {
+            // The statement aborted the transaction: roll it back explicitly, so the context is usable again at once.
+            await transaction.RollbackAsync(CancellationToken.None);
+            db.ChangeTracker.Clear();
+            logger.LogInformation("Deleting wish {WishId} gave way to a lock on a wish merged into it.", wishId);
+            return WishCommandResult.Of(WishOutcome.StateConflict);
+        }
+
         // E35: the merged children and the slot exclusions are never loaded, so the database's ON DELETE SET NULL and
         // CASCADE do the rest; a tracked child would have its reference cleared by EF instead.
         var heldSlot = wish.Status == WishStatus.Kept && wish.SlotId is not null;
@@ -1792,6 +1817,12 @@ public sealed class WishService(
 
     // Plan #486 2.8a: the emote row's name; while that is empty, the entry's name.
     private static string EmoteNameOf(EmoteSlot slot) => slot.Emote.Name.Length > 0 ? slot.Emote.Name : slot.Name;
+
+    // SQLSTATE 55P03 of a NOWAIT lock. Npgsql counts it as transient, so its execution strategy hands it on wrapped in an
+    // InvalidOperationException; a context without that strategy throws the PostgresException itself.
+    private static bool IsLockNotAvailable(Exception exception) =>
+        exception is PostgresException { SqlState: PostgresErrorCodes.LockNotAvailable }
+        || exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.LockNotAvailable };
 
     // Confirmed on the id (plan #486 2.4a), checked against the row as it is now.
     internal static bool IsConfirmedOn(WishCaptureAccess? access, string? rowTwitchChannelId) =>
