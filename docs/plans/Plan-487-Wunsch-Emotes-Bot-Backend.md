@@ -799,7 +799,12 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
   **Idempotent:** zeigt der Read `editor`, wird nichts gesendet; ein unklares Ergebnis wird **nie blind wiederholt**, sondern erst
   über den Read aufgelöst (unten). Nach `Ok` liest der Runner im selben Durchgang einmal neu (gemessen: sofort `ACCEPTED`, A5) und
   bucht dann wie sonst (Bestätigung 2.9, Aufnehmen 2.8) samt Auflösung des Versuchs; zeigt der Read noch `invited`, bleibt der
-  Versuch offen, ohne zweite Annahme in diesem Durchgang.
+  Versuch offen, ohne zweite Annahme in diesem Durchgang. **T3-Live (2026-11-24):** Die Annahme einer schon angenommenen
+  Einladung antwortet HTTP 200 mit `BAD_REQUEST`/`status 400` am Pfad `userEditors.editor.updateState` (Client:
+  `Rejected(Unknown)`). Ein `Rejected` nach dem Senden ist deshalb kein Beweis für eine abgelehnte Einladung: T8 löst es wie ein
+  unklares Ergebnis über den Read auf (zeigt er `editor`, gilt die Annahme als erfolgt). Die Erfolgsform von `updateState` ist
+  noch nicht gemessen (Client erwartet `state = ACCEPTED`); T14 hält sie bei der ersten frischen Einladung fest, bis dahin trägt die
+  Auflösung über den Read.
 - **Ergebnisse der Annahme:** `Ok` → Audit `wish.botAcceptInvitation` (Akteur System, Kanal, Details nur `trigger`: `activation`
   oder `activated`) im Commit der Sende-Transaktion, der Versuch bleibt bis zur Auflösung offen; ein anderes Ergebnis schreibt
   dort kein Audit, nur eine Logzeile mit dem Code. Eindeutig **nicht ausgeführt** und deshalb im selben Commit Versuch leer:
