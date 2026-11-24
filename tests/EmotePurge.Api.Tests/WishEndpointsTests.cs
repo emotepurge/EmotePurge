@@ -633,7 +633,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
 
         var usage = root.GetProperty("usage");
         Assert.Equal(
-            ["windowFromUtc", "windowToUtc", "total", "perDayMean", "rank", "rankOf", "coverageGap", "daily"],
+            ["windowFromUtc", "windowToUtc", "total", "perDayMean", "perDayMeanWithheld", "rank", "rankOf", "coverageGap", "daily"],
             usage.EnumerateObject().Select(p => p.Name));
         Assert.Equal("2026-11-02T10:00:00Z", usage.GetProperty("windowFromUtc").GetString());
         // Plan #485 2.1a: the generation as a UTC instant, the image as stored, the series as date + count.
@@ -856,6 +856,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         new DateTime(2026, 11, 9, 10, 0, 0, DateTimeKind.Utc),
         Total: 120,
         PerDayMean: 17.14m,
+        PerDayMeanWithheld: false,
         Rank: 3,
         RankOf: 40,
         CoverageGap: false,

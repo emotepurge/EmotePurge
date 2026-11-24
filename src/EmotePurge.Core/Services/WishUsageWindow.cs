@@ -30,6 +30,13 @@ public static class WishUsageWindow
     public static decimal MeanPerDay(long total, double lengthInDays) =>
         lengthInDays <= 0d ? 0m : total / (decimal)lengthInDays;
 
+    /// <summary>
+    /// E4: whether the product withholds the per-day mean. A mean over less than <see cref="MinimumLength"/>
+    /// extrapolates a few uses into hundreds per day. Exactly 24 hours shows it.
+    /// </summary>
+    public static bool IsMeanWithheld(DateTime windowStartUtc, DateTime evaluatedAtUtc) =>
+        evaluatedAtUtc - windowStartUtc < MinimumLength;
+
     /// <summary>E5: whether the window has a counting gap. Exactly 24 hours is valid, less is a gap.</summary>
     public static bool HasCoverageGap(WishCoverageFacts facts, DateTime windowStartUtc, DateTime evaluatedAtUtc) =>
         facts.TrackedSinceUtc > windowStartUtc

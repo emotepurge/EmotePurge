@@ -3538,6 +3538,7 @@ export function buildWishUsage(total = 10): Record<string, unknown> {
     windowToUtc: wishInstant(0),
     total,
     perDayMean: Math.round((total / 5) * 10) / 10,
+    perDayMeanWithheld: false,
     rank: null,
     rankOf: null,
     coverageGap: false,

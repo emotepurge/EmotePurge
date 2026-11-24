@@ -52,6 +52,7 @@ function usage(total: number, overrides: Partial<WishUsage> = {}): WishUsage {
     windowToUtc: '2026-11-18T12:00:00Z',
     total,
     perDayMean: total / 7,
+    perDayMeanWithheld: false,
     rank: 2,
     rankOf: 9,
     coverageGap: false,
