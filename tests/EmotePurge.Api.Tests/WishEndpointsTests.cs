@@ -62,6 +62,8 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         { "POST", "/api/channels/{0}/wishes/7/approve", "{}" },
         { "POST", "/api/channels/{0}/wishes/7/reject", null },
         { "POST", "/api/channels/{0}/wishes/7/unlink", null },
+        // K7a (spec E38, E41): the delete route carries WishIdAccessFilter behind the same ladder.
+        { "DELETE", "/api/channels/{0}/wishes/7?endedAtUtc=2026-11-02T10:00:00.1234567Z", null },
     };
 
     // ---- AK13: the filter ladder on every route ----
@@ -802,9 +804,9 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
                     || raw.StartsWith("/api/wishes", StringComparison.Ordinal)))
             .ToList();
 
-        // 18 channel routes (the Routes table), the six reward routes (WishCaptureEndpointsTests) and the two overview
+        // 19 channel routes (the Routes table), the six reward routes (WishCaptureEndpointsTests) and the two overview
         // reads: the scan is not vacuous.
-        Assert.Equal(26, endpoints.Count);
+        Assert.Equal(27, endpoints.Count);
         foreach (var endpoint in endpoints)
         {
             var handler = endpoint.Metadata.GetMetadata<MethodInfo>();
