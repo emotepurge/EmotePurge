@@ -90,7 +90,7 @@ bleiben als Nebenwege für Korrektur und Nachtrag.
 | E1 | **Laufzeit je Wunsch in ganzen Tagen**, Spalte `DurationDays`, 1 bis 365. Vorbelegt mit dem Kanal-Default (`DefaultDurationDays`, Default 30). Beim Handeintrag und bei der Freigabe abweichend setzbar. | Betreiber-Ergänzung: Kanäle haben mehrere Belohnungen mit verschiedenen Laufzeiten. Obergrenze 365: Darüber ist ein Wunsch faktisch „behalten“, und kein Wunsch-Datensatz soll länger offen sein, als das Audit-Log (365 Tage) seine Freigabe belegt. |
 | E2 | **Vorlauf der Probezeit** je Kanal, `ProbationLeadDays`, Default 7, 1 bis 30. Probezeit ist **kein gespeicherter Zustand**, sondern abgeleitet: Beginn = spätester von Start und (Ablauf minus Vorlauf). Ist die Laufzeit kürzer als der Vorlauf, ist der Wunsch ab Start in Probezeit. | Eine Regel für alle Laufzeiten, kein Sonderfall für kurze. |
 | E3 | **Verfall offener Wünsche** je Kanal, `PendingExpiryDays`, Default 14, 1 bis 90. Die Verfallsfrist ist zugleich das Zuordnungsfenster eines offenen Wunsches (E20). Gebaut in K6. | Entwurf Scheibe 1; in Runde 2 mit der Chat-Erfassung nach K6 gelegt. |
-| E4 | **Bewertungsfenster des Schutzes:** Fensterbeginn = spätester von Start des Wunsches und (Bewertungszeitpunkt minus 7 Tage). Bewertungszeitpunkt ist der Lauf, der die Fälligkeit feststellt. Mittel je Tag = Summe der Nutzung über alle Slots desselben Emotes im Kanal an den UTC-Tagen vom Tag des Fensterbeginns bis zum Bewertungstag, geteilt durch die Fensterlänge in Tagen (Bruchteile erlaubt). **Ist das Fenster kürzer als 24 Stunden, gilt das wie eine Zähllücke.** | Betreiber-Korrektur: min(7 Tage, tatsächliche Zeit im Set), eine Regel ohne eigene Logik für kurze Laufzeiten. Bei 1 Tag Laufzeit ist das Fenster bei Fälligkeit genau 24 Stunden und damit gültig. |
+| E4 | **Bewertungsfenster des Schutzes:** Fensterbeginn = spätester von Start des Wunsches und (Bewertungszeitpunkt minus 7 Tage). Bewertungszeitpunkt ist der Lauf, der die Fälligkeit feststellt. Mittel je Tag = Summe der Nutzung über alle Slots desselben Emotes im Kanal an den UTC-Tagen vom Tag des Fensterbeginns bis zum Bewertungstag, geteilt durch die Fensterlänge in Tagen (Bruchteile erlaubt). **Ist das Fenster kürzer als 24 Stunden, gilt das wie eine Zähllücke.** *Nachtrag 2026-11-21 (Betreiberentscheidung, #496 Punkt 5):* Unter 24 Stunden zeigt die Karte kein „Ø … pro Tag“: die Antwort trägt dann `perDayMeanWithheld: true` (additives Feld; `perDayMean` bleibt eine Zahl, damit ein vor dem Deploy geöffneter Tab nicht bricht); Nutzungszahl, Rang und Lückenhinweis bleiben. Ab genau 24 Stunden erscheint das Mittel wie bisher. | Betreiber-Korrektur: min(7 Tage, tatsächliche Zeit im Set), eine Regel ohne eigene Logik für kurze Laufzeiten. Bei 1 Tag Laufzeit ist das Fenster bei Fälligkeit genau 24 Stunden und damit gültig. |
 | E5 | **Zähllücke** (Entscheidung 2): `TrackedSince(kanal)` liegt nach dem Fensterbeginn, **oder** `DeactivatedAtUtc` ist gesetzt, **oder** `IsBotActive` ist falsch, **oder** E4-Fenster unter 24 Stunden. Die Lückenregel greift nur bei eingeschaltetem Schutz; ohne Schutz spielt die Nutzung für das Entfernen keine Rolle. | Eine Deaktivierung mit Reaktivierung im Fenster setzt `TrackingResumedAt` und fällt damit unter die erste Bedingung (`Channel.cs:23`). |
 | E6 | **Ablauf-Lauf alle 15 Minuten** (`Wishes:ExpiryIntervalMinutes`, 1 bis 1440), eigener Worker, erster Lauf 1 Minute nach Start, wartet nicht auf die Boot-Recovery. | Das Beobachtungsziel „binnen 24 h“ und Laufzeiten ab 1 Tag vertragen keinen Tagestakt. Der Lauf berührt keinen Kanal-Purge und braucht die Sperre der Retention nicht. |
 | E7 | **Bot-Token asymmetrisch versiegelt:** Die Api hält nur einen öffentlichen Schlüssel und kann damit setzen, aber nicht lesen. Der private Schlüssel liegt nur am Worker. Details in Abschnitt 7. | Erfüllt „nie zurücklesen“ kryptografisch statt per Disziplin. Vom Betreiber angenommen (W2). Nachtrag 18.2: Die Twitch-Sitzung des Bot-Kontos liegt nie am Server, nur am Erneuerer-Host. |
@@ -1848,7 +1848,17 @@ mit 24 Zeichen. Nach der ID dürfen Query-String, Fragment, Schrägstrich und Sa
 davor und danach beliebiger Text. Eine ID anderer Länge ist kein Link. Bei mehreren Links zählt
 der erste.
 
-Ohne Link gilt diese Grammatik für den Namen, in dieser Reihenfolge:
+**Bloße ID (Betreiberentscheidung 2026-11-21):** Ohne Link gilt auch ein eigenständiges Token, das
+genau eine ID ist, als `MatchKind = link` mit kanonisierter ID, denn ein Zuschauer löst die Belohnung
+auch mit der nackten ID ein. Das Token wird wie in der Namensgrammatik gebildet (Leerraum-Split,
+Adressen und Erwähnungen verworfen, Randzeichen `. , ; ! ? " '` entfernt) und gilt als ID nur, wenn
+es entweder 24 Hex-Zeichen hat oder 26 Zeichen aus dem ULID-Alphabet (Ziffern und Buchstaben ohne
+`I`, `L`, `O`, `U`, ohne Rücksicht auf Groß- und Kleinschreibung) mit erstem Zeichen `0` bis `7`.
+Alles andere (25 oder 27 Zeichen, ein verbotener Buchstabe, erstes Zeichen `8` bis `Z`, ein ID-Stück
+in einem längeren Wort) bleibt ein Name. Das erste ID-förmige Token irgendwo im Text schlägt jeden
+Namen, auch einen früheren; ein Link schlägt weiterhin die bloße ID.
+
+Ohne Link und ohne bloße ID gilt diese Grammatik für den Namen, in dieser Reihenfolge:
 
 1. Den Text an Leerraum in Tokens teilen.
 2. Tokens verwerfen, die eine Adresse sind (enthalten `://` oder beginnen mit `www.`) oder eine

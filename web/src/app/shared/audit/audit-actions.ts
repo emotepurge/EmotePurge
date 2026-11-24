@@ -71,6 +71,51 @@ export const CHANNEL_SCOPED_ACTIONS: readonly string[] = Object.keys(ACTION_KEYS
 );
 
 /**
+ * The families the action filter groups its options by. The group of an action is its key prefix
+ * (`wish.rewardAdd` -> `wish`), so a new action of a known family lands in its group without an
+ * edit here; an action with a new prefix has no group and fails `audit-actions.spec.ts` until it
+ * gets one.
+ */
+export const AUDIT_ACTION_GROUPS: readonly { id: string; labelKey: string; prefix: string }[] = [
+  { id: 'channel', labelKey: 'audit.groups.channel', prefix: 'channel' },
+  { id: 'votes', labelKey: 'audit.groups.votes', prefix: 'voteSession' },
+  { id: 'emotes', labelKey: 'audit.groups.emotes', prefix: 'emotes' },
+  { id: 'tags', labelKey: 'audit.groups.tags', prefix: 'tag' },
+  { id: 'backfill', labelKey: 'audit.groups.backfill', prefix: 'backfill' },
+  { id: 'wishes', labelKey: 'audit.groups.wishes', prefix: 'wish' },
+  { id: 'users', labelKey: 'audit.groups.users', prefix: 'user' },
+];
+
+export interface AuditActionGroup {
+  id: string;
+  labelKey: string;
+  actions: string[];
+}
+
+/**
+ * An action filter taken from the URL, reduced to what this list can actually offer. A hand-typed
+ * or outdated `?action=` that no option matches is treated as no filter at all: the trigger says
+ * "all", so the request must not silently filter by something else.
+ */
+export function normalizeActionFilter(raw: string, allowed: readonly string[]): string {
+  return allowed.includes(raw) ? raw : '';
+}
+
+/**
+ * Splits `actions` into the families of {@link AUDIT_ACTION_GROUPS}, in that order, keeping the
+ * order of `actions` inside a group. Families with no action in the list are left out, so the
+ * channel feed never shows an empty "users" heading. An action whose prefix matches no family is
+ * dropped here and caught by the spec instead.
+ */
+export function groupAuditActions(actions: readonly string[]): AuditActionGroup[] {
+  return AUDIT_ACTION_GROUPS.map((group) => ({
+    id: group.id,
+    labelKey: group.labelKey,
+    actions: actions.filter((action) => action.split('.')[0] === group.prefix),
+  })).filter((group) => group.actions.length > 0);
+}
+
+/**
  * One translation key per recognized detail kind. Purely a display table: the server has already
  * whitelisted the payload down to these kinds (`AuditLogQueryService.ProjectDetail`), so an
  * unfamiliar kind here means this build is older than the backend, not that something unsafe

@@ -1031,6 +1031,15 @@
     }
   },
   "audit": {
+    "groups": {
+      "channel": "Channel",
+      "votes": "Votes",
+      "emotes": "Emotes",
+      "tags": "Tags",
+      "backfill": "Backfill",
+      "wishes": "Wishes",
+      "users": "Users"
+    },
     "actor": "by {{actor}}",
     "actions": {
       "channelJoin": "Channel joined",
@@ -2820,6 +2829,10 @@
         "entry": "Add by hand",
         "adopt": "Take over from the set"
       },
+      "settingsHint": {
+        "text": "Wish settings are under",
+        "link": "Settings"
+      },
       "setFull": "The wish is filed, but the set is full. A slot has to be freed before the emote can go in."
     },
     "confirm": {
@@ -3072,6 +3085,22 @@
         "wish_state_conflict": "The wish has changed in the meantime.",
         "wish_not_found": "The wish no longer exists.",
         "reselect": "The entries are reloaded, pick again."
+      },
+      "summary": {
+        "durationOnly": {
+          "one": "{{ count }} day",
+          "other": "{{ count }} days"
+        },
+        "added": {
+          "one": "{{ count }} day from the add date · ends {{ date }}",
+          "other": "{{ count }} days from the add date · ends {{ date }}"
+        },
+        "now": {
+          "one": "{{ count }} day from now · ends {{ date }}",
+          "other": "{{ count }} days from now · ends {{ date }}"
+        },
+        "change": "Change",
+        "changeLabel": "Change duration and start of the deadline"
       }
     },
     "entry": {

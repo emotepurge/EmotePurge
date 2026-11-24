@@ -668,6 +668,11 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   color: var(--ep-fg);
+  /* Focus scrolling must not leave a control behind the sticky action row or sheet handle
+     (WCAG 2.4.11). DialogShell publishes their rendered heights; the extra 4px keeps the focus ring
+     (2px + offset) clear as well. */
+  scroll-padding-top: calc(var(--dialog-clear-top, 0px) + 4px);
+  scroll-padding-bottom: calc(var(--dialog-clear-bottom, 0px) + 4px);
 }
 
 /* The same dialog, docked to the bottom edge, whenever it is being pointed at with a finger. Not a

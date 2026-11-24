@@ -1,3 +1,5 @@
+import type { Page } from '@playwright/test';
+
 import { expect, test } from './support/test';
 
 import {
@@ -8,6 +10,10 @@ import {
   mockChannelPermissions,
   mockWorkerHealth,
 } from './support/mocks';
+
+async function openActionMenu(page: Page): Promise<void> {
+  await page.getByRole('button', { name: /Nach Aktion filtern/ }).click();
+}
 
 test.describe('channel activity tab', () => {
   test.beforeEach(async ({ page }) => {
@@ -64,6 +70,7 @@ test.describe('channel activity tab', () => {
 
     await page.goto('/channels/sensitron/activity');
 
+    await openActionMenu(page);
     await expect(page.getByRole('radio', { name: 'Channel beigetreten' })).toBeVisible();
     // These two can never appear in a single channel's log — offering them would be a segment that
     // only ever returns nothing.
@@ -83,6 +90,7 @@ test.describe('channel activity tab', () => {
     await page.goto('/channels/sensitron/activity');
     await expect(page.getByRole('listitem')).toHaveCount(2);
 
+    await openActionMenu(page);
     await page.getByRole('radio', { name: 'Abstimmung gelöscht' }).click();
 
     await expect(page.getByRole('listitem')).toHaveCount(1);
@@ -138,6 +146,7 @@ test.describe('channel activity tab', () => {
     });
 
     await page.goto('/channels/sensitron/activity');
+    await openActionMenu(page);
     await page.getByRole('radio', { name: 'Abstimmung gelöscht' }).click();
     await expect(page).toHaveURL(/[?&]action=voteSession\.delete/);
     // A filter replaces its history entry — otherwise back would mean "undo one keystroke".
@@ -177,6 +186,7 @@ test.describe('channel activity tab', () => {
     await expect(page.getByRole('listitem')).toHaveCount(5);
     // The controls show the restored state, not just the request: a filter the reader cannot see is
     // a list they cannot explain.
+    await openActionMenu(page);
     await expect(page.getByRole('radio', { name: 'Abstimmung gelöscht' })).toBeChecked();
     await expect(
       page.getByRole('textbox', { name: 'Nach ausführender Person filtern' }),
@@ -197,5 +207,100 @@ test.describe('channel activity tab', () => {
 
     await page.goto('/channels/sensitron/activity');
     await expect(page).toHaveURL(/\/channels\/sensitron\/vote-sessions$/);
+  });
+
+  // Regression: 39 wrapped segments made the sticky toolbar taller than a phone viewport, so the
+  // rows scrolled underneath it and were never visible. A real layout is needed to see that.
+  test('on a phone the sticky toolbar stays compact and the first row is visible', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockChannelPermissions(page, 'sensitron');
+    await mockChannelAuditLog(page, 'sensitron', {
+      1: Array.from({ length: 25 }, (_, i) => ({ id: 100 - i, action: 'channel.join' })),
+    });
+
+    await page.goto('/channels/sensitron/activity');
+
+    const toolbar = page.locator('.app-sticky-bar').last();
+    const box = await toolbar.boundingBox();
+    expect(box!.height).toBeLessThan(844 * 0.3);
+
+    const firstRow = page.getByRole('listitem').first();
+    await expect(firstRow).toBeInViewport();
+    const rowBox = await firstRow.boundingBox();
+    expect(rowBox!.y).toBeGreaterThanOrEqual(box!.y + box!.height);
+
+    // The open menu stays inside the viewport and scrolls on its own.
+    await openActionMenu(page);
+    const group = page.getByRole('radiogroup', { name: 'Nach Aktion filtern' });
+    const groupBox = await group.boundingBox();
+    expect(groupBox!.y + groupBox!.height).toBeLessThanOrEqual(844);
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+    await expect(group.getByText('Abstimmungen', { exact: true })).toBeAttached();
+  });
+
+  test('on a short landscape phone the open menu ends inside the viewport and every option is reachable', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 844, height: 390 });
+    await mockChannelPermissions(page, 'sensitron');
+    await mockChannelAuditLog(page, 'sensitron', {
+      1: Array.from({ length: 25 }, (_, i) => ({ id: 100 - i, action: 'channel.join' })),
+    });
+
+    await page.goto('/channels/sensitron/activity');
+    await openActionMenu(page);
+
+    const group = page.getByRole('radiogroup', { name: 'Nach Aktion filtern' });
+    const box = await group.boundingBox();
+    expect(box!.y + box!.height).toBeLessThanOrEqual(390);
+
+    const last = group.getByRole('radio').last();
+    await last.scrollIntoViewIfNeeded();
+    await expect(last).toBeInViewport();
+  });
+
+  test('a long selected label truncates instead of widening the page at 345 px', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 345, height: 700 });
+    await mockChannelPermissions(page, 'sensitron');
+    await mockChannelAuditLog(page, 'sensitron', {
+      1: [{ id: 1, action: 'wish.autoLink' }],
+    });
+
+    await page.goto('/channels/sensitron/activity?action=wish.autoLink');
+    await expect(page.getByRole('button', { name: /Nach Aktion filtern/ })).toBeVisible();
+
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+
+  test('an unknown ?action= is no filter: trigger says "Alle", the request carries none, the URL is cleaned', async ({
+    page,
+  }) => {
+    await mockChannelPermissions(page, 'sensitron');
+    await mockChannelAuditLog(page, 'sensitron', {
+      1: [{ id: 1, action: 'channel.join' }],
+    });
+    const requests: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/audit-log')) {
+        requests.push(request.url());
+      }
+    });
+
+    await page.goto('/channels/sensitron/activity?action=typo');
+
+    await expect(page.getByRole('listitem')).toHaveCount(1);
+    await expect(page.getByRole('button', { name: /Nach Aktion filtern: Alle/ })).toBeVisible();
+    await expect(page).not.toHaveURL(/action=/);
+    expect(requests.every((url) => !url.includes('action='))).toBe(true);
   });
 });

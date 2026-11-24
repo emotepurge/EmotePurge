@@ -1,5 +1,5 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, inject, input } from '@angular/core';
+import { Component, computed, effect, inject, input } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
@@ -10,14 +10,14 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { PagedResult } from '../../core/models/paged-result.model';
 import { listQueryState } from '../../core/routing/list-query-state';
-import { ACTION_KEYS, CHANNEL_SCOPED_ACTIONS } from '../../shared/audit/audit-actions';
+import { CHANNEL_SCOPED_ACTIONS, normalizeActionFilter } from '../../shared/audit/audit-actions';
+import { AuditActionMenu } from '../../shared/audit/audit-action-menu';
 import { AuditLogList } from '../../shared/audit/audit-log-list';
 import { toAuditRows } from '../../shared/audit/audit-row';
 import { Pager } from '../../shared/pagination/pager';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
-import { SegmentedControl, SegmentedControlOption } from '../../shared/ui/segmented-control';
 import { SkeletonRows } from '../../shared/ui/skeleton-rows';
 
 const PAGE_SIZE = 25;
@@ -44,12 +44,12 @@ const EMPTY_PAGE: PagedResult<AuditLogEntry> = {
 @Component({
   selector: 'app-channel-activity-page',
   imports: [
+    AuditActionMenu,
     AuditLogList,
     Button,
     EmptyState,
     NoticeBanner,
     Pager,
-    SegmentedControl,
     SkeletonRows,
     TranslocoPipe,
   ],
@@ -75,15 +75,18 @@ const EMPTY_PAGE: PagedResult<AuditLogEntry> = {
 
       <!-- Sticky below the shell header (top-14) + the workspace tabs (h-10): top-24, the same
            contract the admin log follows. py-2 gives the blur a surface instead of a hard edge. -->
-      <div class="app-sticky-bar top-24 flex flex-col gap-3 py-2">
-        <app-segmented-control
-          [options]="actionOptions"
-          [value]="actionFilter()"
-          (valueChange)="onActionFilterChange($event)"
-          [ariaLabel]="'channelWorkspace.activity.filter.actionLabel' | transloco"
-        />
-        <!-- Filter-toolbar field: no visible label by design, aria-label + title instead (§5.2). -->
+      <div class="app-sticky-bar top-24 py-2">
         <div class="flex flex-wrap items-center gap-2">
+          <!-- A popover menu, not a segmented control: the option count grows with every new audit
+               action, and a sticky toolbar must stay bounded in height (§8.5). -->
+          <app-audit-action-menu
+            [actions]="actionOptions"
+            [value]="actionFilter()"
+            (valueChange)="onActionFilterChange($event)"
+            [ariaLabel]="'channelWorkspace.activity.filter.actionLabel' | transloco"
+            allLabelKey="channelWorkspace.activity.filter.all"
+          />
+          <!-- Filter-toolbar field: no visible label by design, aria-label + title instead (§5.2). -->
           <input
             type="text"
             class="app-input-sm w-44"
@@ -151,18 +154,18 @@ export class ChannelActivityPage {
 
   protected readonly page = this.query.page;
 
-  protected readonly actionFilter = computed(() => this.query.params().action);
   protected readonly actorFilter = this.query.textFilter('actor', FILTER_DEBOUNCE_MS);
 
   /**
-   * "All" plus one segment per action a channel's log can actually contain — built from
-   * `CHANNEL_SCOPED_ACTIONS`, not from the full table: the two user-scoped actions are global and
-   * would be segments that can only ever return nothing.
+   * The actions a channel's log can actually contain — `CHANNEL_SCOPED_ACTIONS`, not the full
+   * table: the user-scoped actions are global and would be options that can only return nothing.
    */
-  protected readonly actionOptions: SegmentedControlOption[] = [
-    { value: '', labelKey: 'channelWorkspace.activity.filter.all' },
-    ...CHANNEL_SCOPED_ACTIONS.map((value) => ({ value, labelKey: ACTION_KEYS[value] })),
-  ];
+  protected readonly actionOptions = CHANNEL_SCOPED_ACTIONS;
+
+  // An unknown `?action=` counts as no filter, in the request and (see the constructor) in the URL.
+  protected readonly actionFilter = computed(() =>
+    normalizeActionFilter(this.query.params().action, this.actionOptions),
+  );
 
   protected readonly hasActiveFilters = computed(
     () => this.actionFilter() !== '' || this.actorFilter() !== '',
@@ -175,6 +178,7 @@ export class ChannelActivityPage {
       channel: this.channelName(),
       page: this.page(),
       ...this.query.params(),
+      action: this.actionFilter(),
     }),
     stream: ({ params }) =>
       this.channelAuditService.listAuditLog(params.channel, params.page, PAGE_SIZE, {
@@ -199,6 +203,14 @@ export class ChannelActivityPage {
     const error = this.auditLogResource.error();
     return error instanceof HttpErrorResponse ? apiErrorTranslationKey(error) : null;
   });
+
+  constructor() {
+    effect(() => {
+      if (this.query.params().action !== this.actionFilter()) {
+        this.query.setParams({ action: '' });
+      }
+    });
+  }
 
   protected reload(): void {
     this.auditLogResource.reload();

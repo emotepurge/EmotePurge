@@ -228,6 +228,18 @@ public class WishUsageWindowTests
     public void Mean_for_empty_window_is_zero() => Assert.Equal(0m, WishUsageWindow.MeanPerDay(5, 0d));
 
     [Fact]
+    public void Mean_is_withheld_one_second_below_24_hours() =>
+        Assert.True(WishUsageWindow.IsMeanWithheld(T.AddHours(-24).AddSeconds(1), T));
+
+    [Fact]
+    public void Mean_is_shown_at_exactly_24_hours() =>
+        Assert.False(WishUsageWindow.IsMeanWithheld(T.AddHours(-24), T));
+
+    [Fact]
+    public void Mean_is_withheld_for_an_empty_window() =>
+        Assert.True(WishUsageWindow.IsMeanWithheld(T, T));
+
+    [Fact]
     public void Exactly_24_hours_is_no_gap() =>
         Assert.False(WishUsageWindow.HasCoverageGap(Ok(T.AddDays(-30)), T.AddHours(-24), T));
 

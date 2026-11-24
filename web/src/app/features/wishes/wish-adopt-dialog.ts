@@ -1,6 +1,6 @@
 import { DIALOG_DATA, Dialog, DialogRef } from '@angular/cdk/dialog';
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, DestroyRef, inject, signal } from '@angular/core';
+import { Component, computed, DestroyRef, ElementRef, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { interval } from 'rxjs';
@@ -373,84 +373,111 @@ interface StaleNotice {
         }
       }
 
-      <div class="flex flex-col gap-1">
-        <label for="wish-adopt-duration" class="text-sm text-fg-secondary">
-          {{ 'wishes.dialog.duration' | transloco }}
-        </label>
-        <input
-          id="wish-adopt-duration"
-          type="text"
-          inputmode="numeric"
-          class="app-input"
-          autocomplete="off"
-          [value]="duration()"
-          [attr.aria-invalid]="durationError() ? 'true' : null"
-          [attr.aria-describedby]="durationError() ? 'wish-adopt-duration-error' : null"
-          (input)="setDuration($any($event.target).value)"
-        />
-        @if (durationError(); as key) {
-          <p id="wish-adopt-duration-error" class="text-sm text-danger-fg">
-            {{ key | transloco: { max: maxDays } }}
-          </p>
-        }
-      </div>
+      <!-- One block, so "Ändern" brings the duration and the start choice into view together. -->
+      <div id="wish-adopt-fields" class="flex flex-col gap-4">
+        <div class="flex flex-col gap-1">
+          <label for="wish-adopt-duration" class="text-sm text-fg-secondary">
+            {{ 'wishes.dialog.duration' | transloco }}
+          </label>
+          <input
+            id="wish-adopt-duration"
+            type="text"
+            inputmode="numeric"
+            class="app-input"
+            autocomplete="off"
+            [value]="duration()"
+            [attr.aria-invalid]="durationError() ? 'true' : null"
+            [attr.aria-describedby]="durationError() ? 'wish-adopt-duration-error' : null"
+            (input)="setDuration($any($event.target).value)"
+          />
+          @if (durationError(); as key) {
+            <p id="wish-adopt-duration-error" class="text-sm text-danger-fg">
+              {{ key | transloco: { max: maxDays } }}
+            </p>
+          }
+        </div>
 
-      @if (selected(); as entry) {
-        <fieldset class="flex flex-col gap-1">
-          <legend class="mb-1 text-sm text-fg-secondary">
-            {{ 'wishes.adopt.start.legend' | transloco }}
-          </legend>
-          @if (startOptions().canStartAtAdded) {
+        @if (selected(); as entry) {
+          <fieldset class="flex flex-col gap-1">
+            <legend class="mb-1 text-sm text-fg-secondary">
+              {{ 'wishes.adopt.start.legend' | transloco }}
+            </legend>
+            @if (startOptions().canStartAtAdded) {
+              <label class="flex items-center gap-2 py-1 text-sm">
+                <input
+                  type="radio"
+                  name="wish-adopt-start"
+                  class="h-6 w-6 accent-accent-solid"
+                  [checked]="startChoice() === 'added'"
+                  [disabled]="saving()"
+                  (change)="chooseStart('added')"
+                />
+                {{ 'wishes.adopt.start.added' | transloco }}
+              </label>
+            }
             <label class="flex items-center gap-2 py-1 text-sm">
               <input
                 type="radio"
                 name="wish-adopt-start"
                 class="h-6 w-6 accent-accent-solid"
-                [checked]="startChoice() === 'added'"
+                [checked]="startChoice() === 'now'"
                 [disabled]="saving()"
-                (change)="chooseStart('added')"
+                (change)="chooseStart('now')"
               />
-              {{ 'wishes.adopt.start.added' | transloco }}
+              {{ 'wishes.adopt.start.now' | transloco }}
             </label>
-          }
-          <label class="flex items-center gap-2 py-1 text-sm">
-            <input
-              type="radio"
-              name="wish-adopt-start"
-              class="h-6 w-6 accent-accent-solid"
-              [checked]="startChoice() === 'now'"
-              [disabled]="saving()"
-              (change)="chooseStart('now')"
-            />
-            {{ 'wishes.adopt.start.now' | transloco }}
-          </label>
-          @if (!startOptions().canStartAtAdded) {
-            <p class="text-xs text-fg-muted">{{ 'wishes.adopt.start.undatedHint' | transloco }}</p>
-          } @else if (startOptions().addedExpired) {
-            <p class="text-xs text-fg-muted">{{ 'wishes.adopt.start.expiredHint' | transloco }}</p>
-          }
-          @if (expiryText(); as date) {
-            <p class="text-sm text-fg-body">
-              {{ 'wishes.adopt.start.expires' | transloco: { date } }}
-            </p>
-          }
-        </fieldset>
-      }
+            @if (!startOptions().canStartAtAdded) {
+              <p class="text-xs text-fg-muted">
+                {{ 'wishes.adopt.start.undatedHint' | transloco }}
+              </p>
+            } @else if (startOptions().addedExpired) {
+              <p class="text-xs text-fg-muted">
+                {{ 'wishes.adopt.start.expiredHint' | transloco }}
+              </p>
+            }
+            @if (expiryText(); as date) {
+              <p class="text-sm text-fg-body">
+                {{ 'wishes.adopt.start.expires' | transloco: { date } }}
+              </p>
+            }
+          </fieldset>
+        }
+      </div>
 
       @if (errorKey(); as key) {
         <app-notice-banner variant="error">{{ key | transloco }}</app-notice-banner>
       }
 
-      @if (blockedReason(); as reason) {
-        <p dialog-actions id="wish-adopt-blocked" class="mr-auto text-xs text-fg-muted">
-          {{ reason | transloco }}
-        </p>
+      <!-- One wrapping text line, not inputs, so the sheet's row stays compact. No live region: it
+           changes with every keystroke in the duration field, and the blocked reason already speaks. -->
+      @if (blockedReason() || summary()) {
+        <div dialog-actions class="mr-auto flex min-w-0 flex-col gap-0.5 text-xs text-fg-muted">
+          @if (blockedReason(); as reason) {
+            <p id="wish-adopt-blocked">{{ reason | transloco }}</p>
+          }
+          @if (summary(); as text) {
+            <p class="text-fg-secondary">
+              <span id="wish-adopt-summary">{{ text.key | transloco: text.params }}</span>
+              <button
+                type="button"
+                appButton="outline"
+                class="ml-1 align-middle"
+                [attr.aria-label]="'wishes.adopt.summary.changeLabel' | transloco"
+                [disabled]="saving()"
+                (click)="focusDuration()"
+              >
+                {{ 'wishes.adopt.summary.change' | transloco }}
+              </button>
+            </p>
+          }
+        </div>
       }
       <button
         dialog-actions
         type="button"
         appButton="outline"
         buttonSize="lg"
+        cdkFocusInitial
         [disabled]="saving()"
         (click)="dialogRef.close(undefined)"
       >
@@ -477,6 +504,7 @@ export class WishAdoptDialog {
   private readonly lookup = inject(SevenTvEmoteLookup);
   private readonly languageService = inject(LanguageService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   protected readonly maxDays = WISH_DURATION_DAYS_MAX;
   protected readonly pluralKey = pluralKey;
@@ -591,6 +619,28 @@ export class WishAdoptDialog {
     return expiry === null ? null : this.formatDate(new Date(expiry).toISOString());
   });
 
+  /**
+   * The line in the sticky action row: duration, and with an entry picked also the start and the
+   * expiry (`expiryText` is the one date computation). `null` while the duration is unusable: the
+   * blocked reason already says so, and two messages about it would only compete.
+   */
+  protected readonly summary = computed<{
+    key: string;
+    params: { count: number; date?: string };
+  } | null>(() => {
+    const days = this.durationDays();
+    if (days === null) {
+      return null;
+    }
+    const date = this.expiryText();
+    if (this.selected() === null || date === null) {
+      return { key: pluralKey(days, 'wishes.adopt.summary.durationOnly'), params: { count: days } };
+    }
+    const base =
+      this.startChoice() === 'added' ? 'wishes.adopt.summary.added' : 'wishes.adopt.summary.now';
+    return { key: pluralKey(days, base), params: { count: days, date } };
+  });
+
   /** The first reason the request cannot go out yet, as a translation key; `null` when it can. */
   protected readonly blockedReason = computed(() => {
     if (this.disabledFeature()) {
@@ -698,6 +748,19 @@ export class WishAdoptDialog {
         this.prefillDuration(fallback);
       }
     }
+  }
+
+  /** "Ändern": brings the duration field and the start choice into view and focuses it. */
+  protected focusDuration(): void {
+    const host = this.host.nativeElement;
+    const input = host.querySelector<HTMLInputElement>('#wish-adopt-duration');
+    if (input === null) {
+      return;
+    }
+    // Duration and start choice sit in one block; its top goes to the pane's top edge, so the start
+    // radios below follow into view (the pane's scroll-padding keeps the top clear of the handle).
+    (host.querySelector('#wish-adopt-fields') ?? input).scrollIntoView({ block: 'start' });
+    input.focus({ preventScroll: true });
   }
 
   protected chooseStart(choice: AdoptStartChoice): void {

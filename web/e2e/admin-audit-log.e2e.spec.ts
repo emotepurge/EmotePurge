@@ -94,7 +94,8 @@ test.describe('global admin on /admin/audit-log', () => {
       (request) =>
         request.url().includes('action=channel.purge') && request.url().includes('page=1'),
     );
-    await page.getByRole('radio', { name: 'Channel gelöscht' }).click();
+    await page.getByRole('button', { name: /Nach Aktion filtern/ }).click();
+    await page.getByRole('radio', { name: 'Channel gelöscht', exact: true }).click();
     await filteredRequest;
 
     await expect(page.getByRole('listitem').getByText('Channel gelöscht')).toBeVisible();
@@ -156,7 +157,8 @@ test.describe('global admin on /admin/audit-log', () => {
       (request) =>
         request.url().includes('action=user.revokeSessions') && !request.url().includes('channel='),
     );
-    await page.getByRole('radio', { name: 'User-Sessions widerrufen' }).click();
+    await page.getByRole('button', { name: /Nach Aktion filtern/ }).click();
+    await page.getByRole('radio', { name: 'User-Sessions widerrufen', exact: true }).click();
     await filteredRequest;
 
     await expect(channelInput).toBeDisabled();
@@ -164,7 +166,8 @@ test.describe('global admin on /admin/audit-log', () => {
     await expect(page.getByRole('listitem').getByText('User-Sessions widerrufen')).toBeVisible();
 
     // Switching back re-enables the input.
-    await page.getByRole('radio', { name: 'Alle' }).click();
+    await page.getByRole('button', { name: /Nach Aktion filtern/ }).click();
+    await page.getByRole('radio', { name: 'Alle', exact: true }).click();
     await expect(channelInput).toBeEnabled();
   });
 

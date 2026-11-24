@@ -1031,6 +1031,15 @@
     }
   },
   "audit": {
+    "groups": {
+      "channel": "Channel",
+      "votes": "Abstimmungen",
+      "emotes": "Emotes",
+      "tags": "Tags",
+      "backfill": "Backfill",
+      "wishes": "Wünsche",
+      "users": "Nutzer"
+    },
     "actor": "von {{actor}}",
     "actions": {
       "channelJoin": "Channel beigetreten",
@@ -2820,6 +2829,10 @@
         "entry": "Nachtragen",
         "adopt": "Bestand übernehmen"
       },
+      "settingsHint": {
+        "text": "Die Einstellungen für Wünsche findest du unter",
+        "link": "Einstellungen"
+      },
       "setFull": "Der Wunsch ist angelegt, aber das Set ist voll. Bevor das Emote hinein kann, muss ein Platz frei werden."
     },
     "confirm": {
@@ -3072,6 +3085,22 @@
         "wish_state_conflict": "Der Wunsch hat sich inzwischen geändert.",
         "wish_not_found": "Den Wunsch gibt es nicht mehr.",
         "reselect": "Die Einträge sind neu geladen, wähle erneut."
+      },
+      "summary": {
+        "durationOnly": {
+          "one": "{{ count }} Tag",
+          "other": "{{ count }} Tage"
+        },
+        "added": {
+          "one": "{{ count }} Tag ab Hinzufügedatum · endet {{ date }}",
+          "other": "{{ count }} Tage ab Hinzufügedatum · endet {{ date }}"
+        },
+        "now": {
+          "one": "{{ count }} Tag ab jetzt · endet {{ date }}",
+          "other": "{{ count }} Tage ab jetzt · endet {{ date }}"
+        },
+        "change": "Ändern",
+        "changeLabel": "Laufzeit und Beginn der Frist ändern"
       }
     },
     "entry": {

@@ -1,4 +1,5 @@
 import { expect, test } from './support/test';
+import { focusClearance } from './support/dialog-focus';
 
 import {
   AUTH_USER,
@@ -17,6 +18,7 @@ import {
   mockWorkerHealth,
   buildWish,
   buildWishReward,
+  buildWishSlot,
 } from './support/mocks';
 
 // The single emote the atlas needs to render a cell at data-atlas-index="0" — nothing here asserts
@@ -406,5 +408,44 @@ test.describe('touch: wish capture', () => {
 
     await page.goto('/channels/sensitron/settings');
     await expect(page.getByRole('button', { name: 'Belohnung anlernen' })).toBeVisible();
+  });
+});
+
+// WCAG 2.4.11: on the sheet both sticky layers (handle above, action row below) can hide a focused
+// control — the pane's scroll-padding, fed by the rendered heights, keeps it clear of both.
+test.describe('touch: sheet focus clearance', () => {
+  test('arrowing through a long entry list keeps the focused radio between the handle and the action row', async ({
+    page,
+  }) => {
+    await mockAuthMe(page, AUTH_USER);
+    await mockWorkerHealth(page, 'connected');
+    await installLiveStub(page);
+    await mockChannelPermissions(page, 'sensitron', { wishesEnabled: true });
+    await mockVoteSessionList(page, 'sensitron', []);
+    await page.setViewportSize({ width: 360, height: 740 });
+    await mockWishBackend(page, 'sensitron', {
+      slots: Array.from({ length: 80 }, (_, i) =>
+        buildWishSlot(`slot-${String(i).padStart(2, '0')}`, { alias: `Entry${i}` }),
+      ),
+    });
+    await page.goto('/channels/sensitron/wishes');
+    await page.getByRole('button', { name: 'Bestand übernehmen' }).tap();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByRole('radio', { name: 'Entry0', exact: true })).toBeVisible();
+    await expect(dialog.locator('[data-sheet-handle][aria-hidden="true"]')).toHaveCount(1);
+
+    await dialog.getByRole('radio', { name: 'Entry0', exact: true }).focus();
+    for (let step = 0; step < 40; step++) {
+      await page.keyboard.press('ArrowDown');
+      const clearance = (await focusClearance(page))!;
+      expect(clearance.controlBottom, `down ${step}`).toBeLessThanOrEqual(clearance.footerTop);
+      expect(clearance.controlTop, `down ${step}`).toBeGreaterThanOrEqual(clearance.handleBottom!);
+    }
+    for (let step = 0; step < 30; step++) {
+      await page.keyboard.press('ArrowUp');
+      const clearance = (await focusClearance(page))!;
+      expect(clearance.controlBottom, `up ${step}`).toBeLessThanOrEqual(clearance.footerTop);
+      expect(clearance.controlTop, `up ${step}`).toBeGreaterThanOrEqual(clearance.handleBottom!);
+    }
   });
 });

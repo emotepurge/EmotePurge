@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ACTION_KEYS,
+  AUDIT_ACTION_GROUPS,
+  groupAuditActions,
+  normalizeActionFilter,
   CHANNEL_SCOPED_ACTIONS,
   CHANNELLESS_ACTIONS,
   DETAIL_KEYS,
@@ -118,5 +121,47 @@ describe('audit action tables', () => {
       expect(lookup(de, `audit.details.leaderboardSort.${code}`)).toBeTypeOf('string');
       expect(lookup(en, `audit.details.leaderboardSort.${code}`)).toBeTypeOf('string');
     }
+  });
+});
+
+describe('audit action groups', () => {
+  it('flattens to every ACTION_KEYS entry exactly once', () => {
+    const all = Object.keys(ACTION_KEYS);
+    const grouped = groupAuditActions(all).flatMap((group) => group.actions);
+    expect([...grouped].sort()).toEqual([...all].sort());
+  });
+
+  it('covers every channel-scoped action and offers no users group there', () => {
+    const groups = groupAuditActions(CHANNEL_SCOPED_ACTIONS);
+    expect(groups.flatMap((group) => group.actions).sort()).toEqual(
+      [...CHANNEL_SCOPED_ACTIONS].sort(),
+    );
+    expect(groups.map((group) => group.id)).not.toContain('users');
+  });
+
+  it('files the wish reward, auto-link and unlink actions under wishes', () => {
+    const wishes = groupAuditActions(Object.keys(ACTION_KEYS)).find((g) => g.id === 'wishes');
+    expect(wishes?.actions).toEqual(
+      expect.arrayContaining(['wish.rewardAdd', 'wish.autoLink', 'wish.unlink']),
+    );
+  });
+
+  it('has a heading translation for every group in both locales', () => {
+    for (const group of AUDIT_ACTION_GROUPS) {
+      expect(lookup(de, group.labelKey)).toBeTypeOf('string');
+      expect(lookup(en, group.labelKey)).toBeTypeOf('string');
+    }
+  });
+});
+
+describe('normalizeActionFilter', () => {
+  it('keeps a known action and the empty "all" value', () => {
+    expect(normalizeActionFilter('channel.join', CHANNEL_SCOPED_ACTIONS)).toBe('channel.join');
+    expect(normalizeActionFilter('', CHANNEL_SCOPED_ACTIONS)).toBe('');
+  });
+
+  it('treats an unknown or out-of-scope action as no filter', () => {
+    expect(normalizeActionFilter('typo', CHANNEL_SCOPED_ACTIONS)).toBe('');
+    expect(normalizeActionFilter('user.delete', CHANNEL_SCOPED_ACTIONS)).toBe('');
   });
 });

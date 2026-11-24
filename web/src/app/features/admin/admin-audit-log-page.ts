@@ -1,5 +1,5 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, effect, inject } from '@angular/core';
 import { rxResource } from '@angular/core/rxjs-interop';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 
@@ -10,14 +10,18 @@ import { LanguageService } from '../../core/i18n/language.service';
 import { toLocale } from '../../core/i18n/locale';
 import { PagedResult } from '../../core/models/paged-result.model';
 import { listQueryState } from '../../core/routing/list-query-state';
-import { ACTION_KEYS, CHANNELLESS_ACTIONS } from '../../shared/audit/audit-actions';
+import {
+  ACTION_KEYS,
+  CHANNELLESS_ACTIONS,
+  normalizeActionFilter,
+} from '../../shared/audit/audit-actions';
+import { AuditActionMenu } from '../../shared/audit/audit-action-menu';
 import { AuditLogList } from '../../shared/audit/audit-log-list';
 import { toAuditRows } from '../../shared/audit/audit-row';
 import { Pager } from '../../shared/pagination/pager';
 import { Button } from '../../shared/ui/button';
 import { EmptyState } from '../../shared/ui/empty-state';
 import { NoticeBanner } from '../../shared/ui/notice-banner';
-import { SegmentedControl, SegmentedControlOption } from '../../shared/ui/segmented-control';
 import { SkeletonRows } from '../../shared/ui/skeleton-rows';
 
 const PAGE_SIZE = 25;
@@ -41,12 +45,12 @@ const EMPTY_PAGE: PagedResult<AuditLogEntry> = {
 @Component({
   selector: 'app-admin-audit-log-page',
   imports: [
+    AuditActionMenu,
     AuditLogList,
     Button,
     EmptyState,
     NoticeBanner,
     Pager,
-    SegmentedControl,
     SkeletonRows,
     TranslocoPipe,
   ],
@@ -72,16 +76,19 @@ const EMPTY_PAGE: PagedResult<AuditLogEntry> = {
 
       <!-- Sticky below header (top-14) + admin tabs (h-10): top-24. py-2 gives the blur a surface
            instead of a hard edge against the rows scrolling through underneath (design doc §8.5). -->
-      <div class="app-sticky-bar top-24 flex flex-col gap-3 py-2">
-        <app-segmented-control
-          [options]="actionOptions"
-          [value]="actionFilter()"
-          (valueChange)="onActionFilterChange($event)"
-          [ariaLabel]="'admin.audit.filter.actionLabel' | transloco"
-        />
-        <!-- Filter-toolbar fields: no visible label by design, aria-label + title instead (§5.2).
-             Live filtering per keystroke like the emote grid; requests are debounced in the class. -->
+      <div class="app-sticky-bar top-24 py-2">
         <div class="flex flex-wrap items-center gap-2">
+          <!-- A popover menu, not a segmented control: the option count grows with every new audit
+               action, and a sticky toolbar must stay bounded in height (§8.5). -->
+          <app-audit-action-menu
+            [actions]="actionOptions"
+            [value]="actionFilter()"
+            (valueChange)="onActionFilterChange($event)"
+            [ariaLabel]="'admin.audit.filter.actionLabel' | transloco"
+            allLabelKey="admin.audit.filter.all"
+          />
+          <!-- Filter-toolbar fields: no visible label by design, aria-label + title instead (§5.2).
+               Live filtering per keystroke like the emote grid; requests are debounced in the class. -->
           <input
             type="text"
             class="app-input-sm w-44 disabled:cursor-not-allowed disabled:opacity-50"
@@ -163,7 +170,6 @@ export class AdminAuditLogPage {
   // The action segments are clicks, so they go straight into the URL. The two text filters keep a
   // local draft updated per keystroke — same feel as the emote grid's filter — and reach the URL
   // only once the typing settles; the URL value is then also what the request reads.
-  protected readonly actionFilter = computed(() => this.query.params().action);
   protected readonly channelFilter = this.query.textFilter('channel', FILTER_DEBOUNCE_MS);
   protected readonly actorFilter = this.query.textFilter('actor', FILTER_DEBOUNCE_MS);
 
@@ -173,12 +179,14 @@ export class AdminAuditLogPage {
     CHANNELLESS_ACTIONS.has(this.actionFilter()),
   );
 
-  /** "All" plus one segment per known action, reusing the row labels — the filter can only ever
-   *  offer what this build can name. */
-  protected readonly actionOptions: SegmentedControlOption[] = [
-    { value: '', labelKey: 'admin.audit.filter.all' },
-    ...Object.entries(ACTION_KEYS).map(([value, labelKey]) => ({ value, labelKey })),
-  ];
+  /** Every known action, reusing the row labels — the filter can only ever offer what this build
+   *  can name. */
+  protected readonly actionOptions = Object.keys(ACTION_KEYS);
+
+  // An unknown `?action=` counts as no filter, in the request and (see the constructor) in the URL.
+  protected readonly actionFilter = computed(() =>
+    normalizeActionFilter(this.query.params().action, this.actionOptions),
+  );
 
   protected readonly hasActiveFilters = computed(
     () => this.actionFilter() !== '' || this.channelFilter() !== '' || this.actorFilter() !== '',
@@ -192,6 +200,7 @@ export class AdminAuditLogPage {
     params: () => ({
       page: this.page(),
       ...this.query.params(),
+      action: this.actionFilter(),
     }),
     stream: ({ params }) =>
       this.adminService.listAuditLog(params.page, PAGE_SIZE, {
@@ -217,6 +226,14 @@ export class AdminAuditLogPage {
     const error = this.auditLogResource.error();
     return error instanceof HttpErrorResponse ? apiErrorTranslationKey(error) : null;
   });
+
+  constructor() {
+    effect(() => {
+      if (this.query.params().action !== this.actionFilter()) {
+        this.query.setParams({ action: '' });
+      }
+    });
+  }
 
   protected reload(): void {
     this.auditLogResource.reload();
