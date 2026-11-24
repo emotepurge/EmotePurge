@@ -1,4 +1,6 @@
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
+using EmotePurge.Infrastructure.Telemetry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -13,6 +15,12 @@ namespace EmotePurge.Infrastructure.BotAccount;
 /// </summary>
 public static class BotAccountRegistration
 {
+    /// <summary>The base address of <see cref="SevenTvWriteClient"/>: 7TV's v4 API, the GraphQL endpoint below it.</summary>
+    public static readonly Uri WriteClientBaseAddress = new("https://7tv.io/v4/");
+
+    /// <summary>The time limit of one write-client request (plan 2.4: 10 s, not shortened).</summary>
+    public static readonly TimeSpan WriteClientTimeout = TimeSpan.FromSeconds(10);
+
     /// <summary>
     /// Api only. Registers <see cref="IBotAccountTokenSealer"/>: the real sealer while the bot account is enabled,
     /// otherwise one that always refuses (the token route answers 404 first). Never registers an opener. Also registers
@@ -37,9 +45,9 @@ public static class BotAccountRegistration
     }
 
     /// <summary>
-    /// Worker only. Registers the bot account's writing side while the bot account is enabled: for now the
-    /// <see cref="IBotAccountTokenOpener"/>; the write client, runner and signal join here in later tasks. Registers
-    /// nothing while it is disabled, and never a sealer.
+    /// Worker only. Registers the bot account's writing side while the bot account is enabled: the
+    /// <see cref="IBotAccountTokenOpener"/> and the 7TV write client <see cref="ISevenTvWriteClient"/>; the runner and
+    /// signal join here in later tasks. Registers nothing while it is disabled, and never a sealer.
     /// </summary>
     public static IServiceCollection AddBotAccountWriter(this IServiceCollection services, IConfiguration configuration)
     {
@@ -51,6 +59,21 @@ public static class BotAccountRegistration
         // Eager for the same reason as in AddBotAccountTokenSealing.
         var privateKey = BotAccountTokenKeys.ImportPrivateKey(configuration[BotAccountTokenKeys.PrivateKeyName]);
         services.AddSingleton<IBotAccountTokenOpener>(_ => new RsaBotAccountTokenOpener(privateKey));
+
+        // RemoveAllLoggers drops the factory's LoggingHttpMessageHandler pair for this client: at trace level it writes
+        // the request headers, the bot's Authorization header among them (plan 2.4, AK75). The client logs for itself.
+        // The token travels per request, never in DefaultRequestHeaders. 10 s stays (probe P3: addEmote up to 4.4 s).
+        services.AddHttpClient<ISevenTvWriteClient, SevenTvWriteClient>(client =>
+            {
+                client.BaseAddress = WriteClientBaseAddress;
+                client.Timeout = WriteClientTimeout;
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("EmotePurge/1.0");
+            })
+            .RemoveAllLoggers()
+            .AddHttpMessageHandler(serviceProvider => new ProviderRequestTelemetryHandler(
+                RateLimitProviders.SevenTv,
+                RateLimitCallSources.SevenTvBot,
+                serviceProvider.GetRequiredService<IRateLimitTelemetry>()));
         return services;
     }
 

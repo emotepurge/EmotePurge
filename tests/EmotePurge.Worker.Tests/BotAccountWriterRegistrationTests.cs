@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.BotAccount;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -25,6 +26,16 @@ public class BotAccountWriterRegistrationTests
 
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(IBotAccountTokenOpener));
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(IBotAccountTokenSealer));
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(ISevenTvWriteClient));
+    }
+
+    [Fact]
+    public void Enabled_RegistersTheWriteClient()
+    {
+        // Checked by descriptor: resolving it would build the Redis-backed telemetry and dial Redis.
+        var services = WorkerServices(Configuration(enabled: "true", privateKey: PrivateKey));
+
+        Assert.Contains(services, d => d.ServiceType == typeof(ISevenTvWriteClient));
     }
 
     [Fact]

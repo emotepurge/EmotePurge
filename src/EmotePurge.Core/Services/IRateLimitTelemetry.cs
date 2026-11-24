@@ -150,6 +150,13 @@ public static class RateLimitCallSources
     /// breaker counters.
     /// </summary>
     public const string SevenTvEmoteSetList = "seventv-emote-set-list";
+
+    /// <summary>
+    /// The bot account's own 7TV v4 GraphQL client in the worker (plan #487 2.4): reads, writes and the acceptance of an
+    /// editor invitation, all with the bot's token. Counted by the shared handler from the raw HTTP status, so a 429 that
+    /// 7TV disguises as HTTP 200 lands here as a success; the client itself turns it into a pause.
+    /// </summary>
+    public const string SevenTvBot = "seventv-bot";
 }
 
 /// <summary>

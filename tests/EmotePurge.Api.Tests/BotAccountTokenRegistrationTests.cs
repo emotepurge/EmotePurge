@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using EmotePurge.Core.Services;
+using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.BotAccount;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -122,14 +123,8 @@ public class BotAccountTokenRegistrationTests
     {
         Assert.Null(services.GetService<IBotAccountTokenOpener>());
 
-        // The 7TV write client arrives with plan #487 T3 and is registered by the worker's entry point only. Looked up by
-        // name so this check already holds the line before the type exists; T3 may replace it with typeof.
-        var writeClient = typeof(IBotAccountTokenOpener).Assembly.GetTypes()
-            .SingleOrDefault(type => type.IsInterface && type.Name == "ISevenTvWriteClient");
-        if (writeClient is not null)
-        {
-            Assert.Null(services.GetService(writeClient));
-        }
+        // Registered by the worker's entry point only (plan #487 T3).
+        Assert.Null(services.GetService<ISevenTvWriteClient>());
     }
 
     private static void AssertContainsNoPartOf(string value, string message)
