@@ -1569,6 +1569,7 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   zurückgenommen, Kanal `bot_account_changed`; nach dem Senden und vor dem Bestätigungs-Read → keine Bestätigung (auch nicht ohne
   Eigentum), der Rückfall-Lauf legt `unconfirmed` als `presented` (`unconfirmed`) vor; das neue Konto ist im Set-Eintrag nie
   `addedById` des Versuchs, Eigentum entsteht ohnehin nicht.
+- **Verbindlich (PR-1-Review):** Telemetrie: verkleidetes 429 (HTTP 200, `extensions.status 429`) zählt unter `seventv-bot` als 429 — `IRateLimitTelemetry` in den Schreib-Client, `ProviderTelemetrySuppression.OptionsKey`, genau eine Beobachtung nach der Klassifizierung wie `SevenTvApiClient.cs:1039/:1144`; Test. Aus dem PR-1-Review (Sol P2-5, Fable: vor dem ersten Schreibdurchgang).
 - **Tests:** Unit Plan und Eigentumsentscheidung; Integration mit gestubbtem `ISevenTvWriteClient`: AK77 (Bestätigungsfälle),
   AK83 (Abgleich vor und nach der Absicht, Absturz zwischen `addEmote` und `unconfirmed`). **AKs:** AK77 (Teil), AK83 (Teil),
   AK128.
@@ -1641,6 +1642,19 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   einem anderen Bot-Konto: abschalten, neu aktivieren), `EditorVisibilitySeconds`; die Prüfabfrage des Rollback-Wegs (b) um
   „Kanäle mit `BotInvitationAttemptAtUtc`“ erweitern (Abschnitt 6). **AKs:** AK95 (Rest).
   **Commit:** `docs: wish bot backend (child 4)`
+
+### PR-1-Review, bewusst vertagt
+
+Befunde aus dem Review über PR 1, die nicht in PR 1 gehören und hier an ihrer Stelle landen müssen:
+
+- **Gleiches Konto bei der erneuten Prüfung:** die erneute Verifikation (`BotAccountRunner.cs:330-346`) vergleicht nicht, ob der
+  Token noch zum selben 7TV-Konto gehört; relevant, sobald der Erneuerer Tokens tauscht (T16).
+- **`PooledConnectionLifetime`** für den langlebigen typisierten Schreib-Client setzen (DNS-Wechsel), spätestens mit dem
+  Erneuerer.
+- **Ein lesender `users.me`-Aufruf kann einen eben gesetzten Notaus noch überholen:** der Aufruf ist nur lesend, das Fenster
+  bewusst hingenommen; beim Erneuerer erneut bewerten.
+- **Körper-Bindung vor dem Admin-Filter:** ein kaputtes JSON liefert 400 statt 403 (AK73, keine Offenlegung, weil der Körper nichts
+  preisgibt); bei der Maschinenroute (T16) mitprüfen.
 
 ### T16: Erneuerung I: Api-Hälfte (PR 3)
 
