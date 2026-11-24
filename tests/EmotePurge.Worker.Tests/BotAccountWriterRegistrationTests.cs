@@ -27,6 +27,8 @@ public class BotAccountWriterRegistrationTests
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(IBotAccountTokenOpener));
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(IBotAccountTokenSealer));
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(ISevenTvWriteClient));
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(IBotAccountRunner));
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(IWishBotPass));
     }
 
     [Fact]
@@ -36,6 +38,18 @@ public class BotAccountWriterRegistrationTests
         var services = WorkerServices(Configuration(enabled: "true", privateKey: PrivateKey));
 
         Assert.Contains(services, d => d.ServiceType == typeof(ISevenTvWriteClient));
+    }
+
+    // Plan #487 2.5: the runner and the wishes' part of its pass are scoped, so the worker's loop-long scope owns the one
+    // runner instance that holds the lock connection. Checked by descriptor for the same reason as the write client.
+    [Fact]
+    public void Enabled_RegistersTheRunnerAndTheWishPass_Scoped()
+    {
+        var services = WorkerServices(Configuration(enabled: "true", privateKey: PrivateKey));
+
+        Assert.Equal(ServiceLifetime.Scoped, Assert.Single(services, d => d.ServiceType == typeof(IBotAccountRunner)).Lifetime);
+        Assert.Equal(typeof(BotAccountRunner), services.Single(d => d.ServiceType == typeof(IBotAccountRunner)).ImplementationType);
+        Assert.Equal(ServiceLifetime.Scoped, Assert.Single(services, d => d.ServiceType == typeof(IWishBotPass)).Lifetime);
     }
 
     [Fact]
@@ -52,13 +66,13 @@ public class BotAccountWriterRegistrationTests
     }
 
     [Fact]
-    public void Enabled_KeepsTheSixteenHostedServices()
+    public void Enabled_HasTheSeventeenHostedServices()
     {
         var configuration = Configuration(enabled: "true", privateKey: PrivateKey);
         var services = WorkerServices(configuration);
         services.AddWorkerHostedServices(configuration);
 
-        Assert.Equal(16, services.Count(d => d.ServiceType == typeof(IHostedService)));
+        Assert.Equal(17, services.Count(d => d.ServiceType == typeof(IHostedService)));
     }
 
     [Theory]

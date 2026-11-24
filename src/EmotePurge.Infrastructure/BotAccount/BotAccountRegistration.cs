@@ -1,5 +1,6 @@
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
+using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Telemetry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -46,8 +47,11 @@ public static class BotAccountRegistration
 
     /// <summary>
     /// Worker only. Registers the bot account's writing side while the bot account is enabled: the
-    /// <see cref="IBotAccountTokenOpener"/> and the 7TV write client <see cref="ISevenTvWriteClient"/>; the runner and
-    /// signal join here in later tasks. Registers nothing while it is disabled, and never a sealer.
+    /// <see cref="IBotAccountTokenOpener"/>, the 7TV write client <see cref="ISevenTvWriteClient"/>, the loop's
+    /// <see cref="IBotAccountRunner"/> and the wishes' part of its pass <see cref="IWishBotPass"/> (both scoped: the worker
+    /// resolves them once from a scope that lives as long as its loop). Registers nothing while it is disabled, and never
+    /// a sealer. The wake-up signal is the worker's own and registered there whatever the switch, because the command
+    /// loop that sets it always runs.
     /// </summary>
     public static IServiceCollection AddBotAccountWriter(this IServiceCollection services, IConfiguration configuration)
     {
@@ -74,6 +78,9 @@ public static class BotAccountRegistration
                 RateLimitProviders.SevenTv,
                 RateLimitCallSources.SevenTvBot,
                 serviceProvider.GetRequiredService<IRateLimitTelemetry>()));
+
+        services.AddScoped<IWishBotPass, WishBotPass>();
+        services.AddScoped<IBotAccountRunner, BotAccountRunner>();
         return services;
     }
 

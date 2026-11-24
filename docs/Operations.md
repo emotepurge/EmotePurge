@@ -1916,7 +1916,7 @@ manager approves, rejects or unlinks. Nothing here writes to 7TV.
   The image from before child 6 keeps running against the new schema. **On production `AddWishes` is
   probably still pending, so `list` shows two pending migrations (`AddWishes`, `AddWishCapture`); both are
   additive and one `update` applies them in order.**
-- **The housekeeping tick runs even with everything off.** The sixteenth hosted service, `WishCaptureWorker`,
+- **The housekeeping tick runs even with everything off.** The last hosted service, `WishCaptureWorker`,
   runs a tick every minute whatever the switches say: it deletes expired learning rows and capture receipts
   older than seven days and, on its first tick and every fifteenth minute, expires open wishes that waited
   longer than the channel's `PendingExpiryDays` (default 14, 1 to 90). It needs the migration; without it the

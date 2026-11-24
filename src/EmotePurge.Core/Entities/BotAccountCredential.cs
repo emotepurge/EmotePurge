@@ -99,3 +99,16 @@ public static class TwitchSessionStates
 
     public static readonly IReadOnlyList<string> All = [Valid, Malformed, Lost];
 }
+
+/// <summary>
+/// The language-neutral values the worker writes to <see cref="BotAccountCredential.LastErrorCode"/> when it moves the
+/// token to <see cref="BotAccountStatus.Invalid"/> (plan #487 2.8). Field values for the admin page, not Api error codes.
+/// </summary>
+public static class BotAccountErrorCodes
+{
+    /// <summary>The worker could not open the seal (another key, a damaged value).</summary>
+    public const string SealUnreadable = "seal_unreadable";
+
+    /// <summary>7TV answered the verification with a real 401 or a 7TV-shaped 403: the token opens no session.</summary>
+    public const string TokenUnauthorized = "token_unauthorized";
+}

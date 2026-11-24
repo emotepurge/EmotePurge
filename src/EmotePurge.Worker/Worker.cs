@@ -1,6 +1,7 @@
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Worker.BotAccount;
 using EmotePurge.Worker.ChatLogBackfill;
 using EmotePurge.Worker.SevenTv;
 
@@ -18,7 +19,8 @@ public class Worker(
     ITwitchLiveStatusReader liveStatusReader,
     IServiceScopeFactory scopeFactory,
     IConfiguration configuration,
-    ChatLogBackfillSignal backfillSignal) : BackgroundService
+    ChatLogBackfillSignal backfillSignal,
+    BotAccountSignal botAccountSignal) : BackgroundService
 {
     // Worker-local debug command for the RECONNECT path (issue #68, Entscheidung 7.5, Task 6):
     // the Api never sends this. BotCommands in EmotePurge.Core stays the Api<->Worker contract
@@ -105,6 +107,12 @@ public class Worker(
                 // never trusted for identity — the queued run row is the truth, and the claim
                 // re-validates the channel itself, so no roster check is needed here.
                 backfillSignal.Set();
+            }
+            else if (message.StartsWith(BotCommands.BotAccountPrefix, StringComparison.Ordinal))
+            {
+                // A nudge for the bot account loop and nothing else (plan #487 2.5): the token or the kill switch changed.
+                // No payload; the credential row is the truth, and the loop's own cadence finds the change anyway.
+                botAccountSignal.Set();
             }
             else if (string.Equals(message, DebugTwitchReconnectCommand, StringComparison.Ordinal))
             {
