@@ -3,8 +3,9 @@
 Erstellt am 2026-11-20 im Worktree `EmotePurge-wt-487` (Branch `feat/487-wish-bot`, Basis `origin/main` @ `801e64a6`; K1
 (#492), K2 (#493), K3 (#494) und K6 (#495) gemergt, seit 2026-11-20 auf Prod live und eingeschaltet, Bot-Modus existiert noch
 nicht). Alle Codestellen dieses Plans sind an diesem Stand gelesen.
-**Status: Revision 6 (2026-11-24): Ergebnis der Probe T0, Tor G0 bestanden, dazu der Betreiberentscheid [F7] zur Annahme
-von Editor-Einladungen (Tabelle „Revision 6“).** Davor Revision 5b (Helfer per Hand gestartetem Browser) und Revision 5a
+**Status: Revision 6a (2026-11-24): die sechs Befunde der adversarialen Sol-Runde über Revision 6 voll eingearbeitet
+(Tabelle „Revision 6a“), keine weitere Sol-Runde [B].** Revision 6 (2026-11-24): Ergebnis der Probe T0, Tor G0 bestanden, dazu
+der Betreiberentscheid [F7] zur Annahme von Editor-Einladungen (Tabelle „Revision 6“). Davor Revision 5b (Helfer per Hand gestartetem Browser) und Revision 5a
 (2026-11-20): Revision 5 mit neutralen Namen der kontoweiten Teile (Tabelle „Revision 5a“), Verträge
 unverändert. Revision 5 war der Endstand des Nachtrags; Reviews: Fable, Sol, Astra über Rev. 3; Sol über Rev. 4 (3 × P1,
 6 × P2, alle übernommen). Keine weitere Runde; Code-Review je PR.** Revision 2 war der Endstand für PR 1 und PR 2 (Sol
@@ -13,7 +14,8 @@ Revision 3 brachte die automatische Erneuerung (Spec 18) als PR 3; Revision 4 di
 die Betreiberentscheidungen (Erneuerer auf dem NAS, schmale Maschinenroute, G0b vor T1); Revision 5 die neun Sol-Befunde über
 Revision 4 und die Betreiberentscheidungen vom Abend (Helfer statt Profilkopie, keine Vertretung, N2 hingenommen).
 Betreiberfragen F1 bis F6, FT1 bis FT4, N1 und N2 entschieden (Abschnitt 9). Plan committet als `8ae80d4d`, Revision 3 bis 5 als `40fb8685`, Revision 5a als `f936bb35`, Revision 5b als `eeef09e7`,
-Revision 6 nicht. Stand der Umsetzung bei Revision 6: T1, T2 und T4 committet; T3 beginnt nach G0.
+Revision 6 als `8548419a`, Revision 6a nicht. Stand der Umsetzung bei Revision 6a: T1, T2 und T4 committet (PR 1 nicht
+gemergt); vor T3 kommt der Nachtrag **T1a** (drei Spalten in der committeten Migration, Tabelle „Revision 6a“).
 Quellen: [Spec](../superpowers/specs/2026-11-17-wunsch-emotes-spec.md) Abschnitte 5 bis 8, 6.4, 12 bis 14, 16, E7, E8, E11,
 E17, E24, E25, RR2, RR3, Tabellen W/X/S und „K4: Bot-Backend“ (AK71 bis AK96), **Nachtrag 18 (AK109 bis AK118)**; [Plan-483](Plan-483-Wunsch-Emotes-Backend-Kern.md)
 (1.2, Befund 8, R10), [Plan-484](Plan-484-Wunsch-Emotes-Ablauf-Lauf.md) (1.2, Befunde 1, 11, 13, 15, 20, 21),
@@ -31,7 +33,8 @@ Bestandsdateien, bevor er schreibt.
 **Lesehinweis:** **[E]** Planer-Entscheidung (der Betreiber kann widersprechen) · **[P]** Präzisierung ohne
 Entscheidungsgehalt · **[B]** schon entschieden (Spec oder Betreiber) · **[W*n*]** Widerspruch oder Lücke aus Abschnitt 7 ·
 **[F*n*]**, **[FT*n*]** Betreiberfrage aus Abschnitt 9 (FT: Nachtrag Erneuerung) · **Sol-P1-*n*/P2-*n*/P3-*n*** Befund der Sol-Runde 1, **R2-*n*** Befund der
-Sol-Runde 2, **S5-*n*** Befund der Sol-Runde über Revision 4 (Tabellen unten) · „AK77“
+Sol-Runde 2, **S5-*n*** Befund der Sol-Runde über Revision 4, **S6-*n*** Befund der Sol-Runde über Revision 6 (Tabellen
+unten) · „AK77“
 meint das Akzeptanzkriterium der Spec, „Spec 8“ deren Abschnitt.
 
 ### Revision 1 (2026-11-20): Sol-Runde 1 und Betreiberentscheidungen
@@ -184,6 +187,36 @@ Abschnitte 4, 5, 6, 8, 9, 10. **Neu:** AK123 bis AK125 (Spec K4), Audit `wish.bo
 neue Spalte und keine Änderung an der committeten Migration (beide Werte sind Text in Bestandsspalten ohne CHECK), kein neuer
 Fehlercode (Regel 7), PR-Schnitt, Reihenfolge, Task-Schnitt; T1, T2 und T4 bleiben, wie sie committet sind (Folgen für ihren
 Bestand tragen T8 und T13).
+
+### Revision 6a (2026-11-24): Sol über Revision 6
+
+Eingang: Sol `gpt-6.2-sol` adversarial über Revision 6 (`8548419a`), 1 × P1, 4 × P2, 1 × P3. **[B] Betreiber:** alle sechs voll
+übernommen, keine weitere Sol-Runde. „Hält“ ist am Text von Revision 6 geprüft; S6-3 mit der Korrektur des Orchestrators.
+
+| # | Befund | Hält | Gelöst in |
+|---|---|---|---|
+| S6-1 | P1: Editor-Rechte nach bestätigtem Abbruch. Die Sperren schützen das Senden der Annahme, aber nach `Timeout`, `Unavailable` oder Verlust der Transaktion kann 7TV die schon abgeschickte Annahme noch ausführen; `DELETE` beendet die Anfrage inzwischen mit 204, oder der Notaus greift. Kein dauerhafter Versuch, Audit nur bei `Ok` → der Bot kann `ACCEPTED` werden, ohne dass `BotModeEnabled` je wahr war | ja (2.5b Revision 6: „unklares Ergebnis … erneut gesendet“, Audit nur bei `Ok`) | **Annahmeversuch dauerhaft vor dem Senden** (`BotInvitationAttemptAtUtc`, eigene Transaktion), Auflösung nur über einen Read, auch nach `DELETE`, Notaus, Pause und Token-Ausfall (der Read ist unauthentifiziert); `DELETE` mit offenem Versuch → `activationError = invitation_accept_unresolved`; späte Wirkung → `invitation_accepted_after_abort` samt Audit, Runbook: Inhaber trägt den Bot in 7TV aus (2.5b „Annahmeversuch“, 2.9, 2.11); **Schema: neue Spalte, T1a**; T7, T8, T13; AK126 |
+| S6-2 | P2: Anfrage für Bot A macht Bot B zum Editor. Nach einem Hand-`PUT` mit einem anderen 7TV-Konto zeigt ein frischer Read für B `PENDING`, und der Worker nähme auf die alte Anfrage für A an | ja (2.9 Revision 6 bindet die Bestätigung an Version und Bot-ID des **Reads**, nicht an die Zustimmung) | **Zustimmung an die Bot-ID gebunden** (`BotConsentSevenTvUserId`, gesetzt von `activate`, übernommen bei der Bestätigung); **jedes** Schreiben des Bots (Hinzufügen, Bestätigen, Entfernen, Reparatur, Annahme) und die Bestätigung einer Aktivierung nur bei gleicher Bot-ID, als eigene Stufe der Vorprüfung; anderes Konto → Kanal ausgesetzt mit `bot_account_changed`, kein Schreiben, bis ein Verwalter neu aktiviert (Nachtrag Orchestrator 2026-11-24: auch wenn das neue Konto dort schon `editor` ist); der Tausch über die Maschinenroute und ein Hand-`PUT` desselben Kontos behalten die Bot-ID und bleiben erlaubt (2.5, 2.5b, 2.8, 2.9); **Schema: neue Spalte, T1a**; T6, T7, T8, T9, T10; AK127 |
+| S6-3 | P2: Frist verwirft eine gültige Einladung, bevor sie sichtbar ist. Sol las `PENDING` erst bei +134 s (P2) | **teilweise:** die +134 s zählen ab Start der Beobachtung, nicht ab der Einladung; gegen das von 7TV vermerkte `addedAt` lag `PENDING` rund 9 s (zweite Einladung) bzw. 16 s (erste) dahinter, also unter 30 s, aber an nur zwei Messungen; dazu entschied bisher **ein** negativer Read nach 2 Minuten, auch ein zwischengespeicherter von davor | Frist konfigurierbar und großzügig (`BotAccount:EditorVisibilitySeconds`, Default 300, 60 bis 1800), `not_editor` nur durch einen Read, der **nach** Ablauf der Frist begonnen hat (2.5b „Frische Einladung“); Test mit ungünstiger Taktlage (T8); Protokoll P2 im Wortlaut korrigiert; **keine Spalte, Option in T1a**; AK124 |
+| S6-4 | P2: Erfolgsnachweis von `addEmote` bei Teilantworten offen. `Ok` auch bei fehlender oder unlesbarer Rückgabe, ohne zu sagen, woran der Client den Erfolg der Mutation selbst erkennt | ja (2.4 Revision 6) | `Ok` und damit `BotAddAckAtUtc` nur, wenn das Mutationsfeld fehlerfrei ein Set mit `id` = Ziel-Set liefert; Fehler nur in der verschachtelten Auswahl `emotes` → `Ok` ohne Einträge (Read bei 0 s); jedes andere unklare Ergebnis nach dem Senden → `Unavailable`, also `unconfirmed` ohne Sende-Nachweis, nie Eigentum (2.4, 2.6 Punkt 3); gleiche Regel für die Annahme; **keine Spalte**; T3, T9; AK128 |
+| S6-5 | P2: Eigentumsbeleg kann vor `removeEmote` veraltet sein. P5 zeigt, dass 7TV einen Menschen-Ersatz gleicher Emote-ID und gleichen Alias löscht; gelesen wurde in Transaktion 1, gesendet in Transaktion 2 ohne neuen Read, dazwischen Sperrerwerb und Vorprüfung ohne Altersgrenze | ja (2.7 Revision 6: „ohne neuen Vor-Read; das Fenster … ist ein Commit lang“) | **frischer Vor-Read in der Sende-Transaktion** nach Sperren und Nachprüfung, unmittelbar vor `removeEmote`, Vergleich mit dem Beleg (vier Merkmale und die übrigen Einträge der Emote-ID); der Nach-Read wandert in eine eigene kurze Buchung (Transaktion 3), damit es bei zwei 7TV-Aufrufen je Sende-Transaktion bleibt; Restfenster zwischen Read-Antwort und Ankunft von `removeEmote` als Restrisiko (7TV kennt keine bedingte Mutation) (2.5a (c), (h), 2.7, R2); **keine Spalte**; T10; AK129 |
+| S6-6 | P3: Runner-Wechsel umgeht die 15-Minuten-Sperre. Sie lebte nur im Speicher; ein zweiter Inhaber des Advisory-Locks versuchte sofort neu | ja (2.5b Revision 6) | **frühester neuer Versuch dauerhaft** je Kanal (`BotInvitationRetryAtUtc`), gebunden an die Bot-ID der Zustimmung (S6-2), übersteht Runner-Wechsel und Neustart; Test mit zwei Instanzen (2.5b, T8); **Schema: neue Spalte, T1a**; AK125 |
+
+**Schema [E]:** S6-1, S6-2 und S6-6 brauchen je einen Zustand, den keine Bestandsspalte trägt (Zeitpunkt, Bot-ID). Kleinste
+konsistente Lösung: **drei nullbare Spalten an `ChannelWishSettings`** (`BotConsentSevenTvUserId` text, `BotInvitationAttemptAtUtc`
+timestamptz, `BotInvitationRetryAtUtc` timestamptz), **in die committete, nicht gemergte Migration `AddBotAccount`** als
+Nachtrag-Commit **T1a** in PR 1. Verworfen: Feldwerte in Bestandsspalten (Text kann weder Zeitpunkt noch Bot-ID tragen), eine
+jsonb-Spalte für alles (drei Zustände mit eigenem Lebenszyklus in einem Dokument, schlechter abfragbar für Prüfabfrage und
+Runbook), eine zweite Migration in PR 2 (bräche „PR 2 und PR 3 ohne Migration“ und die Deploy-Reihenfolge), eine eigene Spalte für
+die Bot-ID des Versuchs (die gebundene Bot-ID bleibt stehen, solange ein Versuch offen ist, 2.5b). Für S6-3 genügt eine Option.
+
+**Geändert:** Status, 1.3, 2.4, 2.5a (c), (h), 2.5b, 2.6 Punkt 3, 2.7, 2.8 (Aussetzgrund), 2.9, 2.11, 2.12, Abschnitt 3 (T1a neu, Reihenfolge), T3, T7,
+T8, T9, T10, T13, T14, Abschnitte 4, 6, 8, 9, 10; Spec 6.2, 8, K4 (Kanal-Api, Schreib-Client, Einladungen, Entfernen), AK92
+(Wortlaut), AK124, AK125, neu AK126 bis AK129; Protokoll T0, P2 (Wortlaut der zweiten Einladung). **Neu:** Spalten aus T1a, Option
+`BotAccount:EditorVisibilitySeconds`, Feldwerte `invitation_accept_unresolved`, `invitation_accepted_after_abort` und
+`bot_account_changed` (`BotActivationError`) sowie `bot_account_changed` (`BotSuspendedReason`), R23. **Unverändert:** kein neuer
+Fehlercode (Regel 7), keine neue Audit-Aktion (Details an `wish.botAcceptInvitation` und `wish.botDeactivate`), PR-Schnitt,
+Reihenfolge der übrigen Tasks, [F7] selbst.
 
 ### Revision 5a (2026-11-20): Neutrale Benennung der kontoweiten Teile
 
@@ -367,6 +400,12 @@ Audit-Übersetzungen `wish.bot*` und `botAccount.*` ([W15]); der Hinweis, dass W
 `activationError = invitation_not_accepted` (2.5b) zum Übersetzen, und der Hinweis, dass der Bot eine Einladung beim Aktivieren
 selbst annimmt: K5 legt die Einladung mit dem Token des Verwalters an und ruft dann `activate`, eine Annahme im Browser gibt es
 nicht. `activationPending` bleibt wahr, solange der Worker eine frische Einladung noch nicht sieht oder annimmt (bis 2 Minuten).
+**Revision 6a:** die Frist ist `BotAccount:EditorVisibilitySeconds` (Default 300 s) plus höchstens einen Takt, nicht 2 Minuten;
+dazu die Feldwerte `activationError = invitation_accept_unresolved` („abgebrochen, ob 7TV die Annahme noch ausführt, ist offen“),
+`invitation_accepted_after_abort` („Bot wurde nach dem Abbruch als Editor angenommen; austragen, falls nicht gewollt“) und
+`bot_account_changed` (Anfrage galt einem anderen Bot-Konto, neu aktivieren) sowie `suspendedReason = bot_account_changed`
+(das Bot-Konto ist ein anderes als das, dem die Aktivierung gilt; der Bot schreibt dort nicht mehr; abschalten und neu
+aktivieren) zum Übersetzen.
 
 ### 1.4 Verhältnis zum laufenden Betrieb
 
@@ -541,10 +580,21 @@ Nutzer, kein Platzhalter. K4 sorgt nur dafür, dass die Namen den Weg nicht verb
 - **Revision 6 (G0), festgelegt:** `VerifyAsync` = v4 `users.me { id }` (der Claim `sub` trägt dieselbe ID, P1); Feld
   `addedById`. `AddEmoteAsync` fordert die Rückgabe-Auswahl `emotes(page, perPage) { items { alias addedAt addedById emote { id } } }`
   am zurückgegebenen Set an und liefert bei `Ok` die zurückgegebenen Einträge mit (oder keine, wenn die Auswahl fehlt oder
-  unlesbar ist: das bleibt `Ok`, die Mutation ist durch). Neu **`AcceptEditorInvitationAsync(token, ownerSevenTvUserId)`**: v4
+  unlesbar ist: das bleibt `Ok`, **sofern der Erfolgsnachweis unten erfüllt ist**, Revision 6a). Neu **`AcceptEditorInvitationAsync(token, ownerSevenTvUserId)`**: v4
   `userEditors.editor(editorId: <Bot-ID>, userId: <Inhaber>).updateState(state: ACCEPT)`, Bot-ID aus `BotSevenTvUserId`. Der Client
   kennt **nur** `ACCEPT` (kein Parameter für den Zustand, also weder Ablehnen noch Austragen, [B] F7); Ergebnis in derselben
   geschlossenen Form. Das Zeitlimit von 10 s bleibt (gemessen bis 4,4 s für `addEmote`, P3) und wird nicht gekürzt.
+- **Erfolgsnachweis einer Mutation [E] (Revision 6a, S6-4):** `Ok` heißt „7TV hat die Mutation nachweislich ausgeführt“ und ist
+  nie aus dem Fehlen eines Fehlers abgeleitet. Für `addEmote`: das Mutationsfeld (Pfad wie im Wegwerf-Skript von T0) ist nicht
+  `null`, auf seinem eigenen Pfad steht kein Fehler, und das zurückgegebene Set trägt `id` = angefragtes `setId` (die
+  Rückgabe-Auswahl fordert dafür zusätzlich `id` am Set an). Fehler, deren `path` **unterhalb** des Mutationsfelds in der Auswahl
+  `emotes` liegt, und eine fehlende oder unlesbare Einträge-Liste ändern daran nichts: `Ok` ohne Einträge (2.6 Punkt 3 beginnt mit
+  dem Read bei 0 s). Ein Fehler auf dem Mutationspfad mit bekannter Zuordnung (unten) ist das jeweilige Ergebnis; einer mit
+  `extensions.status` 4xx ohne Zuordnung ist `Rejected(unknown)`. **Alles andere nach dem Senden** (Mutationsfeld `null` ohne
+  Fehler, anderes oder fehlendes `id`, Fehler ohne Status oder mit 5xx, unlesbarer Körper) ist `Unavailable`: ungeklärt, ob 7TV
+  geschrieben hat. Für `AcceptEditorInvitationAsync` gilt dieselbe Regel mit dem Rückgabewert der Annahme-Mutation (Form aus T0,
+  A5: `OK`); ein ungeklärtes Ergebnis ist dort `Unavailable` und läuft über den Annahmeversuch (2.5b). `RemoveEmoteAsync` braucht
+  keinen eigenen Nachweis, weil dort immer der Nach-Read entscheidet (2.7).
 - **Ergebnis je Aufruf (eine geschlossene Form [E]):** `Ok`, `RateLimited(retryAfter)` (HTTP 429 mit `Retry-After`, oder HTTP
   200 mit `extensions.status = 429`; Default 60 s, Kappe 6 h, AK76), `Unauthorized` (HTTP 401/403), `LackingPrivileges`
   (`extensions.code = LACKING_PRIVILEGES`), `Rejected(reason)` mit `alias_conflict` (`extensions.status = 409`), `set_full`,
@@ -589,7 +639,9 @@ Nutzer, kein Platzhalter. K4 sorgt nur dafür, dass die Namen den Weg nicht verb
   der Einreihung), dann ID.
 - **Vorprüfung vor jedem 7TV-Schreibzugriff** als reine Funktion `WishBotPreflight.Check(…)` mit fester Reihenfolge (Spec K4):
   Schalter → Deckung (E8) → `KillSwitch` (frisch aus der Datenbank, AK81) → `PausedUntilUtc` → Token-Status, Ablauf und
-  `CredentialVersion` gleich der des geöffneten Tokens (2.2) → Editor-Status des Kanals (höchstens 1 Minute alt, zur selben
+  `CredentialVersion` gleich der des geöffneten Tokens (2.2) → **Zustimmung des Kanals gilt dem aktuellen Bot-Konto
+  (`BotConsentSevenTvUserId = BotSevenTvUserId`, Revision 6a, S6-2; Nein → je Kanal `bot_account_changed`)** → Editor-Status des
+  Kanals (höchstens 1 Minute alt, zur selben
   `IdentityVersion` gebucht, 2.3; positiv nur `editor` nach 2.5b, Revision 6). Das erste Nein gewinnt und bestimmt den Rückfall (global oder je Kanal). **Revision 5a [E]:**
   Die zusammenhängenden Kontostufen (`KillSwitch` → `PausedUntilUtc` → Token-Status, Ablauf, `CredentialVersion`) sind eine eigene
   reine Funktion `BotAccountPreflight.Check(…)`, die `WishBotPreflight` an genau dieser Stelle aufruft; Reihenfolge und Ergebnis
@@ -645,9 +697,11 @@ Eigentum, (d)), `BotConfirmDeadlineAtUtc` (Revision 2: Ende der E11-Frist, (e)),
   Vorprüfung 2.5 (`KillSwitch`, `CredentialVersion` aus der gesperrten Zeile), Runner-Epoche (g). Ein Nein → nicht senden; ein in
   **diesem** Durchgang festgeschriebener, nachweislich nie gesendeter Versuch wird bedingt zurückgenommen (Hinzufügen: bleibt
   `approved`), jeder andere nach (e) aufgelöst. Sonst senden und unter **derselben** Sperre buchen (Spec 8). **Höchstens zwei
-  7TV-Aufrufe je solcher Transaktion** (Senden, Nach-Read; je 10 s), damit wartende Kanal-Schreiber unter Npgsqls
-  Standard-Timeout von 30 s bleiben (im Repo nicht überschrieben). Reads ohne Senden (Vor-Read, Bestätigung, Wiederaufnahme,
-  Prüfphase) laufen ohne Kanalsperre; ihre Buchung ist eine kurze Transaktion derselben Sperrfolge ohne 7TV-Aufruf.
+  7TV-Aufrufe je solcher Transaktion** (je 10 s), damit wartende Kanal-Schreiber unter Npgsqls Standard-Timeout von 30 s bleiben
+  (im Repo nicht überschrieben). **Revision 6a (S6-5):** beim Entfernen sind das der frische Vor-Read direkt vor dem Senden und
+  `removeEmote`; der Nach-Read liegt danach in einer eigenen Buchung (2.7); beim Hinzufügen und bei der Annahme einer Einladung
+  ist es nur der Schreibaufruf. Reads ohne Senden (Vor-Read in Transaktion 1, Nach-Read, Bestätigung, Wiederaufnahme, Prüfphase)
+  laufen ohne Kanalsperre; ihre Buchung ist eine kurze Transaktion derselben Sperrfolge ohne 7TV-Aufruf.
 - **(d) Set-Bindung und Eigentum.** Alle Reads und Schreibzugriffe eines Versuchs gehen an `BotSetId`, nie an das inzwischen
   aktive Set. Bestätigt wird nur ein Eintrag in `BotSetId` mit `addedAt` zwischen `BotWriteAtUtc − 2 min` **[E]** (Uhrenabweichung)
   und dem Read: die Generation dieses Versuchs (auch nach `recheck`). Weicht `ActiveEmoteSetId` bei der Buchung ab, wird nicht
@@ -676,8 +730,8 @@ Eigentum, (d)), `BotConfirmDeadlineAtUtc` (Revision 2: Ende der E11-Frist, (e)),
   unterwegs ist, wenn die Transaktion des Vorgängers abbricht (Arbeitsverbindung getrennt, Prozess hängt): Restfenster R11, gedeckt
   durch den vor dem Senden festgeschriebenen Versuch und (e) bzw. (h). Dieses Fenster wird nicht weiter geschlossen.
 - **(h) Reparatur als eigene Phase [B] F6 (R2-4).** Braucht es nach einer Entfernung eine Reparatur (2.7), bucht die
-  Sende-Transaktion der Entfernung zugleich `BotRepairAtUtc = jetzt` und behält `BotRemoveEvidence` (dauerhaft vor dem Senden der
-  Reparatur). Gesendet wird die Reparatur **nur im selben Durchgang direkt danach** in eigener Transaktion nach (c), genau ein
+  Buchung nach dem Nach-Read (seit Revision 6a Transaktion 3 in 2.7, vorher die Sende-Transaktion) zugleich `BotRepairAtUtc =
+  jetzt` und behält `BotRemoveEvidence` (dauerhaft vor dem Senden der Reparatur). Gesendet wird die Reparatur **nur im selben Durchgang direkt danach** in eigener Transaktion nach (c), genau ein
   `addEmote`; eine eindeutige Antwort (`Ok`, `Rejected`, `LackingPrivileges`, `Unauthorized`, `RateLimited`) wird gebucht (Audit
   `wish.botRepair` mit `outcome`, Phase und Beleg leer). Jede andere offene Prüfphase (Absturz, `Timeout`, Lock-Verlust, ein Nein in (c), Auflösung nach (e)) ist **unklar** und wird
   **nur lesend** aufgelöst, sobald ein Read möglich ist (Token gültig, kein Notaus; Kanalzustand egal): Zieleintrag noch da → nichts
@@ -710,36 +764,92 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
   unbeantwortet:** nie annehmen, nie ablehnen, nie austragen, auch nicht für Kanäle, die Emote Purge gar nicht kennt. Begründung:
   (a) hat ein nach E24 Berechtigter angefordert, (b) ist eine bestehende, geprüfte Aktivierung; eine Einladung ohne Aktivierung
   trägt keine Zustimmung nach D7. Ein ungelisteter, aktivierter Kanal (`not_listed`) bekommt keine Annahme, bis er wieder gedeckt ist.
+  **Revision 6a:** zusätzlich nur, wenn die Zustimmung dem aktuellen Bot-Konto gilt (`BotConsentSevenTvUserId =
+  BotSevenTvUserId`, S6-2), kein Annahmeversuch des Kanals offen ist (S6-1) und `BotInvitationRetryAtUtc` leer oder erreicht ist
+  (S6-6).
+- **Zustimmung an die Bot-ID gebunden [E] (Revision 6a, S6-2):** `activate` schreibt mit der Anfrage `BotConsentSevenTvUserId =
+  BotSevenTvUserId` aus der eben gelesenen Credentials-Zeile (verfügbar heißt `valid`, die ID ist also gesetzt); die Bestätigung
+  (2.9) lässt sie stehen, sie ist dann die Bot-ID der Aktivierung; `DELETE` leert sie (Ausnahme: offener Annahmeversuch, unten).
+  Angenommen und bestätigt wird nur, wenn die gebundene ID gleich der Bot-ID des Reads und der aktuellen `BotSevenTvUserId` ist.
+  Weicht sie ab (Hand-`PUT` mit einem anderen 7TV-Konto), gilt die Zustimmung nicht für das neue Konto: eine offene Anfrage endet
+  ohne Annahme und ohne Bestätigung mit `BotActivationError = bot_account_changed`; ein aktivierter Kanal wird mit
+  `BotSuspendedReason = bot_account_changed` ausgesetzt (wirkt wie `not_editor`, Kanal im `fallback`, Rückfall-Lauf 2.8), **gleich
+  was der Editor-Read für das neue Konto zeigt, auch wenn es dort schon `editor` ist** (Nachtrag Orchestrator 2026-11-24, S6-2 voll):
+  kein Hinzufügen, Bestätigen, Entfernen, keine Reparatur und keine Annahme, bis ein Verwalter abschaltet und neu aktiviert (die
+  neue Aktivierung bindet die neue ID) oder das gebundene Konto wieder gesetzt ist (dann nimmt der Runner ohne neue Aktivierung
+  auf wie bei `not_editor`). Die Prüfung ist eine eigene Stufe der Vorprüfung (2.5) und läuft auch beim Bestätigungs-Read; nur
+  lesend auflösende Schritte (offene Annahmeversuche unten, Prüfphasen 2.5a (h), Wiederaufnahme 2.5a (e) ohne Senden) bleiben
+  erlaubt. `WishBotChannelState.Of` bekommt die Abweichung als Eingang und rechnet in Api und Worker sofort `fallback`, noch bevor
+  der Runner den Grund bucht (T6). Der Tausch über die Maschinenroute behält die Bot-ID (2.13) und ändert daran nichts, ebenso ein
+  Hand-`PUT` mit demselben Konto. Ein aktivierter Kanal ohne gebundene ID (gibt es nicht, Befund 20) gilt als abweichend.
 - **Ablauf [E]:** Die Annahme schreibt in die **Editor-Beziehung**, nicht in ein Set: sie ist kein Versuch nach 2.5a (keine
   Wunsch-Zeile, kein `BotSetId`, keine setweite Serialisierung), läuft aber unter denselben Schranken: Lock-Probe und
-  Runner-Epoche (2.5a (g)), Kontostufen (`BotAccountPreflight`) und Deckung, `WriteDelaySeconds`, eine Aktion des Budgets. Gesendet
-  wird in einer Transaktion mit Kanalzeile `FOR SHARE` und Credentials-Zeile `FOR SHARE` (Sperrfolge 2.5a (c)), geprüft unter
-  diesen Sperren: im Fall (a) der gelesene Anfrage-Stempel unverändert und `BotModeEnabled = false`, im Fall (b) `BotModeEnabled =
-  true`; dazu Deckung, `KillSwitch`, `CredentialVersion`, Epoche; genau ein 7TV-Aufruf (`AcceptEditorInvitationAsync`, 2.4). Ein
-  `DELETE …/wishes/bot` oder eine neue Anfrage fällt so nicht zwischen Prüfung und Annahme. **Idempotent:** zeigt der Read
-  `editor`, wird nichts gesendet; anders als `addEmote` (2.6 Punkt 3) darf ein unklares Ergebnis im nächsten Durchgang erneut
-  gesendet werden. Nach `Ok` liest der Runner im selben Durchgang einmal neu (gemessen: sofort `ACCEPTED`, A5) und bucht dann wie
-  sonst (Bestätigung 2.9, Aufnehmen 2.8); zeigt der Read noch `invited`, bleibt es bis zum nächsten Read dabei, ohne zweite
-  Annahme in diesem Durchgang.
+  Runner-Epoche (2.5a (g)), Kontostufen (`BotAccountPreflight`) und Deckung, `WriteDelaySeconds`, eine Aktion des Budgets.
+  **Revision 6a (S6-1):** zuerst der **Annahmeversuch** in eigener, committeter Transaktion (unter der Kanalsperre, bedingt auf
+  die eben geprüfte Lage: Anfrage-Stempel bzw. `BotModeEnabled`, gebundene Bot-ID, kein offener Versuch, Sperre erreicht, Epoche):
+  `BotInvitationAttemptAtUtc = jetzt`; trifft das Update nichts, wird nicht gesendet. Gesendet wird danach in einer Transaktion
+  mit Kanalzeile `FOR SHARE` und Credentials-Zeile `FOR SHARE` (Sperrfolge 2.5a (c)), geprüft unter diesen Sperren: Versuchsstempel
+  unverändert, im Fall (a) der gelesene Anfrage-Stempel unverändert und `BotModeEnabled = false`, im Fall (b) `BotModeEnabled =
+  true`; dazu gebundene Bot-ID, Deckung, `KillSwitch`, `CredentialVersion`, Epoche; genau ein 7TV-Aufruf
+  (`AcceptEditorInvitationAsync`, 2.4). Ein Nein unter den Sperren → nicht senden, den nachweislich nie gesendeten Versuch bedingt
+  zurücknehmen (wie 2.5a (c)). Ein `DELETE …/wishes/bot` oder eine neue Anfrage fällt so nicht zwischen Prüfung und Annahme.
+  **Idempotent:** zeigt der Read `editor`, wird nichts gesendet; ein unklares Ergebnis wird **nie blind wiederholt**, sondern erst
+  über den Read aufgelöst (unten). Nach `Ok` liest der Runner im selben Durchgang einmal neu (gemessen: sofort `ACCEPTED`, A5) und
+  bucht dann wie sonst (Bestätigung 2.9, Aufnehmen 2.8) samt Auflösung des Versuchs; zeigt der Read noch `invited`, bleibt der
+  Versuch offen, ohne zweite Annahme in diesem Durchgang.
 - **Ergebnisse der Annahme:** `Ok` → Audit `wish.botAcceptInvitation` (Akteur System, Kanal, Details nur `trigger`: `activation`
-  oder `activated`) im Commit der Sende-Transaktion; ein anderes Ergebnis schreibt kein Audit, nur eine Logzeile mit dem Code.
+  oder `activated`) im Commit der Sende-Transaktion, der Versuch bleibt bis zur Auflösung offen; ein anderes Ergebnis schreibt
+  dort kein Audit, nur eine Logzeile mit dem Code. Eindeutig **nicht ausgeführt** und deshalb im selben Commit Versuch leer:
   `RateLimited` → `PausedUntilUtc` (an `IdentityVersion`, 2.2). `Unauthorized` → Token `invalid` (an `CredentialVersion`),
-  globaler Rückfall; eine Anfrage bleibt liegen (2.9). `Timeout`, `Unavailable` → nichts gebucht, der nächste Read entscheidet.
-  `LackingPrivileges`, `Rejected` → für diesen Anlauf endgültig: im Fall (a) Anfrage leeren und `BotActivationError =
-  invitation_not_accepted` **[E, neuer Wert]**; im Fall (b) Kanal `invitation_pending` (2.8), eine neue Annahme für diesen Kanal
-  frühestens nach 15 Minuten (Zähler im Speicher des Runners; ein Neustart darf einmal früher versuchen).
-- **Frische Einladung beim Aktivieren [E]:** v4 zeigte eine neue Einladung erst nach bis zu rund 30 s (P2). Ergibt der Read für
-  einen Kanal mit offener Anfrage `not_editor`, solange die Anfrage jünger als **2 Minuten** ist, bleibt sie offen und der nächste
-  Takt liest neu; erst danach `BotActivationError = not_editor`. Fehlt `manage` (bei `PENDING` wie bei `ACCEPTED`), ist das
-  `not_editor` **ohne Annahme**, weil eine Annahme kein Schreibrecht brächte; eine eigene Meldung für die fehlende Berechtigung
-  baut K4 nicht, K5 erklärt `not_editor` mit dem Hinweis auf „Emote-Sets verwalten“ **[E]**.
+  globaler Rückfall; eine Anfrage bleibt liegen (2.9). `LackingPrivileges`, `Rejected` → für diesen Anlauf endgültig: im Fall (a)
+  Anfrage leeren und `BotActivationError = invitation_not_accepted` **[E, neuer Wert]**; im Fall (b) Kanal `invitation_pending`
+  (2.8) und **`BotInvitationRetryAtUtc = jetzt + 15 min` (Revision 6a, S6-6)**. `Timeout`, `Unavailable` (auch ein Ergebnis
+  ohne Erfolgsnachweis, 2.4) und jeder Abbruch nach dem Senden (Absturz, Lock- oder Epochenverlust, Verlust der Transaktion) →
+  **ungeklärt**, der Versuch bleibt offen.
+- **Annahmeversuch und Auflösung [E] (Revision 6a, S6-1):** Ein offener Versuch (`BotInvitationAttemptAtUtc` gesetzt) gilt dem
+  Kanal und der gebundenen Bot-ID; solange er offen ist, sendet der Runner für den Kanal keine Annahme, entscheidet die Anfrage
+  nicht (weder Bestätigung noch `not_editor`) und überschreibt niemand `BotConsentSevenTvUserId` (`DELETE` und `activate` lassen
+  sie stehen, 2.9). Aufgelöst wird **nur über einen Editor-Read für die gebundene Bot-ID**, und zwar auch nach `DELETE`, bei
+  Notaus, 429-Pause, `invalid`/`expired` und außerhalb der Deckung: der Read ist unauthentifiziert, verlangt nur Lock und Epoche
+  für die Buchung und kostet kein Aktionsbudget (Schritt 2 vor jeder Annahme; weicht die gebundene ID von der aktuellen
+  `BotSevenTvUserId` ab, liest der Runner für sie gesondert). Nur bei ausgeschaltetem Bot-Konto bleibt der
+  Versuch liegen, bis der Dienst wieder läuft (sichtbar, unten; Prüfabfrage Abschnitt 6). Je Ergebnis des Reads, gebucht bedingt
+  auf den unveränderten Versuchsstempel:
+  - **`editor`:** die Annahme hat gewirkt; Versuch leer. Gilt die Zustimmung noch (offene Anfrage oder Aktivierung mit dieser
+    Bot-ID), läuft alles weiter wie nach `Ok` (Bestätigung 2.9 bzw. Aufnehmen 2.8). Gilt sie nicht mehr (Anfrage per `DELETE`
+    beendet oder Kanal abgeschaltet, während der Versuch offen war), ist der Bot ohne Zustimmung Editor geworden:
+    `BotActivationError = invitation_accepted_after_abort` **[E, neuer Wert]**, `BotConsentSevenTvUserId` leer, Audit
+    `wish.botAcceptInvitation` mit Details `trigger` und `afterAbort: true` (fehlte das Audit, weil das Ergebnis ungeklärt war,
+    entsteht es jetzt mit `resolved: true`).
+    Der Bot schreibt dort nichts (kein Bot-Modus); K5 und das Runbook bitten den Inhaber, den Bot in 7TV auszutragen, falls er ihn
+    nicht neu aktivieren will. Der Bot trägt sich nie selbst aus ([F7], kein Zustand außer `ACCEPT` im Client).
+  - **`invited` oder `not_editor`:** die Annahme hat (noch) nicht gewirkt. Aufgelöst wird das erst durch einen Read, der
+    mindestens `BotAccount:EditorVisibilitySeconds` nach dem Versuchsstempel begonnen hat (spätere Wirkung einer verzögerten
+    Mutation, Sichtbarkeit wie S6-3); davor bleibt der Versuch offen. Danach: Versuch leer; gilt die Zustimmung nicht mehr,
+    `BotActivationError` und `BotConsentSevenTvUserId` leer (ohne Wirkung abgebrochen, ohne Audit); sonst entscheidet der
+    Runner wie ohne Versuch (eine neue Annahme ist wieder erlaubt, `invited` mit gültiger Zustimmung → neuer Versuch).
+  - **`Unavailable`:** offen, keine Frist löscht ihn (wie 2.5a (h)).
+- **Frische Einladung beim Aktivieren [E] (Revision 6a, S6-3):** gemessen erschien eine neue Einladung im öffentlichen v4-Read rund
+  9 bis 16 s nach dem von 7TV vermerkten `addedAt` (zwei Messungen, 10-s-Takt; die „+134 s“ in P2 zählten ab Start der
+  Beobachtung). Weil das nur zwei Proben sind, entscheidet **kein einzelner negativer Read** über eine junge Anfrage: ergibt der
+  Read für einen Kanal mit offener Anfrage `not_editor`, bleibt sie offen, bis ein Read `not_editor` zeigt, der **nach**
+  `BotActivationRequestedAtUtc + BotAccount:EditorVisibilitySeconds` begonnen hat; erst dann `BotActivationError = not_editor`.
+  Ein zwischengespeicherter Read (1 Minute, oben) aus der Zeit davor zählt dafür nicht; der Runner liest in diesem Fall neu. Option
+  `BotAccount:EditorVisibilitySeconds` **[E]**: Default 300, 60 bis 1800, Fail-Fast mit Schlüsselname (2.12); dieselbe Frist
+  begrenzt die negative Auflösung eines Annahmeversuchs (oben). `activationPending` bleibt so bis zu Frist plus Takt wahr. Fehlt
+  `manage` (bei `PENDING` wie bei `ACCEPTED`), ist das `not_editor` **ohne Annahme**, weil eine Annahme kein Schreibrecht brächte;
+  eine eigene Meldung für die fehlende Berechtigung baut K4 nicht, K5 erklärt `not_editor` mit dem Hinweis auf „Emote-Sets
+  verwalten“ **[E]**.
 - **Schreibfehler und Editor-Status:** ein `LackingPrivileges` beim Schreiben setzt den Kanal wie bisher sofort auf `not_editor`
   (AK80), gleich welche Meldung 7TV schickt; erst der nächste Read entscheidet, ob eine Einladung offen ist (`invited` → Fall (b)).
 - **Was Verwalter sehen:** im Fall (a) `activationPending = true` bis zur Bestätigung (Annahme und Bestätigung meist im selben
   Durchgang), danach `enabled` oder `activationError` (`not_editor`, `invitation_not_accepted`); im Fall (b) `suspendedReason =
   invitation_pending` („Einladung offen, wird angenommen“), solange der Kanal `invited` ist und die Annahme nicht gelungen ist, mit
-  derselben Wirkung wie `not_editor` (Kanal im `fallback`). Beides sind Feldwerte, keine Fehlercodes: **kein neuer Code nach
-  Regel 7**, weil die Api 7TV nie ruft (2.2) und `activate` weiter 202 antwortet. Übersetzungen in K5 (1.3).
+  derselben Wirkung wie `not_editor` (Kanal im `fallback`). **Revision 6a:** nach einem `DELETE` mit offenem Annahmeversuch
+  `activationError = invitation_accept_unresolved`, bis der Read ihn auflöst (dann leer oder `invitation_accepted_after_abort`);
+  `bot_account_changed` als `activationError` bzw. `suspendedReason` nach S6-2. Alles sind Feldwerte, keine Fehlercodes: **kein
+  neuer Code nach Regel 7**, weil die Api 7TV nie ruft (2.2) und `activate` weiter 202, `DELETE` weiter 204 antwortet.
+  Übersetzungen in K5 (1.3).
 - **Takt [E]:** Schritt 3 bewertet mit jedem Read (höchstens einmal je Minute) alle aktivierten Kanäle, ausgesetzte eingeschlossen.
   Die 15-Minuten-Regel für ausgesetzte `not_editor`-Kanäle (2.5) entfällt: der eine Read beantwortet ohnehin alle Kanäle, und eine
   neue Einladung läge sonst bis zu 15 Minuten unbeantwortet.
@@ -760,6 +870,10 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
    `CredentialVersion`, 2.2), globaler Rückfall. `RateLimited` → Versuch leeren, `PausedUntilUtc`, bleibt `approved`. **`Timeout`
    und `Unavailable` nach dem Senden → `unconfirmed` ohne `BotAddAckAtUtc` [E]**: ob 7TV geschrieben hat, entscheiden die
    Bestätigungs-Reads (höchstens ohne Eigentum), ein zweites `addEmote` gibt es nicht.
+   **Revision 6a (S6-4):** `Ok` und damit `BotAddAckAtUtc` gibt es nur mit dem Erfolgsnachweis aus 2.4 (Mutationsfeld fehlerfrei,
+   zurückgegebenes Set = `BotSetId`); jedes ungeklärte Ergebnis nach dem Senden ist `Unavailable` und endet wie oben in
+   `unconfirmed` **ohne** Sende-Nachweis, also höchstens ohne Eigentum bestätigt. Ein Fehler nur in der verschachtelten Auswahl
+   `emotes` ist `Ok` ohne Einträge (Read bei 0 s).
    **Revision 6 (AK89 positiv):** Bei `Ok` wertet dieselbe Sende-Transaktion die Rückgabe von `addEmote` (2.4) nach Punkt 6 aus;
    sie ersetzt den Read bei 0 s. Treffer → im selben Commit `bot_write` und gleich `bot_confirm` (Eigentum nur mit dem eben
    gebuchten `BotAddAckAtUtc`), kein zusätzlicher 7TV-Aufruf. Kein Treffer (etwa weil der Eintrag auf einer anderen Seite der
@@ -801,22 +915,38 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
   festschreiben (2.5a (a)): `BotRemoveAtUtc`, `BotAttemptVersion = DecisionVersion` (keine Erhöhung: der Versuch ist keine
   Entscheidung), `BotRemoveEvidence` aus diesem Read; Commit nur mit gültiger Epoche (2.5a (g)). Offene Prüfphase (2.5a (h)) →
   nicht festschreiben, Einreihung bleibt.
-- **Transaktion 2 (senden, buchen):** Nachprüfung (2.5a (c), Kanal `FOR SHARE`, ohne neuen Vor-Read; das Fenster zum Read aus
-  Transaktion 1 ist ein Commit lang, Restrisiko Spec 8), `removeEmote`, **Nach-Read**, Wunsch `removed` (Bestand `remove`), Audit
-  `wish.botRemove` (mit `previousExpiresAtUtc`, wenn überfällig, wie K2 (e)), Versuch leeren; alles unter dieser einen Sperre.
+- **Transaktion 2 (frisch lesen, senden) [E] (Revision 6a, S6-5):** Nachprüfung (2.5a (c), Kanal `FOR SHARE`), danach **unter
+  diesen Sperren unmittelbar vor dem Senden ein frischer Read** auf `BotSetId` (der Read aus Transaktion 1 kann beliebig alt sein:
+  Commit, Sperrerwerb hinter Vollsync oder Kanalbefehl, Vorprüfung). Verglichen wird mit `BotRemoveEvidence`: Zieleintrag mit allen
+  vier Merkmalen exakt **und** die übrigen Einträge derselben Emote-ID mit Alias und `addedAt` unverändert. Zieleintrag fehlt →
+  `removed_externally` wie in Transaktion 1; Zieleintrag weicht in einem Merkmal ab (etwa ein Menschen-Ersatz gleichen Alias, P5)
+  → kein Senden, Eigentum endet, `presented` (`ownership_lost`); nur die übrigen Einträge weichen ab → kein Senden, der
+  nachweislich nie gesendete Versuch wird bedingt zurückgenommen (Einreihung bleibt), der nächste Durchgang beginnt mit
+  Transaktion 1 und neuem Beleg; Read nicht möglich → ebenso zurücknehmen. Sonst `removeEmote`. Die Transaktion bucht nur die
+  eindeutigen Fehler (`Rejected`, `LackingPrivileges`, `Unauthorized`, `RateLimited` wie bisher: Versuch leeren, Kanal bzw. Token
+  bzw. Pause); bei `Ok`, `Timeout` und `Unavailable` committet sie nichts weiter, der Versuch aus Transaktion 1 bleibt offen.
+  Zwei 7TV-Aufrufe, wie 2.5a (c) erlaubt. **Restfenster:** zwischen der Antwort dieses Reads und der Ausführung von `removeEmote`
+  bei 7TV (Netz und Verarbeitung, unter einer Sekunde gemessen: `removeEmote` 476 ms, R3); 7TV kennt keine bedingte Mutation
+  (nur Emote-ID und Alias), enger lässt es sich nicht schließen (Spec 8, R2).
+- **Transaktion 3 (Nach-Read, buchen) (Revision 6a):** direkt danach im selben Durchgang der **Nach-Read** ohne Kanalsperre,
+  dann eine kurze Buchung derselben Sperrfolge ohne 7TV-Aufruf, bedingt nach 2.5a (f), mit Epoche (2.5a (g)): Zieleintrag fehlt →
+  Wunsch `removed` (Bestand `remove`), Audit `wish.botRemove` (mit `previousExpiresAtUtc`, wenn überfällig, wie K2 (e)), Versuch
+  leeren; Zieleintrag noch da oder Nach-Read nicht möglich → nichts buchen, Wiederaufnahme nach 2.5a (e). Zwischen Transaktion 2
+  und 3 sperrt der offene Versuch jeden Verwalterbefehl (409, 2.5a (b)); beobachtbar dasselbe wie vorher unter einer Sperre.
 - **Reparatur (R2-4):** Nach-Read gegen `BotRemoveEvidence`: fehlt ein Eintrag derselben Emote-ID, der **nicht** der Bot-Eintrag
-  war, bucht Transaktion 2 statt `removed` → `presented` (`repair_review`) mit leerer Einreihung und die Prüfphase
+  war, bucht Transaktion 3 statt `removed` → `presented` (`repair_review`) mit leerer Einreihung und die Prüfphase
   (`BotRepairAtUtc`, Beleg bleibt). Danach nach 2.5a (h) genau ein `addEmote` unter demselben Alias (ohne Eigentum, ohne Frist,
-  ohne neuen Wunsch) in Transaktion 3, Audit `wish.botRepair` mit `outcome`; das Ergebnis des Wunsches hängt nicht davon ab.
+  ohne neuen Wunsch) in Transaktion 4, Audit `wish.botRepair` mit `outcome`; das Ergebnis des Wunsches hängt nicht davon ab.
   Unklare Fälle (auch aus der Wiederaufnahme 2.5a (e)) nur lesend nach 2.5a (h).
-- **Erkennungsgrenze [E] (Spec 8, AK77):** unmittelbar vor dem Commit liest der Runner die lokalen Slots: Gibt es einen nicht
+- **Erkennungsgrenze [E] (Spec 8, AK77):** unmittelbar vor dem Commit von Transaktion 3 liest der Runner die lokalen Slots: Gibt es einen nicht
   archivierten Slot derselben Emote-ID mit dem Alias des Wunsches, dessen `AddedAt` eine andere Generation als
   `BotOwnedAddedAtUtc` zeigt, und zeigt der Nach-Read keinen Eintrag dieses Alias mehr → Audit `wish.botSuspectRemoval`
   (`wishId`, `slotId`), keine Reparatur. Ein nie gesehener Ersatz hinterlässt keinen Eintrag (so gewollt).
-- **Fehler nach dem Senden:** `removeEmote` mit `Timeout`/`Unavailable` → Nach-Read entscheidet; ist er nicht möglich, bucht
-  Transaktion 2 nichts, der Versuch aus Transaktion 1 bleibt, Wiederaufnahme nach 2.5a (e) mit dem gespeicherten Beleg.
-- **Sperrdauer:** ein 7TV-Aufruf in Transaktion 1 (nur Wunsch-Sperre), zwei in Transaktion 2 (Entfernen, Nach-Read), einer in
-  Transaktion 3 (Reparatur), je 10 s; in 2 und 3 ist die Kanalzeile `FOR SHARE` gehalten (2.5a (c)). Ein Befehl während Transaktion 2 wartet und trifft danach den neuen Zustand (409, AK83); zwischen den Transaktionen antwortet er
+- **Fehler nach dem Senden:** `removeEmote` mit `Timeout`/`Unavailable` → Nach-Read entscheidet (Transaktion 3); ist er nicht
+  möglich, bucht Transaktion 3 nichts, der Versuch aus Transaktion 1 bleibt, Wiederaufnahme nach 2.5a (e) mit dem gespeicherten Beleg.
+- **Sperrdauer:** ein 7TV-Aufruf in Transaktion 1 (nur Wunsch-Sperre), zwei in Transaktion 2 (frischer Vor-Read, Entfernen),
+  keiner unter Sperre in Transaktion 3 (Nach-Read davor), einer in Transaktion 4 (Reparatur), je 10 s; in 2 und 4 ist die
+  Kanalzeile `FOR SHARE` gehalten (2.5a (c)). Ein Befehl während Transaktion 2 wartet und trifft danach den neuen Zustand (409, AK83); zwischen den Transaktionen antwortet er
   sofort 409 (2.5a (b)) [P]: beobachtbar dasselbe. Risiko R3.
 
 ### 2.8 Token-Haushalt, Rückfall, Notaus (T5, T8)
@@ -829,7 +959,10 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
   dieser Ergebnisse wird nur auf die `CredentialVersion` gebucht, deren Token geprüft wurde (2.2, Sol-P1-3): eine verspätete
   Prüfung oder ein verspätetes 401 von Token A trifft ein inzwischen gesetztes Token B nie; Audit nur, wenn das Update traf.
   Ändert sich `BotSevenTvUserId` gegenüber dem Vortoken, bleibt bestehendes Eigentum stehen und scheitert beim frischen Read
-  (`ownership_lost`) **[E]**; die Admin-Seite sagt das beim Setzen. **Revision 4:** Die Erneuerung tauscht über die Maschinenroute
+  (`ownership_lost`) **[E]**; die Admin-Seite sagt das beim Setzen. **Revision 6a (S6-2):** dazu kommt es nicht mehr: jeder
+  aktivierte Kanal ist ab da `bot_account_changed` ausgesetzt (2.5b), der Rückfall-Lauf legt offene Bot-Aktionen vor, das Eigentum
+  bleibt gespeichert und wird erst wieder wirksam, wenn das gebundene Konto zurück ist; ein Abschalten (für eine neue Aktivierung)
+  beendet es wie jedes `DELETE`. Der Hinweis der Admin-Seite bei geänderter Bot-ID (2.10, T12) nennt diese Folge im Text. **Revision 4:** Die Erneuerung tauscht über die Maschinenroute
   (2.13); der Worker bemerkt sie am Versionswechsel und prüft das neue Token einmal (`LastVerifiedAtUtc` leer), ohne Rückfall;
   `PausedUntilUtc` wird auf `IdentityVersion` gebucht (2.2). Seine Warnung ab 7 Tagen vor `exp` bleibt (sie zeigt dann, dass die
   Erneuerung noch nicht gelungen ist).
@@ -847,7 +980,9 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
   Grund `invitation_pending` für einen aktivierten Kanal, dessen Read `invited` zeigt, solange die Annahme nicht gelungen ist
   (Pause, Budget, endgültige Ablehnung); er wirkt wie `not_editor` (`IsBotMode`, `WishExpiryPolicy` und der Zähler der Admin-Seite
   prüfen schon heute nur „gesetzt“). Wechsel zwischen `not_editor` und `invitation_pending` schreiben je ein `wish.botSuspend`.
-  Gelingt die Annahme im selben Durchgang, wird nicht ausgesetzt.
+  Gelingt die Annahme im selben Durchgang, wird nicht ausgesetzt. **Revision 6a (S6-2):** vierter Grund `bot_account_changed`
+  (aktuelles Bot-Konto ≠ gebundenes, unabhängig vom Editor-Read, 2.5b); er geht `not_editor` und `invitation_pending` vor, wirkt
+  ebenso und endet erst mit `DELETE` und neuer Aktivierung oder wenn das Konto wieder das gebundene ist.
 - **Notaus:** Reihenfolge im Betrieb nach Spec 18.8 (Revision 5: Notaus, Geheimnis widerrufen, Erneuerer stoppen, wenn
   erreichbar, Twitch-Sitzungen, „Sign Out Everywhere“, nach 15 min ein zweites; nach einem Restore der SQL-Schritt);
   `KillSwitch` sperrt auch Aufträge und Tausch der Erneuerung (2.13). `PUT /kill-switch` wirkt vor dem nächsten Schreibzugriff (in der Sende-Transaktion aus der gesperrten Zeile
@@ -874,7 +1009,11 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
 - **Handler `activate`:** nicht verfügbar → 409 `wish_bot_unavailable`; `BotModeEnabled` → 409 `wish_bot_already_active`
   (Aktivierender unverändert); unter Kanalsperre `BotActivationRequested*` setzen, `BotActivationError` leeren. Liegt schon eine
   Anfrage, die jünger als 10 Minuten ist, bleibt deren Anfragender stehen, die Route stößt nur erneut an **[E]** (K5 „Erneut
-  prüfen“ ruft dieselbe Route). `BOTACCOUNT:`, `wish.changed`.
+  prüfen“ ruft dieselbe Route). `BOTACCOUNT:`, `wish.changed`. **Revision 6a (S6-2):** im selben Update
+  `BotConsentSevenTvUserId = BotSevenTvUserId` der gelesenen Credentials-Zeile; eine liegende Anfrage, deren gebundene ID von der
+  aktuellen abweicht, wird ersetzt (neuer Anfragender, Stempel und ID), nicht nur angestoßen. Ausnahme: ein offener Annahmeversuch
+  (2.5b) → die gebundene ID bleibt stehen, die Anfrage wird trotzdem gesetzt und nach der Auflösung bewertet (weicht die ID dann
+  ab, endet sie mit `bot_account_changed`).
 - **Bestätigung im Worker (T8):** bestätigt wird nur genau die geprüfte Anfrage (Sol-P2-6): der Editor-Aufruf läuft ohne Sperre,
   danach unter Kanalsperre ein bedingtes Update auf `BotActivationRequestedAtUtc = <geprüfter Stempel>` und `BotModeEnabled =
   false`, im selben Commit gebunden an `IdentityVersion` und Bot-ID des Reads (2.3, R2-5, Revision 3); trifft es nichts (abgebrochen, neu
@@ -888,6 +1027,10 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
   offen. `not_editor` → Anfrage bleibt offen, solange sie jünger als 2 Minuten ist, danach wie oben `not_editor`. Endgültig
   abgelehnte Annahme → Anfrage leeren, `BotActivationError = invitation_not_accepted`. Die Route `activate` bleibt, wie sie ist:
   die Api kann das Token nicht öffnen, sie setzt nur die Anfrage, und die Anfrage ist das, was die Annahme im Worker erlaubt.
+  **Revision 6a:** die 2 Minuten sind die Sichtbarkeitsfrist aus 2.5b (S6-3, nur ein Read nach Fristende entscheidet); das bedingte
+  Update der Bestätigung prüft zusätzlich `BotConsentSevenTvUserId` = Bot-ID des Reads = aktuelle `BotSevenTvUserId` (S6-2),
+  Abweichung → Anfrage leeren, `BotActivationError = bot_account_changed`, ohne Annahme; mit offenem Annahmeversuch wird die
+  Anfrage erst nach dessen Auflösung entschieden (2.5b); die Bestätigung leert `BotInvitationRetryAtUtc` (neue Zustimmung).
 - **D7 unter der Kanalsperre neu geprüft [E] (Sol-P2-6):** `DELETE …/wishes/bot` **und** das bestehende `PUT …/wishes/settings`
   prüfen `CanChangeSettings` nach dem Erwerb der Kanalsperre an frisch gelesenen Einstellungen erneut (403
   `wish_settings_restricted`); der Filter bleibt die billige Vorprüfung. So kann ein reiner Mod, der den Filter im manuellen
@@ -903,7 +1046,12 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
   `wish.changed`. Erreichbar auch bei ausgeschaltetem Bot-Schalter, solange `Wishes:Enabled` an ist (Rollback-Weg (b), Abschnitt
   6). **Abbruch einer offenen Anfrage [E, F5]:** nicht aktiviert, aber Anfrage liegt → `DELETE` leert sie, erlaubt jedem,
   der D7 besteht (im manuellen Modus also jedem Verwalter, wie jede andere Vorgabe), Audit `wish.botDeactivate` mit
-  `pendingOnly: true`. Weder aktiviert noch angefragt → 204 ohne Audit (idempotent).
+  `pendingOnly: true`. Weder aktiviert noch angefragt → 204 ohne Audit (idempotent). **Revision 6a:** `DELETE` leert
+  `BotConsentSevenTvUserId` und `BotInvitationRetryAtUtc`; **ist ein Annahmeversuch offen** (2.5b, S6-1), bleiben Versuch und
+  gebundene ID stehen, `BotActivationError = invitation_accept_unresolved`, Audit `wish.botDeactivate` zusätzlich mit
+  `invitationAcceptUnresolved: true`; die Antwort bleibt 204. Den Versuch löst allein der Runner per Read auf (2.5b). Ein
+  `DELETE` während der Sende-Transaktion der Annahme wartet deren Ende ab (Kanalzeile `FOR SHARE`) und sieht dann den offenen
+  Versuch.
 - **`bot-remove`:** in dieser Reihenfolge: Wunsch fehlt → 404; nicht `presented` oder Grund nicht `protected`, `coverage_gap`,
   `bot_unavailable` → 409 `wish_state_conflict`; nicht `BotOwned` → 409 `wish_not_bot_owned`; nicht `StartsAtAuthoritative` → 409
   `wish_start_unconfirmed` **[E, neuer Code]**; Kanal nicht `bot` → 409 `wish_bot_unavailable`; sonst unter Zeilensperre
@@ -947,19 +1095,23 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
   `botAccount.tokenState`, `wish.botActivate`, `wish.botDeactivate`, `wish.botAdd`, `wish.botRemove`, `wish.botRepair`,
   `wish.botSuspectRemoval`, `wish.botSuspend`, `wish.botRemoveRequest`, `wish.recheck`; **Revision 6:** `wish.botAcceptInvitation`
   (2.5b; Wunsch-Namensraum, weil die Regel [F7] eine Wunsch-Regel ist, die Operation im Client bleibt kontoweit; T4 hat die übrigen
-  Konstanten schon angelegt, diese bringt T8 samt Übersetzung mit). Übergänge des Bots ohne eigenen Eintrag
+  Konstanten schon angelegt, diese bringt T8 samt Übersetzung mit). **Revision 6a:** keine neue Aktion; `wish.botAcceptInvitation`
+  bekommt die Details `resolved` und `afterAbort` (2.5b „Annahmeversuch“), `wish.botDeactivate` das Detail
+  `invitationAcceptUnresolved` (2.9). Übergänge des Bots ohne eigenen Eintrag
   (`bot_unconfirmed`, `bot_already_in_set`, `bot_reject`, `ownership_lost`, Rückfall) schreiben **keinen** Eintrag **[E]**; sie
   sind am Wunsch sichtbar, und die Pilot-Messung braucht sie nicht. Die Operations-Abfrage der Pilot-Messung (a) zählt
   `wish.botRemove` mit (Spec 13).
 - **Codes (Regel 7, je Code `api-error.ts` und beide Locales im selben Task):** die acht der Spec plus `wish_start_unconfirmed` und
   `wish_bot_set_changed` (Revision 2). **Revision 5a:** kontoweit heißen sie `bot_account_*` (`disabled`, `token_malformed`,
   `token_expired`, `renewer_secret_malformed`), die Kanal-Codes bleiben `wish_*`; Audit kontoweit `botAccount.*`, Wunsch `wish.bot*`.
-  **Revision 6:** kein neuer Code; `invitation_pending` und `invitation_not_accepted` sind Feldwerte (2.5b).
+  **Revision 6:** kein neuer Code; `invitation_pending` und `invitation_not_accepted` sind Feldwerte (2.5b). **Revision 6a:**
+  ebenso `invitation_accept_unresolved`, `invitation_accepted_after_abort` und `bot_account_changed`.
 
 ### 2.12 Konfiguration und Compose (T1)
 
 `BotAccountOptions` (Core, eigener Abschnitt `BotAccount`, nicht in `WishOptions` [E, Revision 5a]: `Enabled`, `WriteDelaySeconds`
-0 bis 60, Default 2) und `WishOptions.PilotChannelIds` (Zeichenkette, geparst
+0 bis 60, Default 2; **Revision 6a (T1a):** `EditorVisibilitySeconds` 60 bis 1800, Default 300, 2.5b; ohne eigene
+Compose-Variable [E], der Default genügt, überschreibbar als `BotAccount__EditorVisibilitySeconds`) und `WishOptions.PilotChannelIds` (Zeichenkette, geparst
 zu „alle“ oder einer Menge; leere Einträge ignoriert, ungültige Zeichen → Fail-Fast mit Schlüsselname). Compose (`docker-compose.yml`,
 `docker-compose.prod.yml`, `.env.example`): `BOT_ACCOUNT_ENABLED` und `WISHES_PILOT_CHANNEL_IDS` an **api und worker**,
 `BOT_ACCOUNT_TOKEN_PUBLIC_KEY` nur `api`, `BOT_ACCOUNT_TOKEN_PRIVATE_KEY` nur `worker`; **[B] F2:** zusätzlich
@@ -1027,6 +1179,7 @@ geteilten Wunsch-Code ändert, hat einen Regressionsfall „Bot-Modus aus: unver
 |---|---|---|---|
 | T0 | Frühe Live-Probe AK86 bis AK92 mit Wegwerf-Skript (Abschnitt 5); **durchgeführt 2026-11-24, G0 bestanden** | Orchestrator mit Betreiber | – |
 | T1 | Migration `AddBotAccount`, Entität, Optionen, Pilot-Liste, Compose, DECISIONS-Gerüst | sonnet | 1 |
+| T1a | Nachtrag Revision 6a: drei Spalten an `ChannelWishSettings` in `AddBotAccount`, Option `EditorVisibilitySeconds` | sonnet | 1 |
 | T2 | Siegel, Öffnen, JWT-`exp`, zwei Registrierungs-Einstiege, Fail-Fast; Doku-Pflicht AK95 | opus | 1 |
 | T3 | Schreib-Client mit Fehlerabbildung, ohne Logging, eigene Aufrufquelle; Annahme einer Einladung (Revision 6) | opus | 1 |
 | T4 | Admin-Api, `IBotAccountService`, `IBotAccountAvailability` und echte `IWishBotAvailability`, `BOTACCOUNT:`, Codes, Audit | opus | 1 |
@@ -1051,7 +1204,8 @@ geteilten Wunsch-Code ändert, hat einen Regressionsfall „Bot-Modus aus: unver
 
 Reihenfolge: T0 → **Tor G0** → T0b → **Tor G0b** → T1 → T2 → T3 → T4 → T5 → T11a → T12 → T15 (PR 1) → T6 → T7 → T8 → T9 → T10 →
 T11b → T13 → T14 → T15 (PR 2) → T16 → T17 → T18 → T19 → T20 → T15 (PR 3). T3 darf erst nach G0 beginnen (Feldnamen,
-Prüfabfrage, Antwortformen); **G0 ist am 2026-11-24 bestanden, T3 darf beginnen.** **[B] F1:** zwei PRs, Merge strikt nacheinander; PR 2 setzt auf den gemergten PR 1 auf.
+Prüfabfrage, Antwortformen); **G0 ist am 2026-11-24 bestanden, T3 darf beginnen.** **Revision 6a:** T1, T2 und T4 sind
+committet; **T1a kommt als Nächstes, vor T3**, damit kein weiterer Task auf der alten Migration aufbaut. **[B] F1:** zwei PRs, Merge strikt nacheinander; PR 2 setzt auf den gemergten PR 1 auf.
 **Revision 4 [B] FT4:** G0b liegt vor T1, weil T1 alle Spalten trägt; PR 3 setzt auf den gemergten PR 2 auf. Freigabe 2 (Spec 12)
 setzt PR 3 und Stufe 0 voraus.
 
@@ -1099,6 +1253,26 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
 - **Tests:** Schema-Test je Constraint, Migrationstest „additiv, keine Bestandsspalte geändert“ (Muster K6), `WishOptionsTests`
   erweitert, `BotAccountOptionsTests`, `WishPilotListTests`. **AKs:** AK71. **Commit:** `feat: add bot account credential schema and switches`
 
+### T1a: Nachtrag zur Migration (Revision 6a, S6-1, S6-2, S6-3, S6-6)
+
+- **Lesen:** Tabelle „Revision 6a“, 2.5b, 2.9 (`activate`, `DELETE`), 2.12; den Commit `fe411abb` (T1) samt
+  `ChannelWishSettings.cs`, `BotAccountOptions.cs`, Migration `AddBotAccount` und ihrem Migrationstest; DECISIONS-Eintrag K4.
+- **Liefert:** an `ChannelWishSettings` drei nullbare Spalten `BotConsentSevenTvUserId` (text), `BotInvitationAttemptAtUtc`
+  (timestamptz), `BotInvitationRetryAtUtc` (timestamptz), Kommentare an der Entität nach 2.5b (Bedeutung, wer schreibt, wer leert);
+  **in der bestehenden Migration `AddBotAccount`** (neu erzeugt, nicht als zweite Migration: PR 1 ist nicht gemergt, auf Prod liegt
+  sie nicht; danach gibt es weiter genau eine Migration für K4). `BotAccountOptions.EditorVisibilitySeconds` (60 bis 1800, Default
+  300) mit Validierung und Schlüsselname in der Meldung; keine Compose-Variable [E]. DECISIONS-Absatz im K4-Eintrag (englisch):
+  Zustimmung an die Bot-ID gebunden, Annahmeversuch dauerhaft vor dem Senden, frühester neuer Versuch persistiert, Sichtbarkeitsfrist
+  (Regel 3), `**Betrifft:**`-Zeile um `ChannelWishSettings.cs` und `BotAccountOptions.cs` ergänzt.
+- **Grenzfälle:** ein Upsert in `ChannelWishSettings` ohne die neuen Spalten (Form des laufenden Images) gelingt weiter;
+  `EditorVisibilitySeconds` 59, 1801, fehlend (→ 300). Wer die Migration lokal schon eingespielt hat (Dev-Datenbank des
+  Implementers, nie `docker compose` aus dem Worktree), setzt sie vor dem Neuerzeugen auf die Vorgänger-Migration zurück; die
+  Testcontainers-Suiten brauchen nichts.
+- **Tests:** Migrationstest „additiv“ um die drei Spalten erweitert, `BotAccountOptionsTests` um die neue Option.
+  **AKs:** stützt AK124 bis AK127. **Commit:** eigener Nachtrag-Commit `feat: bind bot account consent and invitation attempts
+  in the schema`, kein Amend von `fe411abb` (der Verlauf bleibt nachvollziehbar; die Migration wird in diesem Commit neu
+  erzeugt, ihr Name bleibt `AddBotAccount`).
+
 ### T2: Siegel, Öffnen, Registrierung, Vertrauensgrenze in der Doku
 
 - **Lesen:** Spec 7 vollständig, E7, AK72, AK95; `LogCaptureRegistration.cs`, `Program.cs:30-60`, `WorkerServiceRegistration.cs`,
@@ -1136,7 +1310,13 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   Rückgabe samt Eintrag, mit Rückgabe ohne den Eintrag, ohne Rückgabe, mit unlesbarer Rückgabe (alle `Ok`); Annahme `Ok`,
   `LACKING_PRIVILEGES`, 401, verkleidetes 429, Timeout; der Anfragekörper der Annahme enthält als Zustand nur `ACCEPT`, Bot-ID und
   Inhaber-ID. Kein Grenzfall für `set_full` und `emote_gone` (Form unbekannt, offen im PR). Das Zeitlimit bleibt 10 s.
-- **AKs:** AK76 (Client-Teil), AK125 (Client-Teil). **Commit:** `feat: 7tv write client for the bot account`
+- **Revision 6a (S6-4), Erfolgsnachweis nach 2.4:** die Rückgabe-Auswahl fordert `id` am Set an. Grenzfälle: Mutationsfeld mit
+  passendem `id` und Einträgen → `Ok` mit Einträgen; passendes `id`, Fehler mit `path` in `…emotes` → `Ok` ohne Einträge;
+  passendes `id`, `emotes` fehlt → `Ok` ohne Einträge; Mutationsfeld `null` ohne Fehler, fremdes `id`, fehlendes `id`, Fehler auf
+  dem Mutationspfad ohne `extensions.status`, mit 5xx, Körper abgeschnitten → je `Unavailable`; Fehler auf dem Mutationspfad mit
+  unbekanntem 4xx → `Rejected(unknown)`; Annahme mit Rückgabe ungleich dem Erfolgswert aus T0 oder `null` → `Unavailable`. Die
+  bisherige Zeile „unbekannter GraphQL-Fehler → `Rejected(unknown)`“ gilt nur noch für einen 4xx-Status.
+- **AKs:** AK76 (Client-Teil), AK125 (Client-Teil), AK128 (Client-Teil). **Commit:** `feat: 7tv write client for the bot account`
 
 ### T4: Admin-Api, Verfügbarkeit, Anstoß
 
@@ -1227,7 +1407,10 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   `BotRemoveAtUtc` → kein `removed_externally`; offene Prüfphase sperrt keinen Befehl; **Belohnung:** reiner Mod passiert den
   Filter für `PATCH /rewards/{id}`, der Kanal wird unter Sperre aktiviert → 403, Belohnung unverändert; Editor-Prüfung zu
   `IdentityVersion` I, danach `PUT /token` (I+1) → Kanal `fallback`, bis I+1 geprüft ist; **Revision 3:** Tausch
-  (`CredentialVersion + 1`, I gleich) → Kanal bleibt `bot`, `approved` zählt nicht als Handlungsbedarf.
+  (`CredentialVersion + 1`, I gleich) → Kanal bleibt `bot`, `approved` zählt nicht als Handlungsbedarf. **Revision 6a (S6-2):**
+  `WishBotChannelState.Of` bekommt die Abweichung von gebundener und aktueller Bot-ID als Eingang → `fallback`; Fall: aktivierter
+  Kanal gebunden an A, Zeile zeigt B → `mode` manuell, `approved` zählt als Handlungsbedarf, auch bevor der Runner
+  `bot_account_changed` bucht.
 - **Tests:** Unit Matrix, `WishBotChannelStateTests`, `WishBotAttemptGuardTests`; Integration Service und Abgleich; Regression
   manueller Modus (Listen, Zähler, `mine`, `re-add`, `retry`, Belohnungsrouten, Schwellenänderung) unverändert. **AKs:** AK77 (Teile „wieder hinzufügen“, „Moduswechsel“), AK79 (Zähler-Teil).
   **Commit:** `feat: prepare wishes for the bot flow`
@@ -1250,13 +1433,22 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   `DELETE` bleiben ohne 7TV-Aufruf; `GET …/wishes/bot` gibt `activationError = invitation_not_accepted` und `suspendedReason =
   invitation_pending` unverändert als Feldwerte weiter (kein neuer Code); `DELETE` hebt eine offene Anfrage auf, die der Runner
   gerade annehmen will (der Runner prüft den Stempel unter der Kanalsperre, 2.5b, Fall in T8).
+  **Revision 6a (S6-1, S6-2):** `activate` schreibt `BotConsentSevenTvUserId` aus der gelesenen Credentials-Zeile; liegende
+  Anfrage mit anderer gebundener ID → ersetzt (Anfragender, Stempel, ID neu), mit gleicher ID → nur angestoßen; mit offenem
+  Annahmeversuch bleibt die gebundene ID stehen. `DELETE` ohne offenen Versuch leert gebundene ID und `BotInvitationRetryAtUtc`;
+  mit offenem Versuch → beide Stempel und die ID bleiben, `activationError = invitation_accept_unresolved`, Audit mit
+  `invitationAcceptUnresolved: true`, 204; `DELETE` während einer gehaltenen Sende-Transaktion der Annahme (Test hält die
+  Kanalzeile `FOR SHARE`) wartet und sieht danach den offenen Versuch. `GET …/wishes/bot` gibt die neuen Feldwerte unverändert
+  weiter. **S6-2:** `bot-remove` und `recheck` in einem Kanal mit abweichender gebundener ID → 409 `wish_bot_unavailable` (Kanal
+  nicht `bot`); `DELETE` und neues `activate` binden danach die neue ID.
 - **Tests:** `Api.Tests` AK82 vollständig an der echten Route, AK85 Aktivierungsteil, Filterfolge 400/401/403/404/409/503,
   `bot-remove` AK84 Routenteil; Integration `DELETE` (Eigentum endet, Einreihungen leer, AK83 Teil „Abschalten“).
-  **AKs:** AK82, AK84 (Route), AK85 (Aktivierung). **Commit:** `feat: channel routes for the wish bot mode`
+  **AKs:** AK82, AK84 (Route), AK85 (Aktivierung), AK126 (`DELETE`-Teil), AK127 (Routenteil). **Commit:** `feat: channel routes for the wish bot mode`
 
 ### T8: Runner I: Vorprüfung, Kanalzustände, Aktivierung, Rückfall
 
-- **Lesen:** 2.3, 2.5, 2.5a (c), (e), **2.5b**, 2.8, 2.9 (Bestätigung), Spec 7.8, E8, AK79, AK80, AK85, AK123 bis AK125; Protokoll
+- **Lesen:** 2.3, 2.5, 2.5a (c), (e), **2.5b**, 2.8, 2.9 (Bestätigung, `activate`, `DELETE`), Tabelle „Revision 6a“, Spec 7.8, E8,
+  AK79, AK80, AK85, AK123 bis AK127; Protokoll
   T0 (P2, P7, A5); `WishExpiryService.cs:60-115` (Schritt 0), `ISevenTvApiClient.GetEditorOfChannelsAsync` (Muster, nicht mehr
   für den Bot), `IGlobalAdminAllowlist`.
 - **Liefert:** `WishBotPreflight` und `BotAccountPreflight` (beide rein, 2.5), `IBotAccountEditorCheck` (2.5), Kanalzustände mit Aussetzen und Aufnehmen, Aktivierung bestätigen,
@@ -1278,8 +1470,16 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   Form `GetEditorForAsync(sevenTvUserId)`, mit Stub-Server-Fällen wie in T3: Seite oder `data: null` → `Unavailable`, unbekannter
   Zustand → `not_editor`) hinter `IBotAccountEditorCheck` mit dem Ergebnis aus 2.5b; die Annahme nach 2.5b in Schritt 2 (Fall (a))
   und Schritt 3 (Fall (b)); den Grund `invitation_pending` und den Wert `invitation_not_accepted` (Kommentare an
-  `ChannelWishSettings` mitziehen); die Konstante `wish.botAcceptInvitation` samt `audit.actions.*` in beiden Locales; den
-  Speicher-Zähler „frühestens nach 15 Minuten“; Wegfall der 15-Minuten-Regel für ausgesetzte Kanäle. `GetEditorOfChannelsAsync`
+  `ChannelWishSettings` mitziehen); die Konstante `wish.botAcceptInvitation` samt `audit.actions.*` in beiden Locales; ~~den
+  Speicher-Zähler „frühestens nach 15 Minuten“~~ (Revision 6a: persistiert, unten); Wegfall der 15-Minuten-Regel für ausgesetzte
+  Kanäle.
+- **Revision 6a, Liefert zusätzlich (S6-1, S6-2, S6-3, S6-6):** Annahmeversuch vor dem Senden und seine Auflösung per Read
+  (2.5b „Annahmeversuch“) samt Feldwerten `invitation_accept_unresolved` (Auflösung leert ihn) und
+  `invitation_accepted_after_abort` und den Audit-Details `resolved`/`afterAbort`; Bindung von Annahme und Bestätigung an
+  `BotConsentSevenTvUserId` samt `bot_account_changed` (2.5b, 2.9); `BotInvitationRetryAtUtc` statt Speicher-Zähler, geleert bei
+  Bestätigung einer Aktivierung; die Sichtbarkeitsfrist `EditorVisibilitySeconds` für junge Anfragen und negative Auflösungen, mit
+  Neu-Read statt Cache, wenn der zwischengespeicherte Read vor dem Fristende begann. Die Annahme-Entscheidung bleibt rein
+  (`WishBotInvitationPolicy`, Eingang jetzt auch gebundene ID, Versuch, Sperre, Fristen, Beginn des Reads). `GetEditorOfChannelsAsync`
   bleibt für die übrigen Aufrufer unberührt.
 - **Revision 6, Grenzfälle:** Anfrage + `invited` → genau eine Annahme, ein Audit, Neu-Read `editor`, Bestätigung im selben
   Durchgang; Anfrage + `editor` → keine Annahme (idempotent); Anfrage + `not_editor` mit Stempel 1 min alt → Anfrage bleibt, mit
@@ -1295,11 +1495,37 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   wenn der Read noch `invited` zeigt; `LackingPrivileges` → Fall (a) `invitation_not_accepted`, Fall (b) `invitation_pending` und
   kein zweiter Versuch vor 15 Minuten; ein `LackingPrivileges` beim `addEmote` mit der Meldung „Einladung offen“ → `not_editor`
   sofort, der nächste Read macht daraus Fall (b); `editableEmoteSetIds` wird nie gelesen (kein Feld in der Abfrage).
+- **Revision 6a, Grenzfälle (ersetzen die Fälle „1 min/3 min“, „`Timeout` → der nächste Durchgang sendet erneut“ und „kein
+  zweiter Versuch vor 15 Minuten“ oben):**
+  - **S6-1:** Absturz zwischen dem Commit des Versuchs und dem Senden → Versuch offen, der nächste Inhaber sendet nicht, sondern
+    liest; Read `invited` vor Ablauf der Frist → bleibt offen, nach Ablauf → Versuch leer, neue Annahme erlaubt (genau eine).
+    Annahme `Timeout`, danach `DELETE` (204, `invitation_accept_unresolved`), Stub führt die Annahme verspätet aus → nächster Read
+    `editor` → `invitation_accepted_after_abort`, ein `wish.botAcceptInvitation` mit `resolved: true` und `afterAbort: true`,
+    `BotModeEnabled` bleibt falsch, kein Schreiben in ein Set; derselbe Ablauf, Stub führt sie nie aus → nach der Frist
+    `activationError` leer, kein Audit. `Ok`, danach `DELETE` zwischen Sende-Transaktion und Neu-Read → wie verspätet ausgeführt
+    (`after_abort`). Notaus, 429-Pause und `invalid` mit offenem Versuch → der Read löst trotzdem auf (Stub zählt: kein
+    Schreibaufruf), eine Anfrage bleibt bei positivem Ergebnis liegen (global nicht verfügbar) und wird nach dem Aufheben
+    bestätigt. `activate` nach `DELETE` mit offenem Versuch → Read `editor` bestätigt die neue Anfrage normal. Verlust der
+    Epoche in der Sende-Transaktion nach dem Senden → keine Buchung, Versuch offen, Nachfolger liest.
+  - **S6-2:** Anfrage gebunden an A, Hand-`PUT` auf B (anderes Konto), Read für B zeigt `invited` → keine Annahme (Stub zählt),
+    Anfrage endet mit `bot_account_changed`; Read für B zeigt `editor` → keine Bestätigung, ebenso `bot_account_changed`;
+    aktivierter Kanal gebunden an A, B `invited` → `bot_account_changed` als Aussetzgrund, keine Annahme; **aktivierter Kanal
+    gebunden an A, Hand-`PUT` auf B, B ist dort schon `editor` (ACCEPTED, `manage`) → kein Schreibaufruf (Stub zählt), Kanal
+    `bot_account_changed`, ein `wish.botSuspend`, Rückfall-Lauf legt `unconfirmed` und Einreihungen vor**; danach wieder Token für A
+    → Aufnahme ohne neue Aktivierung; `DELETE` und neue Aktivierung mit B → gebunden an B, schreibt; Tausch über die Maschinenroute (gleiche Bot-ID) zwischen Anfrage und Annahme → Annahme und Bestätigung wie sonst;
+    Hand-`PUT` mit demselben Konto → ebenso, sobald das neue Token geprüft ist.
+  - **S6-3 (ungünstige Taktlage):** Anfrage bei t, Einladung wird bei t + Frist − 5 s sichtbar; ein Read beginnt bei t + Frist −
+    1 s (negativ) und wird bis t + Frist + 59 s zwischengespeichert → er entscheidet nicht, der Runner liest beim nächsten Takt neu
+    und nimmt an. Read beginnt bei t + Frist − 1 s, Antwort nach Fristende → entscheidet nicht. Erster Read, der nach t + Frist
+    beginnt und `not_editor` zeigt → `not_editor`. Frist 60 s und 1800 s je ein Fall.
+  - **S6-6:** `LackingPrivileges` im Fall (b) bei Runner 1 → `BotInvitationRetryAtUtc` gebucht; Runner 1 verliert den Lock, Runner
+    2 übernimmt sofort (zwei Instanzen gegen dieselbe Datenbank) → keine Annahme vor dem gebuchten Zeitpunkt, danach genau eine;
+    Neustart beider ebenso; `DELETE` plus neue, bestätigte Aktivierung → Sperre leer.
 - **Tests:** Unit Preflight-Reihenfolge (jede Stufe einzeln falsch), Integration AK79, AK80, AK85 Betrieb, Ablauf-Lauf mit
   ausgeschaltetem Bot leert eingereihte Wünsche und löst offene Versuche auf ([W8], 2.5a (e)), Beleg bleibt als Prüfphase.
   **Revision 6:** Unit der Zuordnung Editor-Eintrag → Ergebnis (`editor`, `invited`, `not_editor`) und der Annahme-Entscheidung
   (rein, Form `WishBotInvitationPolicy`), Integration mit gestubbtem Read und Schreib-Client für alle Fälle oben.
-  **AKs:** AK79, AK80, AK81 (Notaus), AK85, AK123, AK124, AK125.
+  **AKs:** AK79, AK80, AK81 (Notaus), AK85, AK123, AK124, AK125, AK126, AK127.
   **Commit:** `feat: wish bot channel states and fallback`
 
 ### T9: Runner II: Hinzufügen und Bestätigen
@@ -1327,20 +1553,31 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   → `active` ohne Eigentum; Rückgabe ohne den Eintrag, leer oder unlesbar → `unconfirmed`, Read bei 0 s; Rückgabe mit Eintrag
   außerhalb des Generationsfensters → nicht bestätigt; `addEmote` mit 9 s Antwortzeit (Stub) → noch `Ok`, die Sende-Transaktion
   bleibt unter dem 30-s-Timeout der Wartenden.
+- **Revision 6a (S6-4):** gestubbter Client liefert `Unavailable` für eine Antwort ohne Erfolgsnachweis (Mutationsfeld `null`,
+  fremdes Set, abgeschnitten) → `unconfirmed` **ohne** `BotAddAckAtUtc`; ein späterer Read mit Bot-`addedById` bestätigt nur
+  **ohne** Eigentum (`active`, `BotOwned` falsch, kein späteres `removeEmote`); `Ok` ohne Einträge wegen eines Fehlers in `emotes` →
+  `BotAddAckAtUtc` gesetzt, Read bei 0 s bestätigt mit Eigentum.
+- **Revision 6a (S6-2):** Hand-`PUT` auf ein anderes Konto zwischen Absicht und Nachprüfung → kein `addEmote` (Vorprüfung), Absicht
+  zurückgenommen, Kanal `bot_account_changed`; nach dem Senden und vor dem Bestätigungs-Read → keine Bestätigung (auch nicht ohne
+  Eigentum), der Rückfall-Lauf legt `unconfirmed` als `presented` (`unconfirmed`) vor; das neue Konto ist im Set-Eintrag nie
+  `addedById` des Versuchs, Eigentum entsteht ohnehin nicht.
 - **Tests:** Unit Plan und Eigentumsentscheidung; Integration mit gestubbtem `ISevenTvWriteClient`: AK77 (Bestätigungsfälle),
-  AK83 (Abgleich vor und nach der Absicht, Absturz zwischen `addEmote` und `unconfirmed`). **AKs:** AK77 (Teil), AK83 (Teil).
+  AK83 (Abgleich vor und nach der Absicht, Absturz zwischen `addEmote` und `unconfirmed`). **AKs:** AK77 (Teil), AK83 (Teil),
+  AK128.
   **Commit:** `feat: wish bot adds and confirms`
 
 ### T10: Runner III: Entfernen
 
 - **Lesen:** 2.5a vollständig, 2.7, Spec 8 vollständig, E25, RR2, AK77, AK78, AK83, AK84; `RowLocks.cs`, Plan-484 Befund 11;
   **Revision 6:** Protokoll T0 P4 und P5 (Umbenennen behält `addedById` und `addedAt`; `removeEmote` löscht auch einen
-  Menschen-Eintrag gleichen Alias). Die Verträge von T10 ändern sich dadurch nicht; die beiden Fälle „Mensch benennt um“ (nur der
+  Menschen-Eintrag gleichen Alias). Die Verträge von T10 ändern sich dadurch nicht (**Revision 6a:** wohl aber durch S6-5, der
+  frische Vor-Read in Transaktion 2 und der Nach-Read in Transaktion 3, 2.7); die beiden Fälle „Mensch benennt um“ (nur der
   Alias weicht ab) und „Mensch entfernt und fügt gleichen Alias neu hinzu“ (`addedById` = Inhaber, neues `addedAt`) sind je ein
   eigener Grenzfall mit genau diesen Werten aus dem Protokoll.
 - **Liefert:** Entfernen samt Prüfung unter Sperre, Reparatur, Erkennungsgrenze, Ausführung von `bot-remove`.
 - **Grenzfälle:** Abweichung je eines der vier Merkmale; Eintrag schon weg; zweiter Alias desselben Emotes bleibt; Reparatur
-  scheitert; Ersatz zwischen Vor-Read und `removeEmote` (Stub) mit und ohne vorher gesehenen Slot; `extend` nach Auswahl und vor
+  scheitert; Ersatz zwischen Vor-Read und `removeEmote` (Stub; seit Revision 6a zwischen dem frischen Vor-Read in Transaktion 2
+  und `removeEmote`, das Restfenster) mit und ohne vorher gesehenen Slot; `extend` nach Auswahl und vor
   Sperre (Version), `extend` gegen gehaltene Sperre (wartet, 409), `extend` zwischen den beiden Transaktionen (sofort 409);
   `keep` und Abschalten nach Einreihen; **`PATCH` auf einen eingereihten Wunsch an der echten Route → 409, Einreihung bleibt**
   ([W19]); `ActiveEmoteSetId ≠ BotSetId` → kein Senden, `ownership_lost`; **Wiederaufnahme** (2.5a (e)): Timeout und gescheiterter
@@ -1351,8 +1588,20 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   Phase leer; Notaus und Fristablauf mit offener Prüfphase → Beleg bleibt, nach Aufheben des Notaus wird nur gelesen; neuer
   `bot-remove` desselben Wunsches mit offener Prüfphase → wird erst nach deren Auflösung festgeschrieben; Vollsync wartet während
   Transaktion 2 (Stub hält 9 s) und committet danach ohne Timeout.
-- **Tests:** Integration AK77 Rest, AK78, AK83 Rest, AK84 Ausführung, „genau ein `wish.due`“ nach geleerter Einreihung.
-  **AKs:** AK77, AK78, AK83, AK84. **Commit:** `feat: wish bot removes only what it owns`
+- **Revision 6a (S6-5):** **Menschen-Ersatz, während die Sende-Transaktion blockiert ist:** Transaktion 1 committet Versuch und
+  Beleg; der Test hält die Kanalzeile in einer zweiten Verbindung `FOR UPDATE` (wie der Vollsync), der Stub ersetzt den Eintrag
+  durch einen Menschen-Eintrag gleichen Alias (`addedById` = Inhaber, neues `addedAt`, Werte aus P5); die Sperre wird gelöst →
+  der frische Vor-Read schlägt an, **kein** `removeEmote` (Stub zählt), `ownership_lost`. Ebenso: nur ein zweiter Alias derselben
+  Emote-ID kommt hinzu → kein Senden, Versuch zurückgenommen, Einreihung bleibt, der nächste Durchgang schreibt einen neuen Beleg
+  fest und entfernt; Zieleintrag verschwindet → `removed_externally`; frischer Read scheitert → zurückgenommen, kein Senden.
+  `removeEmote` `Ok`, dann Lock-Verlust vor Transaktion 3 → keine Buchung, der Nachfolger löst nach 2.5a (e) auf. Ein
+  Verwalterbefehl zwischen Transaktion 2 und 3 → sofort 409. Die Sende-Transaktion hält mit zwei Stub-Aufrufen zu je 9 s den
+  wartenden Vollsync unter 30 s; der Nach-Read läuft ohne Kanalsperre (der Vollsync kommt dabei durch).
+  **S6-2:** Hand-`PUT` auf ein anderes Konto, das im Kanal schon `editor` ist, mit eingereihtem `active` (Eigentum unter A) →
+  kein `removeEmote` (Stub zählt), Kanal `bot_account_changed`, Rückfall-Lauf → `presented` (`bot_unavailable`), `BotOwned` bleibt;
+  zwischen Transaktion 1 und 2 → Nachprüfung lehnt ab, Versuch zurückgenommen bzw. nach 2.5a (e) aufgelöst.
+- **Tests:** Integration AK77 Rest, AK78, AK83 Rest, AK84 Ausführung, AK129, „genau ein `wish.due`“ nach geleerter Einreihung.
+  **AKs:** AK77, AK78, AK83, AK84, AK129. **Commit:** `feat: wish bot removes only what it owns`
 
 ### T11b: Log- und Antwortfreiheit, PR 2
 
@@ -1378,7 +1627,11 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   18.2). Runbook-Abschnitt „Editor invitations“: der Bot nimmt eine Einladung nur beim Aktivieren oder für einen aktivierten Kanal
   an ([F7]); andere bleiben offen; `invitation_pending` und `invitation_not_accepted` deuten; Notweg bei R22 (Annahme von Hand als
   Bot in einem getrennten Browser-Profil, nie im Profil des Erneuerers). DECISIONS: Probe-Ergebnisse T0 samt [F7] und dem Satz,
-  dass `editableEmoteSetIds` kein Schreibrecht-Signal ist. **AKs:** AK95 (Rest).
+  dass `editableEmoteSetIds` kein Schreibrecht-Signal ist. **Revision 6a:** im Abschnitt „Editor invitations“ zusätzlich
+  `invitation_accept_unresolved` und `invitation_accepted_after_abort` deuten (der Bot wurde nach einem Abbruch Editor; der Inhaber
+  trägt ihn in 7TV aus, wenn er nicht neu aktivieren will; der Bot tut das nie selbst), `bot_account_changed` (Zustimmung galt
+  einem anderen Bot-Konto: abschalten, neu aktivieren), `EditorVisibilitySeconds`; die Prüfabfrage des Rollback-Wegs (b) um
+  „Kanäle mit `BotInvitationAttemptAtUtc`“ erweitern (Abschnitt 6). **AKs:** AK95 (Rest).
   **Commit:** `docs: wish bot backend (child 4)`
 
 ### T16: Erneuerung I: Api-Hälfte (PR 3)
@@ -1495,8 +1748,10 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
 | AK113 Cookies am Host | T17, T20 | AK119 Lauf-Buchhaltung | T16, T17 |
 | AK114 Alarm-Endpunkt, `/api/health` unberührt | T16, T20 | AK120 Stufe 0, Zustellung, Übernahme im Worker | T5, T16; nach Merge und Deploy, Tor für Freigabe 2 |
 | AK121 Helfer | T17, T20 | AK122 Restore-Schritt | T13, T19, T20 |
-| AK123 Annahme nur nach [F7] (Revision 6) | T8, T14 | AK124 Editor-Read über Zustand und Berechtigung | T8, T14 |
-| AK125 Annahme: Fehlerformen, Idempotenz | T3, T8, T11b | | |
+| AK123 Annahme nur nach [F7] (Revision 6) | T8, T14 | AK124 Editor-Read über Zustand und Berechtigung, Sichtbarkeitsfrist (6a) | T1a, T8, T14 |
+| AK125 Annahme: Fehlerformen, Idempotenz, persistierte Sperre (6a) | T1a, T3, T8, T11b | AK126 ungeklärte Annahme, Abbruch (6a) | T1a, T3, T7, T8 |
+| AK127 Zustimmung an die Bot-ID (6a) | T1a, T6, T7, T8, T9, T10 | AK128 Erfolgsnachweis `addEmote` (6a) | T3, T9, T14 |
+| AK129 frischer Vor-Read vor `removeEmote` (6a) | T10 | | |
 
 AK76 Teil „401 → alle Bot-Kanäle im Rückfall“ prüft T8 über den Runner, nicht den Client.
 
@@ -1589,6 +1844,15 @@ Takten in 7TV weiter `PENDING`, kein `wish.botAcceptInvitation` und keine Annahm
 Einladung danach von Hand zurück. „Bot austragen → `not_editor`“ oben bleibt; mit einer offenen Einladung zeigt der Kanal danach
 kurz `invitation_pending` oder gleich wieder `bot`.
 
+**Revision 6a, live (AK124, AK127, AK128):** (1) Sichtbarkeitsfrist: Bot ausgetragen, `activate` **vor** der Einladung, nach rund
+einer Minute einladen → `activationPending` bleibt wahr, dann angenommen und `enabled` (kein `not_editor` vor Fristende); die
+Zeiten von Anfrage, `addedAt` der Einladung und Annahme ins Protokoll. (2) Nach der Bestätigung zeigt eine SQL-Abfrage
+`BotConsentSevenTvUserId` = `botSevenTvUserId` aus `GET …/wishes/bot`. (3) Beim ersten `addEmote` des Bots ist `BotAddAckAtUtc`
+gesetzt und die Logzeile nennt den Erfolgsnachweis (Ziel-Set mit `id` zurückgegeben, ohne Werte). **Nur getestet** (live nicht
+herstellbar, das Protokoll nennt sie): ungeklärte Annahme samt später Wirkung nach `DELETE` (AK126), Kontowechsel (AK127),
+Teilantworten von `addEmote` (AK128), Menschen-Ersatz bei blockierter Sende-Transaktion (AK129), Sperre über einen Runner-Wechsel
+(AK125).
+
 ### T20: Live-Verifikation PR 3 (Revision 4)
 
 Lokal auf der Devbox: Api und Worker aus dem Branch, Erneuerer-Image im Profil `renewer` gegen die lokale Api; die Cookie-Datei
@@ -1635,7 +1899,8 @@ die Schritte einzeln vor und verbindet sich weder zum VPS noch zum NAS.
 6. Orchestrator: `/codex:adversarial-review --model gpt-6.2-sol` über diesen Plan vor T1 (zwei Runden durch, Revision 2 ist der
    Endstand für PR 1 und PR 2; **Revision 3 bis 5:** Fable, Sol und Astra über Revision 3, Sol über Revision 4; Revision 5 ist der
    Endstand des Nachtrags, keine weitere Runde vor T1; **Revision 6:** die Annahme von Einladungen (2.5b, [F7]) ist neues
-   Schreibverhalten; eine adversariale Sol-Runde über die Revision-6-Änderungen vor T3 entscheidet der Orchestrator);
+   Schreibverhalten; eine adversariale Sol-Runde über die Revision-6-Änderungen vor T3 entscheidet der Orchestrator; **gelaufen,
+   Revision 6a** trägt alle sechs Befunde, keine weitere Runde [B]);
    `/codex:review --model gpt-6.2-sol` je
    Branch; Opus-Review; bei Widerspruch Fable. Push, PR; der Merge gehört dem Betreiber.
 7. PR-Text (englisch): Migration `AddBotAccount` von Hand vor den Images (PR 1); neue Variablen und welcher Dienst welchen Schlüssel
@@ -1643,7 +1908,8 @@ die Schritte einzeln vor und verbindet sich weder zum VPS noch zum NAS.
 
 **Migration:** `AddBotAccount` (Name nach Revision 5a), eine neue Tabelle `BotAccountCredentials` (mit den einundzwanzig Erneuerungs-Spalten aus Revision 4 und 5, kein Geheimnis außer
 einem Hash, keine Cookies), sieben nullbare Spalten an
-`Wishes` (2.5a) und eine an `ChannelWishSettings` (2.3, `BotEditorCheckedIdentityVersion`), rein additiv; PR 2 und PR 3 ohne
+`Wishes` (2.5a) und vier an `ChannelWishSettings` (2.3 `BotEditorCheckedIdentityVersion`; seit T1a, Revision 6a, dazu
+`BotConsentSevenTvUserId`, `BotInvitationAttemptAtUtc`, `BotInvitationRetryAtUtc`, 2.5b), rein additiv; PR 2 und PR 3 ohne
 Migration; Prod hat `AddWishes` und
 `AddWishCapture` schon, `list` zeigt genau eine. Das laufende Image liest weder Tabelle noch Spalten und legt Wünsche ohne sie an
 (T1-Test). **Deploy:** nicht Teil dieses Plans; Images dürfen mit `BOT_ACCOUNT_ENABLED` aus ausgeliefert werden (dann kein
@@ -1662,7 +1928,9 @@ Host (`infra-docs`); danach Stufe 0 (Spec 12 Punkt 7), erst dann der erste Pilot
   `DELETE …/wishes/bot` (bleibt bei ausgeschaltetem Bot-Schalter erreichbar, solange `Wishes:Enabled` an ist **[E]**; es beendet
   nur); (3) **Prüfabfrage** (Operations): Kanäle mit `BotModeEnabled` oder offener Anfrage, Wünsche in `unconfirmed`, in `approved`
   mit `BotWriteAtUtc`, mit `RemovalQueuedAtUtc`, `BotRemoveAtUtc`, `BotRepairAtUtc` oder `BotOwned`, **und `kept` mit `LinkOrigin =
-  bot` ohne `SlotId` (R2-9)**; erwartet überall 0, sonst kein Downgrade. Ein `kept`-Treffer heißt: der Abgleich hat den Slot noch
+  bot` ohne `SlotId` (R2-9)**, **dazu Kanäle mit `BotInvitationAttemptAtUtc` (Revision 6a: ein altes Image löst einen offenen
+  Annahmeversuch nie auf; erst mit K4-Images und eingeschaltetem Bot-Konto auflösen lassen, oder der Betreiber prüft in 7TV, ob
+  der Bot Editor ist, und bittet den Inhaber gegebenenfalls ums Austragen)**; erwartet überall 0, sonst kein Downgrade. Ein `kept`-Treffer heißt: der Abgleich hat den Slot noch
   nicht verknüpft; Admin-Resync des Kanals, Abfrage wiederholen; bleibt er, prüft der Betreiber das Set von Hand (Runbook). Eine
   offene Prüfphase klärt er mit der Beleg-Abfrage aus dem Runbook und leert sie danach per SQL. (4) Images von Api und Worker
   tauschen. Tabelle und Spalten bleiben liegen.
@@ -1714,7 +1982,7 @@ Host (`infra-docs`); danach Stufe 0 (Spec 12 Punkt 7), erst dann der erste Pilot
 | # | Risiko | Umgang |
 |---|---|---|
 | R1 | 7TV ändert JWT, Schema oder Editor-Modell (RR3) | Rückfall ist Normalpfad; fail-closed im Client; DECISIONS „unofficial“ |
-| R2 | Erkennungsgrenze (RR2): Ersatz zwischen Vor-Read und `removeEmote` wird entfernt | wie Spec 8; Pilotmessung ist untere Schranke |
+| R2 | Erkennungsgrenze (RR2): Ersatz zwischen Vor-Read und `removeEmote` wird entfernt | wie Spec 8; Pilotmessung ist untere Schranke. **Revision 6a (S6-5):** der Vor-Read liegt jetzt unter den Sperren direkt vor dem Senden; offen bleibt nur das Fenster zwischen seiner Antwort und der Ausführung von `removeEmote` bei 7TV (unter einer Sekunde), weil 7TV keine bedingte Mutation kennt |
 | R3 | Bot hält Wunsch-Sperre und Kanalzeile (`FOR SHARE`) bis ~20 s über HTTP; Vollsync, Abgleich und Kanalbefehle warten | höchstens zwei Aufrufe je Transaktion, eine Aktion zur Zeit, 10-s-Timeouts, unter dem 30-s-Standard-Timeout der Wartenden (2.5a (c)); im Live-Lauf gemessen. **G0:** `addEmote` antwortete in bis zu 4,4 s (zwei von fünf über 3,5 s), `removeEmote` in 476 ms, die Annahme in 536 ms; alles unter dem 10-s-Zeitlimit, das deshalb bleibt |
 | R4 | Token gestohlen (RR4) | Siegel, Notaus, Editor je Kanal; Runbook |
 | R5 | Änderungen an geteiltem Wunsch-Code treffen den live laufenden manuellen Modus | Regressionsfälle je Task (Befund 20), Bot-Schalter bleibt aus |
@@ -1735,6 +2003,7 @@ Host (`infra-docs`); danach Stufe 0 (Spec 12 Punkt 7), erst dann der erste Pilot
 | R20 | Keine Vertretung: ohne erreichbaren Betreiber wird keine Störung behoben ([B] N1, Spec RR18) | 21 Tage Vorlauf zum Beheben, danach sicherer Rückfall |
 | R21 | Twitch dehnt die Automationserkennung auf die Authorize-Seite aus, die der Erneuerer aufruft (Passwort-Login ist seit Probe 4 im automatisierten Browser gesperrt; Spec RR19) | Erneuerung scheitert, Alarm, Totmann, Rückfall über die Handerneuerung; mehr als Erkennung ist nicht möglich |
 | R22 | 7TV ändert oder entfernt die Annahme-Mutation (`userEditors.editor(…).updateState`) oder das Einladungsmodell (Revision 6; Spec RR20); ebenso könnten sich Feldnamen des Editor-Eintrags ändern | Annahme endet als `Rejected`/`LackingPrivileges` → `invitation_not_accepted` bzw. `invitation_pending`, nie ein Schreiben in ein Set ohne `ACCEPTED`; ein unlesbarer Read ist `Unavailable` (nach 15 min `fallback`). Notweg im Runbook: der Betreiber nimmt als Bot von Hand in einem getrennten Browser-Profil an (wie in T0, P2), nie im Profil des Erneuerers; danach erkennt der Read `editor` ohne Codeänderung |
+| R23 | Eine Annahme wirkt nach einem Abbruch doch noch (S6-1), oder ein Annahmeversuch bleibt lange ungeklärt (Read dauerhaft `Unavailable`, Bot-Konto aus); die Sichtbarkeit einer Einladung ist an nur zwei Proben gemessen (S6-3) | Versuch vor dem Senden dauerhaft, Auflösung nur per Read, sichtbar als `invitation_accept_unresolved` bzw. `invitation_accepted_after_abort`; ohne Bot-Modus schreibt der Bot dort nie in ein Set; der Inhaber trägt ihn aus (Runbook); Prüfabfrage vor einem Downgrade; Frist `EditorVisibilitySeconds` großzügig (300 s gegen gemessene 9 bis 16 s) und ohne Code änderbar |
 
 ---
 
@@ -1772,12 +2041,27 @@ Beheben. **[N2]** gefälschtes JWT über das Maschinengeheimnis hingenommen. All
 Einladung nur an, wenn für diesen Kanal der Bot-Modus gerade aktiviert wird, oder bei der Editor-Prüfung eines Kanals, dessen
 Bot-Modus schon aktiviert ist (etwa nachdem ein Verwalter den Bot neu eingeladen hat). Alle anderen Einladungen bleiben
 unbeantwortet, nie angenommen, nie abgelehnt (2.5b). Planer-Entscheidungen dazu **[E]**, denen der Betreiber widersprechen kann:
-Annahme nur in gedeckten Kanälen; öffentlicher v4-Read statt `users.me.editorFor`; Anfrage bleibt 2 Minuten offen, bevor
+Annahme nur in gedeckten Kanälen; öffentlicher v4-Read statt `users.me.editorFor`; Anfrage bleibt 2 Minuten (Revision 6a:
+`EditorVisibilitySeconds`, Default 300 s) offen, bevor
 `not_editor` gilt; fehlendes `manage` ist `not_editor` ohne eigene Meldung und ohne Annahme; neue Feldwerte `invitation_pending`
 und `invitation_not_accepted` statt neuer Spalten oder Codes; Audit nur bei gelungener Annahme, im Wunsch-Namensraum; 15 Minuten
-Sperre nach endgültig abgelehnter Annahme, im Speicher; die 15-Minuten-Prüfung ausgesetzter Kanäle entfällt. **Offen nach G0:**
+Sperre nach endgültig abgelehnter Annahme, im Speicher (Revision 6a: persistiert, S6-6); die 15-Minuten-Prüfung ausgesetzter Kanäle entfällt. **Offen nach G0:**
 nur die Formen von `set_full` und `emote_gone` (AK91, nicht herstellbar; bleiben `unknown` und stehen offen im PR) und die
 Feldnamen für Inhaber-ID und Twitch-Verbindung im v4-Editor-Eintrag (keine Entscheidung, T8 liest sie am Testkonto nach, 2.5b).
+
+**Entschieden nach Sol über Revision 6 (Betreiber, 2026-11-24) [B]:** alle sechs Befunde (S6-1 bis S6-6) voll eingearbeitet als
+Revision 6a, keine weitere Sol-Runde. Planer-Entscheidungen dazu **[E]**, denen der Betreiber widersprechen kann: drei Spalten an
+`ChannelWishSettings` **in der committeten Migration `AddBotAccount`** per Nachtrag-Commit T1a statt Feldwerten, jsonb oder einer
+zweiten Migration (Tabelle „Revision 6a“); `DELETE` bleibt mit offenem Annahmeversuch 204 und markiert nur
+(`invitation_accept_unresolved`), statt 409 zu antworten; die negative Auflösung eines Versuchs und das Ende einer jungen Anfrage
+hängen an derselben Frist `EditorVisibilitySeconds` (Default 300 s, ohne Compose-Variable); ~~ein anderes Bot-Konto in einem
+aktivierten Kanal, das dort schon `editor` ist, schreibt weiter~~ (**zurückgenommen vom Orchestrator, 2026-11-24 [B]:** jedes
+Schreiben und jede Bestätigung verlangt die gebundene Zustimmung, sonst `bot_account_changed`, 2.5b);
+die 15-Minuten-Sperre gilt weiter nur im Fall (b) und fällt mit einer neuen, bestätigten Aktivierung; beim Entfernen wandert der
+Nach-Read aus der Sende-Transaktion in eine eigene Buchung, damit der frische Vor-Read hineinpasst; der Bot trägt sich nach einer
+späten Annahme nie selbst aus (der Inhaber tut es, [F7]). **Zu klären am Code, keine Entscheidung:** ob die Dev-Datenbank des
+Implementers `AddBotAccount` schon trägt (T1a setzt sie dann zurück) und die genaue Form des Erfolgswerts der Annahme-Mutation (T3
+aus dem Wegwerf-Skript von T0, A5: `OK`).
 
 Planer-Entscheidungen mit größerem Gewicht, denen der Betreiber widersprechen kann: Fensterrechnung bleibt (2.1 Punkt 4);
 Timeout nach dem Senden gilt als „vielleicht geschrieben“ (2.6, 2.7); offener Schreibversuch beantwortet Verwalter-Befehle mit
@@ -1814,4 +2098,10 @@ vor der zweiten 7TV-Abmeldung, keine Generationsspalte für das Geheimnis.
   Lock, Epoche, Kontostufen und Deckung; kein neuer Fehlercode, keine neue Spalte, die committete Migration bleibt unberührt; die
   „offen bis G0“-Stellen (Tor G0, [F3], Befunde 12 bis 14, 2.3, 2.4, 2.5, 2.6 Punkt 5, T8) sind aufgelöst, offen bleiben nur
   `set_full`/`emote_gone` und zwei Feldnamen.
+- Revision 6a: jeder Befund S6-1 bis S6-6 hat eine Zeile in Tabelle „Revision 6a“ mit Prüfung, Ort und Schema-Folge; AK126 bis
+  AK129 und die geänderten AK124 und AK125 haben je einen Task (Abschnitt 4), live herstellbare Teile einen Schritt in T14, der
+  Rest steht dort als „nur getestet“. Die Aussage „keine neue Spalte, die committete Migration bleibt unberührt“ aus Revision 6 ist
+  überholt: drei nullbare Spalten an `ChannelWishSettings` kommen mit T1a in dieselbe, nicht gemergte Migration; es bleibt eine
+  Migration für K4, PR 2 und PR 3 ohne Migration. Kein neuer Fehlercode, keine neue Audit-Aktion. Jede Sende-Transaktion hat
+  höchstens zwei 7TV-Aufrufe.
 - Kein fertiger Code; Namen und Signaturen nur als Form.
