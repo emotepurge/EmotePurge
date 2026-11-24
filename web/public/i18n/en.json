@@ -2843,7 +2843,7 @@
       "reject": "Reject the wish “{{ name }}”? Nothing changes in 7TV.\nRefund the channel points in Twitch, in the redemption queue.",
       "unlink": "Unlink “{{ name }}”? The wish is open again, and this set entry is not linked to it automatically again. Nothing changes in 7TV.",
       "delete": "Delete wish “{{ name }}” for good? The requester and redemption text are deleted with it.",
-      "deleteKept": "Delete wish “{{ name }}” for good? The requester and redemption text are deleted with it. The emote stays in the set, and you can put it on a timer again afterwards via “Take over from the set” with a new duration."
+      "deleteKept": "Delete wish “{{ name }}” for good? The requester and redemption text are deleted with it. The emote stays in the set. If the entry is free afterwards, you can put it on a timer again via “Take over from the set” with a new duration."
     },
     "pending": {
       "title": "Open",
@@ -3224,7 +3224,7 @@
     },
     "deleted": {
       "done": "Wish deleted.",
-      "kept": "Wish deleted. The emote stays in the set; you can link the entry again with a new duration.",
+      "kept": "Wish deleted. The emote stays in the set; if the entry is free afterwards, you can link it again with a new duration.",
       "dismiss": "Dismiss"
     }
   }

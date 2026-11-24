@@ -711,6 +711,15 @@ describe('WishAdoptDialog', () => {
       expect(blockedReason()).toBe(t('wishes.adopt.blocked.noSelection'));
     });
 
+    it('keeps a visible spot for the entry when it sorts beyond the display cap', () => {
+      const many = Array.from({ length: 60 }, (_, i) => slot(`s${String(i).padStart(2, '0')}`));
+      open({ sevenTvEmoteId: 'emote-x', preselectSlotId: 's58' });
+      answerSettings(14);
+      answerSlots(many);
+      expect(radio('s58').checked).toBe(true);
+      expect(blockedReason()).toBeNull();
+    });
+
     it('picks nothing when the list no longer has the entry', () => {
       open({ sevenTvEmoteId: 'emote-x', preselectSlotId: 'gone' });
       answerSettings(14);

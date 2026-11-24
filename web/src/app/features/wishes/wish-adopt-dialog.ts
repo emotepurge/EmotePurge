@@ -574,7 +574,16 @@ export class WishAdoptDialog {
       .map((known) => ({ key: known.slot.slotId, kind: 'entry', ...known }));
   });
 
-  protected readonly listed = computed(() => this.allListed().slice(0, ADOPT_MAX_LISTED));
+  protected readonly listed = computed(() => {
+    const all = this.allListed();
+    const wanted = this.data.preselectSlotId;
+    const at = wanted === undefined ? -1 : all.findIndex((line) => line.key === wanted);
+    if (at < ADOPT_MAX_LISTED) {
+      return all.slice(0, ADOPT_MAX_LISTED);
+    }
+    // The requested entry sorts beyond the cap: it keeps a visible spot, at the top.
+    return [all[at], ...all.filter((_, i) => i !== at).slice(0, ADOPT_MAX_LISTED - 1)];
+  });
   protected readonly hiddenCount = computed(() =>
     Math.max(0, this.allListed().length - ADOPT_MAX_LISTED),
   );
