@@ -50,6 +50,10 @@ public class BotAccountJwtTests
     public void AnEmptySignature_IsMalformed() =>
         Assert.Null(BotAccountJwt.TryReadExpiry(Jwt("""{"exp":1893456000}""", signature: string.Empty)));
 
+    [Fact]
+    public void ASignatureThatIsNotDecodableBase64Url_IsMalformed() =>
+        Assert.Null(BotAccountJwt.TryReadExpiry(Jwt("""{"exp":1893456000}""", signature: "A")));
+
     [Theory]
     [InlineData("""{"exp":"1893456000"}""")] // as text
     [InlineData("""{"exp":-1}""")] // negative

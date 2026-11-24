@@ -35,7 +35,8 @@ public static class BotAccountJwt
 
         var header = DecodeBase64Url(segments[0]);
         var payload = DecodeBase64Url(segments[1]);
-        if (header is null || payload is null || !IsJsonObject(header))
+        var signature = DecodeBase64Url(segments[2]);
+        if (header is null || payload is null || signature is null || !IsJsonObject(header))
         {
             return null;
         }
