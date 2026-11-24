@@ -1359,9 +1359,13 @@ export class ChannelWishesPage {
     const notice = deletedNoticeFor(wish, pinned);
     this.deletedNotice.set(notice);
     this.deletedNoticeFocused.set(pinned && notice !== null);
-    if (pinned) {
+    // The deep link goes whenever it names the deleted wish, whichever section showed it.
+    if (pinned || this.targetId() === wish.id) {
       this.clearPin(wish.id);
     }
+    const deletedRow = this.host.nativeElement.querySelector<HTMLElement>(
+      `[data-wish-id="${wish.id}"]`,
+    );
     this.reloadAfterChange();
     if (pinned) {
       // Its way back when there is one, else the notice's text itself.
@@ -1370,17 +1374,20 @@ export class ChannelWishesPage {
         () =>
           host.querySelector<HTMLElement>('[data-deleted-adopt]') ??
           host.querySelector<HTMLElement>('[data-deleted-notice]'),
+        deletedRow,
       );
       return;
     }
     const view = sectionId as WishListView;
     const next = focusAfterDelete(shownIds, wish.id, (id) => this.rowOf(view, id) !== null);
-    this.focusAfterRender(() =>
-      next !== null
-        ? this.rowOf(view, next)
-        : this.host.nativeElement.querySelector<HTMLElement>(
-            view === 'ended' ? '#wishes-ended-title button' : `#wishes-${view}-title`,
-          ),
+    this.focusAfterRender(
+      () =>
+        next !== null
+          ? this.rowOf(view, next)
+          : this.host.nativeElement.querySelector<HTMLElement>(
+              view === 'ended' ? '#wishes-ended-title button' : `#wishes-${view}-title`,
+            ),
+      deletedRow,
     );
   }
 
@@ -1412,9 +1419,22 @@ export class ChannelWishesPage {
     );
   }
 
-  /** Focuses what `target` finds once the page has rendered the change. */
-  private focusAfterRender(target: () => HTMLElement | null): void {
-    afterNextRender(() => target()?.focus(), { injector: this.injector });
+  /**
+   * Focuses what `target` finds once the page has rendered the change, but only while the focus is
+   * lost (on nothing, or on an element that left the page) or still sits in the deleted row. Focus
+   * the manager put elsewhere meanwhile, such as into another dialog, stays.
+   */
+  private focusAfterRender(target: () => HTMLElement | null, deletedRow: HTMLElement | null): void {
+    afterNextRender(
+      () => {
+        const active = document.activeElement;
+        const lost = active === null || active === document.body || !active.isConnected;
+        if (lost || (deletedRow !== null && deletedRow.contains(active))) {
+          target()?.focus();
+        }
+      },
+      { injector: this.injector },
+    );
   }
 
   /** The trigger went with the notice: focus left on nothing goes to the header's "Bestand übernehmen". */

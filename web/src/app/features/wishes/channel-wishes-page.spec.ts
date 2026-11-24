@@ -2296,6 +2296,42 @@ describe('ChannelWishesPage', () => {
         expect(document.activeElement?.getAttribute('data-wish-id')).toBe('1');
       });
 
+      it('leaves the focus alone when it moved elsewhere meanwhile', async () => {
+        const fixture = create();
+        settle(fixture);
+        showEnded(fixture, [ended(1), ended(2), ended(3)]);
+
+        remove(fixture, rowOf(fixture, 2));
+        const elsewhere = document.createElement('button');
+        document.body.appendChild(elsewhere);
+        elsewhere.focus();
+        deletes[0].answer.next();
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        expect(document.activeElement).toBe(elsewhere);
+        elsewhere.remove();
+      });
+
+      it('clears the deep link when the target was deleted from the open list', async () => {
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+        const fixture = create('chan', '2');
+        settle(fixture);
+        getCalls[0]?.answer.next({ ...ended(2), usage: null });
+        showEnded(fixture, [ended(1), ended(2)]);
+        fixture.detectChanges();
+
+        remove(fixture, rowOf(fixture, 2));
+        deletes[0].answer.next();
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        expect(navigate).toHaveBeenCalledWith(
+          [],
+          expect.objectContaining({ queryParams: { wish: null }, queryParamsHandling: 'merge' }),
+        );
+      });
+
       it('goes to the heading of "Beendet" when no row is left', async () => {
         const fixture = create();
         settle(fixture);
