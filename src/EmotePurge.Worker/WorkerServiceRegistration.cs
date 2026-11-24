@@ -1,6 +1,7 @@
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure;
+using EmotePurge.Infrastructure.BotAccount;
 using EmotePurge.Infrastructure.Logging;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Worker.ChatLogBackfill;
@@ -46,6 +47,9 @@ public static class WorkerServiceRegistration
         services.AddSingleton<WorkerIdentity>();
         services.AddSingleton<SevenTvSubscriptionRegistry>();
         services.AddSingleton<ISevenTvEventClient, SevenTvEventClient>();
+        // The bot account's writing side (plan #487 2.2): opens the sealed token with the private key, which only the
+        // worker holds. Registers nothing while BotAccount:Enabled is off; never registers the sealer.
+        services.AddBotAccountWriter(configuration);
         return services;
     }
 

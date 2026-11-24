@@ -78,8 +78,18 @@ Drei Eigenschaften tragen das:
 - **Die Messung läuft dauerhaft, sie ist kein Snapshot.** Ein Bot sitzt anonym im IRC des Kanals und
   zählt fortlaufend; Zeiträume sind frei wählbar, weil die Rohdaten über Wochen vorliegen.
 - **Der Schreibzugriff geht direkt gegen 7TV**, gebündelt statt Emote für Emote durch die Liste.
-- **Das 7TV-Write-Token verlässt den Browser nicht** (Zero-Knowledge-Prinzip, s. `Architectur.md`) —
-  es liegt in `sessionStorage`, nicht auf dem Server.
+- **Das 7TV-Write-Token eines Nutzers verlässt den Browser nie** (Zero-Knowledge-Prinzip für
+  Nutzer-Token, s. `Architectur.md`) — es liegt in `sessionStorage`, nicht auf dem Server. Am Server
+  liegt genau ein 7TV-Token: das des eigenen Bot-Kontos, versiegelt, sodass nur der Worker es öffnen
+  kann, nie die aus dem Internet erreichbare Api. Es hat genau einen Zweck: Wunsch-Emotes in Kanälen,
+  die den Bot-Modus ausdrücklich aktiviert und das Bot-Konto als 7TV-Editor eingetragen haben, auf
+  Zeit ins Set zu legen und wieder zu entfernen. Der Bot-Modus ist inoffiziell und von 7TV nicht
+  bestätigt; fällt er aus, läuft jeder Wunsch im manuellen Ablauf weiter.
+
+**Purge plus Wünsche.** Mit den Wunsch-Emotes (Epic #481) wird dasselbe Set nicht nur ausgedünnt,
+sondern auch auf Zeit ergänzt: ein Kanal wünscht sich ein Emote, es bleibt für eine Laufzeit und wird
+danach anhand derselben gemessenen Nutzung behalten oder wieder entfernt. Das Aufräumen bleibt der
+Kern; die Wünsche nutzen dieselbe Messung und denselben Vollzug.
 
 ## Operating Context
 
