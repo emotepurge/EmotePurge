@@ -21,6 +21,15 @@ public sealed class WishOptions
     /// <summary>Minutes between two runs of the expiry worker (1 to 1440).</summary>
     public int ExpiryIntervalMinutes { get; set; } = 15;
 
+    /// <summary>
+    /// The pilot list (spec E8): numeric Twitch channel ids, comma-separated, or <c>*</c> for every channel; empty
+    /// means no channel. It releases the bot mode for wishes only. Evaluate it through <see cref="PilotList"/>.
+    /// </summary>
+    public string? PilotChannelIds { get; set; }
+
+    /// <summary>The parsed <see cref="PilotChannelIds"/>; throws on an invalid entry.</summary>
+    public WishPilotList PilotList => WishPilotList.Parse(PilotChannelIds);
+
     /// <summary>The chat capture, <c>Wishes:Capture:*</c> (K6).</summary>
     public WishCaptureOptions Capture { get; set; } = new();
 
@@ -36,6 +45,8 @@ public sealed class WishOptions
     /// </summary>
     public void Validate()
     {
+        _ = PilotList;
+
         if (ExpiryIntervalMinutes is < 1 or > 1440)
         {
             throw new InvalidOperationException(

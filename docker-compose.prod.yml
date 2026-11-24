@@ -126,6 +126,15 @@ services:
       - Wishes__Enabled=${WISHES_ENABLED:-false}
       # Chat capture of wish emotes (#486): effective only with WISHES_ENABLED; same value on api AND worker.
       - Wishes__Capture__Enabled=${WISHES_CAPTURE_ENABLED:-false}
+      # Bot mode of wish emotes (#487, spec E8): numeric Twitch channel ids, comma-separated, or * for every channel;
+      # empty = no channel except for global admins. Same value on api AND worker.
+      - Wishes__PilotChannelIds=${WISHES_PILOT_CHANNEL_IDS:-}
+      # Bot account (#487): off by default. BOT_ACCOUNT_ENABLED needs the same value on api AND worker.
+      # The public token key is read by the api only, the private one by the worker only (one base64-DER line each).
+      - BotAccount__Enabled=${BOT_ACCOUNT_ENABLED:-false}
+      - BotAccount__TokenPublicKey=${BOT_ACCOUNT_TOKEN_PUBLIC_KEY:-}
+      # Automatic token renewal (#487): machine route and alarms, api only.
+      - BotAccount__Renewal__Enabled=${BOT_ACCOUNT_RENEWAL_ENABLED:-false}
       # Read only by images built before #379 part B: keeps a rollback to such an image on the slot flag.
       # Current images ignore it; remove with the Portainer variable after the rollback window (docs/Operations.md).
       - SevenTv__SlotReconcile__Enabled=${SEVENTV_SLOT_RECONCILE_ENABLED:-true}
@@ -208,6 +217,13 @@ services:
       - Wishes__ExpiryIntervalMinutes=${WISHES_EXPIRY_INTERVAL_MINUTES:-15}
       # Chat capture of wish emotes (#486): the worker's value decides whether redemptions are stored.
       - Wishes__Capture__Enabled=${WISHES_CAPTURE_ENABLED:-false}
+      # Bot mode of wish emotes (#487): same pilot list as the api.
+      - Wishes__PilotChannelIds=${WISHES_PILOT_CHANNEL_IDS:-}
+      # Bot account (#487): same switch as the api; the private token key belongs to the worker only.
+      - BotAccount__Enabled=${BOT_ACCOUNT_ENABLED:-false}
+      - BotAccount__TokenPrivateKey=${BOT_ACCOUNT_TOKEN_PRIVATE_KEY:-}
+      # Global admins (same value as the api): the bot writes in a channel whose activation came from one.
+      - Auth__AdminTwitchUserIds=${ADMIN_TWITCH_USER_IDS:-}
     networks:
       - emotepurge-network
     depends_on:

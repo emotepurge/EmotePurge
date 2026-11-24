@@ -348,6 +348,13 @@ public static class ServiceCollectionExtensions
         configuration.GetSection(WishOptions.SectionName).Bind(wishOptions);
         wishOptions.Validate();
         services.AddSingleton(wishOptions);
+
+        // The bot account's account-wide switches (#487), bound and validated the same way for Api and Worker.
+        var botAccountOptions = new BotAccountOptions();
+        configuration.GetSection(BotAccountOptions.SectionName).Bind(botAccountOptions);
+        botAccountOptions.Validate();
+        services.AddSingleton(botAccountOptions);
+
         services.AddSingleton<IWishChangedPublisher, WishChangedPublisher>();
         services.AddScoped<IWishService, WishService>();
         services.AddScoped<IWishOverviewService, WishOverviewService>();

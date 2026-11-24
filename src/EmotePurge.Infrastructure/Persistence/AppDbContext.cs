@@ -38,6 +38,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<WishRewardLearning> WishRewardLearnings => Set<WishRewardLearning>();
     public DbSet<WishCaptureGap> WishCaptureGaps => Set<WishCaptureGap>();
     public DbSet<WishCaptureState> WishCaptureState => Set<WishCaptureState>();
+    public DbSet<BotAccountCredential> BotAccountCredentials => Set<BotAccountCredential>();
     public DbSet<WishSlotExclusion> WishSlotExclusions => Set<WishSlotExclusion>();
     public DbSet<WishCaptureReceipt> WishCaptureReceipts => Set<WishCaptureReceipt>();
 
@@ -493,6 +494,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             entity.Property(w => w.IrcMessageId).HasMaxLength(WishLimits.IrcMessageIdMaxLength);
             entity.Property(w => w.RequestText).HasMaxLength(WishLimits.RequestTextMaxLength);
             entity.Property(w => w.RequestedName).HasMaxLength(WishLimits.RequestedNameMaxLength);
+            entity.Property(w => w.BotSetId).HasMaxLength(WishLimits.SevenTvEmoteIdMaxLength);
+            entity.Property(w => w.BotRemoveEvidence).HasColumnType("jsonb");
 
             entity.ToTable(t =>
             {
@@ -648,6 +651,28 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         {
             entity.Property(s => s.Id).ValueGeneratedNever();
             entity.ToTable(t => t.HasCheckConstraint("CK_WishCaptureState_Singleton", $"\"Id\" = {(global::EmotePurge.Core.Entities.WishCaptureState.SingletonId)}"));
+        });
+
+        modelBuilder.Entity<BotAccountCredential>(entity =>
+        {
+            entity.Property(c => c.Id).ValueGeneratedNever();
+            entity.Property(c => c.Status).HasDefaultValue(BotAccountStatus.None);
+
+            // Database defaults, so the one row can be created by an upsert that names only what it sets.
+            entity.Property(c => c.KillSwitch).HasDefaultValue(false);
+            entity.Property(c => c.CredentialVersion).HasDefaultValue(0);
+            entity.Property(c => c.RunnerEpoch).HasDefaultValue(0L);
+            entity.Property(c => c.IdentityVersion).HasDefaultValue(0);
+            entity.Property(c => c.KillSwitchVersion).HasDefaultValue(0L);
+            entity.Property(c => c.RenewalFailureCount).HasDefaultValue(0);
+            entity.ToTable(t =>
+            {
+                t.HasCheckConstraint("CK_BotAccountCredentials_Singleton", $"\"Id\" = {BotAccountCredential.SingletonId}");
+                t.HasCheckConstraint("CK_BotAccountCredentials_Status", $"\"Status\" IN ({SqlList(BotAccountStatus.All)})");
+                t.HasCheckConstraint(
+                    "CK_BotAccountCredentials_TwitchSessionState",
+                    $"\"TwitchSessionState\" IS NULL OR \"TwitchSessionState\" IN ({SqlList(TwitchSessionStates.All)})");
+            });
         });
 
         modelBuilder.Entity<WishSlotExclusion>(entity =>

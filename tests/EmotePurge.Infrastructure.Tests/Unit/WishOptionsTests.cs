@@ -202,6 +202,33 @@ public class WishOptionsTests
         Assert.Equal(["disconnect", "worker_restart", "not_joined"], WishCaptureGapReason.All);
     }
 
+    // ------------------------------------------------------------------ pilot list (#487, spec E8)
+
+    [Fact]
+    public void PilotChannelIds_DefaultsToEmpty_AndBindsFromTheSection()
+    {
+        Assert.Null(new WishOptions().PilotChannelIds);
+        Assert.True(new WishOptions().PilotList.IsEmpty);
+
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["Wishes:PilotChannelIds"] = "123, 456" })
+            .Build();
+        var options = new WishOptions();
+        configuration.GetSection(WishOptions.SectionName).Bind(options);
+        options.Validate();
+
+        Assert.True(options.PilotList.Covers("456"));
+        Assert.False(options.PilotList.Covers("789"));
+    }
+
+    [Fact]
+    public void PilotChannelIds_InvalidEntryThrowsOnValidate_NamingTheKey()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => new WishOptions { PilotChannelIds = "123,abc" }.Validate());
+
+        Assert.Contains("Wishes:PilotChannelIds", ex.Message);
+    }
+
     [Fact]
     public void WishChanged_IsAChannelEventOnly()
     {

@@ -22,6 +22,9 @@ public class ChannelWishSettings
     public DateTime? BotModeActivatedAtUtc { get; set; }
     public DateTime? BotEditorCheckedAtUtc { get; set; }
 
+    /// <summary>The bot account's <c>IdentityVersion</c> at the editor check; null = never checked against one.</summary>
+    public int? BotEditorCheckedIdentityVersion { get; set; }
+
     /// <summary><c>not_editor</c> or <c>not_listed</c>; set means the channel runs in the manual flow.</summary>
     public string? BotSuspendedReason { get; set; }
 
