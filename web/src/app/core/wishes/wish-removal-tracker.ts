@@ -2,6 +2,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { inject, Service, signal } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
 
+import { apiErrorCode } from '../i18n/api-error';
 import {
   DeleteRowEvidence,
   DeleteRunSettlement,
@@ -34,8 +35,11 @@ export type WishRemovalState =
   | { kind: 'reporting' }
   /** Removed in 7TV and booked (200). */
   | { kind: 'booked' }
-  /** Removed in 7TV, but the Api booked nothing (409/404): the wish moved on meanwhile. Final. */
-  | { kind: 'notBooked' }
+  /**
+   * Removed in 7TV, but the Api booked nothing (409/404): the wish moved on meanwhile. Final.
+   * `deleted` is set when the answer was 404 `wish_not_found`: a manager deleted the wish meanwhile (K7a).
+   */
+  | { kind: 'notBooked'; deleted?: true }
   /** Removed in 7TV; the report did not get through (network, 5xx, timeout) — `retry` sends it again. */
   | { kind: 'reportPending' };
 
@@ -201,7 +205,12 @@ export class WishRemovalTracker {
         error: (error: unknown) => {
           if (isFinalRefusal(error)) {
             this.owed.delete(key);
-            this.end(key, target.channelName, target.wishId, { kind: 'notBooked' });
+            this.end(
+              key,
+              target.channelName,
+              target.wishId,
+              isWishGone(error) ? { kind: 'notBooked', deleted: true } : { kind: 'notBooked' },
+            );
             return;
           }
           this.end(key, target.channelName, target.wishId, { kind: 'reportPending' });
@@ -232,6 +241,15 @@ function stateKey(channelName: string, wishId: number): string {
 /** 409 and 404: this report books nothing and must not book anything (plan 2.1a). */
 function isFinalRefusal(error: unknown): boolean {
   return error instanceof HttpErrorResponse && (error.status === 409 || error.status === 404);
+}
+
+/** 404 with `wish_not_found`: the wish itself is gone (deleted meanwhile), not just moved on. */
+function isWishGone(error: unknown): boolean {
+  return (
+    error instanceof HttpErrorResponse &&
+    error.status === 404 &&
+    apiErrorCode(error) === 'wish_not_found'
+  );
 }
 
 /** The end state of a row that is not `done`. */

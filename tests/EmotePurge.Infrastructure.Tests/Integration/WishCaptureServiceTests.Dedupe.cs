@@ -138,6 +138,29 @@ public partial class WishCaptureServiceTests
         Assert.True(await ReceiptExistsAsync(channel, "msg-1"));
     }
 
+    // K7a (spec E35, AK110): the receipt hangs on no wish, so deleting the captured wish keeps it, and the same line
+    // within the receipt's lifetime does not bring the wish back.
+    [Fact]
+    public async Task ADeletedCapturedWish_IsNotCreatedAgain_ByTheSameLine()
+    {
+        var channel = await SeedChannelAsync();
+        await SeedRewardAsync(channel, "tag-a");
+        Assert.Equal(WishCaptureOutcome.WishCreated, await Sut().ProcessAsync(Observation(channel, "tag-a", "msg-1")));
+        var captured = await SingleWishAsync(channel);
+        Assert.True((await Wishes().RejectAsync(channel.Name, captured.Id, Actor, channel.Access)).IsSuccess);
+        var rejected = await SingleWishAsync(channel);
+
+        var deleted = await Wishes().DeleteAsync(channel.Name, rejected.Id, rejected.EndedAtUtc!.Value, Actor, channel.Access);
+        Assert.Equal(WishOutcome.Success, deleted.Outcome);
+
+        Assert.Equal(WishCaptureOutcome.Duplicate, await Sut().ProcessAsync(Observation(channel, "tag-a", "msg-1")));
+        Assert.Empty(await WishesAsync(channel));
+        Assert.True(await ReceiptExistsAsync(channel, "msg-1"));
+
+        WishService Wishes() => new(
+            fixture.CreateDbContext(), new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance), _clock, NullLogger<WishService>.Instance);
+    }
+
     // ------------------------------------------------------------------------------------ first redemption after a command (Sol-P2-5)
 
     [Fact]

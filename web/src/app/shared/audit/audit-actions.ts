@@ -39,6 +39,7 @@ export const ACTION_KEYS: Record<string, string> = {
   'wish.close': 'audit.actions.wishClose',
   'wish.retry': 'audit.actions.wishRetry',
   'wish.readd': 'audit.actions.wishReAdd',
+  'wish.delete': 'audit.actions.wishDelete',
   'wish.settings': 'audit.actions.wishSettings',
   'wish.due': 'audit.actions.wishDue',
   'wish.update': 'audit.actions.wishUpdate',

@@ -742,16 +742,18 @@ public partial class DataRetentionServiceTests(PostgresFixture fixture) : IAsync
     /// The pass as the worker's scope builds it: one context shared by the retention service, the real
     /// account deletion and the real channel purge. Redis and the identity lookup are not reached on
     /// these paths and are substituted. The two hooks run just before an account deletion or a channel
-    /// purge, to stage what a concurrent request would do in between.
+    /// purge, to stage what a concurrent request would do in between. With <paramref name="applicationName"/> the pass
+    /// runs on a tagged connection, so a race test can wait until it blocks on a lock (<see cref="PostgresLockProbe"/>).
     /// </summary>
     private async Task<RetentionRunSummary> RunAsync(
         bool enforce,
         int maxAccountsPerRun = 100,
         Func<string, Task>? beforeAccountDeletion = null,
         Func<string, Task>? beforeChannelPurge = null,
-        DateTime? at = null)
+        DateTime? at = null,
+        string? applicationName = null)
     {
-        await using var db = CreateDbContext();
+        await using var db = applicationName is null ? CreateDbContext() : fixture.CreateTaggedDbContext(applicationName, DatabaseName);
 
         IAccountDeletionService accounts = new AccountDeletionService(
             db, Substitute.For<IModRoleCache>(), new RecordingRateLimitTelemetry(), _logs.For<AccountDeletionService>());

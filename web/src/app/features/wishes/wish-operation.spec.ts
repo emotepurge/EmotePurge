@@ -133,6 +133,15 @@ describe('wishRemovalOperationView', () => {
     }
   });
 
+  it('notBooked after a deletion says so with its own text', () => {
+    expect(wishRemovalOperationView({ kind: 'notBooked', deleted: true })).toMatchObject({
+      tone: 'problem',
+      key: 'wishes.remove.notBookedDeleted',
+      spokenByPage: true,
+    });
+    expect(wishRemovalOperationView({ kind: 'notBooked' })?.key).toBe('wishes.remove.notBooked');
+  });
+
   it('the final states booked and notBooked offer no retry', () => {
     expect(wishRemovalOperationView({ kind: 'booked' })?.retryKey).toBeUndefined();
     expect(wishRemovalOperationView({ kind: 'notBooked' })?.retryKey).toBeUndefined();

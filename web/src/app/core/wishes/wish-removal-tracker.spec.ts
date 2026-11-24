@@ -156,6 +156,30 @@ describe('WishRemovalTracker', () => {
     expect(ends).toEqual([{ channelName: 'olaf', wishId: 7, state }]);
   });
 
+  it('books a 404 wish_not_found as deleted meanwhile, final', () => {
+    startRun().settled(TARGET, settlement(row('done')));
+    httpMock
+      .expectOne(URL_7)
+      .flush({ errorCode: 'wish_not_found' }, { status: 404, statusText: 'No' });
+
+    expect(stateOf()).toEqual({ kind: 'notBooked', deleted: true });
+    tracker.retry('olaf', 7);
+    vi.advanceTimersByTime(60_000);
+    httpMock.expectNone(URL_7);
+  });
+
+  it.each([
+    [404, 'channel_not_found'],
+    [404, 'wishes_disabled'],
+    [409, 'wish_state_conflict'],
+  ])('takes %s %s as plain not booked, not deleted', (status, code) => {
+    startRun().settled(TARGET, settlement(row('done')));
+    httpMock.expectOne(URL_7).flush({ errorCode: code }, { status, statusText: 'No' });
+
+    expect(stateOf()).toEqual({ kind: 'notBooked' });
+    expect(stateOf()).not.toHaveProperty('deleted');
+  });
+
   it.each([409, 404])('takes a %s as final: not booked, never sent again', (status) => {
     startRun().settled(TARGET, settlement(row('done')));
     httpMock.expectOne(URL_7).flush({ code: 'wish_state_conflict' }, { status, statusText: 'No' });

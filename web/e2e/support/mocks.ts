@@ -3576,6 +3576,7 @@ export type MockWishCallKind =
   | 'create'
   | 'adopt'
   | 'update'
+  | 'delete'
   | 'extend'
   | 'keep'
   | 'close'
@@ -3602,6 +3603,8 @@ export interface MockWishCall {
   view: string | null;
   page: number | null;
   sevenTvEmoteId: string | null;
+  /** `endedAtUtc` of a `delete`: the end of the row the confirmation showed, as the client sent it. */
+  endedAtUtc: string | null;
   body: Record<string, unknown> | null;
 }
 
@@ -3777,7 +3780,7 @@ export async function mockWishBackend(
           kind = method === 'DELETE' ? 'reward-delete' : 'reward-update';
         }
       } else if (numeric !== null && rest.length === 1) {
-        kind = method === 'GET' ? 'detail' : 'update';
+        kind = method === 'GET' ? 'detail' : method === 'DELETE' ? 'delete' : 'update';
       } else {
         kind = rest[1] as MockWishCallKind;
       }
@@ -3792,6 +3795,7 @@ export async function mockWishBackend(
         view: url.searchParams.get('view'),
         page: url.searchParams.has('page') ? Number(url.searchParams.get('page')) : null,
         sevenTvEmoteId: url.searchParams.get('sevenTvEmoteId'),
+        endedAtUtc: url.searchParams.get('endedAtUtc'),
         body,
       };
       backend.calls.push(call);
@@ -3965,6 +3969,18 @@ export async function mockWishBackend(
         return fulfillJson(route, 404, { errorCode: 'wish_not_found' });
       }
       switch (kind) {
+        case 'delete': {
+          // Gone from the detail and every list (they answer from this state), and the entry it held
+          // is free again: that release is what the take-over dialog shows afterwards.
+          backend.details.delete(id);
+          for (const name of lists) {
+            backend[name] = backend[name].filter((w) => w.id !== id);
+          }
+          backend.slots = backend.slots.map((slot) =>
+            slot.heldByWishId === id ? { ...slot, heldByWishId: null } : slot,
+          );
+          return fulfillJson(route, 204, null);
+        }
         case 'approve': {
           // A wish whose emote already runs extends that wish and ends as `merged`; any other one is
           // booked as `approved`, with the emote and alias the body names.

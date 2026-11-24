@@ -326,6 +326,51 @@ test.describe('wish emotes: runs against 7TV from a row (#485)', () => {
         expect(wishes.of('complete-removal')).toHaveLength(0);
       });
 
+      test('two managers: the wish is kept, deleted and its entry re-adopted by a new wish in the pause: no second REMOVE, no booking, the dock says the wish changed (AK133, PR2-5)', async ({
+        page,
+      }) => {
+        await page.clock.install();
+        await surroundings(page);
+        const wishes = await mockWishBackend(page, CHANNEL, { open: [removable()] });
+        const sevenTv = await mockSevenTvSetBackend(
+          page,
+          [{ id: EMOTE, alias: 'Entfern', addedAt: ADDED_7TV }],
+          { rejectRemove: (index) => (index === 0 ? rateLimit : undefined) },
+        );
+        await mockSyncDeletedInSet(page, SET_ID);
+
+        await page.goto(URL_WISHES);
+        await removeIntoPause(page, sevenTv);
+
+        // The other manager's work, seen from here: the old wish is gone from detail (404) and from
+        // every list, and a new wish holds the same entry with the same generation.
+        wishes.open = [];
+        wishes.ended = [];
+        wishes.running = [
+          buildWish(11, {
+            alias: 'Entfern',
+            sevenTvEmoteId: EMOTE,
+            slotId: 'slot-10',
+            slotAddedAtUtc: ADDED_API,
+            source: 'adopted',
+            linkOrigin: 'adopted',
+          }),
+        ];
+        await expect
+          .poll(
+            async () => {
+              await page.clock.runFor(1_000);
+              return page.getByText('Der Wunsch hat sich inzwischen geändert.').count();
+            },
+            { intervals: [100], timeout: 20_000 },
+          )
+          .toBeGreaterThan(0);
+
+        expect(sevenTv.mutations()).toHaveLength(1);
+        expect(wishes.of('complete-removal')).toHaveLength(0);
+        expect(wishes.of('detail', 10).length).toBeGreaterThan(0);
+      });
+
       test('counter-check: the set is unchanged in the pause, so exactly one more REMOVE goes out and is booked', async ({
         page,
       }) => {

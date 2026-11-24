@@ -62,6 +62,8 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         { "POST", "/api/channels/{0}/wishes/7/approve", "{}" },
         { "POST", "/api/channels/{0}/wishes/7/reject", null },
         { "POST", "/api/channels/{0}/wishes/7/unlink", null },
+        // K7a (spec E38, E41): the delete route carries WishIdAccessFilter behind the same ladder.
+        { "DELETE", "/api/channels/{0}/wishes/7?endedAtUtc=2026-11-02T10:00:00.1234567Z", null },
     };
 
     // ---- AK13: the filter ladder on every route ----
@@ -411,12 +413,27 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("wishId").ValueKind);
     }
 
+    // K7a (spec E41, AK113): the service's second wall behind the access filter is a 403 in the form of the manager
+    // filter, without a body. Its own case because the theory above always reads a JSON body.
+    [Fact]
+    public async Task AccessDenied_MapsTo403_WithoutABody()
+    {
+        _factory.Wishes.ExtendAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<AuditActor>(), Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>())
+            .Returns(WishCommandResult.Of(WishOutcome.AccessDenied));
+
+        var response = await SendAsync(_factory, "POST", $"/api/channels/{Channel}/wishes/7/extend");
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Empty(await response.Content.ReadAsStringAsync());
+    }
+
     [Fact]
     public void EveryOutcome_HasAMappingCase_InThisTheory()
     {
-        // Success is the 2xx tests below; every other member must have a row, so a new outcome cannot
-        // slip into the service without a case in the handler's switch (and a row here).
-        var covered = FailureOutcomes.Select(row => (WishOutcome)row[0]).ToHashSet();
+        // Success is the 2xx tests below and AccessDenied has its own bodiless case above; every other member must
+        // have a row, so a new outcome cannot slip into the service without a case in the handler's switch (and a
+        // row here).
+        var covered = FailureOutcomes.Select(row => (WishOutcome)row[0]).Append(WishOutcome.AccessDenied).ToHashSet();
         var all = Enum.GetValues<WishOutcome>().Where(o => o != WishOutcome.Success);
 
         Assert.True(covered.SetEquals(all));
@@ -787,9 +804,9 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
                     || raw.StartsWith("/api/wishes", StringComparison.Ordinal)))
             .ToList();
 
-        // 18 channel routes (the Routes table), the six reward routes (WishCaptureEndpointsTests) and the two overview
+        // 19 channel routes (the Routes table), the six reward routes (WishCaptureEndpointsTests) and the two overview
         // reads: the scan is not vacuous.
-        Assert.Equal(26, endpoints.Count);
+        Assert.Equal(27, endpoints.Count);
         foreach (var endpoint in endpoints)
         {
             var handler = endpoint.Metadata.GetMetadata<MethodInfo>();

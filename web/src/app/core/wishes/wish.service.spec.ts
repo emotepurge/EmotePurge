@@ -98,6 +98,20 @@ describe('WishService', () => {
     undated.flush(WISH);
   });
 
+  it('deletes an ended wish, sending the ended-at string unchanged (microseconds, Z, offset)', () => {
+    for (const ended of ['2026-11-17T10:00:00.1234567Z', '2026-11-17T10:00:00.123456+00:00']) {
+      service.deleteWish('handofblood', 7, ended).subscribe();
+      const req = httpMock.expectOne((r) => r.url === `${BASE}/7`);
+      expect(req.request.method).toBe('DELETE');
+      expect(req.request.params.get('endedAtUtc')).toBe(ended);
+      expect(req.request.urlWithParams).toBe(
+        `${BASE}/7?endedAtUtc=${encodeURIComponent(ended).replace(/%3A/g, ':')}`,
+      );
+      expect(req.request.body).toBeNull();
+      req.flush(null, { status: 204, statusText: 'No Content' });
+    }
+  });
+
   it('PATCHes the edit and POSTs re-add with its mode', () => {
     service.update('handofblood', 7, { alias: 'New' }).subscribe();
     const patch = httpMock.expectOne(`${BASE}/7`);

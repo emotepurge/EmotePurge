@@ -21,6 +21,7 @@ import { SevenTvRunArbiter } from '../../core/seven-tv/seven-tv-run-arbiter';
 import { SevenTvTokenService } from '../../core/seven-tv/seven-tv-token.service';
 import type { Wish, WishDetail } from '../../core/wishes/wish.model';
 import { WishRemovalProgress } from '../../core/wishes/wish-removal';
+import { WISH_START_READ_TIMEOUT_MS } from '../../core/wishes/wish-run-start';
 import { WishService } from '../../core/wishes/wish.service';
 import { WishRemovalConfirmData } from './wish-removal-confirm-dialog';
 import { WishRemovalFlowDeps, startWishRemovalFlow } from './wish-removal-flow';
@@ -391,6 +392,83 @@ describe('wish-removal-flow', () => {
 
       token = null;
       expect(await check()).toBe('tokenChanged');
+    });
+  });
+
+  // #500, E46 (plan 2.7): the binding reads the wish afresh before every attempt and compares it
+  // with the wish frozen at the click.
+  describe('the binding’s check of the wish', () => {
+    function checkOfStartedRow(): () => Promise<string | null> {
+      start();
+      toConfirmation();
+      confirm();
+      answer(sets, setList(SET_A));
+      answer(wishes, wish() as WishDetail);
+      const binding = startedWith().rows[0].wishBinding!;
+      return () => firstValueFrom(binding.verifyWish());
+    }
+
+    it('reads the wish afresh and passes when it is unchanged', async () => {
+      const check = checkOfStartedRow();
+      expect(wishes).toHaveLength(0);
+      const verdict = check();
+
+      expect(wishes).toHaveLength(1);
+      answer(wishes, wish({ status: 'presented' }) as WishDetail);
+      expect(await verdict).toBeNull();
+    });
+
+    it.each([
+      ['kept', { status: 'kept' as const }],
+      ['on another slot', { slotId: 'slot-2' }],
+      ['at another generation', { slotAddedAtUtc: '2026-11-02T10:00:00.123457Z' }],
+      ['removed', { status: 'removed' as const }],
+    ])('reports a wish that is now %s as changed', async (_label, change) => {
+      const check = checkOfStartedRow();
+      const verdict = check();
+      answer(wishes, wish(change) as WishDetail);
+
+      expect(await verdict).toBe('wishChanged');
+    });
+
+    it('reports a wish that is gone (404) as changed', async () => {
+      const check = checkOfStartedRow();
+      const verdict = check();
+      wishes.shift()!.error(new HttpErrorResponse({ status: 404 }));
+
+      expect(await verdict).toBe('wishChanged');
+    });
+
+    it.each([
+      ['fails', 500],
+      ['is throttled by the Api', 429],
+    ])('reports a read that %s as unverified, not as a pause', async (_label, status) => {
+      const check = checkOfStartedRow();
+      const verdict = check();
+      wishes.shift()!.error(new HttpErrorResponse({ status }));
+
+      expect(await verdict).toBe('wishUnverified');
+    });
+
+    it('reports a read that completes empty as unverified', async () => {
+      const check = checkOfStartedRow();
+      const verdict = check();
+      wishes.shift()!.complete();
+
+      expect(await verdict).toBe('wishUnverified');
+    });
+
+    it('reports a read that runs into its deadline as unverified', async () => {
+      vi.useFakeTimers();
+      try {
+        const check = checkOfStartedRow();
+        const verdict = check();
+        vi.advanceTimersByTime(WISH_START_READ_TIMEOUT_MS);
+
+        expect(await verdict).toBe('wishUnverified');
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

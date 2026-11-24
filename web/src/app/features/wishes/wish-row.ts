@@ -50,6 +50,7 @@ const DESTRUCTIVE_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
   'remove',
   'close',
   'reject',
+  'delete',
 ]);
 
 /**

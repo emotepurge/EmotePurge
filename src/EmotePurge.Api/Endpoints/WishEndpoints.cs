@@ -278,6 +278,43 @@ public static class WishEndpoints
         })
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
+        // K7a (spec E34, E38, E39, E41, E44): deletes an ended wish. `endedAtUtc` is the episode the confirmation showed,
+        // copied unchanged from the wish's DTO; a missing or unreadable value is a 400, a differing one a 409 from the
+        // service. WishIdAccessFilter answers the switch (404) and the id-bound access (404/409/403) first, so the
+        // query is read only for a confirmed caller. Success is a 204 without a body, which MapResult cannot express
+        // (a success without wish or settings is unreachable there).
+        group.MapDelete("/{id:long}", async (
+            string channelName,
+            long id,
+            string? endedAtUtc,
+            HttpContext httpContext,
+            IWishService wishService,
+            CancellationToken ct) =>
+        {
+            if (!DateTime.TryParse(
+                    endedAtUtc,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal,
+                    out var expectedEndedAtUtc))
+            {
+                return InvalidBody();
+            }
+
+            var actor = httpContext.User.TryBuildAuditActor();
+            if (actor is null)
+            {
+                return Results.Unauthorized();
+            }
+
+            var result = await wishService.DeleteAsync(
+                channelName, id, expectedEndedAtUtc, actor, WishIdAccessFilter.GetAccess(httpContext), ct);
+            return result.Outcome == WishOutcome.Success
+                ? Results.NoContent()
+                : MapResult(result, StatusCodes.Status200OK);
+        })
+        .AddEndpointFilter<WishIdAccessFilter>()
+        .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
+
         MapTransition(group, "/{id:long}/extend", (s, c, id, a, access, ct) => s.ExtendAsync(c, id, a, access, ct));
         MapTransition(group, "/{id:long}/keep", (s, c, id, a, access, ct) => s.KeepAsync(c, id, a, access, ct));
         MapTransition(group, "/{id:long}/close", (s, c, id, a, access, ct) => s.CloseAsync(c, id, a, access, ct));
@@ -368,7 +405,9 @@ public static class WishEndpoints
     /// <see cref="WishOutcome.ModeInvalid"/> and <see cref="WishOutcome.RequestInvalid"/> are <c>invalid_request_body</c>.
     /// The conflicts that concern another wish name it as <c>wishId</c> (plan #485 2.1a, and K6's
     /// <c>wish_running_not_extendable</c>; null when
-    /// <c>wish_emote_already_in_set</c> has no running wish).
+    /// <c>wish_emote_already_in_set</c> has no running wish). <see cref="WishOutcome.AccessDenied"/> (K7a, spec E41) is a
+    /// 403 without a body in the form of the manager filter, like <see cref="WishRewardOutcome.AccessDenied"/>: the
+    /// service's second wall when the channel row's Twitch id changed after the access filter decided.
     /// </summary>
     internal static IResult MapResult(WishCommandResult result, int successStatus)
     {
@@ -427,6 +466,8 @@ public static class WishEndpoints
                 return Results.BadRequest(new { errorCode = ApiErrorCodes.WishEmoteRequired });
             case WishOutcome.RunningNotExtendable:
                 return Results.Conflict(new { errorCode = ApiErrorCodes.WishRunningNotExtendable, wishId = result.ConflictingWishId });
+            case WishOutcome.AccessDenied:
+                return Results.Forbid();
             default:
                 throw new UnreachableException($"Unexpected {nameof(WishOutcome)} value: {result.Outcome}.");
         }
