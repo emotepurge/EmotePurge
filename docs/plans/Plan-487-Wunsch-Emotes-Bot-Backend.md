@@ -137,6 +137,21 @@ dazu **Helfer** statt Profilkopie (Spec 18.2), **[N1]** keine Vertretung, **[N2]
 zusammen einundzwanzig Erneuerungs-Spalten. Neu: AK121 (Helfer), AK122 (Restore). Geändert: 2.8, 2.10, 2.13, T1, T5, T13,
 T16 bis T20, Abschnitte 4 bis 6, 8 bis 10. **PR-Schnitt und Reihenfolge bleiben**; der Helfer kommt mit T17 in PR 3.
 
+### Revision 5b (2026-11-24): Helfer per Hand gestartetem Browser
+
+Anlass: G0b, Schritte R0 und R2 am 2026-11-24 (Spec 18.1, Probe 4). **[B]** Der Helfer startet keinen Browser mehr.
+
+| Was | Vorher (Revision 5) | Jetzt (Revision 5b) |
+|---|---|---|
+| Browser des Passwort-Logins | vom Helfer gestartet, sichtbar, flüchtiges Profil | vom Betreiber von Hand gestartet (Brave oder anderes Chromium), frisches Datenverzeichnis, Debug-Port nur an `127.0.0.1`; Twitch sperrt Logins in einem von Automation gestarteten Browser |
+| Helfer (T17) | Modus `capture-session` startet Browser | hängt sich per CDP an, prüft den 7TV-Login, exportiert die Cookies; Formprüfung bleibt in Core; das Image macht nie Passwort-Logins |
+| T0b/G0b | R0 und R2 offen | R0 und R2 bestanden (15 Cookies, `auth-token` 180 Tage; drei Logins in Folge, alle JWTs gültig, vier parallele Sitzungen); offen R1, R3, kleinste Menge, R4 bis R7 |
+| Neues Risiko | – | R21: Twitch dehnt die Automationserkennung auf die Authorize-Seite des Erneuerers aus → Erneuerung scheitert, Alarm, Rückfall |
+| Abmeldung | – | Logout im Profil, aus dem exportiert wurde, entwertet die Sitzung serverseitig (Notaus, und die Sitzung wird nie im Browser benutzt) |
+
+Verträge, PR-Schnitt und Reihenfolge bleiben; geändert sind Spec 18.1, 18.2, AK116, AK121, RR19 und in diesem Plan Abschnitt 2.13,
+Tor G0b, T0b, T17, T20 Fall 0, V7/V8 und R15/R21.
+
 ### Revision 5a (2026-11-20): Neutrale Benennung der kontoweiten Teile
 
 Anlass: Der Betreiber will das Bot-Konto später womöglich auch außerhalb der Wünsche nutzen (F11, Abschnitt 1.5); die Migration
@@ -823,10 +838,13 @@ festlegt.
   `Failed(code)`, dazu die Cookies nach dem Lauf; Playwright nur hier), `IBotAccountCookieStore` (Datei, Formprüfung über
   `TwitchSessionCookieSet` in Core, Inhalts-Hash, atomares Zurückschreiben, konservativer Ablauf), typisierter Client der
   Maschinenroute, ein minimaler `users.me`-Read. Einstieg `AddBotAccountRenewer(configuration)` im Erneuerer-Projekt; die Zahl der
-  Infrastructure-Einstiege bleibt vier (T2). **Helfer [B] (Revision 5):** Modus `capture-session --out <Datei>` desselben
-  Projekts **[E]** (statt eines Node-Skripts unter `scripts/`), weil Filter und Formprüfung dann genau eine Implementierung
-  in Core haben (`TwitchSessionCookieSet`); der Modus startet keinen Hosted Service, braucht ein lokal installiertes Chromium mit
-  Fenster (nicht im Image) und läuft nur per `dotnet run` auf einem Rechner des Betreibers (Spec 18.2).
+  Infrastructure-Einstiege bleibt vier (T2). **Helfer [B] (Revision 5, geändert in 5b, 2026-11-24):** Modus `capture-session --out <Datei>` desselben
+  Projekts **[E]**, jetzt als reiner Anhänge-/Export-Modus (oder kleines Skript mit derselben Formprüfung): er **startet keinen
+  Browser**, sondern hängt sich per CDP (`connectOverCDP`, nur `127.0.0.1`) an ein vom Betreiber von Hand gestartetes Chromium mit
+  frischem Datenverzeichnis, prüft die 7TV-Anmeldung (`localStorage["7tv-token"]`, Wert nie ausgegeben) und exportiert die
+  `twitch.tv`-Cookies mit allen Attributen (Spec 18.2). Filter und Formprüfung haben genau eine Implementierung in Core
+  (`TwitchSessionCookieSet`); kein Hosted Service, nichts im Image, läuft nur per `dotnet run` auf einem Rechner des Betreibers.
+  Das Erneuerer-Image macht nie einen Passwort-Login.
 - **Ein Takt am Erneuerer (5 min):** Eingang übernehmen (Spec 18.2, nur hier) → Datei lesen und prüfen → `tick` mit
   Sitzungszustand und Ablauf → 204 schlafen; 404 oder 401 eine gedrosselte Logzeile, schlafen (der Alarm entsteht an der Api
   als „still“); 200 mit Auftrag → Inhalts-Hash merken → Treiber (90 s) → Prüfung nach Spec 18.4 → bei gültigem JWT Cookies
@@ -899,8 +917,8 @@ AK92: `editor_of` erkennt Ein- und Austragen nicht binnen einer Minute → T8 ni
 
 **Tor G0b (Orchestrator, Revision 4):** Kleinste Cookie-Menge mit Attributen gefunden und zwei Läufe mit der zurückgeschriebenen
 Datei erfolgreich → wie geplant; Namensliste, Seitenmerkmale und Host-Liste übernimmt T17. Token nicht in `localStorage` →
-`finish`-Antwort. **Lehnt Twitch den Login im sichtbaren, automatisierten Browser des Helfers ab** (auch nach einem Captcha
-durch den Betreiber) → Abbruch vor T1 und Betreiberentscheid über den Weg zur Datei. **Überlappung fehlt** (ein neuer Login entwertet das alte JWT) → Abbruch vor T1 und Betreiberentscheid: der
+`finish`-Antwort. **Lehnt Twitch den Login im automatisierten Browser ab** (eingetreten am 2026-11-24, gelöst über den von Hand gestarteten Browser
+mit CDP, Spec 18.2; R0 bestanden) → bleibt als Fallback-Regel: scheitert auch dieser Weg, Abbruch vor T1 und Betreiberentscheid über den Weg zur Datei. **Überlappung fehlt** (ein neuer Login entwertet das alte JWT) → Abbruch vor T1 und Betreiberentscheid: der
 Worker bekäme vor dem Tausch 401, `invalid` sperrt den Tausch, und der Rückfall-Lauf legte alles vor. 7TV duldet keine drei bis
 vier gültigen Sitzungen → `LeadDays` so wählen, dass höchstens die geduldete Zahl überlappt, sonst Betreiberentscheid. Sandbox läuft
 im Container nicht → `--no-sandbox` nur als DECISIONS-Entscheidung, dem Betreiber vorgelegt. Scheitert der Login am Host, aber
@@ -1290,8 +1308,8 @@ AK76 Teil „401 → alle Bot-Kanäle im Rückfall“ prüft T8 über den Runner
 | V4 | Drei Test-Emotes, die nicht im Set liegen (Links), eines mit einem im Set schon vergebenen Namen | AK86, AK88, AK91 |
 | V5 | Ein drittes Browserprofil oder Gerät für den zweiten Login des Bot-Kontos | AK90 Teil 2 |
 | V6 | Das Schlüsselpaar für **Prod** erst vor Freigabe 2; lokal erzeugt der Implementer in T2 ein Paar in die User-Secrets bzw. die lokale `.env` | – |
-| V7 | Revision 4/5: am Erneuerer-Host ein Wegwerf-Container mit dem Kit aus T0b (Rechte nach Spec 18.6, eigenes Netz ohne LAN) und dort die Cookie-Datei aus dem Helfer-Prototyp (Rechte 600); für T20 eine eigene Datei aus dem Helfer des Branches, nie zwei gleichzeitig in Gebrauch | T0b, T20 |
-| V8 | Zeitfenster für Twitch-Logins mit Passwort und 2FA im Helfer-Prototyp: zu Beginn (R0) und am Ende von T0b (R4, R7 beenden die Sitzung) | T0b |
+| V7 | Revision 4/5: am Erneuerer-Host ein Wegwerf-Container mit dem Kit aus T0b (Rechte nach Spec 18.6, eigenes Netz ohne LAN) und dort die Cookie-Datei aus dem Helfer-Prototyp (von Hand gestarteter Browser plus CDP-Export, Rechte 600); für T20 eine eigene Datei aus dem Helfer des Branches, nie zwei gleichzeitig in Gebrauch | T0b, T20 |
+| V8 | Zeitfenster für Twitch-Logins mit Passwort und 2FA im von Hand gestarteten Browser des Helfers: zu Beginn (R0) und am Ende von T0b (R4, R7 beenden die Sitzung) | T0b |
 
 ### T0: Probe (Wegwerf-Skript im Scratchpad, nichts im Repo)
 
@@ -1313,10 +1331,11 @@ Das Kit (Node mit `playwright` aus `web/node_modules`, Headless-Shell, Host-List
 Browser-Umgebung, Speicherlimit 1 GB, Container mit den Rechten aus Spec 18.6) entsteht im Scratchpad und wird auf der Devbox
 ohne Cookies gegen die öffentlichen Seiten trocken geprüft. **Maßgeblich ist der Lauf am Erneuerer-Host:** der Betreiber startet
 das Kit dort (V7); keine Session verbindet sich zum NAS. Ausgaben nur Codes, Zeiten, Namen von Cookies und Hosts, nie Werte.
-Zerstörende Schritte zuletzt: **R0** Helfer-Prototyp im Kit (sichtbarer Browser, flüchtiges Profil, Revision 5): Login gelingt,
-Datei mit allen Cookies von `twitch.tv` samt Attributen; dann kleinste funktionierende Cookie-Menge (Namen streichen bis zum
+Zerstörende Schritte zuletzt: **R0** Helfer-Prototyp (von Hand gestarteter Browser, frisches Datenverzeichnis, CDP-Export, Revision 5b; **bestanden 2026-11-24**:
+15 Cookies, `.twitch.tv`, `auth-token` bis 2027-05-23): Datei mit allen Cookies von `twitch.tv` samt Attributen; dann kleinste funktionierende Cookie-Menge (Namen streichen bis zum
 Bruch) mit erhaltenen Attributen. **R1** zwei Läufe, der zweite mit der vom ersten zurückgeschriebenen Datei;
-Ablauf vorher und nachher, Wiederholung nach ≥ 24 h (Gleiten?). **R2** Überlappung: das alte JWT bleibt nach dem neuen Login
+Ablauf vorher und nachher, Wiederholung nach ≥ 24 h (Gleiten?). **R2** Überlappung (**bestanden 2026-11-24**: drei Headless-Logins in Folge aus der JSON-Datei, alle früheren JWTs danach gültig, mit dem
+Token des Helfers vier parallele Sitzungen): das alte JWT bleibt nach dem neuen Login
 gültig (`users.me`); vier Läufe hintereinander, alle vier JWTs gültig (parallele Sitzungen). **R3** positives Merkmal je Seite,
 Hosts aller Anfragen, Dauer, Spitzen-RSS, Größe der Headless-Shell, Sandbox im Container, positives Erfolgsmerkmal auf 7tv.app
 für den Helfer. **R4** `auth-token` verfälscht → Merkmal
@@ -1324,6 +1343,9 @@ der Anmeldeseite, Erkennungszeit, kein Hängen. **R5** „Sign Out Everywhere“
 7TV-Verbindung bei Twitch widerrufen → Merkmal der Zustimmungsseite, nichts klicken, der Betreiber erteilt sie neu. **R7** „von
 allen Geräten abmelden“ → Anmeldeseite; der Betreiber meldet sich neu an (V8), neue Datei. Protokoll
 `docs/nachtlaeufe/live-487-renewal-probe-<Datum>.md` (Erwartung, Befund, Folge für G0b; ohne Werte und ohne Adressen mit Query).
+
+**Stand 2026-11-24 (Spec 18.1, Probe 4):** R0 und R2 bestanden (Wortlaut oben); Befund: Twitch sperrt den Passwort-Login im von Automation
+gestarteten Browser, der Helfer hängt sich deshalb an einen von Hand gestarteten. R1, R3, kleinste Cookie-Menge und R4 bis R7 offen.
 
 **Vorlauf am Host, 2026-11-20 (Spec 18.1, Probe 3):** Login mit Isolation nach Spec 18.6 (ohne Sandbox) und voller
 Cookie-Menge bestanden, 5,6 s, nur `www.googletagmanager.com` abgebrochen. Damit ist von R3 nur die Host-Liste belegt. Es bleiben:
@@ -1356,8 +1378,9 @@ Session liest sie nie. Ausgangslage: Token aus V2 `valid`, ein Kanal im
 Zustand `bot` mit einem `active`-Wunsch mit Eigentum und einem eingereihten, Geheimnis gesetzt, Endpunkt 200. Je Fall ein eigener
 Ausgangszustand, je eine Anweisung an den Betreiber:
 
-0. Helfer auf dem Rechner des Betreibers: sichtbarer Browser, Login, 7TV-Verbindung bestätigt → Datei mit Pflichtnamen,
-   Rechte 600, Browser geschlossen; der Erneuerer übernimmt sie aus dem Eingang (AK121, AK113).
+0. Helfer auf dem Rechner des Betreibers: Browser von Hand mit frischem Datenverzeichnis und lokalem Debug-Port gestartet, Login von Hand
+   (Twitch und 7tv.app), Helfer hängt sich per CDP an → Datei mit Pflichtnamen,
+   Rechte 600, Browser geschlossen, Datenverzeichnis gelöscht; der Erneuerer übernimmt sie aus dem Eingang (AK121, AK113).
 1. „Jetzt erneuern“ → Tausch, `CredentialVersion + 1`, `IdentityVersion` gleich, Kanal bleibt `bot`, Einreihung bleibt, der
    nächste Bot-Takt entfernt mit dem neuen Token, der Worker prüft es einmal und die Admin-Seite zeigt geprüfte = aktuelle
    `CredentialVersion` (AK111, S5-9); `docker stats` während des Laufs (AK117).
@@ -1489,6 +1512,7 @@ Host (`infra-docs`); danach Stufe 0 (Spec 12 Punkt 7), erst dann der erste Pilot
 | R18 | Mit dem Maschinengeheimnis lassen sich Lebenszeichen fälschen und formgültige falsche JWTs einspielen (Spec RR17) | Totmann und JWT-Ablauf hängen nicht am Lebenszeichen; Widerruf; hingenommen ([B] N2) |
 | R19 | Erneuerer-Host oder sein Weg zur Api fällt aus (Strom, Router, Cloudflare blockt die Maschinenroute); mit dem NAS fällt auch Kuma aus | Alarm „still“ nach 26 h, Totmann; bei NAS-Ausfall der unabhängige Heartbeat per E-Mail (Stufe 0 prüft ihn); 21 Tage Vorlauf; Stufe 0 prüft den Weg über Cloudflare |
 | R20 | Keine Vertretung: ohne erreichbaren Betreiber wird keine Störung behoben ([B] N1, Spec RR18) | 21 Tage Vorlauf zum Beheben, danach sicherer Rückfall |
+| R21 | Twitch dehnt die Automationserkennung auf die Authorize-Seite aus, die der Erneuerer aufruft (Passwort-Login ist seit Probe 4 im automatisierten Browser gesperrt; Spec RR19) | Erneuerung scheitert, Alarm, Totmann, Rückfall über die Handerneuerung; mehr als Erkennung ist nicht möglich |
 
 ---
 
@@ -1516,7 +1540,7 @@ mit einem Erneuerer, ihr Ende-zu-Ende-Nachweis (T20) braucht das Image, und PR 1
 Migration noch Eingriff in Token-Routen oder Worker braucht. PR 3 setzt auf den gemergten PR 2 auf.
 
 **Entschieden am Abend (Betreiber, 2026-11-20) [B], Wortlaut in Spec 18.2 und 18.12:** **Helfer** für die Cookie-Datei
-(sichtbarer Browser, flüchtiges Profil, `scp` in den Eingang; ersetzt Profilkopie und die Regel „Bot-Profil nicht mehr
+(seit 2026-11-24 per von Hand gestartetem Browser und CDP-Export, Revision 5b; `scp` in den Eingang; ersetzt Profilkopie und die Regel „Bot-Profil nicht mehr
 benutzen“). **[N1]** keine Vertretung; Zustellnachweise nur für den Betreiber; die Automatik nimmt das Erneuern ab, nicht das
 Beheben. **[N2]** gefälschtes JWT über das Maschinengeheimnis hingenommen. Alle neun Sol-Befunde über Revision 4 übernommen
 (Tabelle „Revision 5“). **Offen ist nichts**; ein neuer Betreiberentscheid entsteht nur an Tor G0b (Abschnitt 3).

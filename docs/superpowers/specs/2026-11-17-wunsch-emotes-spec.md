@@ -702,6 +702,7 @@ Abschnitt 7 Punkt 8; nichts geht verloren, alles Offene steht als Handlungsbedar
 | RR16 | Die Erneuerung ist für Twitch und 7TV inoffiziell; Login-Flow, Token-Ablage, Captcha oder eine Sitzungsbindung können sie jederzeit brechen | Fehlerklassen nur über positive Merkmale, Alarm 18.7, Rückfall und Handerneuerung; G0b am Erneuerer-Host vor T1, Stufe 0 vor dem ersten Pilot-Kanal |
 | RR17 | Mit dem Maschinengeheimnis lassen sich Lebenszeichen fälschen (Alarm bleibt aus) und ein formgültiges, falsches JWT einspielen (globaler Rückfall bis Hand-`PUT`) | Geheimnis nur am Erneuerer-Host, widerrufbar; Totmann und JWT-Ablauf hängen nicht am Lebenszeichen; hingenommen ([B] N2) |
 | RR18 | Ohne erreichbaren Betreiber wird keine Störung der Erneuerung behoben (keine Vertretung, [B] N1) | 21 Tage Vorlauf als Zeit zum Beheben; danach sicherer Rückfall auf den manuellen Ablauf (18.1) |
+| RR19 | Twitch könnte die Erkennung von Automation auf die Authorize-Seite ausdehnen, die der Erneuerer aufruft (Probe 4: der Passwort-Login ist schon gesperrt) | Die Erneuerung scheitert, Alarm, Rückfall über den bestehenden Weg (Handerneuerung); mehr als die Erkennung gibt es nicht |
 
 ## 17. Entschieden (Betreiber, 2026-11-17)
 
@@ -816,6 +817,17 @@ möglich, ist aber nicht Teil dieses Nachtrags.
   am Limit (1024 MiB), weil sie Seitencache und das `tmpfs` (Paketinstallation nach `/tmp`) mitzählt, bei 171 MiB RSS des
   Treibers; kein OOM-Kill; (3) mit den beiden Läufen auf der Devbox bestehen seit dem 2026-11-20 drei parallele 7TV-Sitzungen
   des Bots, deren fortdauernde Gültigkeit (Überlappung) noch zu prüfen ist; (4) die kleinste Cookie-Menge ist offen.
+- **Probe 4 (Vorlauf G0b, Schritte R0 und R2, 2026-11-24) bestanden, mit Korrektur des Helfers:** (a) **Twitch sperrt den
+  Passwort-Login in einem von Automation gestarteten Browser** (von Playwright gestartetes Chromium, sichtbar): erst die
+  irreführende Meldung „Dieser Benutzername existiert nicht“, dann „Dein Browser wird zurzeit nicht unterstützt“; ein Login in
+  einem normalen Firefox oder Brave gelingt. Die Erneuerung selbst (Headless-Chromium mit vorhandener Sitzung, ohne
+  Passwort-Login) ist davon nicht betroffen (Probe 2 und 3, R2 heute). (b) **Der Helfer-Weg über einen von Hand gestarteten
+  Browser (18.2) hat R0 bestanden:** 15 Cookies, alle Domain `.twitch.tv`, `auth-token` läuft bis zum Login-Tag plus 180 Tage
+  (2027-05-23). (c) **R2 bestanden:** drei Headless-Logins nacheinander aus der JSON-Datei; nach jedem blieben alle früheren
+  7TV-JWTs gültig (`users.me`), mit dem Token des Helfers vier parallele Sitzungen. (d) **Abmeldung:** Wer sich im
+  Browser-Profil abmeldet, aus dem Cookies exportiert wurden, entwertet die exportierte Twitch-Sitzung serverseitig (ein Logout
+  im Profil beendete am 2026-11-21 und 2026-11-24 die zuvor exportierte Sitzung). Das stützt den Notaus und bestätigt, dass die
+  Sitzung des Erneuerers nie in einem Browser benutzt wird. **Offen bleiben** R1, R3, die kleinste Cookie-Menge und R4 bis R7.
 - **Vorbedingung [E]:** Die App-Freigabe für 7TV besteht bei Twitch, bis sie unter Einstellungen →
   Verbindungen widerrufen wird. Fehlt sie, landet der Lauf auf der Zustimmungsseite; der Erneuerer
   erkennt das an positiven Merkmalen der Seite, meldet es und klickt **nie**.
@@ -844,16 +856,24 @@ möglich, ist aber nicht Teil dieses Nachtrags.
   Domain-Cookie für `.twitch.tv`. Formprüfung beim Start und vor
   jedem Lauf: höchstens 16 KB, nur Domains unter `twitch.tv`, jeder Pflichtname genau einmal und nicht
   leer, jeder Ablauf in der Zukunft; sonst kein Lauf, Sitzungszustand `malformed` (18.4).
-- **Gewinnung über einen Helfer [B] (2026-11-20, ersetzt die Profilkopie):** Chrome-Cookies einer Profilkopie sind
-  verschlüsselt und betriebssystemabhängig. Stattdessen startet ein eigener Modus des Erneuerer-Projekts (Form:
-  `capture-session --out <Datei>`) auf einem Rechner des Betreibers (Devbox oder Desktop) einen **sichtbaren** Browser mit
-  frischem, flüchtigem Profil. Der Betreiber meldet sich bei Twitch an (Passwort, 2FA) und bestätigt die 7TV-Verbindung auf
-  7tv.app; sobald dort das positive Merkmal des Erfolgs erscheint (18.4), schreibt der Helfer `cookies()` des Kontexts,
-  gefiltert auf die Pflichtnamen unter `twitch.tv`, mit allen Attributen und dem konservativen Ablauf als JSON-Datei
-  (Rechte 600, unter Windows nur der eigene Nutzer), verwirft das 7TV-JWT ungelesen und schließt den Browser. Er nutzt
-  dieselbe Formprüfung wie der Erneuerer (eine Implementierung in Core); scheitert sie, schreibt er nichts. Die Datei kommt
-  per `scp` in den **Eingang** am Host (nächster Punkt). Diese Sitzung gehört nur dem Erneuerer; kein Browser benutzt sie
-  danach. Das ersetzt die frühere Betriebsregel „Bot-Profil nicht mehr benutzen“.
+- **Gewinnung über einen Helfer [B] (2026-11-20, ersetzt die Profilkopie; Weg seit 2026-11-24 geändert, Probe 4):** Chrome-Cookies
+  einer Profilkopie sind verschlüsselt und betriebssystemabhängig, und ein von Automation gestarteter Browser kommt bei Twitch
+  nicht durch den Passwort-Login (18.1, Probe 4). **Der Betreiber startet deshalb einen Chromium-Browser (zum Beispiel Brave)
+  von Hand** mit einem frischen, eigenen Datenverzeichnis (zum Beispiel ein Temp-Verzeichnis) und einem lokalen Debug-Port, der
+  nur an `127.0.0.1` lauscht (`--user-data-dir`, `--remote-debugging-port=9222`, `--remote-debugging-address=127.0.0.1`), meldet
+  sich dort von Hand bei Twitch an (Passwort, 2FA) und einmal auf 7tv.app. Ein Skript des Helfers (Form: Modus des
+  Erneuerer-Projekts oder kleines Skript, das **nur anhängt**, nie einen Browser startet) hängt sich per CDP
+  (`connectOverCDP`) an diesen Browser, prüft die 7TV-Anmeldung (positives Merkmal, `localStorage["7tv-token"]` vorhanden, der
+  Wert wird nie gelesen oder ausgegeben), und schreibt die Cookies von `twitch.tv` mit allen Attributen und dem konservativen
+  Ablauf als JSON in Playwrights `cookies()`-Form (Rechte 600, unter Windows nur der eigene Nutzer), gefiltert auf die
+  Pflichtnamen, sobald G0b sie bestimmt hat (bis dahin alle 15). Danach schließt der Betreiber den Browser und löscht das
+  Datenverzeichnis. Die Formprüfung bleibt eine Implementierung in Core und läuft im Helfer wie im Erneuerer; scheitert sie,
+  schreibt der Helfer nichts. **Das Erneuerer-Image macht nie einen Passwort-Login.** Begründung für ein frisches Verzeichnis
+  statt des eigenen Browser-Profils des Betreibers: die Sitzung soll allein dem Erneuerer gehören (ein Logout im Profil hat die
+  zuvor exportierte Sitzung beendet, 18.1 Probe 4), Chromium sperrt den Debug-Port für das Standardverzeichnis, und
+  Profil-Cookies sind verschlüsselt. Die Datei kommt per `scp` in den **Eingang** am Host (nächster Punkt). Diese Sitzung
+  gehört nur dem Erneuerer; kein Browser benutzt sie danach. Das ersetzt die frühere Betriebsregel „Bot-Profil nicht mehr
+  benutzen“. Der frühere Entwurf „sichtbarer, vom Helfer gestarteter Browser mit flüchtigem Profil“ ist damit verworfen.
 - **Eingang statt Überschreiben [E] (Sol über Revision 4):** Der Betreiber legt eine neue Datei nie über die aktive, sondern
   als `incoming.json` neben sie. Einziger Schreiber der aktiven Datei ist der Erneuerer: Zu Beginn eines Takts, nie während
   eines Laufs, übernimmt er eine formgültige Eingangsdatei, die seit mindestens einer Minute unverändert ist (atomar, dann
@@ -1139,14 +1159,15 @@ Schreiben ohne gültiges Token.
 115. **AK115** Notaus: mit `KillSwitch` kein Auftrag und kein Tausch; der Ablauf 18.8 (Widerruf vor dem Host, zweite
      Abmeldung im Vorfall, Weg bei unerreichbarem Host) steht im Runbook; der Live-Lauf zeigt, dass nach dem Beenden der
      Twitch-Sitzungen ein Lauf mit `twitch_login_required` endet.
-116. **AK116** G0b (vor T1, am Erneuerer-Host, Betreiber führt aus): Login über den Helfer-Prototyp (sichtbarer Browser,
-     flüchtiges Profil) gelingt; kleinste funktionierende Cookie-Menge
+116. **AK116** G0b (vor T1, am Erneuerer-Host, Betreiber führt aus): Login über den Helfer-Prototyp (von Hand gestarteter Browser mit frischem
+     Datenverzeichnis, Anhängen per CDP; R0 am 2026-11-24 bestanden) gelingt; kleinste funktionierende Cookie-Menge
      samt Attributen; zwei Läufe mit der jeweils zurückgeschriebenen Datei; Gleiten; das alte JWT bleibt
      nach einem neuen Login gültig (Überlappung); 7TV duldet drei bis vier gleichzeitig gültige Sitzungen;
      positive Merkmale je Seite; Host-Liste; Sandbox im Container; Spitzen-Speicher; ein ungültiger
      `auth-token` endet als `twitch_login_required`; widerrufene Verbindung → Zustimmungsseite; nach „Sign
      Out Everywhere“ holt ein Lauf ein neues JWT. Ergebnis in DECISIONS. Der Vorlauf (Probe 3, 18.1) belegt den Login
-     vom Host aus mit Isolation; offen sind Sandbox, Speicher, Überlappung der drei Sitzungen und kleinste Menge.
+     vom Host aus mit Isolation; Probe 4 (2026-11-24) belegt R0 und R2 (Überlappung, vier parallele Sitzungen); offen sind Sandbox, Speicher, R1 (Gleiten),
+     R3 und die kleinste Menge.
 117. **AK117** Ressourcen: Image-Größe, anonymer Speicher idle und Spitze (`memory.stat`, Browser im Image
      vorinstalliert), Dauer gemessen und im PR genannt; Limit gesetzt; Worker-Image und Worker-Limit unverändert.
 118. **AK118** DECISIONS (Vertrauensgrenze 18.3, Ort, „unofficial for both Twitch and 7TV“) im selben
@@ -1163,9 +1184,11 @@ Schreiben ohne gültiges Token.
      beim Betreiber zugestellt; bei angehaltenem Kuma (NAS oder Uplink unterbrochen) hat der unabhängige Heartbeat den
      Betreiber per E-Mail erreicht, samt Entwarnung; nach „Jetzt erneuern“ hat der Worker binnen 15 Minuten genau die neue
      `CredentialVersion` geprüft (`LastVerifiedCredentialVersion`); ein Tausch allein lässt das Tor offen.
-121. **AK121** Helfer (Revision 5): sichtbarer Browser mit flüchtigem Profil, schreibt nur die Pflichtnamen unter
+121. **AK121** Helfer (Revision 5, Weg seit 2026-11-24): hängt sich per CDP an einen vom Betreiber von Hand gestarteten Browser
+     mit frischem Datenverzeichnis (startet selbst nie einen), prüft die 7TV-Anmeldung, schreibt nur die Pflichtnamen unter
      `twitch.tv` mit allen Attributen und Rechten 600, nie das 7TV-JWT, nichts bei gescheiterter Formprüfung; dieselbe
-     Formprüfung wie der Erneuerer (Test); der Browser ist danach geschlossen.
+     Formprüfung wie der Erneuerer (Test); der Browser ist danach geschlossen und das Datenverzeichnis gelöscht (Betreiberschritt
+     im Runbook); das Erneuerer-Image macht nie einen Passwort-Login.
 122. **AK122** Restore (Revision 5): ein lokal eingespielter Dump von vor einem Widerruf mit dem SQL-Schritt aus 18.8
      → altes Geheimnis 401, Notaus an, Worker schreibt nichts, bis Geheimnis und Prüfung neu sind; beide Restore-Wege im
      Runbook enthalten den Schritt vor dem Start von Api und Worker.
