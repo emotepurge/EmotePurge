@@ -14,6 +14,7 @@ import {
   AdminHealth,
   AdminRoster,
   AdminUser,
+  BotAccountState,
   AuditLogFilter,
   RateLimitTelemetrySnapshot,
   RateLimitTelemetryTrend,
@@ -146,5 +147,25 @@ export class AdminService {
       params['actor'] = filter.actor.trim();
     }
     return this.http.get<PagedResult<AuditLogEntry>>('/api/admin/audit-log', { params });
+  }
+
+  /** The bot account's state. Never carries the token or the seal. */
+  getBotAccount(): Observable<BotAccountState> {
+    return this.http.get<BotAccountState>('/api/admin/bot-account');
+  }
+
+  /** Seals and stores a new 7TV token. 400 `bot_account_token_malformed` / `_expired`, 404
+   *  `bot_account_disabled`. The caller must clear its input whatever the outcome. */
+  setBotAccountToken(token: string): Observable<void> {
+    return this.http.put<void>('/api/admin/bot-account/token', { token });
+  }
+
+  /** Removes the stored token (idempotent); the kill switch stays as it is. */
+  deleteBotAccountToken(): Observable<void> {
+    return this.http.delete<void>('/api/admin/bot-account/token');
+  }
+
+  setBotAccountKillSwitch(enabled: boolean): Observable<void> {
+    return this.http.put<void>('/api/admin/bot-account/kill-switch', { enabled });
   }
 }

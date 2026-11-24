@@ -315,7 +315,8 @@
       "logs": "Logs",
       "channels": "Channels",
       "users": "Users",
-      "auditLog": "Audit log"
+      "auditLog": "Audit log",
+      "botAccount": "Bot account"
     },
     "monitoring": {
       "title": "Monitoring",
@@ -469,7 +470,8 @@
           "seventv-rest": "7TV REST client",
           "seventv-foreign-preview": "7TV foreign-preview client",
           "seventv-leaderboard": "7TV leaderboard client",
-          "seventv-emote-set-list": "7TV set-list client"
+          "seventv-emote-set-list": "7TV set-list client",
+          "seventv-bot": "7TV bot client"
         }
       },
       "hints": {
@@ -1028,6 +1030,62 @@
         "filterLabel": "Filter",
         "save": "Save"
       }
+    },
+    "botAccount": {
+      "title": "Bot account",
+      "refresh": "Refresh",
+      "tokenSaved": "Token saved. It is checked by the worker shortly.",
+      "expiredNotice": "The bot token has expired. Set a fresh one, otherwise the bot cannot write.",
+      "expiresSoonNotice": "The bot token expires in {{days}} days. Set a fresh one in good time.",
+      "killSwitchOnNotice": "The kill switch is on: the bot writes nothing to 7TV.",
+      "stateHeading": "State",
+      "status": {
+        "label": "Token",
+        "none": "No token",
+        "unverified": "Not checked yet",
+        "valid": "Valid",
+        "invalid": "Rejected by 7TV",
+        "expired": "Expired"
+      },
+      "expires": "Expires",
+      "botUserId": "7TV user id of the bot",
+      "lastVerified": "Last checked",
+      "lastError": "Last error",
+      "pausedUntil": "Paused until (rate limit)",
+      "tokenHeading": "Token",
+      "tokenHelp": "Paste the 7TV token of the bot account. It is stored sealed and never shown again; the field is emptied after sending.",
+      "changedBotHint": "If the new token belongs to a different 7TV account than the current one, every channel with the bot switched on is suspended until the bound account is back. Open bot actions are handed to the channel managers.",
+      "tokenLabel": "7TV token",
+      "setToken": "Set token",
+      "replaceToken": "Replace token",
+      "deleteToken": {
+        "button": "Delete token",
+        "title": "Delete the bot token",
+        "message": "The stored token is removed and the bot can no longer write to 7TV. The kill switch stays as it is.",
+        "inputLabel": "Type {{text}} to confirm",
+        "confirm": "Delete token"
+      },
+      "killSwitch": {
+        "heading": "Kill switch",
+        "help": "Stops every bot write to 7TV at once, without touching the token.",
+        "running": "Bot running",
+        "stopped": "Bot stopped",
+        "engage": "Stop bot",
+        "release": "Release bot",
+        "engageMessage": "Stop the bot? It will not write anything to 7TV until you release it.",
+        "engageConfirm": "Stop bot",
+        "releaseMessage": "Release the bot? It resumes writing to 7TV.",
+        "releaseConfirm": "Release bot"
+      },
+      "wishes": {
+        "heading": "Wishes",
+        "botChannels": "Channels with the bot on",
+        "suspendedChannels": "Suspended channels",
+        "queueAdds": "Waiting to add",
+        "queueConfirms": "Waiting to confirm",
+        "queueRemovals": "Waiting to remove",
+        "openRepairChecks": "Open repair checks"
+      }
     }
   },
   "audit": {
@@ -1038,7 +1096,8 @@
       "tags": "Tags",
       "backfill": "Backfill",
       "wishes": "Wishes",
-      "users": "Users"
+      "users": "Users",
+      "botAccount": "Bot account"
     },
     "actor": "by {{actor}}",
     "actions": {
@@ -1082,7 +1141,20 @@
       "wishUnlink": "Wish link removed",
       "wishRewardAdd": "Wish reward learned",
       "wishRewardChange": "Wish reward changed",
-      "wishRewardRemove": "Wish reward forgotten"
+      "wishRewardRemove": "Wish reward forgotten",
+      "wishBotActivate": "Wish bot activated",
+      "wishBotDeactivate": "Wish bot deactivated",
+      "wishBotAdd": "Wish emote added by the bot",
+      "wishBotRemove": "Wish emote removed by the bot",
+      "wishBotRepair": "Wish emote repaired by the bot",
+      "wishBotSuspectRemoval": "Bot suspects a removal",
+      "wishBotSuspend": "Wish bot suspended",
+      "wishBotRemoveRequest": "Bot removal requested",
+      "wishRecheck": "Wish checked again",
+      "botAccountTokenSet": "Bot token set",
+      "botAccountTokenDelete": "Bot token deleted",
+      "botAccountKillSwitch": "Bot kill switch changed",
+      "botAccountTokenState": "Bot token marked unusable"
     },
     "details": {
       "emoteCount": {

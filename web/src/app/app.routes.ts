@@ -101,6 +101,11 @@ export const routes: Routes = [
               import('./features/admin/admin-users-page').then((m) => m.AdminUsersPage),
           },
           {
+            path: 'bot-account',
+            loadComponent: () =>
+              import('./features/admin/admin-bot-account-page').then((m) => m.AdminBotAccountPage),
+          },
+          {
             path: 'audit-log',
             loadComponent: () =>
               import('./features/admin/admin-audit-log-page').then((m) => m.AdminAuditLogPage),

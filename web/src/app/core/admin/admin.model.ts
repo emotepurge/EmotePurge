@@ -437,3 +437,31 @@ export interface RateLimitTelemetryTrend {
   localRejections: number[];
   providers: { providerName: string; callSource: string; rateLimited: number[] }[];
 }
+
+/** `BotAccountStatus` on the server: the stored state of the bot account's 7TV token. */
+export type BotAccountStatus = 'none' | 'unverified' | 'valid' | 'invalid' | 'expired';
+
+/** The wish-bot numbers of the bot-account read (plan 2.10). Counts only, never names. */
+export interface BotAccountWishes {
+  queue: { adds: number; confirms: number; removals: number };
+  botChannels: number;
+  suspendedChannels: number;
+  openRepairChecks: number;
+}
+
+/**
+ * `GET /api/admin/bot-account`. There is deliberately no field for the token, the seal or a
+ * fingerprint: no route returns them, so the page can only ever show that a token is present.
+ */
+export interface BotAccountState {
+  tokenPresent: boolean;
+  status: BotAccountStatus;
+  expiresAtUtc: string | null;
+  expiresInDays: number | null;
+  botSevenTvUserId: string | null;
+  lastVerifiedAtUtc: string | null;
+  lastErrorCode: string | null;
+  killSwitch: boolean;
+  pausedUntilUtc: string | null;
+  wishes: BotAccountWishes;
+}

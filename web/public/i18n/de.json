@@ -315,7 +315,8 @@
       "logs": "Logs",
       "channels": "Channels",
       "users": "User",
-      "auditLog": "Audit-Log"
+      "auditLog": "Audit-Log",
+      "botAccount": "Bot-Konto"
     },
     "monitoring": {
       "title": "Monitoring",
@@ -469,7 +470,8 @@
           "seventv-rest": "7TV-REST-Client",
           "seventv-foreign-preview": "7TV-Fremdvorschau-Client",
           "seventv-leaderboard": "7TV-Bestenlisten-Client",
-          "seventv-emote-set-list": "7TV-Set-Listen-Client"
+          "seventv-emote-set-list": "7TV-Set-Listen-Client",
+          "seventv-bot": "7TV-Bot-Client"
         }
       },
       "hints": {
@@ -1028,6 +1030,62 @@
         "filterLabel": "Filter",
         "save": "Speichern"
       }
+    },
+    "botAccount": {
+      "title": "Bot-Konto",
+      "refresh": "Aktualisieren",
+      "tokenSaved": "Token gespeichert. Der Worker prüft es gleich.",
+      "expiredNotice": "Das Bot-Token ist abgelaufen. Setze ein frisches, sonst kann der Bot nicht schreiben.",
+      "expiresSoonNotice": "Das Bot-Token läuft in {{days}} Tagen ab. Setze rechtzeitig ein frisches.",
+      "killSwitchOnNotice": "Der Notaus ist an: Der Bot schreibt nichts nach 7TV.",
+      "stateHeading": "Zustand",
+      "status": {
+        "label": "Token",
+        "none": "Kein Token",
+        "unverified": "Noch nicht geprüft",
+        "valid": "Gültig",
+        "invalid": "Von 7TV abgelehnt",
+        "expired": "Abgelaufen"
+      },
+      "expires": "Läuft ab",
+      "botUserId": "7TV-Nutzer-ID des Bots",
+      "lastVerified": "Zuletzt geprüft",
+      "lastError": "Letzter Fehler",
+      "pausedUntil": "Pausiert bis (Rate-Limit)",
+      "tokenHeading": "Token",
+      "tokenHelp": "Füge das 7TV-Token des Bot-Kontos ein. Es wird versiegelt gespeichert und nie wieder angezeigt; das Feld wird nach dem Senden geleert.",
+      "changedBotHint": "Gehört das neue Token zu einem anderen 7TV-Konto als das bisherige, werden alle Kanäle mit eingeschaltetem Bot ausgesetzt, bis das gebundene Konto zurück ist. Offene Bot-Aktionen gehen an die Verwalter des Kanals.",
+      "tokenLabel": "7TV-Token",
+      "setToken": "Token setzen",
+      "replaceToken": "Token ersetzen",
+      "deleteToken": {
+        "button": "Token löschen",
+        "title": "Bot-Token löschen",
+        "message": "Das gespeicherte Token wird entfernt, der Bot kann dann nicht mehr nach 7TV schreiben. Der Notaus bleibt, wie er ist.",
+        "inputLabel": "Zum Bestätigen {{text}} eintippen",
+        "confirm": "Token löschen"
+      },
+      "killSwitch": {
+        "heading": "Notaus",
+        "help": "Stoppt sofort jeden Schreibzugriff des Bots auf 7TV, ohne das Token anzufassen.",
+        "running": "Bot läuft",
+        "stopped": "Bot gestoppt",
+        "engage": "Bot stoppen",
+        "release": "Bot freigeben",
+        "engageMessage": "Bot stoppen? Er schreibt nichts mehr nach 7TV, bis du ihn freigibst.",
+        "engageConfirm": "Bot stoppen",
+        "releaseMessage": "Bot freigeben? Er schreibt wieder nach 7TV.",
+        "releaseConfirm": "Bot freigeben"
+      },
+      "wishes": {
+        "heading": "Wünsche",
+        "botChannels": "Kanäle mit Bot",
+        "suspendedChannels": "Ausgesetzte Kanäle",
+        "queueAdds": "Warten aufs Hinzufügen",
+        "queueConfirms": "Warten auf Bestätigung",
+        "queueRemovals": "Warten aufs Entfernen",
+        "openRepairChecks": "Offene Reparaturprüfungen"
+      }
     }
   },
   "audit": {
@@ -1038,7 +1096,8 @@
       "tags": "Tags",
       "backfill": "Backfill",
       "wishes": "Wünsche",
-      "users": "Nutzer"
+      "users": "Nutzer",
+      "botAccount": "Bot-Konto"
     },
     "actor": "von {{actor}}",
     "actions": {
@@ -1082,7 +1141,20 @@
       "wishUnlink": "Verknüpfung eines Wunsches gelöst",
       "wishRewardAdd": "Belohnung für Wünsche angelernt",
       "wishRewardChange": "Belohnung für Wünsche geändert",
-      "wishRewardRemove": "Belohnung für Wünsche vergessen"
+      "wishRewardRemove": "Belohnung für Wünsche vergessen",
+      "wishBotActivate": "Wunsch-Bot aktiviert",
+      "wishBotDeactivate": "Wunsch-Bot deaktiviert",
+      "wishBotAdd": "Wunsch-Emote vom Bot hinzugefügt",
+      "wishBotRemove": "Wunsch-Emote vom Bot entfernt",
+      "wishBotRepair": "Wunsch-Emote vom Bot repariert",
+      "wishBotSuspectRemoval": "Bot vermutet eine Entfernung",
+      "wishBotSuspend": "Wunsch-Bot ausgesetzt",
+      "wishBotRemoveRequest": "Entfernung durch den Bot angefragt",
+      "wishRecheck": "Wunsch erneut geprüft",
+      "botAccountTokenSet": "Bot-Token gesetzt",
+      "botAccountTokenDelete": "Bot-Token gelöscht",
+      "botAccountKillSwitch": "Bot-Notaus geändert",
+      "botAccountTokenState": "Bot-Token als unbrauchbar markiert"
     },
     "details": {
       "emoteCount": {

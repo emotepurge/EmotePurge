@@ -49,6 +49,19 @@ export const ACTION_KEYS: Record<string, string> = {
   'wish.rewardAdd': 'audit.actions.wishRewardAdd',
   'wish.rewardChange': 'audit.actions.wishRewardChange',
   'wish.rewardRemove': 'audit.actions.wishRewardRemove',
+  'wish.botActivate': 'audit.actions.wishBotActivate',
+  'wish.botDeactivate': 'audit.actions.wishBotDeactivate',
+  'wish.botAdd': 'audit.actions.wishBotAdd',
+  'wish.botRemove': 'audit.actions.wishBotRemove',
+  'wish.botRepair': 'audit.actions.wishBotRepair',
+  'wish.botSuspectRemoval': 'audit.actions.wishBotSuspectRemoval',
+  'wish.botSuspend': 'audit.actions.wishBotSuspend',
+  'wish.botRemoveRequest': 'audit.actions.wishBotRemoveRequest',
+  'wish.recheck': 'audit.actions.wishRecheck',
+  'botAccount.tokenSet': 'audit.actions.botAccountTokenSet',
+  'botAccount.tokenDelete': 'audit.actions.botAccountTokenDelete',
+  'botAccount.killSwitch': 'audit.actions.botAccountKillSwitch',
+  'botAccount.tokenState': 'audit.actions.botAccountTokenState',
   'user.revokeSessions': 'audit.actions.userRevokeSessions',
   'user.invalidateRoleCache': 'audit.actions.userInvalidateRoleCache',
   'user.delete': 'audit.actions.userDelete',
@@ -63,6 +76,10 @@ export const CHANNELLESS_ACTIONS: ReadonlySet<string> = new Set<AuditAction>([
   'user.revokeSessions',
   'user.invalidateRoleCache',
   'user.delete',
+  'botAccount.tokenSet',
+  'botAccount.tokenDelete',
+  'botAccount.killSwitch',
+  'botAccount.tokenState',
 ]);
 
 /** The actions a single channel's log can contain — everything except the user-scoped ones. */
@@ -84,6 +101,7 @@ export const AUDIT_ACTION_GROUPS: readonly { id: string; labelKey: string; prefi
   { id: 'backfill', labelKey: 'audit.groups.backfill', prefix: 'backfill' },
   { id: 'wishes', labelKey: 'audit.groups.wishes', prefix: 'wish' },
   { id: 'users', labelKey: 'audit.groups.users', prefix: 'user' },
+  { id: 'botAccount', labelKey: 'audit.groups.botAccount', prefix: 'botAccount' },
 ];
 
 export interface AuditActionGroup {

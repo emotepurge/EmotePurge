@@ -674,4 +674,34 @@ describe('AdminService', () => {
     expect(result?.telemetryAvailable).toBe(false);
     expect(result?.minuteStartsUtc).toEqual([]);
   });
+
+  it('getBotAccount GETs /api/admin/bot-account', () => {
+    service.getBotAccount().subscribe();
+    const req = httpMock.expectOne('/api/admin/bot-account');
+    expect(req.request.method).toBe('GET');
+    req.flush({});
+  });
+
+  it('setBotAccountToken PUTs the token in the body, not in the URL', () => {
+    service.setBotAccountToken('a.b.c').subscribe();
+    const req = httpMock.expectOne('/api/admin/bot-account/token');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ token: 'a.b.c' });
+    req.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  it('deleteBotAccountToken DELETEs the token route', () => {
+    service.deleteBotAccountToken().subscribe();
+    const req = httpMock.expectOne('/api/admin/bot-account/token');
+    expect(req.request.method).toBe('DELETE');
+    req.flush(null, { status: 204, statusText: 'No Content' });
+  });
+
+  it('setBotAccountKillSwitch PUTs the flag', () => {
+    service.setBotAccountKillSwitch(true).subscribe();
+    const req = httpMock.expectOne('/api/admin/bot-account/kill-switch');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ enabled: true });
+    req.flush(null, { status: 204, statusText: 'No Content' });
+  });
 });
