@@ -166,10 +166,13 @@ const UNNAMED_SKIP_REASON_KEYS: ReadonlySet<SkipReasonKey> = new Set<SkipReasonK
   // the gap size change between two reads of one run, the later count is not shown (accepted).
   'usageStats.delete.gapHidden',
   'usageStats.delete.gapIdRow',
-  // #485: a wish removal's checks before its REMOVE — about the set, the token or 7TV, not the row.
+  // #485: a wish removal's checks before its REMOVE — about the set, the token, the wish (#500,
+  // E46) or 7TV; none of these sentences names the row.
   'wishes.start.tokenChanged',
   'wishes.start.setChanged',
   'wishes.start.setUnverified',
+  'wishes.start.wishChanged',
+  'wishes.start.wishUnverified',
   'wishes.remove.tooSlow',
 ]);
 

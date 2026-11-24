@@ -3413,13 +3413,18 @@ describe('SevenTvDeleteService', () => {
     });
   });
 
-  // #485, plan 2.6 (Sol-R2-P1-1, Sol-R3): a wish's entry row checks token, active set, generation
-  // and the age of its observation before every attempt.
+  // #485, plan 2.6 (Sol-R2-P1-1, Sol-R3); #500, plan 2.7 (E46, PR2-1): a wish's entry row checks
+  // token, active set, generation, the wish itself and the age of both observations before every
+  // attempt.
   describe('the wish binding of an entry row', () => {
     let verifications: Subject<WishBindingSkipReason | null>[];
+    let wishChecks: Subject<WishBindingSkipReason | null>[];
+    let wishCheckCount: number;
 
     beforeEach(() => {
       verifications = [];
+      wishChecks = [];
+      wishCheckCount = 0;
     });
 
     function wishRow(addedAt = T1): DeleteQueueEmote {
@@ -3431,6 +3436,12 @@ describe('SevenTvDeleteService', () => {
           verifySetAndToken: () => {
             const verdict = new Subject<WishBindingSkipReason | null>();
             verifications.push(verdict);
+            return verdict;
+          },
+          verifyWish: () => {
+            const verdict = new Subject<WishBindingSkipReason | null>();
+            wishCheckCount += 1;
+            wishChecks.push(verdict);
             return verdict;
           },
         },
@@ -3449,6 +3460,14 @@ describe('SevenTvDeleteService', () => {
       pending!.complete();
     }
 
+    /** Answers the oldest open check of the wish. */
+    function answerWish(verdict: WishBindingSkipReason | null) {
+      const pending = wishChecks.shift();
+      expect(pending).toBeDefined();
+      pending!.next(verdict);
+      pending!.complete();
+    }
+
     /** One page of a multi-page dated read. */
     function datedPage(entries: readonly LiveEntry[], totalCount: number, pageCount: number) {
       const single = datedSetPage(entries, totalCount);
@@ -3462,17 +3481,23 @@ describe('SevenTvDeleteService', () => {
 
     const LIVE_A: LiveEntry = { id: '7tv-x', alias: 'aaa', addedAt: T1 };
 
-    it('checks the token and the active set first, then reads the set, then removes the entry', () => {
+    it('checks the token and the active set, reads the set, checks the wish, then removes the entry once', () => {
       startWish();
 
       httpMock.expectNone(isSetRead);
       expect(verifications).toHaveLength(1);
       verify(null);
       httpMock.expectNone(isRemove);
+      expect(wishChecks).toHaveLength(0);
       answerRead([LIVE_A]);
+      httpMock.expectNone(isRemove);
+      expect(wishChecks).toHaveLength(1);
+      answerWish(null);
 
       expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+      httpMock.expectNone(isRemove);
       expect(rowOf('7tv-x#slot-aaa')?.status).toBe('done');
+      expect(wishCheckCount).toBe(1);
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
     });
 
@@ -3480,21 +3505,25 @@ describe('SevenTvDeleteService', () => {
       startWish();
       verify(null);
       answerRead([LIVE_A]);
+      answerWish(null);
       answerRateLimited();
 
       vi.advanceTimersByTime(1500);
       verify(null);
       answerRead([LIVE_A]);
+      answerWish(null);
 
       expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
       httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
       expect(verifications).toHaveLength(0);
+      expect(wishCheckCount).toBe(2);
     });
 
     it('sends no second REMOVE when the read after a 429 shows the alias under a new generation', () => {
       startWish();
       verify(null);
       answerRead([LIVE_A]);
+      answerWish(null);
       answerRateLimited();
 
       vi.advanceTimersByTime(1500);
@@ -3502,6 +3531,9 @@ describe('SevenTvDeleteService', () => {
       answerRead([{ id: '7tv-x', alias: 'aaa', addedAt: T2 }]);
       vi.advanceTimersByTime(DELETE_DELAY_MS);
 
+      // The entry is gone at its generation: skipped for that, without asking about the wish.
+      expect(wishChecks).toHaveLength(0);
+      expect(wishCheckCount).toBe(1);
       httpMock.expectNone(isRemove);
       expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
         status: 'cancelled',
@@ -3513,6 +3545,7 @@ describe('SevenTvDeleteService', () => {
       startWish();
       verify(null);
       answerRead([LIVE_A]);
+      answerWish(null);
       answerRateLimited();
 
       vi.advanceTimersByTime(1500);
@@ -3531,6 +3564,7 @@ describe('SevenTvDeleteService', () => {
       startWish();
       verify(null);
       answerRead([LIVE_A]);
+      answerWish(null);
       answerRateLimited();
       tokenService.clearToken();
 
@@ -3547,6 +3581,7 @@ describe('SevenTvDeleteService', () => {
       startWish();
       verify(null);
       answerRead([LIVE_A]);
+      answerWish(null);
       answerRateLimited();
       tokenService.setToken('another-token');
 
@@ -3561,6 +3596,7 @@ describe('SevenTvDeleteService', () => {
       verify(null);
       tokenService.setToken('another-token');
       answerRead([LIVE_A]);
+      answerWish(null);
       vi.advanceTimersByTime(DELETE_DELAY_MS);
 
       httpMock.expectNone(isRemove);
@@ -3617,12 +3653,15 @@ describe('SevenTvDeleteService', () => {
         startWish();
         verify(null);
         answerTwoPageRead(LIVE_A, WISH_OBSERVATION_MAX_AGE_MS + 1000);
+        answerWish(null);
         httpMock.expectNone(isRemove);
 
         answerTwoPageRead(LIVE_A, 100);
+        answerWish(null);
 
         expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
         expect(verifications).toHaveLength(0);
+        expect(wishCheckCount).toBe(2);
         httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
       });
 
@@ -3630,10 +3669,12 @@ describe('SevenTvDeleteService', () => {
         startWish();
         verify(null);
         answerTwoPageRead(LIVE_A, WISH_OBSERVATION_MAX_AGE_MS + 1000);
+        answerWish(null);
 
         answerTwoPageRead({ id: '7tv-x', alias: 'aaa', addedAt: T2 }, 100);
         vi.advanceTimersByTime(DELETE_DELAY_MS);
 
+        expect(wishChecks).toHaveLength(0);
         httpMock.expectNone(isSetRead);
         httpMock.expectNone(isRemove);
         expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe(
@@ -3645,8 +3686,10 @@ describe('SevenTvDeleteService', () => {
         startWish();
         verify(null);
         answerTwoPageRead(LIVE_A, WISH_OBSERVATION_MAX_AGE_MS + 1000);
+        answerWish(null);
 
         answerTwoPageRead(LIVE_A, WISH_OBSERVATION_MAX_AGE_MS + 1000);
+        answerWish(null);
         vi.advanceTimersByTime(DELETE_DELAY_MS);
 
         httpMock.expectNone(isSetRead);
@@ -3665,16 +3708,144 @@ describe('SevenTvDeleteService', () => {
         vi.advanceTimersByTime(WISH_OBSERVATION_MAX_AGE_MS + 1000);
         httpMock.expectOne(isSetRead).flush(datedPage([OTHER], 2, 2));
         httpMock.expectOne(isSetRead).flush(datedPage([LIVE_A], 2, 2));
+        answerWish(null);
 
         expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
         httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
       });
+
+      // PR2-1: the age is taken after the wish check, so a slow but unchanged wish answer cannot
+      // stretch a set observation past five seconds.
+      it('reads set and wish once more when a quick set read waits on a slow wish answer, then sends', () => {
+        startWish();
+        verify(null);
+        answerRead([LIVE_A]);
+        vi.advanceTimersByTime(WISH_OBSERVATION_MAX_AGE_MS + 1);
+        answerWish(null);
+        httpMock.expectNone(isRemove);
+
+        answerRead([LIVE_A]);
+        expect(wishChecks).toHaveLength(1);
+        answerWish(null);
+
+        expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+        httpMock.expectNone(isRemove);
+        expect(wishCheckCount).toBe(2);
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+
+      it('skips the row when the wish answers too slowly on the second pass as well', () => {
+        startWish();
+        verify(null);
+        answerRead([LIVE_A]);
+        vi.advanceTimersByTime(WISH_OBSERVATION_MAX_AGE_MS + 1);
+        answerWish(null);
+
+        answerRead([LIVE_A]);
+        vi.advanceTimersByTime(WISH_OBSERVATION_MAX_AGE_MS + 1);
+        answerWish(null);
+        vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+        httpMock.expectNone(isSetRead);
+        httpMock.expectNone(isRemove);
+        expect(wishCheckCount).toBe(2);
+        expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
+          status: 'cancelled',
+          skipReason: { key: 'wishes.remove.tooSlow' },
+        });
+      });
+
+      it('lets the removal through when both observations are exactly five seconds old', () => {
+        startWish();
+        verify(null);
+        answerRead([LIVE_A]);
+        vi.advanceTimersByTime(WISH_OBSERVATION_MAX_AGE_MS);
+        answerWish(null);
+
+        expect(answerRemove()).toEqual({ setId: 'set-1', emoteId: '7tv-x', alias: 'aaa' });
+        expect(wishCheckCount).toBe(1);
+        httpMock.expectOne(SYNC_ENDPOINT).flush(deletedAnswer());
+      });
+    });
+
+    // AK133 (Vitest part): keep → delete → adopt by a colleague during the 429 pause leaves the
+    // entry at its generation, but the fresh read of the old wish no longer finds it.
+    it('sends no second REMOVE when the wish changed during the 429 pause', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerWish(null);
+      answerRateLimited();
+
+      vi.advanceTimersByTime(1500);
+      verify(null);
+      answerRead([LIVE_A]);
+      answerWish('wishChanged');
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isSetRead);
+      httpMock.expectNone(isRemove);
+      expect(wishCheckCount).toBe(2);
+      expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
+        status: 'cancelled',
+        skipReason: { key: 'wishes.start.wishChanged' },
+      });
+    });
+
+    it('sends nothing when the wish changed before the first attempt', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answerWish('wishChanged');
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe('wishes.start.wishChanged');
+    });
+
+    it.each([
+      [
+        'unverified',
+        (pending: Subject<WishBindingSkipReason | null>) => pending.next('wishUnverified'),
+      ],
+      [
+        'erroring',
+        (pending: Subject<WishBindingSkipReason | null>) => pending.error(new Error('x')),
+      ],
+      ['empty', (pending: Subject<WishBindingSkipReason | null>) => pending.complete()],
+    ])('sends nothing and does not pause when the check of the wish is %s', (_label, answer) => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      answer(wishChecks.shift()!);
+      vi.advanceTimersByTime(DELETE_DELAY_MS + 60_000);
+
+      expect(verifications).toHaveLength(0);
+      httpMock.expectNone(isSetRead);
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')).toMatchObject({
+        status: 'cancelled',
+        skipReason: { key: 'wishes.start.wishUnverified' },
+      });
+    });
+
+    it('sends nothing when the token is removed while the wish is being read', () => {
+      startWish();
+      verify(null);
+      answerRead([LIVE_A]);
+      tokenService.clearToken();
+      answerWish(null);
+      vi.advanceTimersByTime(DELETE_DELAY_MS);
+
+      httpMock.expectNone(isRemove);
+      expect(rowOf('7tv-x#slot-aaa')?.skipReason?.key).toBe('wishes.start.tokenChanged');
     });
 
     it('keeps the token out of the row, the record and the report', () => {
       startWish();
       verify(null);
       answerRead([LIVE_A]);
+      answerWish(null);
       answerRemove();
       const report = httpMock.expectOne(SYNC_ENDPOINT);
 
