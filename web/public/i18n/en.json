@@ -2616,7 +2616,10 @@
       "wish_reward_no_candidate": "There is no recognised redemption to confirm. Start learning again.",
       "wish_reward_already_known": "This reward has been learned already. You will find it in the list and can edit it there.",
       "wish_reward_limit": "This channel already has the maximum number of rewards. Forget one first.",
-      "wish_reward_not_found": "This reward no longer exists. The list shows the current state."
+      "wish_reward_not_found": "This reward no longer exists. The list shows the current state.",
+      "bot_account_disabled": "The bot account is switched off on this server. A token can only be set once it is switched on.",
+      "bot_account_token_malformed": "This is not a 7TV token. Copy the whole token, it has three parts separated by dots.",
+      "bot_account_token_expired": "This token has already expired. Get a fresh token for the bot account and set that one."
     }
   },
   "backfill": {

@@ -96,6 +96,31 @@ public static class AuditActions
     public const string WishRewardAdd = "wish.rewardAdd";
     public const string WishRewardChange = "wish.rewardChange";
     public const string WishRewardRemove = "wish.rewardRemove";
+
+    // The bot account (#487, plan 2.11). Account-wide, so no channel. Details never carry the token, the seal, a
+    // name or a login: tokenSet only expiresAtUtc, killSwitch only enabled, tokenDelete nothing.
+    public const string BotAccountTokenSet = "botAccount.tokenSet";
+    public const string BotAccountTokenDelete = "botAccount.tokenDelete";
+
+    /// <summary>The kill switch changed (an unchanged value writes nothing); details <c>enabled</c>.</summary>
+    public const string BotAccountKillSwitch = "botAccount.killSwitch";
+
+    /// <summary>The worker moved the token to <c>invalid</c> or <c>expired</c>; written under <see cref="AuditActor.System"/>.</summary>
+    public const string BotAccountTokenState = "botAccount.tokenState";
+
+    // The wish bot (#487, plan 2.11). Channel-scoped like every wish action, target ("wish", id) where a wish is meant.
+    // Bot transitions without an entry of their own (bot_unconfirmed, bot_already_in_set, bot_reject, ownership_lost,
+    // the fallback) are visible on the wish and write nothing. The bot's own writes go under AuditActor.System; the
+    // activation is recorded under the manager who asked for it.
+    public const string WishBotActivate = "wish.botActivate";
+    public const string WishBotDeactivate = "wish.botDeactivate";
+    public const string WishBotAdd = "wish.botAdd";
+    public const string WishBotRemove = "wish.botRemove";
+    public const string WishBotRepair = "wish.botRepair";
+    public const string WishBotSuspectRemoval = "wish.botSuspectRemoval";
+    public const string WishBotSuspend = "wish.botSuspend";
+    public const string WishBotRemoveRequest = "wish.botRemoveRequest";
+    public const string WishRecheck = "wish.recheck";
 }
 
 /// <summary>

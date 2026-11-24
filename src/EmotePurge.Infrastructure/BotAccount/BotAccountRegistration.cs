@@ -15,10 +15,14 @@ public static class BotAccountRegistration
 {
     /// <summary>
     /// Api only. Registers <see cref="IBotAccountTokenSealer"/>: the real sealer while the bot account is enabled,
-    /// otherwise one that always refuses (the token route answers 404 first). Never registers an opener.
+    /// otherwise one that always refuses (the token route answers 404 first). Never registers an opener. Also registers
+    /// the admin writer <see cref="IBotAccountService"/>, the one consumer of the sealer, whatever the switch: its read,
+    /// token delete and kill switch stay reachable with the bot account off (plan #487 2.10).
     /// </summary>
     public static IServiceCollection AddBotAccountTokenSealing(this IServiceCollection services, IConfiguration configuration)
     {
+        services.AddScoped<IBotAccountService, BotAccountService>();
+
         if (!IsEnabled(configuration))
         {
             services.AddSingleton<IBotAccountTokenSealer, DisabledBotAccountTokenSealer>();

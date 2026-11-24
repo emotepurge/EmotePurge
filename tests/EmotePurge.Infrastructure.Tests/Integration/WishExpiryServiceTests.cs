@@ -2,6 +2,7 @@ using System.Text.Json;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.BotAccount;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
@@ -316,16 +317,20 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
         Assert.Equal((WishStatus.Presented, WishStatusReason.NotBotOwned), (wish.Status, wish.StatusReason));
     }
 
-    // Case 11: with an authoritative start, the registered default availability (never) and a suspended channel with
+    // Case 11: with an authoritative start, the real availability with the bot account switched off (K4, #487: the
+    // regression "bot off: unchanged" against K2's never-available stand-in it replaced) and a suspended channel with
     // an available bot both present as bot_unavailable.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Row4_DefaultAvailabilityOrSuspendedChannel_IsBotUnavailable(bool suspended)
+    public async Task Row4_BotAccountOffOrSuspendedChannel_IsBotUnavailable(bool suspended)
     {
         var channel = await SeedChannelAsync(botMode: true, suspendedReason: suspended ? "not_editor" : null);
         var wishId = await SeedWishAsync(channel, expiresAt: Now.AddMinutes(-1), botOwned: true);
-        IWishBotAvailability availability = suspended ? new CountingAvailability { Available = true } : new WishBotNeverAvailable();
+        await using var availabilityDb = CreateDb();
+        IWishBotAvailability availability = suspended
+            ? new CountingAvailability { Available = true }
+            : new WishBotAvailability(new WishOptions { Enabled = true }, new BotAccountAvailability(availabilityDb, new BotAccountOptions(), _clock));
 
         await Sut(availability: availability).RunAsync();
 

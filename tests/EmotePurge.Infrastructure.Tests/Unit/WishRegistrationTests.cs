@@ -1,4 +1,5 @@
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.BotAccount;
 using EmotePurge.Infrastructure.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -44,19 +45,22 @@ public class WishRegistrationTests
     }
 
     // The expiry run (#484 T3) resolves per scope whatever the switch (the worker checks the switch, not the
-    // container), and the stand-in bot availability is registered and never available until K4 replaces it.
+    // container). The bot availability is K4's real one (#487 2.3), scoped in both layers, and without
+    // BotAccount:Enabled it is never available, with or without the wishes, and without a database read.
     [Theory]
     [InlineData("true")]
     [InlineData("false")]
     [InlineData(null)]
-    public async Task WishExpiry_Resolves_WhateverTheSwitch_AndTheDefaultBotIsNeverAvailable(string? value)
+    public async Task WishExpiry_Resolves_WhateverTheSwitch_AndTheBotIsUnavailableWithTheBotAccountOff(string? value)
     {
         using var provider = BuildProvider(value);
         using var scope = provider.CreateScope();
 
         Assert.IsType<WishExpiryService>(scope.ServiceProvider.GetRequiredService<IWishExpiryService>());
-        var availability = provider.GetRequiredService<IWishBotAvailability>();
-        Assert.IsType<WishBotNeverAvailable>(availability);
+        Assert.IsType<BotAccountAvailability>(scope.ServiceProvider.GetRequiredService<IBotAccountAvailability>());
+        Assert.IsType<WishBotService>(scope.ServiceProvider.GetRequiredService<IWishBotService>());
+        var availability = scope.ServiceProvider.GetRequiredService<IWishBotAvailability>();
+        Assert.IsType<WishBotAvailability>(availability);
         Assert.False(await availability.IsAvailableAsync());
     }
 

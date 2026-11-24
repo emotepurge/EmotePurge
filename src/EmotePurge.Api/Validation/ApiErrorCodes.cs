@@ -275,4 +275,13 @@ internal static class ApiErrorCodes
     public const string WishRewardLimit = "wish_reward_limit";
     // 404 from PATCH/DELETE …/rewards/{rewardId}: no such reward in this channel.
     public const string WishRewardNotFound = "wish_reward_not_found";
+
+    // The bot account (#487, plan 2.10), admin routes under /api/admin/bot-account.
+    // 404 from PUT /token while BotAccount:Enabled is false, after the admin filter. The read, the token delete and the
+    // kill switch stay reachable with the switch off (emergency stop and rollback).
+    public const string BotAccountDisabled = "bot_account_disabled";
+    // 400 from PUT /token: not three base64url segments, no JSON payload, or no numeric exp.
+    public const string BotAccountTokenMalformed = "bot_account_token_malformed";
+    // 400 from PUT /token: the token's exp is not in the future.
+    public const string BotAccountTokenExpired = "bot_account_token_expired";
 }
