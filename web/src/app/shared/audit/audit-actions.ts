@@ -149,6 +149,10 @@ export const DETAIL_KEYS: Record<string, string> = {
   importedFromTag: 'audit.details.importedFromTag',
   backfillMonths: 'audit.details.backfillMonths',
   backfillRemovedDays: 'audit.details.backfillRemovedDays',
+  killSwitchOn: 'audit.details.killSwitchOn',
+  killSwitchOff: 'audit.details.killSwitchOff',
+  tokenInvalid: 'audit.details.tokenInvalid',
+  tokenExpired: 'audit.details.tokenExpired',
 };
 
 /**

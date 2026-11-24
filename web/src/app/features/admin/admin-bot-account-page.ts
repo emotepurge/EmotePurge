@@ -267,6 +267,9 @@ export class AdminBotAccountPage {
   });
 
   protected reload(): void {
+    // A success notice or an action error describes the state before this refresh.
+    this.saved.set(false);
+    this.actionError.set(null);
     this.stateResource.reload();
   }
 

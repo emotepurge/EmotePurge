@@ -1190,6 +1190,10 @@
         "one": "{{count}} Tag",
         "other": "{{count}} Tage"
       },
+      "killSwitchOn": "Notaus an, Bot gestoppt",
+      "killSwitchOff": "Notaus aus, Bot läuft",
+      "tokenInvalid": "Token ungültig",
+      "tokenExpired": "Token abgelaufen",
       "leaderboardSort": {
         "TRENDING_DAILY": "7TV Trend heute",
         "TOP_ALL_TIME": "7TV Top insgesamt"

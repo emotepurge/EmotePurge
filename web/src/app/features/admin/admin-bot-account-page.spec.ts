@@ -1,5 +1,6 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { ApplicationRef } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { TranslocoTestingModule } from '@jsverse/transloco';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -34,6 +35,8 @@ describe('AdminBotAccountPage — the token field', () => {
     canSubmit: () => boolean;
     submitToken(event: Event): void;
     errorMessage: () => string | null;
+    saved: () => boolean;
+    reload(): void;
   };
   const internals = () => page as unknown as Internals;
 
@@ -84,5 +87,38 @@ describe('AdminBotAccountPage — the token field', () => {
       .expectOne('/api/admin/bot-account/token')
       .flush({ errorCode: 'bot_account_token_malformed' }, { status: 400, statusText: 'Bad' });
     expect(internals().errorMessage()).toBe('errors.api.bot_account_token_malformed');
+  });
+
+  it('drops the saved notice on a manual refresh', async () => {
+    internals().tokenInput.set('a.b.c');
+    internals().submitToken(new Event('submit'));
+    httpMock
+      .expectOne('/api/admin/bot-account/token')
+      .flush(null, { status: 204, statusText: 'No Content' });
+    TestBed.tick();
+    httpMock.expectOne('/api/admin/bot-account').flush(STATE);
+    await TestBed.inject(ApplicationRef).whenStable();
+    expect(internals().saved()).toBe(true);
+
+    internals().reload();
+    TestBed.tick();
+    httpMock.expectOne('/api/admin/bot-account').flush(STATE);
+
+    expect(internals().saved()).toBe(false);
+  });
+
+  it('drops a failed action error on a manual refresh', async () => {
+    internals().tokenInput.set('nonsense');
+    internals().submitToken(new Event('submit'));
+    httpMock
+      .expectOne('/api/admin/bot-account/token')
+      .flush({ errorCode: 'bot_account_token_malformed' }, { status: 400, statusText: 'Bad' });
+    expect(internals().errorMessage()).not.toBeNull();
+
+    internals().reload();
+    TestBed.tick();
+    httpMock.expectOne('/api/admin/bot-account').flush(STATE);
+
+    expect(internals().errorMessage()).toBeNull();
   });
 });

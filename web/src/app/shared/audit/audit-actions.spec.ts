@@ -16,6 +16,15 @@ import de from '../../../../public/i18n/de.json';
 import en from '../../../../public/i18n/en.json';
 
 /** Walks a dotted translation key, returning undefined as soon as a segment is missing. */
+/** Kinds without a count: their locale entry is a plain string, not a { one, other } pair. */
+const STRING_DETAIL_KINDS: ReadonlySet<string> = new Set([
+  'title',
+  'killSwitchOn',
+  'killSwitchOff',
+  'tokenInvalid',
+  'tokenExpired',
+]);
+
 function lookup(bundle: unknown, key: string): unknown {
   return key
     .split('.')
@@ -62,7 +71,7 @@ describe('audit action tables', () => {
   // (`audit-row.ts`'s `renderDetail`), so its locale entry is a `{ one, other }` pair rather than
   // a single string — `title` is the one kind that never gets a count and stays a plain string.
   it.each(Object.entries(DETAIL_KEYS))('translates the %s detail in both locales', (kind, key) => {
-    if (kind === 'title') {
+    if (STRING_DETAIL_KINDS.has(kind)) {
       expect(lookup(de, key)).toBeTypeOf('string');
       expect(lookup(en, key)).toBeTypeOf('string');
       return;
@@ -85,8 +94,12 @@ describe('audit action tables', () => {
       'importedFromFile',
       'importedFromLeaderboard',
       'importedFromTag',
+      'killSwitchOff',
+      'killSwitchOn',
       'removedEntries',
       'title',
+      'tokenExpired',
+      'tokenInvalid',
     ]);
   });
 

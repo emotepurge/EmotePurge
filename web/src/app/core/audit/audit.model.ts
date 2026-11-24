@@ -81,7 +81,12 @@ export type AuditDetailKind =
   /** A chat-log backfill request (#346): the number of months asked for; the set rides on the target fields. */
   | 'backfillMonths'
   /** A removal of a channel's imported backfill data (#384): the number of coverage days removed. */
-  | 'backfillRemovedDays';
+  | 'backfillRemovedDays'
+  /** The bot account's kill switch and token state (#487): the kind alone carries the value. */
+  | 'killSwitchOn'
+  | 'killSwitchOff'
+  | 'tokenInvalid'
+  | 'tokenExpired';
 
 /**
  * An action's target set (spec 2026-09-20), present on an `AuditLogDetail` whenever the row's
