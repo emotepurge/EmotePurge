@@ -97,7 +97,7 @@ bleiben als Nebenwege für Korrektur und Nachtrag.
 | E8 | **Pilot-Liste nur für den Bot-Modus, fail-closed beim Aktivieren und im Betrieb:** `Wishes:PilotChannelIds` (Twitch-Kanal-IDs, kommagetrennt, oder `*` für alle). In einem gelisteten Kanal darf jeder nach E24 Berechtigte den Bot-Modus aktivieren, in jedem anderen nur ein globaler Admin. **Leer heißt: nirgends, außer durch globale Admins.** Der Bot schreibt nur in Kanälen, die gelistet sind oder deren Aktivierung von einem Konto stammt, das zum Zeitpunkt des Schreibens globaler Admin ist. Fällt ein Kanal aus der Liste, schreibt der Bot dort ab dem nächsten Lauf nicht mehr; der Kanal läuft im manuellen Ablauf wie beim Notaus, die Aktivierung bleibt gespeichert, und der Bot nimmt ohne neuen Editor-Eintrag wieder auf, sobald der Kanal wieder gelistet ist. Der manuelle Modus hängt allein an `Wishes:Enabled`. | Entscheide W7 und X2. Der Bot-Modus ist der Teil mit serverseitigem Schreibzugriff; eine vergessene oder leere Variable darf ihn weder öffnen noch offen halten. Globale Admins bleiben ausgenommen, damit sich der Betrieb ohne Stack-Update prüfen lässt; `*` ist die bewusste, ausgeschriebene Öffnung. |
 | E9 | **Abgleich zustandsbasiert statt ereignisbasiert:** Nach jedem erfolgreichen Vollsync, Delta und manuellen Slot-Schreiben läuft `IWishReconcileService.ReconcileChannelAsync(channelId)`, der Wünsche gegen den aktuellen Slot-Bestand vergleicht. Idempotent; der Ablauf-Lauf ruft ihn als Sicherheitsnetz für jeden Kanal mit laufenden Wünschen. | Es gibt keinen Hook für „Slot angelegt/archiviert“ (Abschnitt 2). Ein Vergleich gegen den Ist-Stand heilt verpasste Ereignisse von selbst. |
 | E10 | **Übernahmefenster 6 Stunden** nach `extern entfernt` (Entwurf: „Größenordnung Stunden“). | Deckt Entfernen und Wieder-Hinzufügen über mehrere Sync-Läufe (R3-3), ohne ein späteres, unabhängiges Hinzufügen zu übernehmen. |
-| E11 | **Bestätigungsschwelle im Bot-Modus 15 Minuten:** Lesen direkt nach dem Schreiben, dann nach 30 s, 2 min, 5 min, 15 min. Danach `vorgelegt` mit Grund `unconfirmed`. | P2-Schwelle des Entwurfs war 5 Minuten für die Machbarkeit; der Betrieb bekommt einen Versuch mehr, bevor ein Mensch gerufen wird. |
+| E11 | **Bestätigungsschwelle im Bot-Modus 15 Minuten:** Lesen direkt nach dem Schreiben, dann nach 30 s, 2 min, 5 min, 15 min. Danach `vorgelegt` mit Grund `unconfirmed`. **G0 (2026-11-24):** bleibt; AK88 maß 0 s, und die Rückgabe von `addEmote` ersetzt das Lesen direkt nach dem Schreiben (AK89). | P2-Schwelle des Entwurfs war 5 Minuten für die Machbarkeit; der Betrieb bekommt einen Versuch mehr, bevor ein Mensch gerufen wird. |
 | E12 | **Verlängern ohne Obergrenze der Anzahl**, je Vorgang um den Kanal-Default, gerechnet ab dem bisherigen Ablauf, oder ab jetzt, wenn der Ablauf schon vorbei ist. Jede Verlängerung ist ein Audit-Eintrag. | Entscheidung 3 nennt keine Obergrenze; E1 begrenzt die einzelne Laufzeit, das Audit-Log zeigt Ketten. |
 | E13 | **Höchstens ein laufender Wunsch je Kanal und 7TV-Emote-ID** (Zustände `approved`, `unconfirmed`, `active`, `presented`). Ein Handeintrag für ein Emote mit laufendem Wunsch wird abgelehnt (409), und die Oberfläche bietet „Verlängern“ an. Wird ein **offener** Wunsch für ein solches Emote freigegeben, wird er zur Verlängerung des laufenden und endet selbst als `merged` (K6). | Entscheidung 3. Ein zweiter Alias desselben Emotes als eigener Wunsch ist Out of Scope. |
 | E14 | **Personendaten hängender Wünsche:** Einlöser-ID, Login und eingelöster Text werden auch ohne Endzustand geleert, und zwar (a) 30 Tage nach `ExpiresAtUtc`, wenn der Wunsch dann nicht `active` ist; (b) 30 Tage nach `StatusChangedAtUtc` für jeden Wunsch ohne `ExpiresAtUtc` in `approved`, `unconfirmed`, `failed` oder `presented`; (c) spätestens 120 Tage nach `CreatedAtUtc` für jeden Wunsch, der nie `active` war. | `vorgelegt` hat bewusst keinen Timeout (R3-12), und ein unbestätigter oder fehlgeschlagener Wunsch hat weder Start noch Ablauf (Sol-Befund 5). (c) fängt Schleifen aus „erneut versuchen“ ab; 120 = 90 Tage größte Verfallsfrist plus 30. Vom Betreiber angenommen (W3). |
@@ -264,9 +264,9 @@ Indizes und Constraints:
 | `BotModeActivatedByTwitchUserId`, `BotModeActivatedByLogin` | text, null | | bei Kontolöschung pseudonymisiert |
 | `BotModeActivatedAtUtc` | timestamptz, null | | |
 | `BotEditorCheckedAtUtc` | timestamptz, null | | letzte bestandene Editor-Prüfung |
-| `BotSuspendedReason` | text, null | | `not_editor`, `not_listed`; gesetzt heißt: Kanal läuft im manuellen Ablauf |
-| `BotActivationRequestedAtUtc`, `BotActivationRequestedByTwitchUserId`, `BotActivationRequestedByLogin` | null | | laufende Aktivierung; bei Bestätigung in `BotModeActivated*` übernommen und geleert, bei `not_editor` geleert |
-| `BotActivationError` | text, null | | `not_editor` nach gescheiterter Prüfung; geleert beim nächsten `activate` |
+| `BotSuspendedReason` | text, null | | `not_editor`, `not_listed`, seit G0 auch `invitation_pending` (aktivierter Kanal mit offener Einladung, die der Bot noch nicht annehmen konnte, K4 „Einladungen“); gesetzt heißt: Kanal läuft im manuellen Ablauf |
+| `BotActivationRequestedAtUtc`, `BotActivationRequestedByTwitchUserId`, `BotActivationRequestedByLogin` | null | | laufende Aktivierung; bei Bestätigung in `BotModeActivated*` übernommen und geleert, bei `not_editor` oder `invitation_not_accepted` geleert |
+| `BotActivationError` | text, null | | `not_editor` nach gescheiterter Prüfung, seit G0 auch `invitation_not_accepted` (Annahme der Einladung abgelehnt); geleert beim nächsten `activate` |
 
 Die Zeile entsteht beim ersten Schreiben; fehlt sie, gelten die Defaults. Eine Änderung der
 Kanal-Defaults wirkt nur auf künftige Wünsche und Verlängerungen, nie rückwirkend auf laufende
@@ -431,8 +431,12 @@ Kauf genommen mit diesen Schutzmaßnahmen:
    jedem Schreiben liest; wirkt ohne Stack-Update. (b) „Sign Out Everywhere“ in den
    7TV-Einstellungen des Bot-Kontos entwertet das Token bei 7TV. Dazu als harter Schalter
    `BotAccount:Enabled = false`. Bis geprüft ist, ob ein normaler Logout andere Sitzungen
-   beendet, gilt: mit dem Bot-Konto nirgends normal ausloggen. Mit der Erneuerung ist die
-   Reihenfolge aus 18.8 verbindlich: „Sign Out Everywhere“ allein beendet die Twitch-Sitzung nicht.
+   beendet, gilt: mit dem Bot-Konto nirgends normal ausloggen. **Geprüft am 2026-11-24 (AK90):** ein
+   normaler 7TV-Logout in einer anderen Sitzung lässt das gespeicherte JWT gültig; die Regel gilt für
+   7TV nicht mehr. Verboten bleibt, die Twitch-Sitzung des Erneuerers abzumelden (Profil, aus dem die
+   Cookies stammen, 18.2). „Sign Out Everywhere“ entwertet das JWT nachweislich (echtes HTTP 401). Mit der Erneuerung ist die
+   Reihenfolge aus 18.8 verbindlich: „Sign Out Everywhere“ allein beendet die Twitch-Sitzung nicht
+   (bestätigt in derselben Probe: ein Headless-Login aus der gespeicherten Twitch-Sitzung holte danach sofort ein neues JWT).
 7. **Ablauf (F5, geändert durch den Nachtrag 18):** Die Admin-Seite zeigt `exp`. Ab 21 Tagen vorher
    (`Renewal:LeadDays`) erneuert der Erneuerer das JWT automatisch über einen Headless-Login mit der
    Twitch-Sitzung des Bot-Kontos (18.4); Hinweis auf der Seite und Log-Warnung je Tag ab 7 Tagen
@@ -442,7 +446,8 @@ Kauf genommen mit diesen Schutzmaßnahmen:
    oder der Schalter ist aus: **alle** Bot-Kanäle laufen im manuellen Ablauf. Editor-Rechte in
    einem Kanal entzogen, oder der Kanal ist nicht mehr durch die Pilot-Liste gedeckt (E8):
    **dieser** Kanal läuft im manuellen Ablauf (`BotSuspendedReason` = `not_editor` bzw.
-   `not_listed`). Die Aktivierung bleibt gespeichert; entfällt der Grund, nimmt der Bot ohne neuen
+   `not_listed`; seit G0 auch `invitation_pending`, solange eine neue Einladung eines aktivierten
+   Kanals offen ist und der Bot sie noch nicht annehmen konnte, K4 „Einladungen“). Die Aktivierung bleibt gespeichert; entfällt der Grund, nimmt der Bot ohne neuen
    Editor-Eintrag wieder auf. Was dann
    mit offenen Bot-Aktionen geschieht: `approved` bleibt `approved`, zählt als Handlungsbedarf und
    die Karte zeigt den manuellen Hinzufügen-Knopf; `unconfirmed` wird sofort `presented`
@@ -492,6 +497,12 @@ Zeile 81, Zweck, Nutzer, Positionierung „Purge plus Wünsche“), `docs/Operat
   Einträgen, die ein Mensch hinzugefügt hat. Ein zweiter Alias desselben Emotes bleibt unberührt.
 - **F12:** Einträge, die ein Verwalter mit eigenem Token über Emote Purge hinzugefügt hat, entfernt
   der Bot nie; sie werden vorgelegt (`not_bot_owned`).
+- **Belegt am 2026-11-24 (Probe T0, AK86, AK87, AK91):** `addedById` trägt nach `addEmote` des Bots dessen
+  7TV-ID, öffentlich wie authentifiziert. Ein menschliches Umbenennen lässt `addedById` (Bot) und `addedAt`
+  unverändert: Eigentum endet deshalb nur über den exakten Alias, `addedById` allein reicht nie. Entfernt ein
+  Mensch den Eintrag und fügt ihn unter demselben Alias neu hinzu, zeigt der Read `addedById` = Inhaber und ein
+  neues `addedAt`, und `removeEmote(emoteId, alias)` entfernt diesen Menschen-Eintrag ohne Schutz durch 7TV:
+  der Vergleich vor dem Entfernen ist zwingend und erkennt den Fall; das Restrisiko des Fensters danach bleibt.
 
 ## 9. Child Issues
 
@@ -688,7 +699,7 @@ Abschnitt 7 Punkt 8; nichts geht verloren, alles Offene steht als Handlungsbedar
 | RR2 | Wettlauf zwischen frischem Read und `removeEmote` (D33-Klasse). Wird der Eintrag in diesem Fenster entfernt und unter demselben Alias neu hinzugefügt, entfernt der Bot den Ersatz, **ohne dass Vor- und Nach-Read es zeigen** | Erkennung und einmalige Reparatur für den sichtbaren Teil; für den unsichtbaren nur der Hinweis `wish.botSuspectRemoval`, falls ein Sync den Ersatz gesehen hat; Rückweg „wieder hinzufügen“; Messgröße im Pilot ist eine untere Schranke |
 | RR3 | Bot-Modus ist von 7TV nicht bestätigt; 7TV kann das Website-JWT, das Schema oder das Editor-Modell jederzeit ändern | Rückfall auf manuellen Ablauf ist der Normalpfad jedes Fehlers; DECISIONS nennt den Betrieb „inoffiziell“ |
 | RR4 | Gestohlenes Token schreibt bis zum Notaus an Emote Purge vorbei | Abschnitt 7; Editor-Vergabe je Kanal begrenzt die Reichweite |
-| RR5 | Ob ein normaler Logout das Server-Token entwertet, ist ungeprüft | Betriebsregel „nirgends normal ausloggen“; Probe AK90 |
+| RR5 | Ob ein normaler Logout das Server-Token entwertet, ist ungeprüft | Betriebsregel „nirgends normal ausloggen“; Probe AK90. **Erledigt 2026-11-24:** ein normaler 7TV-Logout entwertet es nicht; die Regel gilt nur noch für die Twitch-Sitzung des Erneuerers (Abschnitt 7 Punkt 6) |
 | RR6 | 7TV-Reads können veralten; ein Bestätigungs-Read kann den neuen Eintrag verspätet zeigen | E11, danach Vorlage statt Annahme |
 | RR7 | `presented` ohne Timeout kann liegen bleiben | Zähler und Übersicht halten es sichtbar; E14 begrenzt die Personendaten |
 | RR8 | Der Einwilligungsgedanke aus D7 (nur wer in 7TV Editoren verwalten darf, kann den Bot eintragen) ist unbelegt (R3-15) | Probe AK108; fällt sie durch, entscheidet der Betreiber über D7 neu |
@@ -703,6 +714,7 @@ Abschnitt 7 Punkt 8; nichts geht verloren, alles Offene steht als Handlungsbedar
 | RR17 | Mit dem Maschinengeheimnis lassen sich Lebenszeichen fälschen (Alarm bleibt aus) und ein formgültiges, falsches JWT einspielen (globaler Rückfall bis Hand-`PUT`) | Geheimnis nur am Erneuerer-Host, widerrufbar; Totmann und JWT-Ablauf hängen nicht am Lebenszeichen; hingenommen ([B] N2) |
 | RR18 | Ohne erreichbaren Betreiber wird keine Störung der Erneuerung behoben (keine Vertretung, [B] N1) | 21 Tage Vorlauf als Zeit zum Beheben; danach sicherer Rückfall auf den manuellen Ablauf (18.1) |
 | RR19 | Twitch könnte die Erkennung von Automation auf die Authorize-Seite ausdehnen, die der Erneuerer aufruft (Probe 4: der Passwort-Login ist schon gesperrt) | Die Erneuerung scheitert, Alarm, Rückfall über den bestehenden Weg (Handerneuerung); mehr als die Erkennung gibt es nicht |
+| RR20 | Der Bot-Modus hängt seit G0 an einer weiteren inoffiziellen Mutation: der Annahme einer Editor-Einladung durch das Bot-Konto (`userEditors.editor(…).updateState(state: ACCEPT)`); 7TV kann sie oder das Einladungsmodell ändern | Annahme scheitert sichtbar (`invitation_not_accepted` beim Aktivieren, `invitation_pending` im aktivierten Kanal), nie ein Schreiben in ein Set ohne angenommene Einladung; Notweg: der Betreiber nimmt als Bot von Hand in einem getrennten Browser-Profil an, nie im Profil des Erneuerers |
 
 ## 17. Entschieden (Betreiber, 2026-11-17)
 
@@ -988,7 +1000,9 @@ möglich, ist aber nicht Teil dieses Nachtrags.
   (Plan-487 R2-5 bleibt für Hand-`PUT` wirksam). **Gebucht** wird ein Editor-Ergebnis aus dem
   unauthentifizierten `editor_of` (`SevenTvApiClient.cs:466-475`, nur die 7TV-ID) auf `IdentityVersion` und
   Bot-ID; wählt G0 einen authentifizierten Editor-Read, zusätzlich auf die `CredentialVersion` des
-  lesenden Tokens, solange nicht belegt ist, dass das Ergebnis vom Token unabhängig ist. Ein Tausch lässt
+  lesenden Tokens, solange nicht belegt ist, dass das Ergebnis vom Token unabhängig ist. **G0 (2026-11-24):**
+  gewählt ist der unauthentifizierte v4-Read `user(Bot).editorFor` (K4 „Einladungen“); die Buchung bleibt
+  damit an `IdentityVersion` und Bot-ID, ohne `CredentialVersion`. Ein Tausch lässt
   keinen Kanal in den Rückfall fallen und löst keinen Rückfall-Lauf aus.
 - **429 gilt dem Konto:** die Pause nach 429 wird auf `IdentityVersion` gebucht, nicht auf
   `CredentialVersion`, und übersteht damit einen Tausch.
@@ -1105,6 +1119,10 @@ Abmeldung bei 7TV gehört in den Vorfall, nicht in den Wiederanlauf.
    diesem Schritt gilt der Vorfall als eingedämmt, und erst danach werden neue Zugänge ausgestellt.
 7. **`DELETE /token`** (erreichbar auch bei ausgeschalteten Schaltern, 14) und die Cookie-Datei am Host
    löschen (bei unerreichbarem Host nach Schritt 3). Danach dürfen die Schalter aus.
+
+**Belegt am 2026-11-24 (Probe T0, AK90):** Nach „Sign Out Everywhere“ antwortet 7TV dem gespeicherten JWT mit echtem HTTP 401,
+und ein Headless-Login aus der gespeicherten Twitch-Sitzung holt unmittelbar danach ein neues gültiges JWT. Schritt 5 allein
+stoppt den Erneuerer also nicht; die Reihenfolge oben ist nötig.
 
 Wiederanlauf, erst nach Schritt 6: neue Sitzung über den Helfer (18.2), Datei in den Eingang, neues Maschinengeheimnis,
 neues Token per `PUT`, Notaus aus, „Jetzt erneuern“ als Probe.
@@ -2162,7 +2180,10 @@ suspendedReason, editorCheckedAtUtc, activatedByLogin, activatedAtUtc, botSevenT
 `activationPending` ist wahr zwischen `activate` und der Bestätigung des Workers,
 `activationError` ist `not_editor`, wenn der Worker den Bot nicht als Editor fand, und beendet das
 Warten; `canActivate` und `canDeactivate` spiegeln E24 und D7 für den Aufrufer, die Route bleibt
-die Prüfung),
+die Prüfung; **seit G0:** `activationPending` bleibt wahr, solange der Worker eine frische Einladung
+noch nicht sieht (bis 2 Minuten nach der Anfrage) oder sie gerade annimmt; `activationError` kann
+zusätzlich `invitation_not_accepted` sein; `suspendedReason` zusätzlich `invitation_pending`. Beides
+sind Feldwerte, keine neuen Fehlercodes),
 `POST …/wishes/bot/activate` (Filterfolge: `ChannelNameValidationFilter` →
 `ChannelManagementAuthorizationFilter` → neuer `WishBotActivationAuthorizationFilter`, E24. Der
 erste Autorisierungsfilter lehnt jeden ab, der den Kanal nicht verwaltet, auch einen 7TV-Editor
@@ -2189,6 +2210,16 @@ Fehler, fail-closed); `addEmote(id: { emoteId, alias })`; `removeEmote(id: { emo
 (Alias immer gesetzt); Token prüfen und eigene 7TV-ID lesen. Fehlerformen wie im Lesepfad:
 verkleidetes 429 (HTTP 200, `extensions.status`), HTTP 429 mit `Retry-After`, 401/403, Timeout.
 Telemetrie über den vorhandenen Provider-Handler mit eigener Aufrufquelle.
+**Gemessen in G0 (2026-11-24, Protokoll `docs/nachtlaeufe/live-487-probe-2026-11-24.md`):** Prüfabfrage
+`users.me { id }` (Claim `sub` = dieselbe ID, Laufzeit 30 Tage); `addEmote` nimmt die Rückgabe-Auswahl
+`emotes(page, perPage) { items { alias addedAt addedById emote { id } } }` am zurückgegebenen Set an und liefert
+den neuen Eintrag mit; Antwortzeit bis 4,4 s, das Zeitlimit von 10 s bleibt. Alias-Konflikt = HTTP 200,
+`extensions.status = 409` (`code = BAD_REQUEST`). Fehlende Berechtigung = HTTP 200, `LACKING_PRIVILEGES`,
+`extensions.status = 403`, mit zwei Meldungen (kein Editor; Einladung noch offen); zugeordnet wird **nur über den
+Code**, nie über den Text. Entwertetes Token = echtes HTTP 401 mit Körper außerhalb des Schemas. Volles Set und
+entferntes Emote waren nicht herstellbar und bleiben `unknown`. Rate-Limit-Eimer `emote_set_change`: 100 je 60 s.
+Dazu eine Operation **Einladung annehmen** (`userEditors.editor(editorId: <Bot>, userId: <Inhaber>).updateState(state:
+ACCEPT)`, mit dem Bot-Token); der Client kennt keinen anderen Zustand, kann also weder ablehnen noch austragen.
 
 **`BotAccountWorker`** (Hosted Service, konkrete Klasse): eine Schleife unter Postgres-Advisory-Lock
 (eigener Schlüssel, Muster `ChatLogBackfillService.cs:58-76`), streng seriell über alle Kanäle,
@@ -2201,6 +2232,33 @@ Vor **jedem** Schreiben, in dieser Reihenfolge: Schalter, Pilot-Liste (E8), `Kil
 Token-Status, Editor-Prüfung des Kanals (frisch, ohne `ModRoleCache`; innerhalb einer Minute je
 Kanal wiederverwendbar). Fällt eine Prüfung durch, schreibt der Worker nicht und wendet den Rückfall
 aus Abschnitt 7 Punkt 8 an.
+
+**Editor-Prüfung und Einladungen (Ergebnis G0 und Betreiberentscheid, beide 2026-11-24):** 7TV trägt einen
+eingeladenen Editor zuerst als `PENDING` ein; schreiben darf das Bot-Konto erst, wenn es selbst angenommen hat
+(`ACCEPTED`). Daraus folgt:
+
+- **Was als Editor gilt:** nur ein v4-Editor-Eintrag mit `state = ACCEPTED` **und** `permissions.emoteSet.manage`.
+  Gelesen wird öffentlich über `user(Bot).editorFor` (alle Kanäle in einem Read, Ein- und Austragen binnen
+  einer Minute sichtbar). `users.me.editableEmoteSetIds` ist **kein** Signal (enthält das Set schon bei
+  `PENDING`); v3 `editor_of` dient dem Bot nicht mehr (listet erst nach der Annahme). Ein Eintrag ohne `manage`
+  gilt als nicht Editor.
+- **Wann der Bot annimmt:** nur für einen Kanal, dessen Bot-Modus gerade aktiviert wird (offene
+  Aktivierungsanfrage), oder bei der Editor-Prüfung eines Kanals, dessen Bot-Modus schon aktiviert ist (etwa
+  nachdem ein Verwalter den Bot neu eingeladen hat); in beiden Fällen nur bei Deckung durch die Pilot-Liste (E8)
+  und global verfügbarem Bot. **Jede andere Einladung bleibt unbeantwortet:** nie annehmen, nie ablehnen.
+- **Wer annimmt:** der Worker, unter denselben Schranken wie jedes Schreiben (Advisory-Lock, Schalter, Pilot-Liste,
+  `KillSwitch`, Pause, Token-Status) und unter der Kanalsperre, damit ein Abschalten oder eine neue Anfrage nicht
+  dazwischenfällt. Die Api ruft 7TV nie mit dem Token; `activate` setzt nur die Anfrage, die die Annahme erlaubt.
+  Die Annahme ist ein Schreiben in die Editor-Beziehung, nicht in ein Set, und idempotent: ist die Einladung schon
+  angenommen, wird nichts gesendet.
+- **Ergebnisse:** angenommen → Audit `wish.botAcceptInvitation` (System), sofortiges Neu-Lesen, dann Bestätigung
+  bzw. Wiederaufnahme wie bisher. 429 → Pause; 401 → Token `invalid`, globaler Rückfall; Netzfehler → der nächste
+  Read entscheidet; abgelehnt → beim Aktivieren `activationError = invitation_not_accepted`, im aktivierten Kanal
+  `BotSuspendedReason = invitation_pending` und ein neuer Versuch frühestens nach 15 Minuten.
+- **Frische Einladung:** v4 zeigt eine neue Einladung erst nach bis zu rund 30 Sekunden; eine Anfrage ohne
+  sichtbaren Eintrag bleibt deshalb 2 Minuten offen, bevor `not_editor` gilt.
+- **Schreibfehler:** ein `LACKING_PRIVILEGES` beim Schreiben setzt den Kanal wie bisher auf `not_editor` (AK80),
+  gleich welche Meldung; ob stattdessen eine Einladung offen ist, entscheidet der nächste Editor-Read.
 
 Abläufe:
 
@@ -2224,7 +2282,8 @@ Abläufe:
   dem Slot gleicher Emote-ID und gleichen Alias zugeordnet, ohne Zustand oder Eigentum zu ändern.
 - **Bestätigen:** nach E11. Genau ein Eintrag mit Emote-ID und Alias: `addedById` = Bot → `active`
   mit Eigentum und maßgeblichem Start; sonst `active` ohne Eigentum. Kein Eintrag nach 15 min →
-  `presented` (`unconfirmed`).
+  `presented` (`unconfirmed`). Seit G0 (AK89) ersetzt die Rückgabe von `addEmote` das Lesen direkt
+  nach dem Schreiben; trägt sie den Eintrag nicht, beginnt der Plan mit dem Read wie bisher.
 - **Entfernen:** Zeile des Wunsches sperren und die Berechtigung erneut prüfen (Abschnitt 8, E25):
   Version, Zustand, Ablauf, Eigentum. Nicht mehr berechtigt → nichts senden,
   `RemovalQueuedAtUtc` leeren. Sonst frischer Read; vier Merkmale exakt → `removeEmote`;
@@ -2248,7 +2307,7 @@ Abläufe:
   bleibt dem manuellen Weg vorbehalten.
 
 Audit unter `AuditActor.System`: `wish.botAdd`, `wish.botRemove`, `wish.botRepair`, `wish.botSuspectRemoval`,
-`wish.botSuspend` (Kanal verliert Editor-Rechte). Token-Zustände `invalid` und `expired` schreiben
+`wish.botSuspend` (Kanal verliert Editor-Rechte), seit G0 `wish.botAcceptInvitation` (Einladung angenommen). Token-Zustände `invalid` und `expired` schreiben
 je Wechsel einen Eintrag `botAccount.tokenState`.
 
 **Token-Ablauf:** Der Worker setzt `expired`, sobald `exp` erreicht ist, und loggt ab 7 Tagen
@@ -2338,19 +2397,29 @@ Löschen mit `typed-confirm-dialog`, Notaus-Schalter, Warteschlangentiefe, Zahl 
     v4-Read `addedById` = 7TV-ID des Bot-Kontos. Ergebnis im PR und in DECISIONS festgehalten.
     **Fällt sie durch, entfällt das automatische Entfernen** (Bot fügt nur hinzu und erinnert), und
     der Betreiber entscheidet vor dem Merge.
+    **Ergebnis 2026-11-24: bestanden** (`addedById` = Bot-ID in allen Fällen, öffentlich wie authentifiziert);
+    das automatische Entfernen bleibt.
 87. **AK87** Live-Probe: Nach dem Umbenennen des Bot-Eintrags durch einen Menschen zeigt der Read
     welches `addedById` und welches `addedAt`; Ergebnis festgehalten. Erwartung der Spec: Eigentum
     endet in jedem Fall über den Alias.
+    **Ergebnis 2026-11-24:** `addedById` (Bot) und `addedAt` bleiben unverändert, der alte Alias ist weg; die
+    Erwartung ist bestätigt, Eigentum endet nur über den exakten Alias.
 88. **AK88** Live-Probe Sofort-Read: Zeit zwischen `addEmote`-Antwort und erstem v4-Read, der den
     Eintrag mit `addedAt` zeigt, an mindestens fünf Hinzufügungen gemessen. Über 5 Minuten in einem
     Fall → E11 neu festlegen, vor dem Merge.
+    **Ergebnis 2026-11-24:** 0 s in allen fünf Fällen (auch öffentlich); E11 bleibt. Antwortzeit von `addEmote` bis
+    4,4 s, das Zeitlimit von 10 s bleibt.
 89. **AK89** Live-Probe: Was `addEmote` zurückgibt, wenn die Abfrage
     `emotes { items { alias addedAt addedById } }` am zurückgegebenen Set mit angefordert wird. Trägt
     die Antwort den neuen Eintrag, darf sie den ersten Bestätigungs-Read ersetzen; sonst bleibt es
     beim Read.
+    **Ergebnis 2026-11-24: trägt ihn** (ganzes Set samt neuem Eintrag mit `addedAt` und `addedById`); die Rückgabe
+    ersetzt den ersten Bestätigungs-Read, der Read bleibt Rückfall.
 90. **AK90** Live-Probe Notaus: „Sign Out Everywhere“ am Bot-Konto → der nächste Schreibversuch des
     Workers endet in `invalid` und im Rückfall. Zusätzlich einmal geprüft und dokumentiert, ob ein
     normaler Logout in einer anderen Sitzung dasselbe bewirkt.
+    **Ergebnis 2026-11-24: bestanden.** „Sign Out Everywhere“ → echtes HTTP 401, Token `invalid`; ein normaler
+    7TV-Logout in einer anderen Sitzung entwertet das JWT nicht (Abschnitt 7 Punkt 6, RR5).
 91. **AK91** Live-Probe Verschränkung und Fehlerformen: Bot fügt hinzu, Mensch entfernt, Mensch fügt
     denselben Alias hinzu → frischer Read zeigt fremdes `addedById`, Bot entfernt nicht. Dieselbe
     Folge **nach** dem Vor-Read lässt sich live nicht zuverlässig treffen (Fenster unter einer
@@ -2360,10 +2429,16 @@ Löschen mit `typed-confirm-dialog`, Notaus-Schalter, Warteschlangentiefe, Zahl 
     Alias-Konflikt und (falls herstellbar) vollem Set: die Antwortformen sind den Gründen
     `alias_conflict` und `set_full` zugeordnet; was nicht herstellbar war, läuft als `unknown`
     und steht als offen im PR.
+    **Ergebnis 2026-11-24:** `removeEmote` entfernt den Menschen-Eintrag gleichen Alias (`addedById` = Inhaber, neues
+    `addedAt`), der Vergleich vor dem Entfernen erkennt den Fall; `alias_conflict` = HTTP 200 mit `extensions.status =
+    409`; volles Set und entferntes Emote nicht herstellbar, beide `unknown` und offen im PR.
 92. **AK92** Live-Probe Editor-Lesen: Die Editor-Prüfung erkennt das Bot-Konto nach dem Eintragen
     und nach dem Austragen binnen einer Minute korrekt, und es ist dokumentiert, ob 7TV eine
     Einladung kennt, die das Bot-Konto erst annehmen muss, und ob die Prüfung die nötige
     Berechtigung (Emote-Sets verwalten) unterscheiden kann.
+    **Ergebnis 2026-11-24: bestanden, mit Folge.** Ein- und Austragen über v4 in 26 bis 37 s sichtbar; 7TV kennt eine
+    Einladung (`PENDING`), die das Bot-Konto annehmen muss, und der Bot kann das per API; `permissions.emoteSet.manage`
+    ist lesbar. Folge: „Editor-Prüfung und Einladungen“ oben, AK123 bis AK125.
 93. **AK93** Live-Verifikation Gesamtweg lokal (Regel 16) auf dem Testkonto: Handeintrag →
     Bot fügt hinzu → `active` mit Eigentum; per Datenbank-Update im Dev-Stack den Ablauf in die
     Vergangenheit legen → nächster Takt entfernt, Wunsch `removed`, zwei Audit-Einträge. Das Set
@@ -2375,7 +2450,31 @@ Löschen mit `typed-confirm-dialog`, Notaus-Schalter, Warteschlangentiefe, Zahl 
 96. **AK96** Der Worker hat siebzehn Hosted Services; bei `BotAccount:Enabled = false`
     beendet sich `BotAccountWorker` nach einer Logzeile und öffnet nie das Token.
 
-AK109 bis AK118 (automatische Erneuerung, Nachtrag 2026-11-20) stehen in Abschnitt 18.9.
+AK109 bis AK122 (automatische Erneuerung, Nachtrag 2026-11-20) stehen in Abschnitt 18.10.
+
+**Nachtrag G0 (2026-11-24), fortlaufend nach AK122** (Editor-Prüfung und Einladungen, oben):
+
+123. **AK123** Annahme nur nach dem Betreiberentscheid (Integration mit gestubbtem Editor-Read und Schreib-Client;
+     live in der Verifikation AK93): offene Aktivierungsanfrage und Eintrag `PENDING` mit `manage` → genau eine Annahme,
+     ein `wish.botAcceptInvitation`, danach im selben Durchgang `BotModeEnabled = true`; aktivierter Kanal (auch
+     ausgesetzt `not_editor`), den ein Verwalter neu eingeladen hat → Annahme beim nächsten Editor-Read, der Kanal schreibt
+     wieder ohne neue Aktivierung. **Keine** Annahme und keine Ablehnung bei: Einladung ohne Anfrage und ohne Aktivierung
+     (auch über viele Takte, auch für einen Kanal, den Emote Purge nicht kennt), ungedecktem Kanal (E8), `KillSwitch`,
+     ungültigem Token, Bot-Schalter aus, Eintrag ohne `manage`, schon angenommener Einladung (idempotent). Ein
+     `DELETE …/wishes/bot` zwischen Editor-Read und Annahme verhindert die Annahme. Live: Einladung im Testkanal plus
+     `activate` → angenommen und aktiv; Einladung in einem zweiten Kanal ohne Aktivierung bleibt `PENDING`.
+124. **AK124** Editor-Prüfung über Zustand und Berechtigung: als Editor gilt nur `state = ACCEPTED` mit
+     `permissions.emoteSet.manage`; ein `PENDING`-Eintrag, dessen Set in `users.me.editableEmoteSetIds` steht, gilt
+     **nicht** als schreibbar (die Abfrage liest das Feld gar nicht). `LACKING_PRIVILEGES` wird mit jeder Meldung
+     gleich zugeordnet (Test mit beiden gemessenen und einer fremden Meldung), der Kanal geht nach AK80 auf `not_editor`,
+     und erst der nächste Editor-Read macht daraus eine Annahme bzw. `invitation_pending`. Eine Aktivierungsanfrage ohne
+     sichtbaren Eintrag bleibt 2 Minuten offen (`activationPending` wahr), danach `not_editor`.
+125. **AK125** Annahme, Fehlerformen: 429 → Pause, Anfrage bleibt bzw. `invitation_pending`; 401 → Token `invalid`,
+     globaler Rückfall, Anfrage bleibt; Timeout oder Netzfehler → nichts gebucht, der nächste Durchgang darf erneut
+     annehmen; Ablehnung (`LACKING_PRIVILEGES` oder unbekannter Fehler) → beim Aktivieren `activationError =
+     invitation_not_accepted` und Anfrage geleert, im aktivierten Kanal `invitation_pending` und kein neuer Versuch vor
+     15 Minuten. Der Anfragekörper der Annahme enthält nur `ACCEPT` als Zustand; weder Token noch Fehlertext von 7TV
+     erscheinen in Log, Audit oder Antwort (AK74, AK75).
 
 ## Testplan
 
@@ -2389,7 +2488,9 @@ AK109 bis AK118 (automatische Erneuerung, Nachtrag 2026-11-20) stehen in Abschni
 | Live | lokal, Testkonto | AK86 bis AK93; der Transport selbst wird live statt gegen Fakes verifiziert (Regel 11, 16) | 1 Durchgang |
 
 Die Live-Proben AK86 bis AK92 laufen **zuerst**, vor dem Ausbau der Warteschlange: Ihre Ergebnisse
-entscheiden über Eigentum und Bestätigungsweg.
+entscheiden über Eigentum und Bestätigungsweg. **Gelaufen am 2026-11-24, alle bestanden** (Protokoll
+`docs/nachtlaeufe/live-487-probe-2026-11-24.md`, Tor G0 in Plan-487); neue Folge ist die Annahme von Einladungen
+(AK123 bis AK125, Integration und Live-Verifikation).
 
 ## Files Reference
 
@@ -2453,7 +2554,12 @@ Aktion „Bot entfernen lassen“. Kein Backend außer dem, was K4 liefert.
   Erfolgs- oder Fehlzustand mit Grund. Das Token des Verwalters verlässt den Browser nicht.
 - **Rückfallweg**, falls die Probe kein nutzbares Schema liefert oder 7TV eine Annahme durch das
   Bot-Konto verlangt: Der Dialog zeigt eine Anleitung zum Eintragen in 7TV und einen Knopf „Jetzt
-  prüfen“, der nur `activate` aufruft.
+  prüfen“, der nur `activate` aufruft. **Ergebnis G0 (2026-11-24):** 7TV verlangt die Annahme, aber der Bot
+  nimmt eine Einladung beim Aktivieren selbst an (K4 „Editor-Prüfung und Einladungen“); dieser Grund allein
+  macht den Rückfallweg also nicht nötig. Der Dialog wartet auf `activationPending` (die Annahme liegt darin)
+  und übersetzt zusätzlich `activationError = invitation_not_accepted` und `suspendedReason =
+  invitation_pending` („Einladung offen, wird angenommen“); `not_editor` erklärt er mit dem Hinweis auf die
+  Berechtigung „Emote-Sets verwalten“.
 - **Ort:** Einstieg zum Aktivieren, Zustand des Bot-Modus und Abschalten liegen im Abschnitt
   „Wünsche“ des Settings-Tabs (E19), nicht im Wünsche-Tab.
 - **Abschalten:** Knopf in diesem Abschnitt für Broadcaster, Aktivierenden und Admin, mit
@@ -2468,6 +2574,8 @@ Aktion „Bot entfernen lassen“. Kein Backend außer dem, was K4 liefert.
 ## Akzeptanzkriterien
 97. **AK97** Probe Editor-Mutation dokumentiert: Name, Variablen, Berechtigungsfelder, Antwortform,
     und ob das Bot-Konto eine Einladung annehmen muss. Ohne dieses Ergebnis beginnt K5 nicht.
+    (Die Seite des Bots ist seit G0 geklärt: ja, und der Bot nimmt selbst an; offen bleibt die Mutation des
+    Verwalters, die die Einladung anlegt.)
 98. **AK98** Der Bestätigen-Knopf des Dialogs ist gesperrt, bis die Checkbox gesetzt ist; der Dialog
     enthält die drei Aussagen (über ihre Übersetzungsschlüssel identifiziert, Rolle `dialog`,
     zugänglicher Name gesetzt).
