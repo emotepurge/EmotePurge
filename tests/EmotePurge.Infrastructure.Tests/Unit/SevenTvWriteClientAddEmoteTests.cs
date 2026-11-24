@@ -82,6 +82,11 @@ public class SevenTvWriteClientAddEmoteTests
     [Theory]
     [InlineData("""{"totalCount":2,"pageCount":1,"items":"not a list"}""")]
     [InlineData("""{"totalCount":2,"items":[]}""")]
+    [InlineData("""{"totalCount":2,"pageCount":null,"items":[]}""")]
+    [InlineData("""{"totalCount":2,"pageCount":"1","items":[]}""")]
+    [InlineData("""{"pageCount":1,"items":[]}""")]
+    [InlineData("""{"totalCount":null,"pageCount":1,"items":[]}""")]
+    [InlineData("""{"totalCount":3,"pageCount":1,"items":[{"alias":"x","emote":{"id":"E"}}]}""")]
     [InlineData("""{"totalCount":2,"pageCount":1,"items":[{"alias":"x","emote":{}}]}""")]
     [InlineData("""{"totalCount":2,"pageCount":1,"items":[42]}""")]
     public async Task MatchingSet_WithUnreadableEntries_IsOk_WithoutEntries(string emotes)

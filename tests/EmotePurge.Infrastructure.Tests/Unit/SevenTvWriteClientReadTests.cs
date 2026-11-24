@@ -53,9 +53,9 @@ public class SevenTvWriteClientReadTests
     public async Task ThreePages_AreAllRead_InOrder()
     {
         var handler = new ScriptedHttpHandler()
-            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 3))
-            .ThenOk(ReadPage($"[{ReadItem("E2", "b")}]", pageCount: 3))
-            .ThenOk(ReadPage($"[{ReadItem("E3", "c")}]", pageCount: 3));
+            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 3, totalCount: 3))
+            .ThenOk(ReadPage($"[{ReadItem("E2", "b")}]", pageCount: 3, totalCount: 3))
+            .ThenOk(ReadPage($"[{ReadItem("E3", "c")}]", pageCount: 3, totalCount: 3));
 
         var result = await Client(handler).ReadSetEntriesAsync(Token, SetId);
 
@@ -71,7 +71,7 @@ public class SevenTvWriteClientReadTests
     public async Task SecondOfThreePagesFails_IsUnavailable_WithoutEntries()
     {
         var handler = new ScriptedHttpHandler()
-            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 3))
+            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 3, totalCount: 3))
             .Then(HttpStatusCode.BadGateway, string.Empty);
 
         var result = await Client(handler).ReadSetEntriesAsync(Token, SetId);
@@ -85,7 +85,7 @@ public class SevenTvWriteClientReadTests
     public async Task SecondPageRateLimited_IsRateLimited_WithoutEntries()
     {
         var handler = new ScriptedHttpHandler()
-            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 2))
+            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 2, totalCount: 2))
             .ThenOk(ErrorsOnly(Error("slow down", null, 429)));
 
         var result = await Client(handler).ReadSetEntriesAsync(Token, SetId);
@@ -110,12 +110,77 @@ public class SevenTvWriteClientReadTests
     public async Task PageCountChangingBetweenPages_IsUnavailable()
     {
         var handler = new ScriptedHttpHandler()
-            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 2))
-            .ThenOk(ReadPage($"[{ReadItem("E2", "b")}]", pageCount: 3));
+            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 2, totalCount: 2))
+            .ThenOk(ReadPage($"[{ReadItem("E2", "b")}]", pageCount: 3, totalCount: 2));
 
         var result = await Client(handler).ReadSetEntriesAsync(Token, SetId);
 
         Assert.Equal(SevenTvWriteOutcome.Unavailable, result.Outcome);
+    }
+
+    [Fact]
+    public async Task SinglePageListingFewerItemsThanCounted_IsUnavailable()
+    {
+        var handler = new ScriptedHttpHandler().ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 1, totalCount: 2));
+
+        var result = await Client(handler).ReadSetEntriesAsync(Token, SetId);
+
+        Assert.Equal(SevenTvWriteOutcome.Unavailable, result.Outcome);
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
+    public async Task MultiPageListingFewerItemsThanCounted_IsUnavailable()
+    {
+        var handler = new ScriptedHttpHandler()
+            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 2, totalCount: 3))
+            .ThenOk(ReadPage($"[{ReadItem("E2", "b")}]", pageCount: 2, totalCount: 3));
+
+        var result = await Client(handler).ReadSetEntriesAsync(Token, SetId);
+
+        Assert.Equal(SevenTvWriteOutcome.Unavailable, result.Outcome);
+    }
+
+    [Fact]
+    public async Task TotalCountDriftingBetweenPages_IsUnavailable()
+    {
+        var handler = new ScriptedHttpHandler()
+            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 2, totalCount: 2))
+            .ThenOk(ReadPage($"[{ReadItem("E2", "b")}]", pageCount: 2, totalCount: 3));
+
+        var result = await Client(handler).ReadSetEntriesAsync(Token, SetId);
+
+        Assert.Equal(SevenTvWriteOutcome.Unavailable, result.Outcome);
+    }
+
+    [Fact]
+    public async Task UnresolvedEmoteItem_CountsTowardTotalCount_AndIsOk()
+    {
+        var items = "[" + ReadItem(EmoteId, Alias) + """,{"alias":"gone","emote":null}]""";
+        var handler = new ScriptedHttpHandler().ThenOk(ReadPage(items, pageCount: 1, totalCount: 2));
+
+        var result = await Client(handler).ReadSetEntriesAsync(Token, SetId);
+
+        Assert.Equal(SevenTvWriteOutcome.Ok, result.Outcome);
+        Assert.Single(result.Value!);
+    }
+
+    [Theory]
+    [InlineData("\"pageCount\":null")]
+    [InlineData("\"pageCount\":\"1\"")]
+    [InlineData("\"totalCount\":null")]
+    [InlineData("\"totalCount\":\"0\"")]
+    public async Task NonNumberCount_IsUnavailable(string countProperty)
+    {
+        var name = countProperty[..countProperty.IndexOf(':', StringComparison.Ordinal)];
+        var other = name == "\"pageCount\"" ? "\"totalCount\":0" : "\"pageCount\":0";
+        var body = Fill("{\"data\":{\"emoteSets\":{\"emoteSet\":{\"id\":\"@SET@\",\"emotes\":{" + countProperty + "," + other + ",\"items\":[]}}}}}");
+        var handler = new ScriptedHttpHandler().ThenOk(body);
+
+        var result = await Client(handler).ReadSetEntriesAsync(Token, SetId);
+
+        Assert.Equal(SevenTvWriteOutcome.Unavailable, result.Outcome);
+        Assert.Null(result.Value);
     }
 
     public static TheoryData<string> UnusablePages => new()
@@ -129,6 +194,8 @@ public class SevenTvWriteClientReadTests
         """{"data":{"emoteSets":{"emoteSet":null}}}""",
         // Another set's id.
         ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 1, setId: OtherSetId),
+        // No total count.
+        Fill("""{"data":{"emoteSets":{"emoteSet":{"id":"@SET@","emotes":{"pageCount":0,"items":[]}}}}}"""),
         // No page count.
         Fill("""{"data":{"emoteSets":{"emoteSet":{"id":"@SET@","emotes":{"items":[]}}}}}"""),
         // An item that is not an object, and an item without an emote id.

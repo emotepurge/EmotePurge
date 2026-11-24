@@ -99,6 +99,8 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
 
         var entries = new List<SevenTvSetEntry>();
         int? firstPageCount = null;
+        int? firstTotalCount = null;
+        var rawItems = 0;
         for (var page = 1; page <= MaxSetEntryPages; page++)
         {
             var exchange = await PostAsync(
@@ -115,23 +117,33 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
             }
 
             var set = reply.Field(SetPath);
-            var pageCount = set is { } setElement && SameId(setElement, setId)
+            var entriesPage = set is { } setElement && SameId(setElement, setId)
                 ? ReadEntriesPage(setElement, entries)
                 : null;
 
-            // A page count that moves between pages means the set changed under the read; one above the cap means the
-            // read cannot finish. Neither yields a list the bot may decide on.
-            if (pageCount is not { } count
-                || count > MaxSetEntryPages
-                || (firstPageCount is { } first && first != count))
+            // A page count or total that moves between pages means the set changed under the read; a page count above the
+            // cap means the read cannot finish. Neither yields a list the bot may decide on.
+            if (entriesPage is not { } current
+                || current.PageCount > MaxSetEntryPages
+                || (firstPageCount is { } first && first != current.PageCount)
+                || (firstTotalCount is { } firstTotal && firstTotal != current.TotalCount))
             {
                 LogOutcome("read", SevenTvWriteResult.Unavailable(), exchange.HttpStatus, null);
                 return SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Failed(SevenTvWriteResult.Unavailable());
             }
 
-            firstPageCount = count;
-            if (page >= count)
+            firstPageCount = current.PageCount;
+            firstTotalCount = current.TotalCount;
+            rawItems += current.RawItems;
+            if (page >= current.PageCount)
             {
+                // Fail-closed (AK76): 7TV may list fewer entries than it counts; such a list is not the whole set.
+                if (rawItems != current.TotalCount)
+                {
+                    LogOutcome("read", SevenTvWriteResult.Unavailable(), exchange.HttpStatus, null);
+                    return SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Failed(SevenTvWriteResult.Unavailable());
+                }
+
                 return SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Ok(entries);
             }
         }
@@ -177,7 +189,8 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
         if (reply.Errors.Count == 0)
         {
             var returned = new List<SevenTvSetEntry>();
-            if (ReadEntriesPage(set, returned) is 0 or 1)
+            // Complete means: one page at most, and as many raw items as the set counts.
+            if (ReadEntriesPage(set, returned) is { PageCount: 0 or 1 } returnedPage && returnedPage.RawItems == returnedPage.TotalCount)
             {
                 entries = returned;
             }
@@ -380,15 +393,19 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
             codes);
     }
 
-    // Reads `emotes { pageCount items { alias addedAt addedById emote { id } } }` of one set element into
-    // `entries`. Returns the page count, or null when the page is not readable as a whole.
-    private static int? ReadEntriesPage(JsonElement set, List<SevenTvSetEntry> entries)
+    private readonly record struct EntriesPage(int PageCount, int TotalCount, int RawItems);
+
+    // Reads `emotes { totalCount pageCount items { alias addedAt addedById emote { id } } }` of one set element into
+    // `entries`. Returns the counts, or null when the page is not readable as a whole. `RawItems` includes the items
+    // left out of `entries` because their emote did not resolve, so it is comparable with `totalCount`.
+    private static EntriesPage? ReadEntriesPage(JsonElement set, List<SevenTvSetEntry> entries)
     {
         if (!set.TryGetProperty("emotes", out var emotes)
             || emotes.ValueKind != JsonValueKind.Object
-            || !emotes.TryGetProperty("pageCount", out var pageCountElement)
-            || !pageCountElement.TryGetInt32(out var pageCount)
+            || ReadInt(emotes, "pageCount") is not { } pageCount
             || pageCount < 0
+            || ReadInt(emotes, "totalCount") is not { } totalCount
+            || totalCount < 0
             || !emotes.TryGetProperty("items", out var items)
             || items.ValueKind != JsonValueKind.Array)
         {
@@ -421,8 +438,14 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
         }
 
         entries.AddRange(page);
-        return pageCount;
+        return new EntriesPage(pageCount, totalCount, items.GetArrayLength());
     }
+
+    // TryGetInt32 throws on a non-number element, so the kind is checked first.
+    private static int? ReadInt(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number)
+            ? number
+            : null;
 
     private static bool SameId(JsonElement set, string expectedId) =>
         string.Equals(ReadString(set, "id"), expectedId, StringComparison.OrdinalIgnoreCase);

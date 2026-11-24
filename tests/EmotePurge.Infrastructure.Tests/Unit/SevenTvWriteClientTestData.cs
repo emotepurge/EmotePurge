@@ -69,16 +69,33 @@ internal static class SevenTvWriteClientTestData
     public static string Errors(params string[] errors) => $"[{string.Join(',', errors)}]";
 
     /// <summary>A successful <c>addEmote</c> answer: the returned set with id and its entries.</summary>
-    public static string AddAnswer(string setId = SetId, string? items = null, int pageCount = 1) =>
-        """{"data":{"emoteSets":{"emoteSet":{"addEmote":{"id":"@ID@","emotes":{"totalCount":2,"pageCount":@PAGES@,"items":@ITEMS@}}}}}}"""
+    public static string AddAnswer(string setId = SetId, string? items = null, int pageCount = 1, int? totalCount = null) =>
+        """{"data":{"emoteSets":{"emoteSet":{"addEmote":{"id":"@ID@","emotes":{"totalCount":@TOTAL@,"pageCount":@PAGES@,"items":@ITEMS@}}}}}}"""
             .Replace("@ID@", setId, StringComparison.Ordinal)
+            .Replace("@TOTAL@", (totalCount ?? CountItems(items ?? TwoItems)).ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
             .Replace("@PAGES@", pageCount.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
             .Replace("@ITEMS@", items ?? TwoItems, StringComparison.Ordinal);
 
-    /// <summary>One page of the set read.</summary>
-    public static string ReadPage(string items, int pageCount, string setId = SetId) =>
-        """{"data":{"emoteSets":{"emoteSet":{"id":"@ID@","capacity":1000,"emotes":{"totalCount":2,"pageCount":@PAGES@,"items":@ITEMS@}}}}}"""
+    // The raw item count of a page, which is the honest default for its `totalCount` on a single page; an unparsable or
+    // non-array list counts 0.
+    private static int CountItems(string items)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(items);
+            return document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array ? document.RootElement.GetArrayLength() : 0;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>One page of the set read. `totalCount` defaults to the page's raw item count (a single, complete page).</summary>
+    public static string ReadPage(string items, int pageCount, string setId = SetId, int? totalCount = null) =>
+        """{"data":{"emoteSets":{"emoteSet":{"id":"@ID@","capacity":1000,"emotes":{"totalCount":@TOTAL@,"pageCount":@PAGES@,"items":@ITEMS@}}}}}"""
             .Replace("@ID@", setId, StringComparison.Ordinal)
+            .Replace("@TOTAL@", (totalCount ?? CountItems(items)).ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
             .Replace("@PAGES@", pageCount.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
             .Replace("@ITEMS@", items, StringComparison.Ordinal);
 
