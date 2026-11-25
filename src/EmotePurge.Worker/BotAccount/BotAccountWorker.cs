@@ -73,7 +73,7 @@ public sealed class BotAccountWorker(
     private async Task RunLoopAsync(IBotAccountRunner runner, CancellationToken stoppingToken)
     {
         var warnedAboutLock = false;
-        while (true)
+        while (!stoppingToken.IsCancellationRequested)
         {
             var started = timeProvider.GetUtcNow();
             try
