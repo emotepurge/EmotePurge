@@ -342,6 +342,9 @@ public sealed class BotAccountRunner(
                 return await BookVerifiedAsync(token.CredentialVersion, result.Value!, now, cancellationToken);
 
             case SevenTvWriteOutcome.Unauthorized:
+                // The token is not used again before a verification succeeds (K6b-3, K6c-5), whether or not the booking
+                // of invalid gets to its commit: a periodic check had no outstanding verification to fall back on.
+                reverifyRequested = true;
                 return await BookStateAsync(token.CredentialVersion, BotAccountStatus.Invalid, BotAccountErrorCodes.TokenUnauthorized, now, cancellationToken);
 
             case SevenTvWriteOutcome.RateLimited:

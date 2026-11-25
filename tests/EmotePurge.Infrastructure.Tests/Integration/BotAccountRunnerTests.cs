@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Text;
 using System.Text.Json;
 using EmotePurge.Core.Entities;
@@ -10,9 +11,11 @@ using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using EmotePurge.Infrastructure.Tests.Unit;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
+using Npgsql;
 using NSubstitute;
 using Xunit;
 
@@ -129,6 +132,35 @@ public class BotAccountRunnerTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal(new Dictionary<string, string> { ["status"] = "invalid", ["errorCode"] = "token_unauthorized" }, Details(audit));
         Assert.DoesNotContain(token, audit.DetailsJson, StringComparison.Ordinal);
         Assert.Null(Assert.Single(pass.Sessions).Token);
+    }
+
+    // K6b-3, K6c-5: the six-hourly check of a valid token answers Unauthorized and the booking of invalid fails on the way
+    // (a database error): the row stays valid, yet the session of that pass may not use the token.
+    [Fact]
+    public async Task AnUnauthorizedPeriodicCheck_WhoseBookingFails_KeepsTheTokenUnusable()
+    {
+        var token = Jwt(Now.AddDays(30), "a");
+        await SeedAsync(BotAccountStatus.Unverified, token, Now.AddDays(30));
+        var client = Substitute.For<ISevenTvWriteClient>();
+        client.VerifyAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(
+            SevenTvWriteResult<string>.Ok("bot-a"),
+            SevenTvWriteResult<string>.Failed(SevenTvWriteResult.Unauthorized()));
+        var failing = new FailingCommand("\"LastErrorCode\"");
+        var db = fixture.CreateTaggedDbContext("bot-runner-invalid-fails", [failing], databaseName: DatabaseName);
+        _disposables.Add(db);
+        var (runner, pass) = CreateRunner(client, db: db);
+        var usable = new List<bool>();
+        pass.OnRun = session => usable.Add(session.TokenUsable);
+
+        Assert.Equal(BotAccountPassResult.Completed, await runner.RunPassAsync());
+        _clock.Advance(TimeSpan.FromHours(6) + TimeSpan.FromMinutes(1));
+        failing.Enabled = true;
+        Assert.Equal(BotAccountPassResult.Completed, await runner.RunPassAsync());
+
+        Assert.Equal(BotAccountStatus.Valid, (await ReadRowAsync()).Status);
+        Assert.Equal(token, pass.Sessions[1].Token);
+        Assert.Equal(new[] { true, false }, usable);
+        await client.Received(2).VerifyAsync(token, Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -1145,6 +1177,18 @@ public class BotAccountRunnerTests(PostgresFixture fixture) : IAsyncLifetime
 
     private static string B64(string json) =>
         Convert.ToBase64String(Encoding.UTF8.GetBytes(json)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    // Fails a command whose text contains the marker, once enabled, the way a database error on the way would.
+    private sealed class FailingCommand(string marker) : DbCommandInterceptor
+    {
+        public bool Enabled { get; set; }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default) =>
+            Enabled && command.CommandText.Contains(marker, StringComparison.Ordinal)
+                ? throw new NpgsqlException("forced failure")
+                : ValueTask.FromResult(result);
+    }
 
     // A verification the test holds open until it releases an answer.
     private sealed class HeldVerification
