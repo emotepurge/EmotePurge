@@ -13,7 +13,7 @@ public class ChannelJoinHealthOptionsTests
 
         options.Validate();
 
-        Assert.Equal(300, options.GraceSeconds);
+        Assert.Equal(420, options.GraceSeconds);
     }
 
     [Theory]

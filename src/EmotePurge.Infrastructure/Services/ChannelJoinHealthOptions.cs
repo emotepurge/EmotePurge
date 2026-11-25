@@ -16,10 +16,11 @@ public sealed class ChannelJoinHealthOptions
     public const int MaxGraceSeconds = 3600;
 
     /// <summary>
-    /// Connected seconds a wished JOIN may stay unconfirmed before it counts as overdue. 300 covers
-    /// two rejoin rounds at 120 channels (about 2 x 112 s); see DECISIONS "Join-failure detection".
+    /// Connected seconds a wished JOIN may stay unconfirmed before it counts as overdue. 420 covers
+    /// the worst measured case (a lost JOIN plus the convergence net) up to about 200 channels;
+    /// see DECISIONS "Join-failure detection".
     /// </summary>
-    public int GraceSeconds { get; set; } = 300;
+    public int GraceSeconds { get; set; } = 420;
 
     /// <summary>Throws unless <see cref="GraceSeconds"/> is within 60 to 3600.</summary>
     public void Validate()

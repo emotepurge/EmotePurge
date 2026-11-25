@@ -43,7 +43,7 @@ public class ChannelJoinHealthServiceTests
     [Fact]
     public async Task Evaluate_ReadsTheDesiredListAndJudgesTheRoster()
     {
-        StubDesired(new ActiveChannelActivation("late", _time.GetUtcNow().UtcDateTime.AddSeconds(-301)));
+        StubDesired(new ActiveChannelActivation("late", _time.GetUtcNow().UtcDateTime.AddSeconds(-421)));
 
         var report = await NewService().EvaluateAsync(Roster());
 

@@ -265,6 +265,12 @@ ist ein echter Erfassungsausfall, kein Fehlalarm.
 **Grenze der Warteschlange:** Re-JOINt das Konvergenznetz je Runde K still abgelehnte Kanäle, kostet das ≈ 7 s × K; bei
 K ≈ 20 (N = 120) läuft die Warteschlange nicht mehr leer. Dieser Fall alarmiert ohnehin. Kein Umbau des Konvergenznetzes.
 
+**Nachtrag 2026-11-25 (nach T8): Default 420 s statt 300 s [B].** T8 hat `P` mit 0,66 bis 0,71 s je Kanal gemessen (84 s bei
+N = 120, 104,5 s bei 150, 132,3 s bei 200, 170,4 s bei 240; Twitch lehnte bis 240 nichts ab). Der schlimmste Fall (verlorener
+JOIN plus Konvergenznetz) liegt damit bei 246 s (120), 292 s (150), 362 s (200): 300 s trägt 120, lässt bei 150 nur 8 s Reserve und
+scheitert bei 200. Der Betreiber hat deshalb 420 s entschieden (deckt rund 200 Kanäle; Preis: Alarm etwa 2 min später). Die
+Herleitung oben bleibt als Rechenweg stehen, der Default ist 420.
+
 ### E5 [E] `GET /api/health/channels`: eigenes Budget, geteiltes Ergebnis mit eigener Frist
 
 - Anonym, kein Körper, nur Statuscode, in `WorkerHealthEndpoints.cs` neben `/api/health`; der Handler bildet nur ab.
