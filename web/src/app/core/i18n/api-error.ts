@@ -116,6 +116,7 @@ export const KNOWN_API_ERROR_CODES = new Set([
   'wish_reward_already_known',
   'wish_reward_limit',
   'wish_reward_not_found',
+  'wish_repair_check_open',
   'bot_account_disabled',
   'bot_account_token_malformed',
   'bot_account_token_expired',

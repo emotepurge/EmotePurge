@@ -151,6 +151,31 @@ public class GlobalAdminAllowlistTests
         Assert.False(allowlist.IsAdminById(Principal("1", "loginadmin")));
     }
 
+    // #487 K6b-14: the bare-id overload behind the per-channel bot state. A login list without an id list never makes
+    // anyone an admin there, even for an id that equals a listed login.
+    [Fact]
+    public void IsAdminById_String_WithOnlyALoginListConfigured_IsFalse_NeverTheLoginFallback()
+    {
+        var (allowlist, _) = Create(new() { ["Auth:AdminTwitchLogins"] = "loginadmin,42" });
+
+        Assert.False(allowlist.IsAdminById("42"));
+        Assert.False(allowlist.IsAdminById("loginadmin"));
+    }
+
+    [Fact]
+    public void IsAdminById_String_AnswersLikeThePrincipalForm()
+    {
+        var (allowlist, _) = Create(new()
+        {
+            ["Auth:AdminTwitchUserIds"] = "42",
+            ["Auth:AdminTwitchLogins"] = "loginadmin",
+        });
+
+        Assert.True(allowlist.IsAdminById("42"));
+        Assert.False(allowlist.IsAdminById("999"));
+        Assert.Equal(allowlist.IsAdminById("42"), allowlist.IsAdminById(Principal("42", "whoever")));
+    }
+
     private static TwitchPrincipalInfo Principal(string id, string login = "login") => new(id, login, AccessToken: null);
 
     private static (GlobalAdminAllowlist Allowlist, RecordingLogger<GlobalAdminAllowlist> Logger) Create(Dictionary<string, string?> settings)

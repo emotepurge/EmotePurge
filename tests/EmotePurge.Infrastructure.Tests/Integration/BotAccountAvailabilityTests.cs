@@ -95,10 +95,46 @@ public class BotAccountAvailabilityTests(PostgresFixture fixture) : IAsyncLifeti
         Assert.False(await Sut(enabled: false).IsAvailableAsync());
     }
 
+    // K6b-5: one read gives the answer, the bot's 7TV id and the identity version; the ids pass through also when the
+    // account is not usable (the per-channel state needs them only together with the answer).
+    [Theory]
+    [InlineData(BotAccountStatus.Valid, false, true)]
+    [InlineData(BotAccountStatus.Valid, true, false)]
+    [InlineData(BotAccountStatus.Invalid, false, false)]
+    public async Task GetState_IsOneReadOfAnswerIdAndIdentity(string status, bool killSwitch, bool expected)
+    {
+        await SeedAsync(status, Now.AddDays(3), killSwitch: killSwitch, botId: "01BOTACCOUNT", identityVersion: 6);
+        var hook = new CommandHook(_ => false, _ => Task.CompletedTask);
+        await using var db = fixture.CreateTaggedDbContext("bot-availability-state", [hook]);
+
+        var state = await new BotAccountAvailability(db, new BotAccountOptions { Enabled = true }, _clock).GetStateAsync();
+
+        Assert.Equal(new BotAccountAvailabilityState(expected, "01BOTACCOUNT", 6), state);
+        Assert.Equal(1, hook.Count(c => c.Contains("\"BotAccountCredentials\"", StringComparison.Ordinal)));
+        Assert.Equal(expected, await Sut().IsAvailableAsync());
+    }
+
+    [Fact]
+    public async Task GetState_WithoutARow_IsUnavailable() =>
+        Assert.Equal(BotAccountAvailabilityState.Unavailable, await Sut().GetStateAsync());
+
+    // The switch off answers before any read, also for the state.
+    [Fact]
+    public async Task GetState_SwitchOff_IsUnavailable_WithoutReadingTheRow()
+    {
+        await SeedAsync(BotAccountStatus.Valid, Now.AddDays(3), botId: "01BOTACCOUNT", identityVersion: 6);
+        await using var unreachable = fixture.CreateDbContext("database_that_does_not_exist");
+
+        Assert.Equal(
+            BotAccountAvailabilityState.Unavailable,
+            await new BotAccountAvailability(unreachable, new BotAccountOptions { Enabled = false }, _clock).GetStateAsync());
+    }
+
     private BotAccountAvailability Sut(bool enabled = true) =>
         new(fixture.CreateDbContext(), new BotAccountOptions { Enabled = enabled }, _clock);
 
-    private async Task SeedAsync(string status, DateTime? expiresAt, bool killSwitch = false, DateTime? pausedUntil = null)
+    private async Task SeedAsync(
+        string status, DateTime? expiresAt, bool killSwitch = false, DateTime? pausedUntil = null, string? botId = null, int identityVersion = 0)
     {
         await using var db = fixture.CreateDbContext();
         db.BotAccountCredentials.Add(new BotAccountCredential
@@ -108,6 +144,8 @@ public class BotAccountAvailabilityTests(PostgresFixture fixture) : IAsyncLifeti
             ExpiresAtUtc = expiresAt,
             KillSwitch = killSwitch,
             PausedUntilUtc = pausedUntil,
+            BotSevenTvUserId = botId,
+            IdentityVersion = identityVersion,
         });
         await db.SaveChangesAsync();
     }

@@ -12,6 +12,12 @@ namespace EmotePurge.Core.Services;
 /// the row and gives out no K6 data for an unbound row (<see cref="WishRewardsDto.ChannelBound"/> false).
 /// </para>
 /// <para>
+/// <b>D7 behind the lock (#487 plan 2.9, R2-6).</b> Every write also checks the settings rule on the settings row as it is
+/// behind the channel lock, for the actor's Twitch id and the <c>isGlobalAdmin</c> flag the caller passes: a bot
+/// activation confirmed after the authorization filter decided answers <see cref="WishRewardOutcome.SettingsRestricted"/>
+/// and writes nothing.
+/// </para>
+/// <para>
 /// <b>The learning row changes only through conditional statements</b> (Sol-R2-P2-5): no method reads the row,
 /// decides in memory and writes by key. Each statement names the row it expects (<c>SessionId</c>, and for confirm
 /// also <c>CandidateId</c> and "not expired"), and the number of rows it hit is the answer. A dialog behind a restart
@@ -43,7 +49,8 @@ public interface IWishRewardService
     /// <see cref="Entities.WishLimits.MaxRewardsPerChannel"/> rewards is <see cref="WishRewardOutcome.RewardLimit"/>
     /// already here. Not audited.
     /// </summary>
-    Task<WishRewardResult> StartLearningAsync(WishCaptureAccess access, AuditActor actor, CancellationToken cancellationToken = default);
+    Task<WishRewardResult> StartLearningAsync(
+        WishCaptureAccess access, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Turns the candidate the manager saw into a reward (<c>wish.rewardAdd</c>) and deletes the learning row in the
@@ -57,7 +64,11 @@ public interface IWishRewardService
     /// takes the channel's default. The redemption the reward was learned with never becomes a wish.
     /// </summary>
     Task<WishRewardResult> ConfirmLearningAsync(
-        WishCaptureAccess access, ConfirmWishRewardLearningRequest request, AuditActor actor, CancellationToken cancellationToken = default);
+        WishCaptureAccess access,
+        ConfirmWishRewardLearningRequest request,
+        AuditActor actor,
+        bool isGlobalAdmin = false,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Cancels the session <paramref name="sessionId"/> (delete conditional on it). Nothing lying, or only an expired
@@ -66,7 +77,7 @@ public interface IWishRewardService
     /// <see cref="WishRewardOutcome.RequestInvalid"/>. Not audited.
     /// </summary>
     Task<WishRewardResult> CancelLearningAsync(
-        WishCaptureAccess access, Guid? sessionId, AuditActor actor, CancellationToken cancellationToken = default);
+        WishCaptureAccess access, Guid? sessionId, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Changes the sent fields of the reward with row id <paramref name="rewardRowId"/> (<c>wish.rewardChange</c>
@@ -75,14 +86,19 @@ public interface IWishRewardService
     /// <see cref="WishRewardOutcome.RequestInvalid"/> (label), <see cref="WishRewardOutcome.DurationOutOfRange"/>.
     /// </summary>
     Task<WishRewardResult> UpdateRewardAsync(
-        WishCaptureAccess access, long rewardRowId, UpdateWishRewardRequest request, AuditActor actor, CancellationToken cancellationToken = default);
+        WishCaptureAccess access,
+        long rewardRowId,
+        UpdateWishRewardRequest request,
+        AuditActor actor,
+        bool isGlobalAdmin = false,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Forgets the reward (<c>wish.rewardRemove</c>); its wishes stay and lose their <c>RewardId</c> through the
     /// foreign key's <c>SET NULL</c>. Refusal: <see cref="WishRewardOutcome.RewardNotFound"/>.
     /// </summary>
     Task<WishRewardResult> DeleteRewardAsync(
-        WishCaptureAccess access, long rewardRowId, AuditActor actor, CancellationToken cancellationToken = default);
+        WishCaptureAccess access, long rewardRowId, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default);
 }
 
 /// <summary>Every way a reward command or the read can end; the Api maps each value to a status and a code.</summary>
@@ -124,7 +140,13 @@ public enum WishRewardOutcome
     RequestInvalid,
 
     /// <summary>The default duration lies outside 1 to 365: <c>wish_duration_out_of_range</c>.</summary>
-    DurationOutOfRange
+    DurationOutOfRange,
+
+    /// <summary>
+    /// #487 plan 2.9 (R2-6): behind the channel lock D7 no longer lets the caller change the channel's settings (a bot
+    /// activation confirmed after the filter decided): 403 <c>wish_settings_restricted</c>.
+    /// </summary>
+    SettingsRestricted
 }
 
 /// <summary>

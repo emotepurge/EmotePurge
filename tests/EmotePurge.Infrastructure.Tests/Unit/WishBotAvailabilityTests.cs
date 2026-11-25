@@ -35,6 +35,30 @@ public class WishBotAvailabilityTests
         Assert.Empty(account.ReceivedCalls());
     }
 
+    // K6b-5: the state with the wishes on is the account's, passed through unchanged.
+    [Fact]
+    public async Task GetState_WishesOn_PassesTheAccountStateThrough()
+    {
+        var account = Account(true);
+        var state = new BotAccountAvailabilityState(true, "01BOT", 7);
+        account.GetStateAsync(Arg.Any<CancellationToken>()).Returns(state);
+
+        Assert.Equal(state, await new WishBotAvailability(new WishOptions { Enabled = true }, account).GetStateAsync());
+        await account.Received(1).GetStateAsync(Arg.Any<CancellationToken>());
+    }
+
+    // With the wishes off: unavailable, without asking the account (so without a read).
+    [Fact]
+    public async Task GetState_WishesOff_IsUnavailable_AndDoesNotAskTheAccount()
+    {
+        var account = Account(true);
+
+        var state = await new WishBotAvailability(new WishOptions { Enabled = false }, account).GetStateAsync();
+
+        Assert.Equal(BotAccountAvailabilityState.Unavailable, state);
+        Assert.Empty(account.ReceivedCalls());
+    }
+
     private static IBotAccountAvailability Account(bool available)
     {
         var account = Substitute.For<IBotAccountAvailability>();

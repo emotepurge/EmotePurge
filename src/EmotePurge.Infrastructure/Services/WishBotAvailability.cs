@@ -11,4 +11,7 @@ public sealed class WishBotAvailability(WishOptions wishOptions, IBotAccountAvai
 {
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default) =>
         wishOptions.Enabled && await botAccount.IsAvailableAsync(cancellationToken);
+
+    public async Task<BotAccountAvailabilityState> GetStateAsync(CancellationToken cancellationToken = default) =>
+        wishOptions.Enabled ? await botAccount.GetStateAsync(cancellationToken) : BotAccountAvailabilityState.Unavailable;
 }

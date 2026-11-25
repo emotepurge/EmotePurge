@@ -214,7 +214,7 @@ public partial class DataRetentionServiceTests
         db,
         new WishChangedPublisher(Substitute.For<IRedisPublisher>(), NullLogger<WishChangedPublisher>.Instance),
         new HandWoundTimeProvider(new DateTimeOffset(_now)),
-        NullLogger<WishService>.Instance);
+        NullLogger<WishService>.Instance, BotChannelStates.Unavailable());
 
     // One due row of each category the pass reaches after the wish categories (4e, 5, 6).
     private async Task<LaterRetentionRows> SeedLaterRetentionCategoriesAsync(string wishChannelId)

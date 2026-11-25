@@ -33,11 +33,20 @@ namespace EmotePurge.Infrastructure.Services;
 /// expiry and is decided again, but behind the row lock the run looks for its earlier entry for that expiry and
 /// writes no second one. Only a new expiry allows the next entry.
 /// </para>
+/// <para>
+/// <b>The channel's bot state (#487 plan 2.3, Revision 6b K6b-18, 6c K6c-6, 6d K6d-7).</b> Row 4 asks
+/// <see cref="WishBotChannelState"/> like the Api does, so a channel the runner has not booked as fallen back yet is
+/// presented right away instead of queued. The channel's settings and the bot account's row come from one statement per
+/// candidate (one snapshot): two statements would let a token set, a check and a new editor proof commit in between and
+/// mix a proof of one identity with the account of the next. The switches come from the configuration as before.
+/// </para>
 /// </summary>
 public sealed class WishExpiryService(
     AppDbContext db,
     IWishReconcileService reconcileService,
-    IWishBotAvailability botAvailability,
+    WishOptions wishOptions,
+    BotAccountOptions botAccountOptions,
+    IGlobalAdminAllowlist admins,
     IWishChangedPublisher changedPublisher,
     TimeProvider timeProvider,
     ILogger<WishExpiryService> logger) : IWishExpiryService
@@ -150,7 +159,7 @@ public sealed class WishExpiryService(
                 return null;
             }
 
-            var decision = await DecideAsync(wish, now, tally, cancellationToken);
+            var decision = await DecideAsync(wish, now, cancellationToken);
             if (decision is not { } decided)
             {
                 tally.Skipped++;
@@ -206,31 +215,16 @@ public sealed class WishExpiryService(
         }
     }
 
-    // The facts behind the row lock (plan 2.2). The global availability is asked at most once per pass and only for
-    // a wish past rows 1 to 3; the usage only when the policy needs it (plan finding 16). Null: the channel row is
-    // gone (a purge or merge at the same moment).
-    private async Task<WishExpiryDecision?> DecideAsync(Wish wish, DateTime now, Tally tally, CancellationToken cancellationToken)
+    // The facts behind the row lock (plan 2.2). The channel's bot state comes from one statement that reads the settings
+    // row and the bot account's row together (#487 K6d-7), for every candidate anew, never from a memo of the pass (K6c-6);
+    // the usage only when the policy needs it (plan finding 16). Null: the channel row is gone (a purge or merge at the
+    // same moment).
+    private async Task<WishExpiryDecision?> DecideAsync(Wish wish, DateTime now, CancellationToken cancellationToken)
     {
-        var settings = await db.ChannelWishSettings.AsNoTracking()
-            .Where(s => s.ChannelId == wish.ChannelId)
-            .Select(s => new { s.BotModeEnabled, s.BotSuspendedReason, s.ProtectionThresholdPerDay })
-            .FirstOrDefaultAsync(cancellationToken);
-        var botModeEnabled = settings?.BotModeEnabled ?? false;
+        var read = await ReadChannelFactsAsync(wish.ChannelId, cancellationToken);
+        var channelState = ChannelStateOf(read, now);
 
-        var available = false;
-        if (botModeEnabled && wish.BotOwned && wish.StartsAtAuthoritative)
-        {
-            tally.BotAvailable ??= await botAvailability.IsAvailableAsync(cancellationToken);
-            available = tally.BotAvailable.Value;
-        }
-
-        var facts = new WishExpiryFacts(
-            botModeEnabled,
-            settings?.BotSuspendedReason,
-            wish.BotOwned,
-            available,
-            wish.StartsAtAuthoritative,
-            settings?.ProtectionThresholdPerDay);
+        var facts = new WishExpiryFacts(channelState, wish.BotOwned, wish.StartsAtAuthoritative, read?.Settings.ProtectionThresholdPerDay);
         if (!WishExpiryPolicy.NeedsUsage(facts))
         {
             return WishExpiryPolicy.Decide(facts);
@@ -247,6 +241,59 @@ public sealed class WishExpiryService(
         return usage is null
             ? null
             : WishExpiryPolicy.Decide(facts with { MeanPerDay = usage.MeanPerDay, HasCoverageGap = usage.HasCoverageGap });
+    }
+
+    // One statement, one snapshot (K6d-7): the settings row, left-joined with the bot account's singleton row, and the
+    // channel's Twitch id for the pilot list. No settings row: null, a manual channel.
+    private Task<ChannelFacts?> ReadChannelFactsAsync(string channelId, CancellationToken cancellationToken) =>
+        (from s in db.ChannelWishSettings.AsNoTracking().Where(s => s.ChannelId == channelId)
+         from c in db.BotAccountCredentials.AsNoTracking().Where(c => c.Id == BotAccountCredential.SingletonId).DefaultIfEmpty()
+         select new ChannelFacts(
+             new ChannelWishSettings
+             {
+                 ChannelId = s.ChannelId,
+                 ProtectionThresholdPerDay = s.ProtectionThresholdPerDay,
+                 BotModeEnabled = s.BotModeEnabled,
+                 BotModeActivatedByTwitchUserId = s.BotModeActivatedByTwitchUserId,
+                 BotSuspendedReason = s.BotSuspendedReason,
+                 BotEditorCheckedAtUtc = s.BotEditorCheckedAtUtc,
+                 BotEditorCheckedIdentityVersion = s.BotEditorCheckedIdentityVersion,
+                 BotConsentSevenTvUserId = s.BotConsentSevenTvUserId,
+             },
+             s.Channel!.TwitchChannelId,
+             c != null,
+             c != null ? c.Status : null,
+             c != null ? c.ExpiresAtUtc : null,
+             c != null && c.KillSwitch,
+             c != null ? c.BotSevenTvUserId : null,
+             c != null ? c.IdentityVersion : 0))
+        .FirstOrDefaultAsync(cancellationToken);
+
+    // The same rule as the Api's reader, from the one snapshot: the account-wide answer by the shared rule with the
+    // switches of this process, the pilot list and the activator's admin check by id.
+    private WishBotChannelMode ChannelStateOf(ChannelFacts? read, DateTime now)
+    {
+        if (read is null || !read.Settings.BotModeEnabled)
+        {
+            return WishBotChannelMode.Manual;
+        }
+
+        var account = read.HasAccountRow
+            ? BotAccountAvailabilityState.Of(
+                wishOptions.Enabled && botAccountOptions.Enabled,
+                read.Status,
+                read.ExpiresAtUtc,
+                read.KillSwitch,
+                read.BotSevenTvUserId,
+                read.IdentityVersion,
+                now)
+            : BotAccountAvailabilityState.Unavailable;
+        return WishBotChannelState.Of(
+            read.Settings,
+            account,
+            wishOptions.PilotList.Covers(read.TwitchChannelId),
+            WishBotChannelStateReader.ActivatorIsAdminById(admins, read.Settings),
+            now);
     }
 
     // Behind the row lock: is there a wish.due of this wish for this expiry already? An entry for it cannot be older
@@ -304,7 +351,19 @@ public sealed class WishExpiryService(
 
     private sealed record Candidate(long WishId, string ChannelId);
 
-    // The counters of one pass and its memo of the global bot availability.
+    // What the one statement of ReadChannelFactsAsync carries: the settings columns the state needs, the channel's Twitch
+    // id and the bot account's columns (the HasAccountRow flag tells a missing row from a row with defaults).
+    private sealed record ChannelFacts(
+        ChannelWishSettings Settings,
+        string? TwitchChannelId,
+        bool HasAccountRow,
+        string? Status,
+        DateTime? ExpiresAtUtc,
+        bool KillSwitch,
+        string? BotSevenTvUserId,
+        int IdentityVersion);
+
+    // The counters of one pass.
     private sealed class Tally
     {
         private readonly Dictionary<string, int> _presentedByReason = new(StringComparer.Ordinal);
@@ -315,7 +374,6 @@ public sealed class WishExpiryService(
         public int HeldBack { get; set; }
         public int Skipped { get; set; }
         public int Failed { get; set; }
-        public bool? BotAvailable { get; set; }
 
         public void Count(WishExpiryDecision decision)
         {

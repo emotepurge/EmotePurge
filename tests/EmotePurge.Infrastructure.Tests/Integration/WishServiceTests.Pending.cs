@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
+using EmotePurge.Infrastructure.Tests.Fakes;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
@@ -720,7 +721,7 @@ public partial class WishServiceTests
             db ?? fixture.CreateDbContext(),
             new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance),
             _clock,
-            NullLogger<WishService>.Instance,
+            NullLogger<WishService>.Instance, BotChannelStates.Unavailable(),
             trigger);
 
     // A wish the capture created: pending, source irc, the placeholder in name and alias, redeemer data set.

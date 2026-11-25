@@ -137,7 +137,7 @@ public partial class WishExpiryServiceTests
         var slotId = await SeedSlotAsync(emote, "Kappa", startsAt);
         var wishId = await SeedLinkedWishAsync(channel, emote, slotId, "Kappa", startsAt, confirmedAt: Now, botOwned: true);
         var expiry = (await LoadAsync(wishId)).ExpiresAtUtc!.Value;
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
 
         await Sut(reconcile: RealReconcile()).RunAsync();
         var queued = await LoadAsync(wishId);
@@ -207,7 +207,7 @@ public partial class WishExpiryServiceTests
     {
         var channel = await SeedChannelAsync(botMode: true);
         var (wishId, _) = await SeedUsedWishAsync(channel, startsAt: Now.AddDays(-30), perDay: [10]);
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
         await Sut().RunAsync();
         Assert.NotNull((await LoadAsync(wishId)).RemovalQueuedAtUtc);
 
@@ -231,7 +231,7 @@ public partial class WishExpiryServiceTests
     {
         var channel = await SeedChannelAsync(botMode: true);
         var (wishId, _) = await SeedUsedWishAsync(channel, startsAt: Now.AddDays(-30), perDay: [10]);
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
         await using var holder = CreateDb();
         await using var holderTransaction = await holder.Database.BeginTransactionAsync();
         Assert.Single(await holder.LockChannelsByIdsAsync([channel.Id], CancellationToken.None));
@@ -262,7 +262,7 @@ public partial class WishExpiryServiceTests
     {
         var channel = await SeedChannelAsync(botMode: true, suspendedReason: globalOutage ? null : "not_editor", lastSyncedAt: Now.AddHours(-25));
         var wishId = await SeedWishAsync(channel, expiresAt: Now.AddMinutes(-1), authoritative: false, botOwned: true);
-        _availability.Available = !globalOutage;
+        await SetBotAvailableAsync(!globalOutage);
 
         await Sut().RunAsync();
 
@@ -271,7 +271,7 @@ public partial class WishExpiryServiceTests
         Assert.Equal(WishStatusReason.UnconfirmedStart, OutcomeOf(Assert.Single(await DueEntriesAsync(wishId))));
 
         var before = await SnapshotAsync(wishId);
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
         await using (var db = CreateDb())
         {
             await db.ChannelWishSettings.Where(s => s.ChannelId == channel.Id).ExecuteUpdateAsync(u => u.SetProperty(s => s.BotSuspendedReason, (string?)null));

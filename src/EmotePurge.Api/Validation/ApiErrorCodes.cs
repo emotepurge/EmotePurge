@@ -276,6 +276,10 @@ internal static class ApiErrorCodes
     // 404 from PATCH/DELETE …/rewards/{rewardId}: no such reward in this channel.
     public const string WishRewardNotFound = "wish_reward_not_found";
 
+    // Wish emotes, child 4 (#487). 409 from DELETE …/wishes/{id}: the ended wish carries an open repair phase of a bot
+    // removal; it can be deleted once the phase is resolved.
+    public const string WishRepairCheckOpen = "wish_repair_check_open";
+
     // The bot account (#487, plan 2.10), admin routes under /api/admin/bot-account.
     // 404 from PUT /token while BotAccount:Enabled is false, after the admin filter. The read, the token delete and the
     // kill switch stay reachable with the switch off (emergency stop and rollback).

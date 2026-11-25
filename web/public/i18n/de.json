@@ -2724,6 +2724,7 @@
       "wish_reward_already_known": "Diese Belohnung ist bereits angelernt. Du findest sie in der Liste und kannst sie dort bearbeiten.",
       "wish_reward_limit": "Dieser Kanal hat schon die höchste Zahl an Belohnungen. Vergiss zuerst eine.",
       "wish_reward_not_found": "Diese Belohnung gibt es nicht mehr. Die Liste zeigt den aktuellen Stand.",
+      "wish_repair_check_open": "Dieser Wunsch hat noch eine offene Prüfung nach einer Entfernung durch den Bot. Löschen geht, sobald die Prüfung abgeschlossen ist.",
       "bot_account_disabled": "Das Bot-Konto ist auf diesem Server ausgeschaltet. Ein Token lässt sich erst setzen, wenn es eingeschaltet ist.",
       "bot_account_token_malformed": "Das ist kein 7TV-Token. Kopiere das ganze Token, es besteht aus drei durch Punkte getrennten Teilen.",
       "bot_account_token_expired": "Dieses Token ist bereits abgelaufen. Hol ein frisches Token für das Bot-Konto und setze dieses."

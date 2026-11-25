@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
+using EmotePurge.Infrastructure.Tests.Fakes;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
@@ -158,7 +159,7 @@ public partial class WishCaptureServiceTests
         Assert.True(await ReceiptExistsAsync(channel, "msg-1"));
 
         WishService Wishes() => new(
-            fixture.CreateDbContext(), new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance), _clock, NullLogger<WishService>.Instance);
+            fixture.CreateDbContext(), new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance), _clock, NullLogger<WishService>.Instance, BotChannelStates.Unavailable());
     }
 
     // ------------------------------------------------------------------------------------ first redemption after a command (Sol-P2-5)

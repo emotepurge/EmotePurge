@@ -51,17 +51,17 @@ public class WishCaptureEndpointsTests : IClassFixture<ApiFactory>
 
         _factory.WishRewards.GetAsync(Arg.Any<WishCaptureAccess>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new WishRewardResult(WishRewardOutcome.Success, Rewards: RewardsDto()));
-        _factory.WishRewards.StartLearningAsync(Arg.Any<WishCaptureAccess>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.WishRewards.StartLearningAsync(Arg.Any<WishCaptureAccess>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new WishRewardResult(WishRewardOutcome.Success, Learning: LearningDto()));
         _factory.WishRewards.ConfirmLearningAsync(
-                Arg.Any<WishCaptureAccess>(), Arg.Any<ConfirmWishRewardLearningRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<WishCaptureAccess>(), Arg.Any<ConfirmWishRewardLearningRequest>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new WishRewardResult(WishRewardOutcome.Success, Reward: RewardDto()));
-        _factory.WishRewards.CancelLearningAsync(Arg.Any<WishCaptureAccess>(), Arg.Any<Guid?>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.WishRewards.CancelLearningAsync(Arg.Any<WishCaptureAccess>(), Arg.Any<Guid?>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(WishRewardResult.Of(WishRewardOutcome.Success));
         _factory.WishRewards.UpdateRewardAsync(
-                Arg.Any<WishCaptureAccess>(), Arg.Any<long>(), Arg.Any<UpdateWishRewardRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<WishCaptureAccess>(), Arg.Any<long>(), Arg.Any<UpdateWishRewardRequest>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new WishRewardResult(WishRewardOutcome.Success, Reward: RewardDto()));
-        _factory.WishRewards.DeleteRewardAsync(Arg.Any<WishCaptureAccess>(), Arg.Any<long>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.WishRewards.DeleteRewardAsync(Arg.Any<WishCaptureAccess>(), Arg.Any<long>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(WishRewardResult.Of(WishRewardOutcome.Success));
     }
 
@@ -329,7 +329,7 @@ public class WishCaptureEndpointsTests : IClassFixture<ApiFactory>
     public async Task Confirm_WithoutIds_ForwardsTheGaps_AndTheRefusalIs400()
     {
         _factory.WishRewards.ConfirmLearningAsync(
-                Arg.Any<WishCaptureAccess>(), Arg.Any<ConfirmWishRewardLearningRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+                Arg.Any<WishCaptureAccess>(), Arg.Any<ConfirmWishRewardLearningRequest>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(WishRewardResult.Of(WishRewardOutcome.RequestInvalid));
 
         var response = await SendAsync(_factory, "POST", $"/api/channels/{Channel}/wishes/rewards/learning/confirm", """{"label":"Wunsch"}""");
@@ -337,7 +337,7 @@ public class WishCaptureEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ApiErrorCodes.InvalidRequestBody, await ReadErrorCodeAsync(response));
         await _factory.WishRewards.Received(1).ConfirmLearningAsync(
-            Confirmed, new ConfirmWishRewardLearningRequest(null, null, "Wunsch", null), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Confirmed, new ConfirmWishRewardLearningRequest(null, null, "Wunsch", null), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -352,7 +352,7 @@ public class WishCaptureEndpointsTests : IClassFixture<ApiFactory>
             Confirmed,
             new ConfirmWishRewardLearningRequest(Guid.Parse(SessionId), Guid.Parse(CandidateId), "Wunsch", 14),
             Arg.Is<AuditActor>(a => a.TwitchUserId == Manager),
-            Arg.Any<CancellationToken>());
+            Arg.Any<bool>(), Arg.Any<CancellationToken>());
     }
 
     [Theory]
@@ -376,7 +376,7 @@ public class WishCaptureEndpointsTests : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
         await _factory.WishRewards.Received(1).CancelLearningAsync(
-            Confirmed, Guid.Parse(SessionId), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Confirmed, Guid.Parse(SessionId), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
     }
 
     [Theory]
@@ -399,8 +399,8 @@ public class WishCaptureEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.OK, patch.StatusCode);
         Assert.Equal(HttpStatusCode.NoContent, delete.StatusCode);
         await _factory.WishRewards.Received(1).UpdateRewardAsync(
-            Confirmed, 5, new UpdateWishRewardRequest("Neu", 7, null), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
-        await _factory.WishRewards.Received(1).DeleteRewardAsync(Confirmed, 5, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+            Confirmed, 5, new UpdateWishRewardRequest("Neu", 7, null), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+        await _factory.WishRewards.Received(1).DeleteRewardAsync(Confirmed, 5, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
     }
 
     // ---- Wire shape of the reward answers ----
@@ -456,13 +456,15 @@ public class WishCaptureEndpointsTests : IClassFixture<ApiFactory>
         { WishRewardOutcome.RewardNotFound, HttpStatusCode.NotFound, ApiErrorCodes.WishRewardNotFound },
         { WishRewardOutcome.RequestInvalid, HttpStatusCode.BadRequest, ApiErrorCodes.InvalidRequestBody },
         { WishRewardOutcome.DurationOutOfRange, HttpStatusCode.BadRequest, ApiErrorCodes.WishDurationOutOfRange },
+        // #487 T6: D7 behind the channel lock.
+        { WishRewardOutcome.SettingsRestricted, HttpStatusCode.Forbidden, ApiErrorCodes.WishSettingsRestricted },
     };
 
     [Theory]
     [MemberData(nameof(RewardFailureOutcomes))]
     public async Task EveryRewardFailureOutcome_MapsToItsStatusAndErrorCode(WishRewardOutcome outcome, HttpStatusCode status, string? code)
     {
-        _factory.WishRewards.StartLearningAsync(Arg.Any<WishCaptureAccess>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.WishRewards.StartLearningAsync(Arg.Any<WishCaptureAccess>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(WishRewardResult.Of(outcome));
 
         var response = await SendAsync(_factory, "POST", $"/api/channels/{Channel}/wishes/rewards/learning");

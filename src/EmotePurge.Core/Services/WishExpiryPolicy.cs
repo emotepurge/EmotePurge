@@ -16,19 +16,19 @@ public readonly record struct WishExpiryDecision(bool Queue, string? Reason)
 }
 
 /// <summary>The facts <see cref="WishExpiryPolicy.Decide"/> reads; the caller collects them.</summary>
-/// <param name="BotModeEnabled">The raw switch, not <c>IsBotMode</c>: a suspended channel still counts as bot mode here.</param>
-/// <param name="BotSuspendedReason">Set while the channel's bot is suspended.</param>
+/// <param name="ChannelState">
+/// The channel's effective bot state (<see cref="WishBotChannelState"/>, plan #487 2.3, Revision 6b K6b-18). <c>manual</c>
+/// is exactly "the bot mode is not activated" (row 1); everything but <c>bot</c> is unavailable for row 4, also a channel
+/// the runner has not suspended yet.
+/// </param>
 /// <param name="BotOwned">The wish's entry was written by the bot (ownership).</param>
-/// <param name="BotGloballyAvailable">The answer of <see cref="IWishBotAvailability"/>.</param>
 /// <param name="StartsAtAuthoritative">False while the start is only the provisional EventAPI date.</param>
 /// <param name="ProtectionThresholdPerDay">Null: protection off.</param>
 /// <param name="MeanPerDay">The window mean; required when <see cref="WishExpiryPolicy.NeedsUsage"/> is true.</param>
 /// <param name="HasCoverageGap">The window gap; required when <see cref="WishExpiryPolicy.NeedsUsage"/> is true.</param>
 public sealed record WishExpiryFacts(
-    bool BotModeEnabled,
-    string? BotSuspendedReason,
+    WishBotChannelMode ChannelState,
     bool BotOwned,
-    bool BotGloballyAvailable,
     bool StartsAtAuthoritative,
     decimal? ProtectionThresholdPerDay,
     decimal? MeanPerDay = null,
@@ -60,22 +60,20 @@ public static class WishExpiryPolicy
     }
 
     /// <summary>
-    /// Whether <see cref="Decide"/> needs the usage window: bot mode on, owned, bot available (globally and
-    /// for the channel), authoritative start and a threshold set. Every earlier row decides without it.
+    /// Whether <see cref="Decide"/> needs the usage window: owned, authoritative start, the channel in state <c>bot</c> and a
+    /// threshold set. Every earlier row decides without it.
     /// </summary>
     public static bool NeedsUsage(WishExpiryFacts facts) =>
-        facts.BotModeEnabled
+        facts.ChannelState == WishBotChannelMode.Bot
         && facts.BotOwned
         && facts.StartsAtAuthoritative
-        && facts.BotGloballyAvailable
-        && facts.BotSuspendedReason is null
         && facts.ProtectionThresholdPerDay is not null;
 
     public static WishExpiryDecision Decide(WishExpiryFacts facts)
     {
         ArgumentNullException.ThrowIfNull(facts);
 
-        if (!facts.BotModeEnabled)
+        if (facts.ChannelState == WishBotChannelMode.Manual)
         {
             return WishExpiryDecision.Present(WishStatusReason.Expired);
         }
@@ -91,7 +89,7 @@ public static class WishExpiryPolicy
             return WishExpiryDecision.Present(WishStatusReason.UnconfirmedStart);
         }
 
-        if (!facts.BotGloballyAvailable || facts.BotSuspendedReason is not null)
+        if (facts.ChannelState != WishBotChannelMode.Bot)
         {
             return WishExpiryDecision.Present(WishStatusReason.BotUnavailable);
         }

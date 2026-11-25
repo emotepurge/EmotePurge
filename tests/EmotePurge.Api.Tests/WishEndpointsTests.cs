@@ -197,7 +197,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         // The service decides; the filter forwards the caller's id and the admin flag.
         _factory.Wishes.CanChangeSettingsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(call => call.ArgAt<string>(1) is "broadcaster" or "activator" || call.ArgAt<bool>(2));
-        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Settings: Settings()));
         _factory.ChannelAccess.IsGlobalAdmin(Arg.Is<TwitchPrincipalInfo>(p => p.TwitchUserId == "admin")).Returns(true);
         const string body = """{"defaultDurationDays":30,"probationLeadDays":7,"protectionThresholdPerDay":null}""";
@@ -206,7 +206,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         var mod = await SendAsync(_factory, "PUT", path, body, userId: "plain-mod");
         Assert.Equal(HttpStatusCode.Forbidden, mod.StatusCode);
         Assert.Equal(ApiErrorCodes.WishSettingsRestricted, await ReadErrorCodeAsync(mod));
-        await _factory.Wishes.DidNotReceiveWithAnyArgs().UpdateSettingsAsync(default!, default!, default!, default);
+        await _factory.Wishes.DidNotReceiveWithAnyArgs().UpdateSettingsAsync(default!, default!, default!, default, default);
 
         foreach (var allowed in new[] { "broadcaster", "activator", "admin" })
         {
@@ -284,7 +284,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     {
         _factory.Wishes.CanChangeSettingsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(true);
-        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Settings: Settings()));
 
         var response = await SendAsync(
@@ -369,6 +369,9 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         { WishOutcome.StateConflict, HttpStatusCode.Conflict, ApiErrorCodes.WishStateConflict },
         { WishOutcome.EmoteRequired, HttpStatusCode.BadRequest, ApiErrorCodes.WishEmoteRequired },
         { WishOutcome.RunningNotExtendable, HttpStatusCode.Conflict, ApiErrorCodes.WishRunningNotExtendable },
+        // #487 T6: D7 behind the channel lock, and the hard delete during an open repair phase.
+        { WishOutcome.SettingsRestricted, HttpStatusCode.Forbidden, ApiErrorCodes.WishSettingsRestricted },
+        { WishOutcome.RepairCheckOpen, HttpStatusCode.Conflict, ApiErrorCodes.WishRepairCheckOpen },
     };
 
     [Theory]
@@ -578,7 +581,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     {
         _factory.Wishes.CanChangeSettingsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(true);
-        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Settings: Settings()));
 
         var response = await SendAsync(_factory, "PUT", $"/api/channels/{Channel}/wishes/settings", body);
@@ -586,7 +589,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var expected = new UpdateWishSettingsRequest(
             14, 5, threshold is null ? null : decimal.Parse(threshold, System.Globalization.CultureInfo.InvariantCulture), keep);
-        await _factory.Wishes.Received(1).UpdateSettingsAsync(Channel, expected, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        await _factory.Wishes.Received(1).UpdateSettingsAsync(Channel, expected, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
     }
 
     // K6 (plan #486 2.8): the expiry of open wishes is optional on the write; absent keeps the stored value.
@@ -598,7 +601,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     {
         _factory.Wishes.CanChangeSettingsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(true);
-        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Settings: Settings() with { PendingExpiryDays = 30 }));
 
         var response = await SendAsync(_factory, "PUT", $"/api/channels/{Channel}/wishes/settings", body);

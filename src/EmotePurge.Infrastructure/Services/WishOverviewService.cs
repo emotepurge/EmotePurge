@@ -17,10 +17,16 @@ namespace EmotePurge.Infrastructure.Services;
 /// confirmed on the row's Twitch id (<see cref="IChannelAccessService.ResolveWishCaptureAccessAsync"/>, asked next to
 /// the manager check and only for channels whose answer holds a captured wish). The counter carries numbers only.
 /// </para>
+/// <para>
+/// K4 (#487 plan 2.3, [W1]): whether <c>approved</c> needs action is the channel's effective bot state, not the stored
+/// switch: a channel that has fallen back counts its approved wishes again. The bot account's row is read at most once
+/// per call, for all channels, and only when an activated channel is among the candidates.
+/// </para>
 /// </summary>
 public sealed class WishOverviewService(
     AppDbContext db,
     IChannelAccessService channelAccess,
+    IWishBotChannelStateReader botChannelStates,
     TimeProvider timeProvider) : IWishOverviewService
 {
     private static readonly string[] ProbationStatuses = [WishStatus.Active];
@@ -104,7 +110,7 @@ public sealed class WishOverviewService(
 
     // One query on the wish table narrows to what could qualify (a status that may need action, or an active
     // wish that has started and expires within the longest possible lead); the per-channel settings then decide
-    // in memory: "approved" needs action only while the channel runs manually, and the probation start depends
+    // in memory: "approved" needs action unless the bot acts for the channel, and the probation start depends
     // on the channel's lead. No candidate: no further query and no role check.
     private async Task<List<Candidate>> LoadCandidatesAsync(bool includeProbation, CancellationToken cancellationToken)
     {
@@ -124,15 +130,22 @@ public sealed class WishOverviewService(
         }
 
         var channelIds = rows.Select(r => r.ChannelId).Distinct().ToList();
-        var settings = await db.ChannelWishSettings.AsNoTracking()
+        var stored = await db.ChannelWishSettings.AsNoTracking()
             .Where(s => channelIds.Contains(s.ChannelId))
-            .ToDictionaryAsync(s => s.ChannelId, WishService.ToSettings, StringComparer.Ordinal, cancellationToken);
+            .Select(s => new { Row = s, s.Channel!.TwitchChannelId })
+            .ToListAsync(cancellationToken);
+        var settings = new Dictionary<string, WishService.EffectiveSettings>(StringComparer.Ordinal);
+        foreach (var entry in stored)
+        {
+            var mode = await botChannelStates.ReadAsync(entry.Row, entry.TwitchChannelId, cancellationToken);
+            settings[entry.Row.ChannelId] = WishService.ToSettings(entry.Row) with { ChannelMode = mode };
+        }
 
         var candidates = new List<Candidate>();
         foreach (var row in rows)
         {
             var effective = settings.GetValueOrDefault(row.ChannelId) ?? WishService.EffectiveSettings.Defaults;
-            var needsAction = WishService.StatusesOf(WishListView.Open, effective.IsBotMode).Contains(row.Status);
+            var needsAction = WishService.StatusesOf(WishListView.Open, effective.ChannelMode).Contains(row.Status);
             var inProbation = includeProbation
                 && ProbationStatuses.Contains(row.Status)
                 && row.StartsAtUtc is { } start

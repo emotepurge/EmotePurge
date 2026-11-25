@@ -387,6 +387,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWishExpiryService, WishExpiryService>();
         services.AddScoped<IBotAccountAvailability, BotAccountAvailability>();
         services.AddScoped<IWishBotAvailability, WishBotAvailability>();
+        // The per-channel bot state for the Api's reads (plan #487 2.3): scoped, so it reads the account row at most once
+        // per request and only when an activated channel asks.
+        services.AddScoped<IWishBotChannelStateReader, WishBotChannelStateReader>();
         services.AddScoped<IWishBotService, WishBotService>();
 
         // The backfill's database side for both processes (spec section 3). Scoped like every service

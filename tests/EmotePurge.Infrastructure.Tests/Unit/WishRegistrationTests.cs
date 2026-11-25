@@ -62,6 +62,8 @@ public class WishRegistrationTests
         var availability = scope.ServiceProvider.GetRequiredService<IWishBotAvailability>();
         Assert.IsType<WishBotAvailability>(availability);
         Assert.False(await availability.IsAvailableAsync());
+        Assert.Equal(BotAccountAvailabilityState.Unavailable, await availability.GetStateAsync());
+        Assert.IsType<WishBotChannelStateReader>(scope.ServiceProvider.GetRequiredService<IWishBotChannelStateReader>());
     }
 
     // The trigger parameters of SevenTvSyncService and EmoteService are optional (null = no hook), so a

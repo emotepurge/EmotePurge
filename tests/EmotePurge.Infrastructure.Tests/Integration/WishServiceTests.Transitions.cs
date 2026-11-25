@@ -383,7 +383,9 @@ public partial class WishServiceTests
         Assert.Null(row.SlotConfirmedAtUtc);
         Assert.Null(row.EndedAtUtc);
         Assert.Equal(0, row.ExtensionCount);
-        Assert.Equal((slot, (DateTime?)firstActivated, WishLinkOrigin.Auto), (row.SlotId, row.FirstActivatedAtUtc, row.LinkOrigin));
+        // The slot and the first activation are history and stay; the link origin goes with the old link (#487 plan 2.1
+        // point 2), the next link sets it again.
+        Assert.Equal((slot, (DateTime?)firstActivated, (string?)null), (row.SlotId, row.FirstActivatedAtUtc, row.LinkOrigin));
     }
 
     // AK12, command part: permanent → approved with Permanent; the reconcile half is T7's.

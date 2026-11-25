@@ -35,6 +35,13 @@ namespace EmotePurge.Infrastructure.Services;
 /// Hand entries, approved wishes, extended ones and <c>kept</c> keep the behaviour from before K6.
 /// </para>
 /// <para>
+/// <b>Bot flow (K4, #487 plan 2.1, 2.5a (b), [W7]).</b> A wish with an open bot attempt
+/// (<see cref="WishBotAttemptGuard"/>) is left out of steps 3 and 4: the runner resolves it, not the reconcile. A wish
+/// the bot confirmed (<c>LinkOrigin = bot</c>, no slot yet; <c>active</c>, or <c>kept</c> that never held one) only gets
+/// its slot filled in: a slot of the same emote id <b>and</b> the same alias (ordinal), in the approved window, without
+/// any change to state, start or ownership.
+/// </para>
+/// <para>
 /// <b>Start of a date confirmation.</b> The start moves with the slot's confirmed date only when it was taken
 /// from the slot: it equals the generation (<see cref="Wish.SlotAddedAtUtc"/>), or, while the generation is
 /// unknown (an adoption of an undated slot), it equals <see cref="Wish.SlotConfirmedAtUtc"/>, which the adoption
@@ -98,7 +105,8 @@ public sealed class WishReconcileService(
     // around EndedAtUtc and is held by no other wish (a running link or a kept one). The bounds come from
     // WishLimits like the matcher's, and nothing compares with "now": a run days later still finds the
     // returner, an old row without a candidate never triggers a run. A kept wish is affected only while its
-    // stay is over and it still holds the slot (see ReleaseKept).
+    // stay is over and it still holds the slot (see ReleaseKept), or while the bot confirmed it, it never held a
+    // slot and a live slot of its emote under its alias is there to fill in (K4).
     private static IQueryable<Wish> Affected(AppDbContext db, string channelId)
     {
         var reconciled = ReconciledStatuses;
@@ -106,6 +114,7 @@ public sealed class WishReconcileService(
         var linkHolding = LinkHoldingStatuses;
         var lookBack = WishLimits.ReturnLookBack;
         var window = WishLimits.AdoptionWindow;
+        const string botOrigin = WishLinkOrigin.Bot;
 
         return db.Wishes.Where(w => w.ChannelId == channelId
             && (reconciled.Contains(w.Status)
@@ -128,7 +137,17 @@ public sealed class WishReconcileService(
                             || (s.AddedAt != null
                                 && w.SlotConfirmedAtUtc != null
                                 && s.AddedAt > w.SlotConfirmedAtUtc
-                                && (w.SlotAddedAtUtc == null || s.AddedAt > w.SlotAddedAtUtc)))))));
+                                && (w.SlotAddedAtUtc == null || s.AddedAt > w.SlotAddedAtUtc)))))
+                || (w.Status == WishStatus.Kept
+                    && w.SlotId == null
+                    && w.LinkOrigin == botOrigin
+                    && w.SlotConfirmedAtUtc == null
+                    && db.EmoteSlots.Any(s => s.Emote.ChannelId == channelId
+                        && s.Emote.SevenTvEmoteId == w.SevenTvEmoteId
+                        && !s.IsArchived
+                        && !s.SeedUnsettled
+                        && s.AddedAt != null
+                        && s.Name == w.Alias))));
     }
 
     // Steps 2 to 6. Returns the channel name to announce, or null when nothing a client sees has changed.
@@ -199,8 +218,9 @@ public sealed class WishReconcileService(
         var save = new Saver(db, transaction, channelId, channelName, pass, now, logger);
         var before = wishes.ToDictionary(w => w.Id, Visible.Of);
 
-        // Step 3: linked live wishes against their slot.
-        foreach (var wish in wishes.Where(w => IsLive(w.Status) && w.SlotId is not null).OrderBy(w => w.Id).ToList())
+        // Step 3: linked live wishes against their slot. A wish with an open bot attempt is the runner's (K4, 2.5a (b)): an
+        // archived slot under a removal attempt is the bot's own removal, not an external one.
+        foreach (var wish in wishes.Where(w => IsLive(w.Status) && w.SlotId is not null && !WishBotAttemptGuard.Blocks(w)).OrderBy(w => w.Id).ToList())
         {
             if (pass.SlotById(wish.SlotId!) is { } slot)
             {
@@ -221,12 +241,15 @@ public sealed class WishReconcileService(
 
         // Step 4: wishes without a valid link, in creation order over every state, so the older of two contenders
         // wins a slot, also a hand entry against a younger redemption (AK58). An approved wish counts as unlinked
-        // whatever its SlotId says (a re-add keeps the old one). An open wish released by step 3 is one of them.
+        // whatever its SlotId says (a re-add keeps the old one). An open wish released by step 3 is one of them. Left out:
+        // a wish with an open bot attempt (K4, 2.5a (b)); in: a kept wish the bot confirmed that never held a slot.
         var unlinked = wishes
-            .Where(w => w.Status == WishStatus.Pending
-                || (w.Status == WishStatus.Approved && w.BotWriteAtUtc is null)
-                || w.Status == WishStatus.RemovedExternally
-                || (w.Status == WishStatus.Active && w.SlotId is null))
+            .Where(w => !WishBotAttemptGuard.Blocks(w)
+                && (w.Status == WishStatus.Pending
+                    || (w.Status == WishStatus.Approved && w.BotWriteAtUtc is null)
+                    || w.Status == WishStatus.RemovedExternally
+                    || (w.Status == WishStatus.Active && w.SlotId is null)
+                    || IsBotKeptWithoutSlot(w)))
             .OrderBy(w => w.CreatedAtUtc)
             .ThenBy(w => w.Id)
             .ToList();
@@ -317,6 +340,15 @@ public sealed class WishReconcileService(
             : null;
 
     private static bool IsLive(string status) => status is WishStatus.Active or WishStatus.Presented;
+
+    // A permanent wish the bot confirmed (K4, #487 plan 2.1 point 1) that never held a slot: the reconcile fills its slot
+    // in like an active one's. A kept wish that gave its slot back (ReleaseKept) carries its confirmation stamp and stays
+    // without one.
+    private static bool IsBotKeptWithoutSlot(Wish wish) =>
+        wish.Status == WishStatus.Kept
+        && wish.SlotId is null
+        && wish.LinkOrigin == WishLinkOrigin.Bot
+        && wish.SlotConfirmedAtUtc is null;
 
     // A kept wish holds its entry only while it is in the set (operator ruling 2026-11-18): once the slot
     // is archived, or carries a date after the wish's last confirmation and after its known generation (it
@@ -470,9 +502,13 @@ public sealed class WishReconcileService(
                     break;
 
                 case WishStatus.Active when wish.SlotId is null:
+                case WishStatus.Kept when IsBotKeptWithoutSlot(wish):
                     // K4's exception: an active wish without a slot gets one, without any change to state, start
-                    // or ownership. The approved rule decides, from the approval on.
-                    if (Match(wish, WishStatus.Approved, wish.ApprovedAtUtc ?? wish.CreatedAtUtc) is { } ownSlot)
+                    // or ownership. The approved rule decides, from the approval on. A wish the bot confirmed takes
+                    // only a slot under its own alias ([W7]): the bot added exactly that entry. Kept the same way, so
+                    // the kept entry holds its slot against a later wish of the emote (#487 plan 2.1 point 1).
+                    var botConfirmed = wish.LinkOrigin == WishLinkOrigin.Bot;
+                    if (Match(wish, WishStatus.Approved, wish.ApprovedAtUtc ?? wish.CreatedAtUtc, sameAliasOnly: botConfirmed) is { } ownSlot)
                     {
                         wish.SlotId = ownSlot.Id;
                         wish.Alias = ownSlot.Name;
@@ -515,7 +551,7 @@ public sealed class WishReconcileService(
             }
         }
 
-        private SlotRow? Match(Wish wish, string ruleStatus, DateTime? approvedAtUtc)
+        private SlotRow? Match(Wish wish, string ruleStatus, DateTime? approvedAtUtc, bool sameAliasOnly = false)
         {
             // A match by emote id needs an emote: the K6 placeholder of an open wish matches no slot this way.
             if (!wish.HasEmote)
@@ -524,7 +560,10 @@ public sealed class WishReconcileService(
             }
 
             var linked = LinkedSlotIdsExcept(wish);
-            var candidates = Admissible(wish).Where(c => !linked.Contains(c.SlotId)).ToList();
+            var candidates = Admissible(wish)
+                .Where(c => !linked.Contains(c.SlotId)
+                    && (!sameAliasOnly || string.Equals(c.Alias, wish.Alias, StringComparison.Ordinal)))
+                .ToList();
             if (candidates.Count == 0)
             {
                 return null;

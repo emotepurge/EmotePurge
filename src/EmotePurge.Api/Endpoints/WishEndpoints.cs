@@ -119,6 +119,7 @@ public static class WishEndpoints
             HttpContext httpContext,
             WishOptions options,
             IWishService wishService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             if (!options.Enabled)
@@ -134,7 +135,10 @@ public static class WishEndpoints
             var actor = httpContext.User.TryBuildAuditActor();
             return actor is null
                 ? Results.Unauthorized()
-                : MapResult(await wishService.UpdateSettingsAsync(channelName, request.ToRequest(), actor, ct), StatusCodes.Status200OK);
+                : MapResult(
+                    await wishService.UpdateSettingsAsync(
+                        channelName, request.ToRequest(), actor, IsGlobalAdmin(httpContext, channelAccess), ct),
+                    StatusCodes.Status200OK);
         })
         .AddEndpointFilter<WishSettingsAuthorizationFilter>()
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
@@ -462,6 +466,10 @@ public static class WishEndpoints
                 return Results.Conflict(new { errorCode = ApiErrorCodes.WishSlotAlreadyLinked, wishId = result.ConflictingWishId });
             case WishOutcome.StateConflict:
                 return Results.Conflict(new { errorCode = ApiErrorCodes.WishStateConflict });
+            case WishOutcome.SettingsRestricted:
+                return Results.Json(new { errorCode = ApiErrorCodes.WishSettingsRestricted }, statusCode: StatusCodes.Status403Forbidden);
+            case WishOutcome.RepairCheckOpen:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.WishRepairCheckOpen });
             case WishOutcome.EmoteRequired:
                 return Results.BadRequest(new { errorCode = ApiErrorCodes.WishEmoteRequired });
             case WishOutcome.RunningNotExtendable:
@@ -493,6 +501,8 @@ public static class WishEndpoints
             WishRewardOutcome.RewardNotFound => Results.NotFound(new { errorCode = ApiErrorCodes.WishRewardNotFound }),
             WishRewardOutcome.RequestInvalid => InvalidBody(),
             WishRewardOutcome.DurationOutOfRange => Results.BadRequest(new { errorCode = ApiErrorCodes.WishDurationOutOfRange }),
+            WishRewardOutcome.SettingsRestricted =>
+                Results.Json(new { errorCode = ApiErrorCodes.WishSettingsRestricted }, statusCode: StatusCodes.Status403Forbidden),
             _ => throw new UnreachableException($"Unexpected {nameof(WishRewardOutcome)} value: {result.Outcome}."),
         };
 
@@ -602,13 +612,15 @@ public static class WishEndpoints
         rewards.MapPost("/learning", async (
             HttpContext httpContext,
             IWishRewardService rewardService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             var actor = httpContext.User.TryBuildAuditActor();
             return actor is null
                 ? Results.Unauthorized()
                 : MapRewardResult(
-                    await rewardService.StartLearningAsync(WishCaptureAccessFilter.GetAccess(httpContext), actor, ct),
+                    await rewardService.StartLearningAsync(
+                        WishCaptureAccessFilter.GetAccess(httpContext), actor, IsGlobalAdmin(httpContext, channelAccess), ct),
                     r => Results.Json(r.Learning, statusCode: StatusCodes.Status201Created));
         })
         .AddEndpointFilter<WishSettingsAuthorizationFilter>()
@@ -618,6 +630,7 @@ public static class WishEndpoints
             ConfirmWishRewardLearningRequest? request,
             HttpContext httpContext,
             IWishRewardService rewardService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             if (request is null)
@@ -629,7 +642,8 @@ public static class WishEndpoints
             return actor is null
                 ? Results.Unauthorized()
                 : MapRewardResult(
-                    await rewardService.ConfirmLearningAsync(WishCaptureAccessFilter.GetAccess(httpContext), request, actor, ct),
+                    await rewardService.ConfirmLearningAsync(
+                        WishCaptureAccessFilter.GetAccess(httpContext), request, actor, IsGlobalAdmin(httpContext, channelAccess), ct),
                     r => Results.Json(r.Reward, statusCode: StatusCodes.Status201Created));
         })
         .AddEndpointFilter<WishSettingsAuthorizationFilter>()
@@ -641,6 +655,7 @@ public static class WishEndpoints
             string? sessionId,
             HttpContext httpContext,
             IWishRewardService rewardService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             if (!Guid.TryParse(sessionId, out var parsedSessionId) || parsedSessionId == Guid.Empty)
@@ -652,7 +667,8 @@ public static class WishEndpoints
             return actor is null
                 ? Results.Unauthorized()
                 : MapRewardResult(
-                    await rewardService.CancelLearningAsync(WishCaptureAccessFilter.GetAccess(httpContext), parsedSessionId, actor, ct),
+                    await rewardService.CancelLearningAsync(
+                        WishCaptureAccessFilter.GetAccess(httpContext), parsedSessionId, actor, IsGlobalAdmin(httpContext, channelAccess), ct),
                     _ => Results.NoContent());
         })
         .AddEndpointFilter<WishSettingsAuthorizationFilter>()
@@ -663,6 +679,7 @@ public static class WishEndpoints
             UpdateWishRewardRequest? request,
             HttpContext httpContext,
             IWishRewardService rewardService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             if (request is null)
@@ -674,7 +691,8 @@ public static class WishEndpoints
             return actor is null
                 ? Results.Unauthorized()
                 : MapRewardResult(
-                    await rewardService.UpdateRewardAsync(WishCaptureAccessFilter.GetAccess(httpContext), rewardId, request, actor, ct),
+                    await rewardService.UpdateRewardAsync(
+                        WishCaptureAccessFilter.GetAccess(httpContext), rewardId, request, actor, IsGlobalAdmin(httpContext, channelAccess), ct),
                     r => Results.Ok(r.Reward));
         })
         .AddEndpointFilter<WishSettingsAuthorizationFilter>()
@@ -684,13 +702,15 @@ public static class WishEndpoints
             long rewardId,
             HttpContext httpContext,
             IWishRewardService rewardService,
+            IChannelAccessService channelAccess,
             CancellationToken ct) =>
         {
             var actor = httpContext.User.TryBuildAuditActor();
             return actor is null
                 ? Results.Unauthorized()
                 : MapRewardResult(
-                    await rewardService.DeleteRewardAsync(WishCaptureAccessFilter.GetAccess(httpContext), rewardId, actor, ct),
+                    await rewardService.DeleteRewardAsync(
+                        WishCaptureAccessFilter.GetAccess(httpContext), rewardId, actor, IsGlobalAdmin(httpContext, channelAccess), ct),
                     _ => Results.NoContent());
         })
         .AddEndpointFilter<WishSettingsAuthorizationFilter>()
@@ -706,6 +726,11 @@ public static class WishEndpoints
         var principal = httpContext.User.TryBuildTwitchPrincipal();
         return principal is null ? null : await channelAccess.ResolveWishCaptureAccessAsync(principal, channelName, ct);
     }
+
+    // The admin flag the settings rule (D7) needs behind the channel lock (#487 plan 2.9): the same question the settings
+    // filter asks. No principal is no admin; the handler answers 401 before it matters.
+    private static bool IsGlobalAdmin(HttpContext httpContext, IChannelAccessService channelAccess) =>
+        httpContext.User.TryBuildTwitchPrincipal() is { } principal && channelAccess.IsGlobalAdmin(principal);
 
     private static bool TryParseView(string? view, out WishListView parsed)
     {

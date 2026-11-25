@@ -95,14 +95,15 @@ public sealed class WishRewardService(
                 settings.PendingExpiryDays, aliveAt));
     }
 
-    public async Task<WishRewardResult> StartLearningAsync(WishCaptureAccess access, AuditActor actor, CancellationToken cancellationToken = default)
+    public async Task<WishRewardResult> StartLearningAsync(
+        WishCaptureAccess access, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
         ArgumentNullException.ThrowIfNull(actor);
 
         var channelId = access.ChannelId;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        var gate = await LockAndCheckAsync(access, cancellationToken);
+        var gate = await LockAndCheckAsync(access, actor, isGlobalAdmin, cancellationToken);
         if (gate.Refusal is { } refusal)
         {
             return WishRewardResult.Of(refusal);
@@ -137,7 +138,11 @@ public sealed class WishRewardService(
     }
 
     public async Task<WishRewardResult> ConfirmLearningAsync(
-        WishCaptureAccess access, ConfirmWishRewardLearningRequest request, AuditActor actor, CancellationToken cancellationToken = default)
+        WishCaptureAccess access,
+        ConfirmWishRewardLearningRequest request,
+        AuditActor actor,
+        bool isGlobalAdmin = false,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
         ArgumentNullException.ThrowIfNull(request);
@@ -157,7 +162,7 @@ public sealed class WishRewardService(
 
         var channelId = access.ChannelId;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        var gate = await LockAndCheckAsync(access, cancellationToken);
+        var gate = await LockAndCheckAsync(access, actor, isGlobalAdmin, cancellationToken);
         if (gate.Refusal is { } refusal)
         {
             return WishRewardResult.Of(refusal);
@@ -228,7 +233,7 @@ public sealed class WishRewardService(
     }
 
     public async Task<WishRewardResult> CancelLearningAsync(
-        WishCaptureAccess access, Guid? sessionId, AuditActor actor, CancellationToken cancellationToken = default)
+        WishCaptureAccess access, Guid? sessionId, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
         ArgumentNullException.ThrowIfNull(actor);
@@ -240,7 +245,7 @@ public sealed class WishRewardService(
 
         var channelId = access.ChannelId;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        var gate = await LockAndCheckAsync(access, cancellationToken);
+        var gate = await LockAndCheckAsync(access, actor, isGlobalAdmin, cancellationToken);
         if (gate.Refusal is { } refusal)
         {
             return WishRewardResult.Of(refusal);
@@ -280,7 +285,12 @@ public sealed class WishRewardService(
     }
 
     public async Task<WishRewardResult> UpdateRewardAsync(
-        WishCaptureAccess access, long rewardRowId, UpdateWishRewardRequest request, AuditActor actor, CancellationToken cancellationToken = default)
+        WishCaptureAccess access,
+        long rewardRowId,
+        UpdateWishRewardRequest request,
+        AuditActor actor,
+        bool isGlobalAdmin = false,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
         ArgumentNullException.ThrowIfNull(request);
@@ -299,7 +309,7 @@ public sealed class WishRewardService(
 
         var channelId = access.ChannelId;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        var gate = await LockAndCheckAsync(access, cancellationToken);
+        var gate = await LockAndCheckAsync(access, actor, isGlobalAdmin, cancellationToken);
         if (gate.Refusal is { } refusal)
         {
             return WishRewardResult.Of(refusal);
@@ -346,14 +356,14 @@ public sealed class WishRewardService(
     }
 
     public async Task<WishRewardResult> DeleteRewardAsync(
-        WishCaptureAccess access, long rewardRowId, AuditActor actor, CancellationToken cancellationToken = default)
+        WishCaptureAccess access, long rewardRowId, AuditActor actor, bool isGlobalAdmin = false, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(access);
         ArgumentNullException.ThrowIfNull(actor);
 
         var channelId = access.ChannelId;
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-        var gate = await LockAndCheckAsync(access, cancellationToken);
+        var gate = await LockAndCheckAsync(access, actor, isGlobalAdmin, cancellationToken);
         if (gate.Refusal is { } refusal)
         {
             return WishRewardResult.Of(refusal);
@@ -379,8 +389,10 @@ public sealed class WishRewardService(
     }
 
     // The channel row lock, and behind it the binding the write decides on (plan 2.4: "nach dem Erwerb der
-    // Kanalsperre erneut gelesen"). A row merged or purged while this waited is gone.
-    private async Task<Gate> LockAndCheckAsync(WishCaptureAccess access, CancellationToken cancellationToken)
+    // Kanalsperre erneut gelesen"). A row merged or purged while this waited is gone. Behind the binding the settings
+    // rule (D7) on the settings row as it is now (#487 plan 2.9, R2-6): the filter decided before the lock.
+    private async Task<Gate> LockAndCheckAsync(
+        WishCaptureAccess access, AuditActor actor, bool isGlobalAdmin, CancellationToken cancellationToken)
     {
         var channelId = access.ChannelId;
         var locked = await db.LockChannelsByIdsAsync([channelId], cancellationToken);
@@ -398,9 +410,15 @@ public sealed class WishRewardService(
             return new Gate(WishRewardOutcome.ChannelUnbound, channel.ChannelName);
         }
 
-        return IsConfirmedFor(access, channel.TwitchChannelId)
+        if (!IsConfirmedFor(access, channel.TwitchChannelId))
+        {
+            return new Gate(WishRewardOutcome.AccessDenied, channel.ChannelName);
+        }
+
+        var settings = await LoadSettingsAsync(channelId, cancellationToken);
+        return WishService.CanChangeSettings(settings, channel.TwitchChannelId, actor.TwitchUserId, isGlobalAdmin)
             ? new Gate(null, channel.ChannelName)
-            : new Gate(WishRewardOutcome.AccessDenied, channel.ChannelName);
+            : new Gate(WishRewardOutcome.SettingsRestricted, channel.ChannelName);
     }
 
     // What lies when the conditional delete of a confirm hit nothing (plan 2.4): absent, expired (deleted here) or

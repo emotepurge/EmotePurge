@@ -36,12 +36,20 @@ namespace EmotePurge.Infrastructure.Services;
 /// (<see cref="RowLocks.LockChannelWishesByIdsNoWaitAsync"/>, SQLSTATE <c>55P03</c> gives way as a state conflict), so it
 /// never waits for a second wish row while it holds one.
 /// </para>
+/// <para>
+/// <b>Bot flow (#487 plan 2.3, 2.5a (b), 2.9).</b> The channel's effective bot state (<see cref="WishBotChannelState"/>,
+/// through <see cref="IWishBotChannelStateReader"/>) decides <c>mode</c> and which states need a human; the right to the
+/// settings (D7) hangs on the stored activation and is checked again behind the channel lock. Every mutating path asks
+/// <see cref="WishBotAttemptGuard"/> under the wish's row lock: an open bot attempt answers 409
+/// <c>wish_state_conflict</c>, and the threshold change skips such a wish.
+/// </para>
 /// </summary>
 public sealed class WishService(
     AppDbContext db,
     IWishChangedPublisher changedPublisher,
     TimeProvider timeProvider,
     ILogger<WishService> logger,
+    IWishBotChannelStateReader botChannelStates,
     IWishReconcileTrigger? reconcileTrigger = null) : IWishService
 {
     private const string RunningEmoteIndex = "IX_Wishes_ChannelId_SevenTvEmoteId_Running";
@@ -68,7 +76,11 @@ public sealed class WishService(
     }
 
     public async Task<WishCommandResult> UpdateSettingsAsync(
-        string channelName, UpdateWishSettingsRequest request, AuditActor actor, CancellationToken cancellationToken = default)
+        string channelName,
+        UpdateWishSettingsRequest request,
+        AuditActor actor,
+        bool isGlobalAdmin = false,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(channelName);
         ArgumentNullException.ThrowIfNull(request);
@@ -96,6 +108,16 @@ public sealed class WishService(
         }
 
         var row = await db.ChannelWishSettings.FirstOrDefaultAsync(s => s.ChannelId == channelId, cancellationToken);
+
+        // D7 again behind the channel lock, on the row as it is now (#487 plan 2.9, Sol-P2-6): the filter decided before
+        // the lock, and a bot activation confirmed in between restricts the settings to broadcaster, activator and admins.
+        var stored = row is null ? EffectiveSettings.Defaults : ToSettings(row);
+        if (!CanChangeSettings(stored, locked.TwitchChannelId, actor.TwitchUserId, isGlobalAdmin))
+        {
+            db.ChangeTracker.Clear();
+            return WishCommandResult.Of(WishOutcome.SettingsRestricted);
+        }
+
         if (row is null)
         {
             row = new ChannelWishSettings { ChannelId = channelId };
@@ -155,7 +177,7 @@ public sealed class WishService(
             return true;
         }
 
-        var settings = await LoadSettingsAsync(channel.Id, cancellationToken);
+        var settings = await LoadStoredSettingsAsync(channel.Id, cancellationToken);
         return CanChangeSettings(settings, channel.TwitchChannelId, callerTwitchUserId, isGlobalAdmin);
     }
 
@@ -312,6 +334,13 @@ public sealed class WishService(
             if (wish is null)
             {
                 return WishCommandResult.Of(WishOutcome.WishNotFound);
+            }
+
+            // #487 plan 2.5a (b): an open bot attempt blocks every decision until it is resolved.
+            if (WishBotAttemptGuard.Blocks(wish))
+            {
+                db.ChangeTracker.Clear();
+                return WishCommandResult.Of(WishOutcome.StateConflict);
             }
         }
 
@@ -529,9 +558,11 @@ public sealed class WishService(
                 return CommandStep.ConflictTask;
             }
 
-            // The manager's click is the approval (R3-12). The bot's attempt fields are K4's to reset.
+            // The manager's click is the approval (R3-12). A fresh approval is a fresh start for the bot as well (#487
+            // plan 2.1 point 2); an open repair phase stays.
             wish.Status = target;
             wish.ApprovedAtUtc = now;
+            ResetBotAttempt(wish);
             return CommandStep.DoneTask;
         }, access, cancellationToken);
 
@@ -574,6 +605,9 @@ public sealed class WishService(
 
             // A new run: fresh approval, duration or permanent, no start, expiry or slot generation until the
             // reconcile links a slot again. SlotId and FirstActivatedAtUtc are history and stay (plan T5, finding 20).
+            // The bot starts afresh too (#487 plan 2.1 point 2): without this it would take the wish for a crash
+            // remnant and the reconcile would leave it out; the link origin goes with the old link, an open repair
+            // phase stays.
             wish.Status = target;
             wish.Permanent = permanent;
             wish.DurationDays = request.DurationDays ?? (permanent ? wish.DurationDays : settings.DefaultDurationDays);
@@ -586,6 +620,8 @@ public sealed class WishService(
             wish.SlotConfirmedAtUtc = null;
             wish.BotOwned = false;
             wish.BotOwnedAddedAtUtc = null;
+            wish.LinkOrigin = null;
+            ResetBotAttempt(wish);
             return CommandStep.Done;
         }, access, cancellationToken);
     }
@@ -640,6 +676,13 @@ public sealed class WishService(
         if (wish is null)
         {
             return WishCommandResult.Of(WishOutcome.WishNotFound);
+        }
+
+        // #487 plan 2.5a (b): an open bot attempt blocks the report like every other decision.
+        if (WishBotAttemptGuard.Blocks(wish))
+        {
+            db.ChangeTracker.Clear();
+            return WishCommandResult.Of(WishOutcome.StateConflict);
         }
 
         // Row 3: the set is proven only by being the channel's active set right now; slots are entries of it.
@@ -820,6 +863,14 @@ public sealed class WishService(
                 w => w.Id == targetId && w.ChannelId == scope.Id && w.SevenTvEmoteId == emoteId, cancellationToken);
             if (target is not null && WishStatus.IsRunning(target.Status))
             {
+                // #487 plan 2.5a (b): an open bot attempt on the running wish blocks its extension, so the approval
+                // books nothing.
+                if (WishBotAttemptGuard.Blocks(target))
+                {
+                    db.ChangeTracker.Clear();
+                    return WishCommandResult.Of(WishOutcome.StateConflict);
+                }
+
                 return await MergeIntoRunningAsync(transaction, actor, channel.ChannelName, scope, settings, wish, target, now, cancellationToken);
             }
         }
@@ -912,6 +963,13 @@ public sealed class WishService(
             return WishCommandResult.Of(WishOutcome.WishNotFound);
         }
 
+        // #487 plan 2.5a (b).
+        if (WishBotAttemptGuard.Blocks(wish))
+        {
+            db.ChangeTracker.Clear();
+            return WishCommandResult.Of(WishOutcome.StateConflict);
+        }
+
         // Only active (spec K6): the table also lets presented with unconfirmed_start back to pending, but that row
         // is the reconcile's date correction (plan 2.5), not a manager command.
         var ircAutoLinked = wish.Source == WishSource.Irc && wish.LinkOrigin == WishLinkOrigin.Auto;
@@ -1002,6 +1060,21 @@ public sealed class WishService(
             return WishCommandResult.Of(WishOutcome.StateConflict);
         }
 
+        // #487 plan 2.5a (b), K6b-12: an open bot attempt blocks (defensive, an ended wish carries none), and an open
+        // repair phase keeps the row and its evidence until it is resolved, whatever the bot mode is now: deleting it
+        // would destroy the evidence the needs_review result is built from. Afterwards the delete works as in K7a.
+        if (WishBotAttemptGuard.Blocks(wish))
+        {
+            db.ChangeTracker.Clear();
+            return WishCommandResult.Of(WishOutcome.StateConflict);
+        }
+
+        if (wish.BotRepairAtUtc is not null)
+        {
+            db.ChangeTracker.Clear();
+            return WishCommandResult.Of(WishOutcome.RepairCheckOpen);
+        }
+
         // E32: the wishes merged into this one, within the channel, ascending and without waiting. The delete's ON DELETE
         // SET NULL writes them, so their locks are taken here, before anything is written. Never waiting for a second
         // wish row while holding this one rules out a deadlock with the retention's unordered batches: if the pass (or
@@ -1067,7 +1140,7 @@ public sealed class WishService(
         pageSize = Math.Clamp(pageSize, 1, MaxPageSize);
 
         var settings = await LoadSettingsAsync(channelId, cancellationToken);
-        var statuses = StatusesOf(view, settings.IsBotMode);
+        var statuses = StatusesOf(view, settings.ChannelMode);
         var query = db.Wishes.AsNoTracking().Where(w => w.ChannelId == channelId && statuses.Contains(w.Status));
         var ordered = view switch
         {
@@ -1366,7 +1439,7 @@ public sealed class WishService(
 
         return await db.Channels.AsNoTracking()
             .Where(c => c.Id == channelId)
-            .Select(c => new LockedChannel(c.ChannelName, c.ActiveEmoteSetCapacity))
+            .Select(c => new LockedChannel(c.ChannelName, c.ActiveEmoteSetCapacity, c.TwitchChannelId))
             .FirstOrDefaultAsync(cancellationToken);
     }
 
@@ -1374,7 +1447,7 @@ public sealed class WishService(
     // active wishes ascending by id, read them only afterwards, bump their DecisionVersion and drop a queued
     // removal, so a removal queued under the old threshold can never be carried out under the new one. The
     // caller commits this together with the settings row and its audit entry. Presented wishes stay untouched
-    // (before K4 none carries a queue; K4 decides for bot-remove).
+    // (before K4 none carries a queue; K4 decides for bot-remove), and so does a wish with an open bot attempt.
     private async Task SupersedeActiveDecisionsAsync(string channelId, CancellationToken cancellationToken)
     {
         // Under the channel lock no writer can turn a wish active (the reconcile and adopt take that lock first);
@@ -1392,7 +1465,9 @@ public sealed class WishService(
         var wishes = await db.Wishes
             .Where(w => ids.Contains(w.Id) && w.ChannelId == channelId && w.Status == WishStatus.Active)
             .ToListAsync(cancellationToken);
-        foreach (var wish in wishes)
+
+        // #487 plan 2.5a (b): a wish with an open bot attempt is skipped; the change comes too late for it, like a 409.
+        foreach (var wish in wishes.Where(w => !WishBotAttemptGuard.Blocks(w)))
         {
             wish.DecisionVersion++;
             wish.RemovalQueuedAtUtc = null;
@@ -1400,7 +1475,31 @@ public sealed class WishService(
         }
     }
 
+    // The settings with the channel's effective bot state (#487 plan 2.3). Only an activated channel needs the channel's
+    // Twitch id and the bot account's state; a manual one costs no further read.
     private async Task<EffectiveSettings> LoadSettingsAsync(string channelId, CancellationToken cancellationToken)
+    {
+        var row = await db.ChannelWishSettings.AsNoTracking().FirstOrDefaultAsync(s => s.ChannelId == channelId, cancellationToken);
+        if (row is null)
+        {
+            return EffectiveSettings.Defaults;
+        }
+
+        var settings = ToSettings(row);
+        if (!row.BotModeEnabled)
+        {
+            return settings;
+        }
+
+        var twitchChannelId = await db.Channels.AsNoTracking()
+            .Where(c => c.Id == channelId)
+            .Select(c => c.TwitchChannelId)
+            .FirstOrDefaultAsync(cancellationToken);
+        return settings with { ChannelMode = await botChannelStates.ReadAsync(row, twitchChannelId, cancellationToken) };
+    }
+
+    // The stored settings only, for the D7 rule, which hangs on the stored activation and needs no channel state.
+    private async Task<EffectiveSettings> LoadStoredSettingsAsync(string channelId, CancellationToken cancellationToken)
     {
         var row = await db.ChannelWishSettings.AsNoTracking().FirstOrDefaultAsync(s => s.ChannelId == channelId, cancellationToken);
         return row is null ? EffectiveSettings.Defaults : ToSettings(row);
@@ -1586,6 +1685,13 @@ public sealed class WishService(
             return WishCommandResult.Of(WishOutcome.WishNotFound);
         }
 
+        // #487 plan 2.5a (b): an open bot attempt blocks every command, before the command looks at the wish.
+        if (WishBotAttemptGuard.Blocks(wish))
+        {
+            db.ChangeTracker.Clear();
+            return WishCommandResult.Of(WishOutcome.StateConflict);
+        }
+
         var settings = await LoadSettingsAsync(channelId, cancellationToken);
         var now = Now();
         var previousStatus = wish.Status;
@@ -1705,6 +1811,25 @@ public sealed class WishService(
         wish.RemovalQueuedVersion = null;
     }
 
+    // #487 plan 2.1 point 2: re-add and retry start the bot afresh, so the runner never takes the wish for a crash remnant
+    // of an earlier attempt. An open repair phase (BotRepairAtUtc with its evidence) is the one thing that stays (2.5a
+    // (h)): manager commands never touch it.
+    private static void ResetBotAttempt(Wish wish)
+    {
+        wish.BotWriteAtUtc = null;
+        wish.BotAttemptCount = 0;
+        wish.BotNextAttemptAtUtc = null;
+        wish.BotSetId = null;
+        wish.BotAttemptVersion = null;
+        wish.BotRemoveAtUtc = null;
+        wish.BotAddAckAtUtc = null;
+        wish.BotConfirmDeadlineAtUtc = null;
+        if (wish.BotRepairAtUtc is null)
+        {
+            wish.BotRemoveEvidence = null;
+        }
+    }
+
     // The extension of ExtendAsync, shared with the approval that becomes one (plan #486 2.6, Sol-P2-9): only a wish
     // with an expiry, E12 by the channel's default from the current expiry or from now when that has passed. Returns
     // the extension length for the audit entry, or null (and changes nothing) when the wish cannot be extended; one
@@ -1788,10 +1913,11 @@ public sealed class WishService(
     internal static Expression<Func<EmoteSlot, bool>> AdoptableIn(string channelId) =>
         s => s.Emote.ChannelId == channelId && !s.IsArchived && !s.SeedUnsettled;
 
-    internal static string[] StatusesOf(WishListView view, bool botMode)
+    internal static string[] StatusesOf(WishListView view, WishBotChannelMode channelMode)
     {
-        // An approved wish needs a human while the channel runs manually; in bot mode it is the bot's turn.
-        var approvedNeedsAction = !botMode;
+        // An approved wish needs a human while the channel runs manually or has fallen back (spec 5 "or the bot is
+        // down", AK79, #487 [W1]); only while the bot acts for the channel is it the bot's turn.
+        var approvedNeedsAction = channelMode != WishBotChannelMode.Bot;
         string[] statuses = view switch
         {
             WishListView.Open => approvedNeedsAction
@@ -1836,14 +1962,16 @@ public sealed class WishService(
         && !alias.Any(c => char.IsControl(c) || char.IsWhiteSpace(c));
 
     /// <summary>
-    /// The one rule behind <see cref="CanChangeSettingsAsync"/>, shared with the reward read's <c>canEdit</c>: a manual
-    /// channel answers yes (the caller is a manager already); in bot mode only the broadcaster (by id), the manager
-    /// who activated the bot and a global admin.
+    /// The one rule behind <see cref="CanChangeSettingsAsync"/>, shared with the reward read's <c>canEdit</c> and checked
+    /// again behind the channel lock by every settings and reward write: a channel without a stored activation answers yes
+    /// (the caller is a manager already); with one only the broadcaster (by id), the manager who activated the bot and a
+    /// global admin. The stored activation decides, not the effective state (#487 [W2]): a suspended or fallen-back
+    /// channel keeps D7.
     /// </summary>
     internal static bool CanChangeSettings(
         EffectiveSettings settings, string? channelTwitchId, string callerTwitchUserId, bool isGlobalAdmin)
     {
-        if (!settings.IsBotMode || isGlobalAdmin)
+        if (!settings.BotModeEnabled || isGlobalAdmin)
         {
             return true;
         }
@@ -1890,7 +2018,8 @@ public sealed class WishService(
         w.ExtensionCount,
         w.Permanent,
         w.BotOwned,
-        w.BotWriteAtUtc is not null && w.Status != WishStatus.Active,
+        // #487 [W9]: only while the write is under way; an old stamp in any later state is history.
+        w.BotWriteAtUtc is not null && w.Status is WishStatus.Approved or WishStatus.Unconfirmed,
         w.BotNextAttemptAtUtc,
         w.RemovalQueuedAtUtc,
         settings.IsBotMode ? "bot" : "manual",
@@ -1900,7 +2029,7 @@ public sealed class WishService(
         includeRequestData ? rewardLabel : null,
         w.MergedIntoWishId);
 
-    private sealed record LockedChannel(string ChannelName, int? ActiveEmoteSetCapacity);
+    private sealed record LockedChannel(string ChannelName, int? ActiveEmoteSetCapacity, string? TwitchChannelId);
 
     // The channel a call works on: its id, its current name, and whether redeemer data may leave (plan #486 2.4a).
     private sealed record ChannelScope(string Id, string Name, bool IncludeRequestData);
@@ -1919,6 +2048,8 @@ public sealed class WishService(
         public static readonly Task<CommandStep> ConflictTask = Task.FromResult(Conflict);
     }
 
+    // ChannelMode is the channel's effective bot state (#487 plan 2.3); ToSettings leaves it manual, LoadSettingsAsync and
+    // the overview fill it for an activated channel.
     internal sealed record EffectiveSettings(
         int DefaultDurationDays,
         int ProbationLeadDays,
@@ -1926,13 +2057,14 @@ public sealed class WishService(
         bool BotModeEnabled,
         string? BotSuspendedReason,
         string? ActivatedByTwitchUserId,
-        int PendingExpiryDays)
+        int PendingExpiryDays,
+        WishBotChannelMode ChannelMode = WishBotChannelMode.Manual)
     {
         public static readonly EffectiveSettings Defaults = new(
             WishLimits.DefaultDurationDays, WishLimits.DefaultProbationLeadDays, null, false, null, null, WishLimits.DefaultPendingExpiryDays);
 
-        // In K1 nothing sets BotModeEnabled, so every channel is manual.
-        public bool IsBotMode => BotModeEnabled && BotSuspendedReason is null;
+        /// <summary>The bot acts for the channel right now; <c>mode</c> in the DTO is <c>bot</c> only then.</summary>
+        public bool IsBotMode => ChannelMode == WishBotChannelMode.Bot;
 
         public WishSettingsDto ToDto() => new(
             DefaultDurationDays, ProbationLeadDays, ProtectionThresholdPerDay, BotModeEnabled, BotSuspendedReason, PendingExpiryDays);

@@ -342,7 +342,7 @@ public partial class ChannelIdentityServiceTests
             writeDb,
             new WishChangedPublisher(Substitute.For<IRedisPublisher>(), NullLogger<WishChangedPublisher>.Instance),
             new HandWoundTimeProvider(),
-            NullLogger<WishService>.Instance);
+            NullLogger<WishService>.Instance, BotChannelStates.Unavailable());
         var harness = CreateHarness(mergeDb, [pair.Identity]);
 
         Task<WishCommandResult> writeTask;
