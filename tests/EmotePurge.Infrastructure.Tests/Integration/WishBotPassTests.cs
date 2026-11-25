@@ -85,6 +85,10 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
         _sevenTv.GetEditorForAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(call => AnswerEditorRead(call.Arg<string>()));
         _writes.AcceptEditorInvitationAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(call => AnswerAcceptAsync(call.ArgAt<string>(1), call.ArgAt<string>(2)));
+        _writes.AddEmoteAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call => AnswerAddAsync(call.ArgAt<string>(1), call.ArgAt<string>(2), call.ArgAt<string>(3)));
+        _writes.ReadSetEntriesAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call => AnswerSetReadAsync(call.ArgAt<string>(1)));
     }
 
     public async Task DisposeAsync()
@@ -695,6 +699,7 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
     {
         private DateTime? _lastWrite;
         private int _probes;
+        private int _waits;
 
         public BotAccountSnapshot Account { get; set; } = account;
         public string? Token => Account.Status == BotAccountStatus.Valid ? "token" : null;
@@ -707,6 +712,9 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
         public List<string> Calls { get; } = [];
         public List<TimeSpan> Pauses { get; } = [];
         public Func<int, Task<bool>>? OnProbe { get; set; }
+
+        // Runs inside WaitForWriteSlotAsync (before the intent of an add), with the number of the wait.
+        public Func<int, Task>? OnWait { get; set; }
 
         // The pass's context: the probe must never run while it has a transaction (with row locks) open (K6f-1).
         public AppDbContext? Db { get; set; }
@@ -734,7 +742,7 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
             return true;
         }
 
-        public Task WaitForWriteSlotAsync(CancellationToken cancellationToken = default)
+        public async Task WaitForWriteSlotAsync(CancellationToken cancellationToken = default)
         {
             Calls.Add("wait");
             if (_lastWrite is { } last && last + WriteDelay > clock.GetUtcNow().UtcDateTime)
@@ -742,7 +750,10 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
                 clock.Advance(last + WriteDelay - clock.GetUtcNow().UtcDateTime);
             }
 
-            return Task.CompletedTask;
+            if (OnWait is { } hook)
+            {
+                await hook(++_waits);
+            }
         }
 
         public void MarkWriteSent()
@@ -761,7 +772,8 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
 
         public Task<bool> PauseAsync(TimeSpan retryAfter, CancellationToken cancellationToken = default)
         {
-            Calls.Add("pause");
+            // "pause" joined to an open transaction of the pass (K6c-3), "pause-alone" without one.
+            Calls.Add(Db?.Database.CurrentTransaction is null ? "pause-alone" : "pause");
             Pauses.Add(retryAfter);
             TokenUsable = false;
             return Task.FromResult(false);
