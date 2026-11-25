@@ -142,12 +142,12 @@ describe('AdminService', () => {
       rosterChannelCount: 3,
       ircConfirmedCount: 2,
       sevenTvAcknowledgedCount: 3,
-      missingFromIrc: ['sensitron'],
-      missingFromIrcTotal: 1,
+      missingFromSevenTv: ['sensitron'],
+      missingFromSevenTvTotal: 1,
     });
 
     expect(result?.ircConfirmedCount).toBe(2);
-    expect(result?.missingFromIrc).toEqual(['sensitron']);
+    expect(result?.missingFromSevenTv).toEqual(['sensitron']);
     expect(result?.ceilings.maxActiveChannels).toBe(80);
   });
 

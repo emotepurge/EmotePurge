@@ -280,12 +280,6 @@ public static class AdminEndpoints
             var rosterByChannel = snapshot.Channels.ToDictionary(
                 c => c.ChannelName, StringComparer.OrdinalIgnoreCase);
 
-            // "Missing" means not confirmed, which covers both absent-from-the-roster and
-            // present-but-unconfirmed: for the question this page answers — is this channel actually
-            // being counted — the two are the same failure.
-            var missingFromIrc = trackedChannels
-                .Where(name => !rosterByChannel.TryGetValue(name, out var row) || !row.IrcJoinConfirmed)
-                .ToList();
             var missingFromSevenTv = trackedChannels
                 .Where(name => !rosterByChannel.TryGetValue(name, out var row) || !row.SevenTvEmoteSetAcknowledged)
                 .ToList();
@@ -303,13 +297,13 @@ public static class AdminEndpoints
                 .ThenByDescending(e => e.UnconfirmedSeconds)
                 .ThenBy(e => e.ChannelName, StringComparer.Ordinal)
                 .ToList();
-            // Active in the database but never wished by the worker, and past the grace: it counts for
-            // the alarm, so the card must be able to name it.
-            var missingIntentOverdue = joinReport.MissingIntent
-                .Where(m => m.Overdue)
-                .OrderByDescending(m => m.WaitingSeconds)
+            // Active in the database, no IRC wish in the worker: judged against the full roster here,
+            // before any list is capped, so it is disjoint from ircUnjoined by construction. Overdue
+            // ones count for the alarm and come first, then the longest wait.
+            var missingIntent = joinReport.MissingIntent
+                .OrderBy(m => m.Overdue ? 0 : 1)
+                .ThenByDescending(m => m.WaitingSeconds)
                 .ThenBy(m => m.ChannelName, StringComparer.Ordinal)
-                .Select(m => m.ChannelName)
                 .ToList();
 
             return Results.Ok(new
@@ -331,8 +325,6 @@ public static class AdminEndpoints
                 sevenTvAcknowledgedCount = snapshot.Channels.Count(c => c.SevenTvEmoteSetAcknowledged),
                 // Capped lists plus their untruncated totals: a short list that silently stood for a
                 // long one would read as "almost fine" on the page where that matters most.
-                missingFromIrc = missingFromIrc.Take(DeficitListLimit).ToList(),
-                missingFromIrcTotal = missingFromIrc.Count,
                 missingFromSevenTv = missingFromSevenTv.Take(DeficitListLimit).ToList(),
                 missingFromSevenTvTotal = missingFromSevenTv.Count,
                 unknownToDatabase = unknownToDatabase.Take(DeficitListLimit).ToList(),
@@ -347,8 +339,14 @@ public static class AdminEndpoints
                     countsForAlarm = e.CountsForAlarm,
                 }).ToList(),
                 ircUnjoinedTotal = ircUnjoined.Count,
-                missingIntentOverdue = missingIntentOverdue.Take(DeficitListLimit).ToList(),
-                missingIntentOverdueTotal = missingIntentOverdue.Count,
+                missingIntent = missingIntent.Take(DeficitListLimit).Select(m => new
+                {
+                    channelName = m.ChannelName,
+                    waitingSeconds = m.WaitingSeconds,
+                    overdue = m.Overdue,
+                }).ToList(),
+                missingIntentTotal = missingIntent.Count,
+                missingIntentOverdueTotal = missingIntent.Count(m => m.Overdue),
                 ceilings = Ceilings(channelCapacity),
             });
         });

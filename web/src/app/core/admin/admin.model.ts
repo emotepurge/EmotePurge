@@ -164,6 +164,15 @@ export interface IrcUnjoinedChannel {
   countsForAlarm: boolean;
 }
 
+/** One `missingIntent` row of GET /api/admin/roster: active in the database, no IRC wish in the worker. */
+export interface MissingIntentChannel {
+  channelName: string;
+  /** Since `max(TrackingResumedAt ?? CreatedAt, worker process start)`, at the roster's timestamp. */
+  waitingSeconds: number;
+  /** Past the grace period: counts for the alarm. */
+  overdue: boolean;
+}
+
 /**
  * GET /api/admin/roster — the worker's roster compared against the channels the database considers
  * active. Its own endpoint rather than more fields on /health, which every open monitoring page
@@ -194,8 +203,6 @@ export interface AdminRoster {
   sevenTvAcknowledgedCount?: number;
   /** Capped lists with their untruncated totals alongside — a short list standing in silently for a
    *  long one would read as "almost fine" on the page where that matters most. */
-  missingFromIrc?: string[];
-  missingFromIrcTotal?: number;
   missingFromSevenTv?: string[];
   missingFromSevenTvTotal?: number;
   /** The other direction: the worker holds a channel the database no longer considers active — what
@@ -205,9 +212,11 @@ export interface AdminRoster {
   /** Capped (50) and ordered by the server: alarming, excluded, waiting; longest first. */
   ircUnjoined?: IrcUnjoinedChannel[];
   ircUnjoinedTotal?: number;
-  /** Active channels with no IRC intent in the worker past the grace period — they count for the
-   *  alarm but have no unconfirmed-time row because the worker never tried them. */
-  missingIntentOverdue?: string[];
+  /** Active channels the worker holds no IRC wish for, decided by the server on the full roster
+   *  (disjoint from `ircUnjoined`). Capped (50), overdue first, then longest wait. Overdue ones count
+   *  for the alarm but have no unconfirmed-time row because the worker never tried them. */
+  missingIntent?: MissingIntentChannel[];
+  missingIntentTotal?: number;
   missingIntentOverdueTotal?: number;
 }
 

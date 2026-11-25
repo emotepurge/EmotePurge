@@ -1254,7 +1254,11 @@ const SCENARIOS: Scenario[] = [
       // banners and deficit lists rather than the all-green layout.
       await mockAdminRoster(page, {
         trackedChannelCount: 24,
-        missingFromIrc: ['sensitron', 'olaf_olaf_son'],
+        joinHealthStatus: 'failing',
+        missingIntent: [
+          { channelName: 'sensitron', waitingSeconds: 900, overdue: true },
+          { channelName: 'olaf_olaf_son', waitingSeconds: 40, overdue: false },
+        ],
         missingFromSevenTv: ['sensitron'],
       });
       await adminDashboard(page, {

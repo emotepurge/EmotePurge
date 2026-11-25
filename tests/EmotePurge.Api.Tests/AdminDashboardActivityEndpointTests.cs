@@ -231,8 +231,68 @@ public class AdminDashboardActivityEndpointTests : IClassFixture<ApiFactory>
         Assert.True(unjoined[1].GetProperty("overdue").GetBoolean());
         Assert.Equal(JsonValueKind.Null, unjoined[2].GetProperty("reason").ValueKind);
         Assert.Equal(400, unjoined[0].GetProperty("unconfirmedSeconds").GetInt32());
-        Assert.Equal(["unwished"], root.GetProperty("missingIntentOverdue").EnumerateArray().Select(e => e.GetString()));
+        var missing = Assert.Single(root.GetProperty("missingIntent").EnumerateArray());
+        Assert.Equal("unwished", missing.GetProperty("channelName").GetString());
+        Assert.Equal(700, missing.GetProperty("waitingSeconds").GetInt32());
+        Assert.True(missing.GetProperty("overdue").GetBoolean());
+        Assert.Equal(1, root.GetProperty("missingIntentTotal").GetInt32());
         Assert.Equal(1, root.GetProperty("missingIntentOverdueTotal").GetInt32());
+        // Superseded by ircUnjoined plus missingIntent, which split it by whether the worker holds a wish.
+        Assert.False(root.TryGetProperty("missingFromIrc", out _));
+        Assert.False(root.TryGetProperty("missingFromIrcTotal", out _));
+    }
+
+    [Fact]
+    public async Task Roster_WithMoreThanFiftyUnconfirmedWishes_ListsOnlyChannelsWithoutAWishAsMissingIntent()
+    {
+        // The real join-health service and policy over a full roster: 60 wished, unconfirmed channels
+        // (more than the 50-row cap of ircUnjoined), plus three active channels the worker holds no IRC
+        // wish for — one of them present in the roster as a 7TV-only row. The missing list is decided
+        // on the full roster before anything is capped, so no wished channel may appear in it.
+        var now = DateTime.UtcNow;
+        var wished = Enumerable.Range(0, 60).Select(i => $"wished{i:D2}").ToList();
+        var rows = wished
+            .Select((name, i) => new WorkerRosterChannel(
+                name, false, null, null, true, null, true, IrcIntent: true, IrcUnconfirmedSeconds: i * 10, IrcJoinFailureReason: null))
+            .Append(new WorkerRosterChannel("seventvonly", false, null, "set", true, null, true))
+            .ToList();
+        var roster = Substitute.For<IWorkerRosterReader>();
+        roster.ReadAsync(Arg.Any<CancellationToken>()).Returns(new WorkerRosterSnapshot(
+            now, "worker", now.AddHours(-2), true, false, rows, WorkerRosterSnapshot.CurrentSchemaVersion));
+        var active = wished.Select(name => new ActiveChannelActivation(name, now.AddDays(-3)))
+            .Append(new ActiveChannelActivation("seventvonly", now.AddDays(-3)))
+            .Append(new ActiveChannelActivation("lostjoin", now.AddDays(-3)))
+            .Append(new ActiveChannelActivation("justadded", now.AddSeconds(-30)))
+            .ToList();
+        var channels = Substitute.For<IChannelService>();
+        channels.ListActiveChannelActivationsAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<ActiveChannelActivation>>(active));
+        var channelQuery = Substitute.For<IAdminChannelQueryService>();
+        channelQuery.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<string>>(active.Select(a => a.ChannelName).ToList()));
+        using var factory = NewHost(builder => builder.ConfigureTestServices(services =>
+        {
+            services.AddSingleton(roster);
+            services.AddScoped(_ => channelQuery);
+            services.AddScoped(_ => channels);
+        }));
+
+        var (status, body) = await SendAsync(factory, "/api/admin/roster");
+        using var disposal = body;
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        var root = body.RootElement;
+        Assert.Equal(50, root.GetProperty("ircUnjoined").GetArrayLength());
+        Assert.Equal(60, root.GetProperty("ircUnjoinedTotal").GetInt32());
+        var missing = root.GetProperty("missingIntent").EnumerateArray().ToList();
+        // Overdue first (longest wait, then name), the one still within its grace last.
+        Assert.Equal(
+            ["lostjoin", "seventvonly", "justadded"],
+            missing.Select(e => e.GetProperty("channelName").GetString()));
+        Assert.Equal([true, true, false], missing.Select(e => e.GetProperty("overdue").GetBoolean()));
+        Assert.DoesNotContain(missing, e => wished.Contains(e.GetProperty("channelName").GetString()!));
+        Assert.Equal(3, root.GetProperty("missingIntentTotal").GetInt32());
+        Assert.Equal(2, root.GetProperty("missingIntentOverdueTotal").GetInt32());
     }
 
     private static AdminDashboardActivity NewActivity(AdminDashboardActivityRange range, DateTime nowUtc)

@@ -181,7 +181,6 @@ test.describe('roster card: join status and capacity (#516)', () => {
   }) => {
     await open(page, {
       joinHealthStatus: 'failing',
-      missingFromIrc: ['stilleskanal', 'vollerkanal'],
       ircUnjoined: [
         {
           channelName: 'stilleskanal',
@@ -230,7 +229,9 @@ test.describe('roster card: join status and capacity (#516)', () => {
   test('an overdue channel without any worker intent is marked in "Nicht im Worker"', async ({
     page,
   }) => {
-    await open(page, { missingIntentOverdue: ['ohnewunsch'] });
+    await open(page, {
+      missingIntent: [{ channelName: 'ohnewunsch', waitingSeconds: 900, overdue: true }],
+    });
 
     const section = rosterCard(page).getByTestId('roster-not-in-worker');
     await expect(section).toContainText('#ohnewunsch');

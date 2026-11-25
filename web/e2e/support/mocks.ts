@@ -190,7 +190,6 @@ export interface MockAdminRoster {
   ircConfirmedCount?: number;
   sevenTvAcknowledgedCount?: number;
   ageSeconds?: number;
-  missingFromIrc?: string[];
   missingFromSevenTv?: string[];
   maxActiveChannels?: number;
   joinHealthStatus?: 'healthy' | 'starting' | 'unavailable' | 'failing';
@@ -201,17 +200,16 @@ export interface MockAdminRoster {
     overdue: boolean;
     countsForAlarm: boolean;
   }[];
-  missingIntentOverdue?: string[];
+  missingIntent?: { channelName: string; waitingSeconds: number; overdue: boolean }[];
 }
 
 /** GET /api/admin/roster — the monitoring page's roster card. Defaults to a complete roster; the
  *  interesting cases are the deficit ones, which a test states explicitly. */
 export async function mockAdminRoster(page: Page, overrides: MockAdminRoster = {}): Promise<void> {
   const tracked = overrides.trackedChannelCount ?? 3;
-  const missingFromIrc = overrides.missingFromIrc ?? [];
   const missingFromSevenTv = overrides.missingFromSevenTv ?? [];
   const ircUnjoined = overrides.ircUnjoined ?? [];
-  const missingIntentOverdue = overrides.missingIntentOverdue ?? [];
+  const missingIntent = overrides.missingIntent ?? [];
   await page.route('**/api/admin/roster', (route) =>
     fulfillJson(route, 200, {
       snapshotAvailable: overrides.snapshotAvailable ?? true,
@@ -223,13 +221,16 @@ export async function mockAdminRoster(page: Page, overrides: MockAdminRoster = {
       joinHealth: {
         status: overrides.joinHealthStatus ?? 'healthy',
         graceSeconds: 60,
-        alarmingTotal: ircUnjoined.filter((row) => row.countsForAlarm && row.overdue).length,
-        excludedTotal: ircUnjoined.filter((row) => !row.countsForAlarm).length,
+        alarmingTotal:
+          ircUnjoined.filter((row) => row.countsForAlarm && row.overdue).length +
+          missingIntent.filter((row) => row.overdue).length,
+        excludedTotal: ircUnjoined.filter((row) => row.overdue && !row.countsForAlarm).length,
       },
       ircUnjoined,
       ircUnjoinedTotal: ircUnjoined.length,
-      missingIntentOverdue,
-      missingIntentOverdueTotal: missingIntentOverdue.length,
+      missingIntent,
+      missingIntentTotal: missingIntent.length,
+      missingIntentOverdueTotal: missingIntent.filter((row) => row.overdue).length,
       generatedAtUtc: '2026-08-01T12:00:00Z',
       ageSeconds: overrides.ageSeconds ?? 12,
       workerInstanceId: 'a1b2c3d4',
@@ -237,11 +238,11 @@ export async function mockAdminRoster(page: Page, overrides: MockAdminRoster = {
       bootRecoveryCompleted: overrides.bootRecoveryCompleted ?? true,
       truncated: false,
       rosterChannelCount: tracked,
-      ircConfirmedCount: overrides.ircConfirmedCount ?? tracked - missingFromIrc.length,
+      // Unconfirmed in IRC is either wished but unanswered or not wished at all.
+      ircConfirmedCount:
+        overrides.ircConfirmedCount ?? tracked - ircUnjoined.length - missingIntent.length,
       sevenTvAcknowledgedCount:
         overrides.sevenTvAcknowledgedCount ?? tracked - missingFromSevenTv.length,
-      missingFromIrc,
-      missingFromIrcTotal: missingFromIrc.length,
       missingFromSevenTv,
       missingFromSevenTvTotal: missingFromSevenTv.length,
       unknownToDatabase: [],

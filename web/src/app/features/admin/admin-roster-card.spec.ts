@@ -308,7 +308,7 @@ describe('AdminRosterCard', () => {
     it('defaults all three lists to [] when the snapshot omits them', () => {
       render(of(roster()));
 
-      expect(component['missingFromIrc']()).toEqual([]);
+      expect(component['notInWorker']()).toEqual([]);
       expect(component['missingFromSevenTv']()).toEqual([]);
       expect(component['unknownToDatabase']()).toEqual([]);
     });
@@ -317,14 +317,12 @@ describe('AdminRosterCard', () => {
       render(
         of(
           roster({
-            missingFromIrc: ['a'],
             missingFromSevenTv: ['b'],
             unknownToDatabase: ['c'],
           }),
         ),
       );
 
-      expect(component['missingFromIrc']()).toEqual(['a']);
       expect(component['missingFromSevenTv']()).toEqual(['b']);
       expect(component['unknownToDatabase']()).toEqual(['c']);
     });
@@ -452,29 +450,22 @@ describe('AdminRosterCard', () => {
       expect(component['unjoinedMore']()).toBe(119);
     });
 
-    it('lists a channel that is both in missingFromIrc and ircUnjoined only in the join status', () => {
-      render(
-        of(
-          roster({
-            ircUnjoined: [row('both')],
-            ircUnjoinedTotal: 1,
-            missingFromIrc: ['both', 'only'],
-            missingFromIrcTotal: 2,
-          }),
-        ),
-      );
-
-      expect(component['notInWorker']()).toEqual([{ name: 'only', overdue: false }]);
+    const missing = (channelName: string, overdue: boolean) => ({
+      channelName,
+      waitingSeconds: overdue ? 900 : 30,
+      overdue,
     });
 
-    it('puts overdue missing-intent names first and marked, even when missingFromIrc lacks them', () => {
+    it("shows exactly the server's missing-intent list in its order, independent of the join status", () => {
+      // With a capped join-status list the client cannot tell which of the remaining channels the
+      // worker holds a wish for; the server's list is the only source.
       render(
         of(
           roster({
-            missingFromIrc: ['plain', 'late'],
-            missingFromIrcTotal: 2,
-            missingIntentOverdue: ['late', 'ghost'],
-            missingIntentOverdueTotal: 2,
+            ircUnjoined: [row('wished')],
+            ircUnjoinedTotal: 80,
+            missingIntent: [missing('late', true), missing('ghost', true), missing('fresh', false)],
+            missingIntentTotal: 3,
           }),
         ),
       );
@@ -482,13 +473,16 @@ describe('AdminRosterCard', () => {
       expect(component['notInWorker']()).toEqual([
         { name: 'late', overdue: true },
         { name: 'ghost', overdue: true },
-        { name: 'plain', overdue: false },
+        { name: 'fresh', overdue: false },
       ]);
+      expect(component['notInWorkerTotal']()).toBe(3);
+      expect(component['notInWorkerTruncated']()).toBe(false);
     });
 
-    it('flags a truncated not-in-worker list', () => {
-      render(of(roster({ missingFromIrc: ['a'], missingFromIrcTotal: 40 })));
+    it('flags a truncated not-in-worker list and counts its untruncated total', () => {
+      render(of(roster({ missingIntent: [missing('a', true)], missingIntentTotal: 40 })));
 
+      expect(component['notInWorkerTotal']()).toBe(40);
       expect(component['notInWorkerTruncated']()).toBe(true);
     });
   });

@@ -231,9 +231,7 @@ const STATUS_TONES: Record<string, HealthTone> = {
           @if (notInWorker().length > 0) {
             <div class="flex flex-col gap-1" data-testid="roster-not-in-worker">
               <p class="text-sm text-warning-fg">
-                {{
-                  'admin.roster.notInWorker.heading' | transloco: { count: notInWorker().length }
-                }}
+                {{ 'admin.roster.notInWorker.heading' | transloco: { count: notInWorkerTotal() } }}
               </p>
               <ul class="flex flex-wrap gap-x-3 gap-y-1 text-sm">
                 @for (item of notInWorker(); track item.name) {
@@ -425,33 +423,26 @@ export class AdminRosterCard {
   );
 
   /**
-   * "Not in the worker": database says active, the worker holds no intent. Names with an overdue
-   * missing intent feed the alarm and come first; channels that already appear in the join-status
-   * list are not repeated here.
+   * "Not in the worker": database says active, the worker holds no intent. Exactly the server's
+   * `missingIntent` list in its order (overdue first), which it decides on the full roster before
+   * capping; subtracting two capped lists here could name a channel the worker is already joining.
    */
-  protected readonly notInWorker = computed(() => {
+  protected readonly notInWorker = computed(() =>
+    (this.roster()?.missingIntent ?? []).map((row) => ({
+      name: row.channelName,
+      overdue: row.overdue,
+    })),
+  );
+
+  protected readonly notInWorkerTotal = computed(() => {
     const data = this.roster();
-    const unjoined = new Set((data?.ircUnjoined ?? []).map((row) => row.channelName));
-    const overdue = (data?.missingIntentOverdue ?? []).filter((name) => !unjoined.has(name));
-    const seen = new Set(overdue);
-    const rest = (data?.missingFromIrc ?? []).filter(
-      (name) => !unjoined.has(name) && !seen.has(name),
-    );
-    return [
-      ...overdue.map((name) => ({ name, overdue: true })),
-      ...rest.map((name) => ({ name, overdue: false })),
-    ];
+    return Math.max(data?.missingIntentTotal ?? 0, data?.missingIntent?.length ?? 0);
   });
 
-  protected readonly notInWorkerTruncated = computed(() => {
-    const data = this.roster();
-    return (
-      (data?.missingFromIrcTotal ?? 0) > (data?.missingFromIrc?.length ?? 0) ||
-      (data?.missingIntentOverdueTotal ?? 0) > (data?.missingIntentOverdue?.length ?? 0)
-    );
-  });
+  protected readonly notInWorkerTruncated = computed(
+    () => this.notInWorkerTotal() > this.notInWorker().length,
+  );
 
-  protected readonly missingFromIrc = computed(() => this.roster()?.missingFromIrc ?? []);
   protected readonly missingFromSevenTv = computed(() => this.roster()?.missingFromSevenTv ?? []);
   protected readonly unknownToDatabase = computed(() => this.roster()?.unknownToDatabase ?? []);
 
