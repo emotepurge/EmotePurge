@@ -109,7 +109,8 @@ public partial class WishExpiryServiceTests
 
         var expected = afterTheStatement ? WishStatus.Unconfirmed : WishStatus.Presented;
         Assert.Equal(expected, (await LoadAsync(unconfirmed)).Status);
-        Assert.Equal(1, hook.Count(IsChannelFactsRead));
+        // Plan 2.8: a wish handed over reads the same one statement once more behind its lock.
+        Assert.Equal(afterTheStatement ? 1 : 2, hook.Count(IsChannelFactsRead));
     }
 
     private static (string Status, string? Reason) StatusOf(Wish wish) => (wish.Status, wish.StatusReason);

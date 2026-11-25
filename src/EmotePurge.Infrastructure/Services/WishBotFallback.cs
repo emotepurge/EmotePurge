@@ -11,8 +11,9 @@ namespace EmotePurge.Infrastructure.Services;
 /// <see cref="IWishBotFallback"/> (#487 plan 2.8). The selection runs without a lock (one query over the wishes with an
 /// open bot action in activated channels); each wish is then decided in its own short transaction behind its row lock,
 /// re-read there, so a command or the runner that changed it meanwhile wins and a row gone by then (deleted, K7a) is
-/// skipped. Only the wish row is locked, never the channel row, like the expiry run: the runner's send transactions take
-/// channel then wish, so no cycle. The decision per wish is <see cref="ApplyTo"/>; open attempts go through
+/// skipped, and the channel's state is read once more there (<see cref="WishBotChannelFacts"/>): only a channel still in
+/// fallback is handed over. Only the wish row is locked, never the channel row, like the expiry run: the runner's send
+/// transactions take channel then wish, so no cycle. The decision per wish is <see cref="ApplyTo"/>; open attempts go through
 /// <see cref="WishBotAttemptResolution"/> (K6b-11). The decision version stays (2.5a (e)): clearing an attempt or a queue
 /// is no manager decision, and every bot booking is conditional on its own fields anyway.
 /// </summary>
@@ -61,7 +62,6 @@ public sealed class WishBotFallback(
     public async Task<int> ApplyAsync(CancellationToken cancellationToken = default)
     {
         var channelIds = await CandidateChannelIdsAsync(cancellationToken);
-        var switchesOn = wishOptions.Enabled && botAccountOptions.Enabled;
         var pilotList = wishOptions.PilotList;
 
         var changed = 0;
@@ -69,7 +69,7 @@ public sealed class WishBotFallback(
         {
             // One statement per channel, never a memo of the run (K6d-7, K6e-9): the state it books from is one snapshot.
             var facts = await WishBotChannelFacts.ReadAsync(db, channelId, cancellationToken);
-            if (WishBotChannelFacts.StateOf(facts, switchesOn, pilotList, admins, Now()) == WishBotChannelMode.Fallback)
+            if (WishBotChannelFacts.StateOf(facts, SwitchesOn, pilotList, admins, Now()) == WishBotChannelMode.Fallback)
             {
                 changed += await ApplyToChannelAsync(channelId, cancellationToken);
             }
@@ -145,8 +145,16 @@ public sealed class WishBotFallback(
                 }
 
                 var wish = await db.Wishes.FirstOrDefaultAsync(w => w.Id == id, cancellationToken);
-                if (wish is null
-                    || !string.Equals(wish.ChannelId, channelId, StringComparison.Ordinal)
+                if (wish is null || !string.Equals(wish.ChannelId, channelId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                // The channel's state once more behind the wish lock, through the one read point (K6d-7): a fresh proof
+                // and an intent the runner committed since the selection win, and only a channel still in fallback is
+                // handed over. The runner's intent needs this wish lock, so it cannot slip in after this read.
+                var facts = await WishBotChannelFacts.ReadAsync(db, channelId, cancellationToken);
+                if (WishBotChannelFacts.StateOf(facts, SwitchesOn, wishOptions.PilotList, admins, Now()) != WishBotChannelMode.Fallback
                     || !ApplyTo(wish, Now()))
                 {
                     continue;
@@ -184,6 +192,8 @@ public sealed class WishBotFallback(
 
         return changed;
     }
+
+    private bool SwitchesOn => wishOptions.Enabled && botAccountOptions.Enabled;
 
     private DateTime Now() => timeProvider.GetUtcNow().UtcDateTime;
 

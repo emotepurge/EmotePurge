@@ -481,6 +481,43 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal(1, EventsFor(channel));
     }
 
+    // Plan 2.8: the expiry run's fallback selects a channel in fallback (an editor proof 20 minutes old); the runner
+    // refreshes the proof before the wish lock is taken. Behind that lock the state is read again through the one read
+    // point: the channel is bot, and the queued removal stays the bot's.
+    [Fact]
+    public async Task TheFallback_ReadsTheChannelStateAgainBehindTheWishLock()
+    {
+        await SeedAccountAsync(BotA);
+        var channel = await SeedChannelAsync(proofAt: Now.AddMinutes(-20));
+        var queued = await SeedWishAsync(channel, WishStatus.Active, Queue);
+        var hook = new CommandHook(IsWishLock, async occurrence =>
+        {
+            if (occurrence == 1)
+            {
+                await using var other = CreateDb();
+                await other.ChannelWishSettings.Where(s => s.ChannelId == channel.Id)
+                    .ExecuteUpdateAsync(u => u.SetProperty(s => s.BotEditorCheckedAtUtc, Now));
+            }
+        });
+        await using var db = fixture.CreateTaggedDbContext("wish-bot-fallback-recheck", [hook], databaseName: DatabaseName);
+        var fallback = new WishBotFallback(
+            db,
+            new WishOptions { Enabled = true, PilotChannelIds = "*" },
+            new BotAccountOptions { Enabled = true },
+            _admins,
+            new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance),
+            _clock,
+            NullLogger<WishBotFallback>.Instance);
+
+        Assert.Equal(0, await fallback.ApplyAsync());
+
+        var wish = await LoadAsync(queued);
+        Assert.Equal((WishStatus.Active, (string?)null), StatusOf(wish));
+        Assert.NotNull(wish.RemovalQueuedAtUtc);
+        Assert.Equal(1, hook.Count(IsWishLock));
+        Assert.Equal(0, EventsFor(channel));
+    }
+
     // ------------------------------------------------------------------------------------ Helpers
 
     private AppDbContext CreateDb() => fixture.CreateDbContext(DatabaseName);
