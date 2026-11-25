@@ -365,12 +365,13 @@ describe('AdminRosterCard', () => {
     });
 
     it('states overdue, waiting and excluded as text and marks only the alarming row', () => {
+      // As the server sends them: within the grace `countsForAlarm` is always false.
       render(
         of(
           roster({
             ircUnjoined: [
               row('a', { overdue: true }),
-              row('b'),
+              row('b', { countsForAlarm: false }),
               row('c', { overdue: true, countsForAlarm: false, reason: 'channelSuspended' }),
             ],
             ircUnjoinedTotal: 3,
@@ -385,6 +386,21 @@ describe('AdminRosterCard', () => {
         'admin.roster.unjoined.excluded',
       ]);
       expect(rows.map((r) => r.alarming)).toEqual([true, false, false]);
+    });
+
+    it('shows a rejected join that is still within its grace as waiting, not as excluded', () => {
+      render(
+        of(
+          roster({
+            ircUnjoined: [row('fresh', { reason: 'banned', countsForAlarm: false })],
+            ircUnjoinedTotal: 1,
+          }),
+        ),
+      );
+
+      const [only] = component['unjoinedRows']();
+      expect(only.stateKey).toBe('admin.roster.unjoined.waiting');
+      expect(only.alarming).toBe(false);
     });
 
     it('falls back to the generic reason for a missing or unknown code', () => {

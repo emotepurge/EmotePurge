@@ -518,11 +518,13 @@ export class AdminRosterCard {
       durationKey: minutes ? 'admin.roster.unjoined.minutes' : 'admin.roster.unjoined.seconds',
       durationValue: minutes ? Math.floor(seconds / 60) : seconds,
       alarming: row.overdue && row.countsForAlarm,
-      stateKey: !row.countsForAlarm
-        ? 'admin.roster.unjoined.excluded'
-        : row.overdue
+      // `overdue` first: the server sends `countsForAlarm: false` for every row still within its
+      // grace, rejected or not, so only an overdue row can be told apart as excluded.
+      stateKey: !row.overdue
+        ? 'admin.roster.unjoined.waiting'
+        : row.countsForAlarm
           ? 'admin.roster.unjoined.overdue'
-          : 'admin.roster.unjoined.waiting',
+          : 'admin.roster.unjoined.excluded',
     };
   }
 }
