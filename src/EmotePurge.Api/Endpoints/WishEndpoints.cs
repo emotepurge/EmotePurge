@@ -355,12 +355,18 @@ public static class WishEndpoints
         })
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
 
-        // K1 registers the route; the command refuses every state until K4 gives it its one transition. It answers no
-        // wish, so it asks no capture access.
-        MapTransition(group, "/{id:long}/recheck", (s, c, id, a, _, ct) => s.RecheckAsync(c, id, a, ct), resolveAccess: false);
+        // #487 plan 2.9: "check again" and "have the bot remove it". Both need the bot to act for the channel; the open-
+        // attempt guard (2.5a (b)) runs in the service under the wish lock. bot-remove answers 202: the removal is queued.
+        MapTransition(group, "/{id:long}/recheck", (s, c, id, a, access, ct) => s.RecheckAsync(c, id, a, access, ct));
+        MapTransition(
+            group,
+            "/{id:long}/bot-remove",
+            (s, c, id, a, access, ct) => s.RequestBotRemovalAsync(c, id, a, access, ct),
+            successStatus: StatusCodes.Status202Accepted);
 
         MapCaptureCommands(group);
         MapRewardEndpoints(group);
+        WishBotEndpoints.MapWishBotEndpoints(group);
 
         // The cross-channel side (E18). Neither read goes through IMyChannelsService.
         var overview = app.MapGroup("/api/wishes")
@@ -470,6 +476,16 @@ public static class WishEndpoints
                 return Results.Json(new { errorCode = ApiErrorCodes.WishSettingsRestricted }, statusCode: StatusCodes.Status403Forbidden);
             case WishOutcome.RepairCheckOpen:
                 return Results.Conflict(new { errorCode = ApiErrorCodes.WishRepairCheckOpen });
+            case WishOutcome.BotUnavailable:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.WishBotUnavailable });
+            case WishOutcome.BotAlreadyActive:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.WishBotAlreadyActive });
+            case WishOutcome.NotBotOwned:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.WishNotBotOwned });
+            case WishOutcome.StartUnconfirmed:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.WishStartUnconfirmed });
+            case WishOutcome.BotSetChanged:
+                return Results.Conflict(new { errorCode = ApiErrorCodes.WishBotSetChanged });
             case WishOutcome.EmoteRequired:
                 return Results.BadRequest(new { errorCode = ApiErrorCodes.WishEmoteRequired });
             case WishOutcome.RunningNotExtendable:
@@ -510,7 +526,7 @@ public static class WishEndpoints
         RouteGroupBuilder group,
         string pattern,
         Func<IWishService, string, long, AuditActor, WishCaptureAccess?, CancellationToken, Task<WishCommandResult>> command,
-        bool resolveAccess = true)
+        int successStatus = StatusCodes.Status200OK)
     {
         group.MapPost(pattern, async (
             string channelName,
@@ -532,8 +548,8 @@ public static class WishEndpoints
                 return Results.Unauthorized();
             }
 
-            var access = resolveAccess ? await ResolveAccessAsync(httpContext, channelName, channelAccess, ct) : null;
-            return MapResult(await command(wishService, channelName, id, actor, access, ct), StatusCodes.Status200OK);
+            var access = await ResolveAccessAsync(httpContext, channelName, channelAccess, ct);
+            return MapResult(await command(wishService, channelName, id, actor, access, ct), successStatus);
         })
         .RequireRateLimiting(RateLimitPolicyNames.Bookkeeping);
     }

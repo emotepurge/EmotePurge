@@ -391,6 +391,8 @@ public static class ServiceCollectionExtensions
         // per request and only when an activated channel asks.
         services.AddScoped<IWishBotChannelStateReader, WishBotChannelStateReader>();
         services.AddScoped<IWishBotService, WishBotService>();
+        // The nudge of the bot account loop after a committed channel write (plan 2.9); an accelerator, never a failure.
+        services.AddSingleton<IBotAccountNudge, BotAccountNudge>();
 
         // The backfill's database side for both processes (spec section 3). Scoped like every service
         // on AppDbContext; the worker resolves it from a scope that lives as long as its loop, because

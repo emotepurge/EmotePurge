@@ -11,7 +11,7 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 // The wish numbers of the bot account's admin read (#487, plan 2.10, T4) against real Postgres in a database of its
 // own: the counts run over every channel, so they must not see the rows of other classes. Emptied before every test.
 [Collection("Postgres")]
-public class WishBotServiceTests(PostgresFixture fixture) : IAsyncLifetime
+public partial class WishBotServiceTests(PostgresFixture fixture) : IAsyncLifetime
 {
     private const string DatabaseName = "wish_bot_service_tests";
 
@@ -46,7 +46,7 @@ public class WishBotServiceTests(PostgresFixture fixture) : IAsyncLifetime
         }
 
         await using var reset = CreateDb();
-        await reset.Database.ExecuteSqlRawAsync("""TRUNCATE "Wishes", "ChannelWishSettings", "Channels" CASCADE;""");
+        await reset.Database.ExecuteSqlRawAsync("""TRUNCATE "Wishes", "ChannelWishSettings", "Channels", "AuditLogEntries", "BotAccountCredentials" CASCADE;""");
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -88,7 +88,6 @@ public class WishBotServiceTests(PostgresFixture fixture) : IAsyncLifetime
 
     private AppDbContext CreateDb() => fixture.CreateDbContext(DatabaseName);
 
-    private WishBotService Sut() => new(CreateDb());
 
     private async Task<string> SeedChannelAsync(bool? botMode, string? suspendedReason = null)
     {

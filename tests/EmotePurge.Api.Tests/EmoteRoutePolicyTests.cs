@@ -91,6 +91,11 @@ public class EmoteRoutePolicyTests : IClassFixture<ApiFactory>
     [InlineData("PATCH", "/api/channels/{channelName}/wishes/{id:long}", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("POST", "/api/channels/{channelName}/wishes/{id:long}/extend", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("POST", "/api/channels/{channelName}/wishes/{id:long}/recheck", RateLimitPolicyNames.Bookkeeping)]
+    // #487 T7: the bot read is navigation, its three writes are bookkeeping.
+    [InlineData("POST", "/api/channels/{channelName}/wishes/{id:long}/bot-remove", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("GET", "/api/channels/{channelName}/wishes/bot", RateLimitPolicyNames.InteractiveRead)]
+    [InlineData("POST", "/api/channels/{channelName}/wishes/bot/activate", RateLimitPolicyNames.Bookkeeping)]
+    [InlineData("DELETE", "/api/channels/{channelName}/wishes/bot", RateLimitPolicyNames.Bookkeeping)]
     [InlineData("GET", "/api/wishes/mine", RateLimitPolicyNames.InteractiveRead)]
     [InlineData("GET", "/api/wishes/summary", RateLimitPolicyNames.InteractiveRead)]
     public void EmoteGroupRoute_CarriesTheExpectedRateLimitPolicy(string method, string routePattern, string expectedPolicy)

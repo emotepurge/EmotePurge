@@ -50,7 +50,8 @@ public sealed class WishService(
     TimeProvider timeProvider,
     ILogger<WishService> logger,
     IWishBotChannelStateReader botChannelStates,
-    IWishReconcileTrigger? reconcileTrigger = null) : IWishService
+    IWishReconcileTrigger? reconcileTrigger = null,
+    IBotAccountNudge? botNudge = null) : IWishService
 {
     private const string RunningEmoteIndex = "IX_Wishes_ChannelId_SevenTvEmoteId_Running";
     private const string LiveSlotIndex = "IX_Wishes_SlotId_Live";
@@ -744,29 +745,73 @@ public sealed class WishService(
         return new WishCommandResult(WishOutcome.Success, Wish: await ResponseDtoAsync(wish, settings, imageUrl, scope, cancellationToken));
     }
 
-    public async Task<WishCommandResult> RecheckAsync(
-        string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(channelName);
-        ArgumentNullException.ThrowIfNull(actor);
-
-        var channelId = await ResolveChannelIdAsync(channelName, cancellationToken);
-        if (channelId is null)
+    // #487 plan 2.9 (R2-8): the channel row first, so the active set read behind it cannot change before the commit.
+    // The attempt's set and generation anchor stay; only the schedule starts again, bound to the new decision version so
+    // the runner's conditional bookings (2.5a (f)) still match after the decision this command counts.
+    public Task<WishCommandResult> RecheckAsync(
+        string channelName, long wishId, AuditActor actor, WishCaptureAccess? access = null, CancellationToken cancellationToken = default) =>
+        RunTransitionAsync(channelName, wishId, actor, AuditActions.WishRecheck, async (wish, settings, now, ct) =>
         {
-            return WishCommandResult.Of(WishOutcome.ChannelNotFound);
-        }
+            if (WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.Recheck) is not { } target)
+            {
+                return CommandStep.Conflict;
+            }
 
-        var exists = await db.Wishes.AsNoTracking().AnyAsync(w => w.Id == wishId && w.ChannelId == channelId, cancellationToken);
-        if (!exists)
+            if (!settings.IsBotMode)
+            {
+                return CommandStep.Refuse(WishOutcome.BotUnavailable);
+            }
+
+            var activeSetId = await db.Channels.AsNoTracking()
+                .Where(c => c.Id == wish.ChannelId)
+                .Select(c => c.ActiveEmoteSetId)
+                .FirstOrDefaultAsync(ct);
+            if (wish.BotSetId is null || !string.Equals(wish.BotSetId, activeSetId, StringComparison.Ordinal))
+            {
+                return CommandStep.Refuse(WishOutcome.BotSetChanged);
+            }
+
+            wish.Status = target;
+            wish.BotAttemptCount = 0;
+            wish.BotNextAttemptAtUtc = now;
+            wish.BotConfirmDeadlineAtUtc = now + WishLimits.BotConfirmWindow;
+            return new CommandStep(null, NudgeBot: true, AfterCount: w => w.BotAttemptVersion = w.DecisionVersion);
+        }, access, cancellationToken, lockChannel: true);
+
+    // #487 plan 2.9 (AK84): the request is a decision of its own; the queue is bound to the version after it, which is the
+    // one the runner checks before it removes (E25).
+    public Task<WishCommandResult> RequestBotRemovalAsync(
+        string channelName, long wishId, AuditActor actor, WishCaptureAccess? access = null, CancellationToken cancellationToken = default) =>
+        RunTransitionAsync(channelName, wishId, actor, AuditActions.WishBotRemoveRequest, (wish, settings, now, _) =>
         {
-            return WishCommandResult.Of(WishOutcome.WishNotFound);
-        }
+            if (!string.Equals(wish.Status, WishStatus.Presented, StringComparison.Ordinal)
+                || wish.StatusReason is not (WishStatusReason.Protected or WishStatusReason.CoverageGap or WishStatusReason.BotUnavailable)
+                || wish.RemovalQueuedAtUtc is not null)
+            {
+                return CommandStep.ConflictTask;
+            }
 
-        // Plan finding 8: the only transition (presented/unconfirmed -> unconfirmed) needs an available bot, which
-        // K1 does not have, so every state is a conflict and nothing is locked or written. K4 replaces this with
-        // the WishTransitions lookup and its own wish_bot_unavailable.
-        return WishCommandResult.Of(WishOutcome.StateConflict);
-    }
+            if (!wish.BotOwned)
+            {
+                return Task.FromResult(CommandStep.Refuse(WishOutcome.NotBotOwned));
+            }
+
+            if (!wish.StartsAtAuthoritative)
+            {
+                return Task.FromResult(CommandStep.Refuse(WishOutcome.StartUnconfirmed));
+            }
+
+            if (!settings.IsBotMode)
+            {
+                return Task.FromResult(CommandStep.Refuse(WishOutcome.BotUnavailable));
+            }
+
+            return Task.FromResult(new CommandStep(null, NudgeBot: true, AfterCount: w =>
+            {
+                w.RemovalQueuedAtUtc = now;
+                w.RemovalQueuedVersion = w.DecisionVersion;
+            }));
+        }, access, cancellationToken, recordPreviousExpiry: true);
 
     public async Task<WishCommandResult> ApproveAsync(
         string channelName,
@@ -1706,6 +1751,7 @@ public sealed class WishService(
 
         CountDecision(wish);
         StampStateChange(wish, previousStatus, now);
+        step.AfterCount?.Invoke(wish);
 
         var conflict = await SaveOrConflictAsync(transaction, channelId, wish.SevenTvEmoteId, cancellationToken);
         if (conflict is not null)
@@ -1719,6 +1765,11 @@ public sealed class WishService(
         if (step.TriggerReconcile)
         {
             await TriggerReconcileAsync(channelId, cancellationToken);
+        }
+
+        if (step.NudgeBot && botNudge is not null)
+        {
+            await botNudge.NudgeAsync(cancellationToken);
         }
 
         var imageUrl = await TryImageUrlOfAsync(channelId, wish.SevenTvEmoteId, cancellationToken);
@@ -2037,15 +2088,23 @@ public sealed class WishService(
     // What a booked removal reported, for its audit entry only.
     private sealed record RemovalReport(string SlotId, DateTime SlotAddedAtUtc, string EmoteSetId, string? Evidence);
 
-    // What a transition command decided: a refusal, or success with an optional durationDays for the audit entry and
-    // whether the reconcile runs after the commit.
-    private sealed record CommandStep(WishCommandResult? Refusal, int? AuditDurationDays = null, bool TriggerReconcile = false)
+    // What a transition command decided: a refusal, or success with an optional durationDays for the audit entry,
+    // whether the reconcile runs after the commit, what is written after the decision was counted (a field bound to
+    // the new DecisionVersion), and whether the bot account loop is nudged after the commit (#487 plan 2.9).
+    private sealed record CommandStep(
+        WishCommandResult? Refusal,
+        int? AuditDurationDays = null,
+        bool TriggerReconcile = false,
+        bool NudgeBot = false,
+        Action<Wish>? AfterCount = null)
     {
         public static readonly CommandStep Done = new((WishCommandResult?)null);
         public static readonly CommandStep DoneAndReconcile = new((WishCommandResult?)null, TriggerReconcile: true);
         public static readonly CommandStep Conflict = new(WishCommandResult.Of(WishOutcome.StateConflict));
         public static readonly Task<CommandStep> DoneTask = Task.FromResult(Done);
         public static readonly Task<CommandStep> ConflictTask = Task.FromResult(Conflict);
+
+        public static CommandStep Refuse(WishOutcome outcome) => new(WishCommandResult.Of(outcome));
     }
 
     // ChannelMode is the channel's effective bot state (#487 plan 2.3); ToSettings leaves it manual, LoadSettingsAsync and
