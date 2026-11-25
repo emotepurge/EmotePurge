@@ -328,6 +328,62 @@ further apart than 2.5 times the **currently configured** `SystemLoad:IntervalSe
   `SystemLoad:IntervalSeconds`, the hourly rollup the **Worker's**. After changing it, recreate both
   containers; otherwise the raw and the hourly ranges apply different gap rules and diverge.
 
+## Channel join health
+
+`GET /api/health/channels` answers one question: does the worker hold a confirmed IRC join for every channel that is supposed to be
+counted? It evaluates the worker's roster (each wished join carries a clock that only runs while the connection is up) and
+cross-checks it against the channels the database lists as active but the worker holds no wish for.
+
+- **Answer:** `200` when healthy (or while the Api process is still within its start-up window and waits for the first roster),
+  `503` when at least one counted channel is overdue, or when the verdict cannot be computed (no fresh roster, a legacy roster
+  without `schemaVersion`, the database query failed). The body is payload-free: no channel names, no counts. It is anonymous and
+  has its own rate-limit bucket (10 per minute per IP). It is **never** a container `HEALTHCHECK`: a failing join must not restart
+  anything.
+- **Uptime Kuma, second monitor.** Add it next to the existing `/api/health` monitor: type HTTP(s), URL
+  `https://<host>/api/health/channels`, accepted status `200-299` (a pure status check, no keyword), interval 60 s, retries 2,
+  notification Telegram, and **Resend Notification if Down Every 60 Checks** (about hourly). Retries 2 add roughly two minutes before
+  the first message.
+- **Order matters.** Create the monitor only once **both** the Api and the Worker image with #516 run. A Worker without it publishes
+  a roster without `schemaVersion`, and an Api without it has no such route (404): both turn the monitor red by design. The same
+  applies to a rollback of the Worker alone.
+- **A duplicate alert during a full outage is expected.** If the Api, the worker or Postgres is down, `/api/health` and this monitor
+  both go red. That is intended; do not suppress either.
+- **Reading the admin card.** `/admin/monitoring`, card "Roster": the status badge (`Vollständig`, `Fehlerhaft`, `Nicht verfügbar`,
+  ...), the "Join status" list (each unconfirmed channel with the reason Twitch gave, the connected time accrued and whether it is
+  overdue, waiting, or rejected in a way that does not count for the alarm) and "Not in the worker" (active channels without a
+  wish). The capacity bar grades the active channels against our own cap (`ceilings.maxActiveChannels`): orange from 90 %, red at 100 %.
+- **Grace.** `Channels:JoinHealth:GraceSeconds`, default 420 s: the connected seconds a wished join may stay unconfirmed. Measured on
+  2026-11-25: 0.66 to 0.71 s per channel, a full rejoin round 84 s at 120 channels (90 s with five silent ones), 104.5 s at 150,
+  132.3 s at 200, 170.4 s at 240. The worst case (a once-lost join caught by the convergence net, `P + 60 s + 0.85 s x N`) is about
+  246 s at 120, 292 s at 150, 362 s at 200: 420 s covers roughly 200 channels. Rule of thumb:
+  `Grace >= max(2P, P + SevenTv:ResyncIntervalSeconds + 0.85 s x N) + reserve`. **Whoever changes `SevenTv:ResyncIntervalSeconds`
+  re-checks the grace.** Above about 200 channels re-derive it.
+- **A dead, banned or deleted channel.** Twitch answers nothing for a channel that no longer exists, so the join stays
+  unconfirmed (`noConfirmation`) and the alarm fires. Remedy: leave the channel through the audited "Verlassen" action in
+  `/admin/channels`. A suspended or banned channel (`channelSuspended`, `banned`) is listed but does not count for the alarm.
+- **Log events** (log viewer, `event:<name>`): `TwitchJoinRejected` (51601, Twitch refused a join with a reason),
+  `TwitchJoinUnconfirmed` (51602, a join stayed unconfirmed past the grace), `ChannelCapacityReached` (51603, our own cap turned a
+  non-admin activation away).
+
+### Raising the active-channel cap
+
+The cap is `Channels:MaxActiveChannels` (Api only), default 80, set through the stack variable `CHANNELS_MAX_ACTIVE_CHANNELS`
+(mapped into the Api service of both compose files).
+
+1. **Gate (operator decision):** part A (the detection above) has run on production for at least 7 days, including at least one
+   deploy and at least one real Twitch reconnect, without a false alarm. Until then an interim cap of about 90 is allowed.
+   Measured on 2026-11-25 (throwaway stack, anonymous connection): 240 channels held and rejoined without a single rejection by
+   Twitch; that is a measurement of that day, not a guarantee. Also watch the 7TV EventAPI limit (500 subscriptions per connection,
+   two per channel, so about 250 channels), and above about 200 channels re-check the grace.
+2. Set `CHANNELS_MAX_ACTIVE_CHANNELS` in the stack and **recreate** the Api container (a restart does not apply new environment
+   values).
+3. Verify `ceilings.maxActiveChannels` on `/api/admin/roster` shows the new value.
+4. Confirm coverage by channel name, not by count: each wished channel appears confirmed in the join status, and the monitor stays green.
+
+**Rolling back (for example 120 to 80)** has two parts. First stop new joins: lower the variable and recreate the Api container
+(channels already active stay active). Then restore capture: remove the surplus channels through the audited leaves in
+`/admin/channels`, and afterwards verify desired against confirmed again, by channel name.
+
 ## Log viewer
 
 `/admin/logs` (global admins only) reads log lines that the Api and the Worker write into Postgres
