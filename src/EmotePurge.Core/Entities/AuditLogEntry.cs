@@ -89,6 +89,13 @@ public static class AuditActions
     /// </summary>
     public const string WishUnlink = "wish.unlink";
 
+    /// <summary>
+    /// A manager deleted an ended wish for good (K7a, spec E36). Details exactly <c>wishId</c>, <c>sevenTvEmoteId</c>,
+    /// <c>durationDays</c> and <c>fromStatus</c> (the end state it was deleted from): never the alias, the emote name, a
+    /// login or the redemption text, and no <c>previousExpiresAtUtc</c>. The entry outlives the row it names.
+    /// </summary>
+    public const string WishDelete = "wish.delete";
+
     // Learned channel-point rewards (K6), written by the reward service under the acting manager. Target
     // ("wishReward", row id); details carry the row id and, for a change, the names of the changed fields only:
     // never the label, the reward's Twitch tag, a redemption text or a login. Starting and cancelling a learning

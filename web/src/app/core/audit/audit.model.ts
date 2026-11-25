@@ -41,6 +41,7 @@ export type AuditAction =
   | 'wish.close'
   | 'wish.retry'
   | 'wish.readd'
+  | 'wish.delete'
   | 'wish.settings'
   | 'wish.due'
   | 'wish.update'

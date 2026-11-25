@@ -4,7 +4,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideRouter, Router } from '@angular/router';
-import { TranslocoTestingModule } from '@jsverse/transloco';
+import { TranslocoService, TranslocoTestingModule } from '@jsverse/transloco';
 import { signal } from '@angular/core';
 import { Subject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,7 +34,14 @@ import type { Wish, WishDetail, WishListView, WishUsage } from '../../core/wishe
 import { WishService } from '../../core/wishes/wish.service';
 import { WishSummaryService } from '../../core/wishes/wish-summary.service';
 import { DeleteProgressSection } from '../../shared/seven-tv/delete-progress-section';
-import { ChannelWishesPage, WISH_RUN_LOCK_ID, WISH_SAFETY_RELOAD_MS } from './channel-wishes-page';
+import {
+  ChannelWishesPage,
+  deleteConfirmKey,
+  deletedNoticeFor,
+  focusAfterDelete,
+  WISH_RUN_LOCK_ID,
+  WISH_SAFETY_RELOAD_MS,
+} from './channel-wishes-page';
 import { WishAdoptDialog } from './wish-adopt-dialog';
 import { WishApproveDialog } from './wish-approve-dialog';
 import { WishEntryDialog } from './wish-entry-dialog';
@@ -182,6 +189,7 @@ describe('ChannelWishesPage', () => {
   let listCalls: ListCall[];
   let getCalls: GetCall[];
   let actions: { name: string; id: number; answer: Subject<Wish> }[];
+  let deletes: { channel: string; id: number; endedAtUtc: string; answer: Subject<void> }[];
   let dialogs: Subject<boolean>[];
   /** Index of each dialog the page closed itself (`DialogRef.close`). */
   let closedByPage: number[];
@@ -206,6 +214,7 @@ describe('ChannelWishesPage', () => {
     listCalls = [];
     getCalls = [];
     actions = [];
+    deletes = [];
     dialogs = [];
     closedByPage = [];
     stillIds = new Set();
@@ -267,6 +276,11 @@ describe('ChannelWishesPage', () => {
             close: action('close'),
             reject: action('reject'),
             unlink: action('unlink'),
+            deleteWish: vi.fn((channel: string, id: number, endedAtUtc: string) => {
+              const answer = new Subject<void>();
+              deletes.push({ channel, id, endedAtUtc, answer });
+              return answer;
+            }),
           },
         },
         { provide: Dialog, useValue: { open: openDialog } },
@@ -1940,6 +1954,488 @@ describe('ChannelWishesPage', () => {
       setVisibility('visible');
       fixture.detectChanges();
       expect(asked).toEqual(['e1']);
+    });
+  });
+  describe('deleting an ended wish (K7a)', () => {
+    const ENDED = '2026-11-17T10:00:00.1234567Z';
+
+    function ended(id: number, overrides: Partial<Wish> = {}): Wish {
+      return wish(id, { status: 'expired', slotId: null, endedAtUtc: ENDED, ...overrides });
+    }
+
+    function kept(id: number, overrides: Partial<Wish> = {}): Wish {
+      return wish(id, { status: 'kept', endedAtUtc: ENDED, ...overrides });
+    }
+
+    function openCall(index: number): { component: unknown; data: Record<string, unknown> } {
+      const [component, config] = openDialog.mock.calls[index] as [
+        unknown,
+        { data: Record<string, unknown> },
+      ];
+      return { component, data: config.data };
+    }
+
+    /** Opens "Beendet" and answers it with these rows. */
+    function showEnded(fixture: ComponentFixture<ChannelWishesPage>, items: Wish[]): void {
+      section(fixture, 'ended').querySelector<HTMLButtonElement>('button[aria-expanded]')?.click();
+      fixture.detectChanges();
+      last('ended').answer.next(page(items));
+      fixture.detectChanges();
+    }
+
+    function rowOf(fixture: ComponentFixture<ChannelWishesPage>, id: number): HTMLElement {
+      const row = section(fixture, 'ended').querySelector<HTMLElement>(`[data-wish-id="${id}"]`);
+      expect(row).not.toBeNull();
+      return row as HTMLElement;
+    }
+
+    /** Clicks "Löschen" in the row and confirms (or not). */
+    function remove(
+      fixture: ComponentFixture<ChannelWishesPage>,
+      host: HTMLElement,
+      confirmed = true,
+    ): void {
+      buttonIn(host, de.wishes.actions.delete).click();
+      close(dialogs[dialogs.length - 1], confirmed);
+      fixture.detectChanges();
+    }
+
+    function spoken(fixture: ComponentFixture<ChannelWishesPage>): string[] {
+      return Array.from(
+        fixture.nativeElement.querySelectorAll('p[role="status"].sr-only') as NodeListOf<Element>,
+      ).map((region) => region.textContent?.trim() ?? '');
+    }
+
+    function translate(key: string, params?: Record<string, unknown>): string {
+      return TestBed.inject(TranslocoService).translate(key, params);
+    }
+
+    describe('pure rules', () => {
+      it.each([
+        ['kept with its entry', kept(1), 'wishes.confirm.deleteKept'],
+        ['kept the reconcile released', kept(1, { slotId: null }), 'wishes.confirm.delete'],
+        ['expired', ended(1), 'wishes.confirm.delete'],
+        [
+          'removed, still naming its entry',
+          ended(1, { status: 'removed', slotId: 's' }),
+          'wishes.confirm.delete',
+        ],
+        ['merged', ended(1, { status: 'merged' }), 'wishes.confirm.delete'],
+      ])('confirms %s with %s', (_name, target, key) => {
+        expect(deleteConfirmKey(target)).toBe(key);
+      });
+
+      it.each([
+        [
+          'kept with its entry, in a list',
+          kept(1),
+          false,
+          { kind: 'kept', sevenTvEmoteId: 'emote1', slotId: 'slot-1' },
+        ],
+        [
+          'kept with its entry, pinned',
+          kept(1),
+          true,
+          { kind: 'kept', sevenTvEmoteId: 'emote1', slotId: 'slot-1' },
+        ],
+        ['kept without entry, in a list', kept(1, { slotId: null }), false, null],
+        ['kept without entry, pinned', kept(1, { slotId: null }), true, { kind: 'done' }],
+        ['another ended state, in a list', ended(1), false, null],
+        ['another ended state, pinned', ended(1), true, { kind: 'done' }],
+      ])('leaves for %s: %j', (_name, target, pinned, expected) => {
+        expect(deletedNoticeFor(target, pinned)).toEqual(expected);
+      });
+
+      it('hands the focus to the next row, else the previous one, else to the heading', () => {
+        const all = () => true;
+        expect(focusAfterDelete([1, 2, 3], 2, all)).toBe(3);
+        expect(focusAfterDelete([1, 2, 3], 3, all)).toBe(2);
+        expect(focusAfterDelete([1, 2, 3], 2, (id) => id !== 3)).toBe(1);
+        expect(focusAfterDelete([2], 2, all)).toBeNull();
+        expect(focusAfterDelete([1, 3], 2, all)).toBeNull();
+      });
+    });
+
+    it('sends nothing without the confirmation, and the shown end once confirmed', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [ended(1)]);
+
+      remove(fixture, rowOf(fixture, 1), false);
+      expect(deletes).toEqual([]);
+
+      remove(fixture, rowOf(fixture, 1));
+      expect(deletes).toEqual([
+        expect.objectContaining({ channel: 'chan', id: 1, endedAtUtc: ENDED }),
+      ]);
+    });
+
+    it('sends the end of the row the confirmation showed, even when a reload replaced it', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [ended(1)]);
+
+      buttonIn(rowOf(fixture, 1), de.wishes.actions.delete).click();
+      streamOf('chan').emit('wish.changed');
+      vi.advanceTimersByTime(CHANNEL_RELOAD_DEBOUNCE_MS);
+      last('ended').answer.next(page([ended(1, { endedAtUtc: '2026-11-18T08:00:00.7654321Z' })]));
+      fixture.detectChanges();
+      close(dialogs[0], true);
+
+      expect(deletes.map((call) => call.endedAtUtc)).toEqual([ENDED]);
+    });
+
+    it('names the way back only for a kept wish with its entry', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [kept(1), kept(2, { slotId: null }), ended(3)]);
+
+      for (const id of [1, 2, 3]) {
+        buttonIn(rowOf(fixture, id), de.wishes.actions.delete).click();
+      }
+      expect(openCall(0).data['message']).toBe(
+        translate('wishes.confirm.deleteKept', { name: 'alias1' }),
+      );
+      expect(openCall(1).data['message']).toBe(
+        translate('wishes.confirm.delete', { name: 'alias2' }),
+      );
+      expect(openCall(2).data['message']).toBe(
+        translate('wishes.confirm.delete', { name: 'alias3' }),
+      );
+      expect(openCall(0).data['confirmLabel']).toBe(de.wishes.actions.delete);
+    });
+
+    it('reloads after the delete and shows no error, as after a wish that was gone already', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [ended(1), ended(2)]);
+
+      remove(fixture, rowOf(fixture, 1));
+      deletes[0].answer.next();
+      deletes[0].answer.complete();
+      fixture.detectChanges();
+      expect(calls('ended')).toHaveLength(2);
+      expect(summaryRefresh).toHaveBeenCalledOnce();
+
+      remove(fixture, rowOf(fixture, 2));
+      deletes[1].answer.error(
+        new HttpErrorResponse({ status: 404, error: { errorCode: 'wish_not_found' } }),
+      );
+      fixture.detectChanges();
+      expect(calls('ended')).toHaveLength(3);
+      expect(alerts(fixture, 'ended')).toEqual([]);
+    });
+
+    it('shows a state conflict at the section and reloads; a refusal without reload otherwise', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [ended(1)]);
+
+      remove(fixture, rowOf(fixture, 1));
+      deletes[0].answer.error(
+        new HttpErrorResponse({ status: 409, error: { errorCode: 'wish_state_conflict' } }),
+      );
+      fixture.detectChanges();
+      expect(alerts(fixture, 'ended')).toEqual([de.errors.api.wish_state_conflict]);
+      expect(calls('ended')).toHaveLength(2);
+
+      last('ended').answer.next(page([ended(1)]));
+      fixture.detectChanges();
+      remove(fixture, rowOf(fixture, 1));
+      expect(alerts(fixture, 'ended')).toEqual([]);
+      deletes[1].answer.error(new HttpErrorResponse({ status: 403 }));
+      fixture.detectChanges();
+      expect(alerts(fixture, 'ended')).toHaveLength(1);
+      expect(calls('ended')).toHaveLength(2);
+    });
+
+    it('treats a 404 of another kind as a refusal, not as done', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [kept(1)]);
+
+      remove(fixture, rowOf(fixture, 1));
+      deletes[0].answer.error(
+        new HttpErrorResponse({ status: 404, error: { errorCode: 'channel_not_found' } }),
+      );
+      fixture.detectChanges();
+
+      expect(alerts(fixture, 'ended')).toEqual([de.errors.api.channel_not_found]);
+      expect(fixture.nativeElement.querySelector('[data-deleted-notice]')).toBeNull();
+    });
+
+    it('shows the generic error when the delete fails without an HTTP answer', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [ended(1)]);
+
+      remove(fixture, rowOf(fixture, 1));
+      deletes[0].answer.error(new Error('boom'));
+      fixture.detectChanges();
+
+      expect(alerts(fixture, 'ended')).toHaveLength(1);
+      expect(fixture.nativeElement.querySelector('[data-deleted-notice]')).toBeNull();
+    });
+
+    it('waits on a delete under way: the row takes no second one', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [ended(1)]);
+
+      remove(fixture, rowOf(fixture, 1));
+      buttonIn(rowOf(fixture, 1), de.wishes.actions.delete).click();
+
+      expect(openDialog).toHaveBeenCalledTimes(1);
+      expect(deletes).toHaveLength(1);
+    });
+
+    it('sends nothing when the channel changed while the confirmation was open', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [ended(1)]);
+
+      buttonIn(rowOf(fixture, 1), de.wishes.actions.delete).click();
+      fixture.componentRef.setInput('channelName', 'Other');
+      fixture.detectChanges();
+      close(dialogs[0], true);
+
+      expect(deletes).toEqual([]);
+    });
+
+    it('says the freed entry after deleting a kept wish and opens the take-over for its emote', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [kept(1), ended(2)]);
+
+      remove(fixture, rowOf(fixture, 1));
+      deletes[0].answer.next();
+      fixture.detectChanges();
+
+      expect(spoken(fixture)).toContain(de.wishes.deleted.kept);
+      const adoptButtons = Array.from(
+        fixture.nativeElement.querySelectorAll('[data-deleted-adopt]') as NodeListOf<HTMLElement>,
+      );
+      expect(adoptButtons).toHaveLength(1);
+      expect(adoptButtons[0].getAttribute('aria-describedby')).toBe('wishes-deleted-text');
+      adoptButtons[0].click();
+      fixture.detectChanges();
+
+      expect(openCall(1)).toEqual({
+        component: WishAdoptDialog,
+        data: { channelName: 'chan', sevenTvEmoteId: 'emote1', preselectSlotId: 'slot-1' },
+      });
+      // The notice goes with its dialog.
+      expect(fixture.nativeElement.querySelector('[data-deleted-notice]')).toBeNull();
+    });
+
+    it('leaves no notice after deleting another ended wish of a list', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [kept(1, { slotId: null }), ended(2)]);
+
+      remove(fixture, rowOf(fixture, 1));
+      deletes[0].answer.next();
+      remove(fixture, rowOf(fixture, 2));
+      deletes[1].answer.next();
+      fixture.detectChanges();
+
+      expect(fixture.nativeElement.querySelector('[data-deleted-notice]')).toBeNull();
+    });
+
+    it('drops the notice on the next own delete, on dismissing it and on a channel switch', () => {
+      const fixture = create();
+      settle(fixture);
+      showEnded(fixture, [kept(1), kept(2), kept(3)]);
+      const notice = () => fixture.nativeElement.querySelector('[data-deleted-notice]');
+
+      remove(fixture, rowOf(fixture, 1));
+      deletes[0].answer.next();
+      fixture.detectChanges();
+      expect(notice()).not.toBeNull();
+      remove(fixture, rowOf(fixture, 2));
+      expect(notice()).toBeNull();
+
+      deletes[1].answer.next();
+      fixture.detectChanges();
+      buttonIn(fixture.nativeElement, de.wishes.deleted.dismiss).click();
+      fixture.detectChanges();
+      expect(notice()).toBeNull();
+
+      remove(fixture, rowOf(fixture, 3));
+      deletes[2].answer.next();
+      fixture.detectChanges();
+      fixture.componentRef.setInput('channelName', 'Other');
+      fixture.detectChanges();
+      expect(notice()).toBeNull();
+    });
+
+    describe('focus after a delete in "Beendet"', () => {
+      it('goes to the next row', async () => {
+        const fixture = create();
+        settle(fixture);
+        showEnded(fixture, [ended(1), ended(2), ended(3)]);
+
+        remove(fixture, rowOf(fixture, 2));
+        deletes[0].answer.next();
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        expect(document.activeElement?.getAttribute('data-wish-id')).toBe('3');
+      });
+
+      it('goes to the previous row when the last one went', async () => {
+        const fixture = create();
+        settle(fixture);
+        showEnded(fixture, [ended(1), ended(2)]);
+
+        remove(fixture, rowOf(fixture, 2));
+        deletes[0].answer.next();
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        expect(document.activeElement?.getAttribute('data-wish-id')).toBe('1');
+      });
+
+      it('leaves the focus alone when it moved elsewhere meanwhile', async () => {
+        const fixture = create();
+        settle(fixture);
+        showEnded(fixture, [ended(1), ended(2), ended(3)]);
+
+        remove(fixture, rowOf(fixture, 2));
+        const elsewhere = document.createElement('button');
+        document.body.appendChild(elsewhere);
+        elsewhere.focus();
+        deletes[0].answer.next();
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        expect(document.activeElement).toBe(elsewhere);
+        elsewhere.remove();
+      });
+
+      it('clears the deep link when the target was deleted from the open list', async () => {
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+        const fixture = create('chan', '2');
+        settle(fixture);
+        getCalls[0]?.answer.next({ ...ended(2), usage: null });
+        showEnded(fixture, [ended(1), ended(2)]);
+        fixture.detectChanges();
+
+        remove(fixture, rowOf(fixture, 2));
+        deletes[0].answer.next();
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        expect(navigate).toHaveBeenCalledWith(
+          [],
+          expect.objectContaining({ queryParams: { wish: null }, queryParamsHandling: 'merge' }),
+        );
+      });
+
+      it('goes to the heading of "Beendet" when no row is left', async () => {
+        const fixture = create();
+        settle(fixture);
+        showEnded(fixture, [kept(1)]);
+
+        remove(fixture, rowOf(fixture, 1));
+        deletes[0].answer.next();
+        last('ended').answer.next(page([]));
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        const heading = fixture.nativeElement.querySelector('#wishes-ended-title button');
+        expect(document.activeElement).toBe(heading);
+        // The notice speaks through its region: the focus is elsewhere.
+        expect(spoken(fixture)).toContain(de.wishes.deleted.kept);
+      });
+    });
+
+    describe('the pinned row (B2)', () => {
+      async function pinned(target: Wish): Promise<ComponentFixture<ChannelWishesPage>> {
+        const fixture = create('chan', String(target.id));
+        settle(fixture);
+        getCalls[0].answer.next({ ...target, usage: null });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        return fixture;
+      }
+
+      it('clears the pin without "no longer there" and focuses "Bestand übernehmen"', async () => {
+        const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+        const fixture = await pinned(kept(5));
+
+        remove(fixture, section(fixture, 'pinned'));
+        deletes[0].answer.next();
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        expect(section(fixture, 'pinned')).toBeNull();
+        expect(navigate).toHaveBeenCalledWith(
+          [],
+          expect.objectContaining({ queryParams: { wish: null }, queryParamsHandling: 'merge' }),
+        );
+        // The list reload must not fetch the deleted wish again as the target.
+        expect(getCalls.map((call) => call.id)).toEqual([5]);
+        const adopt = document.activeElement as HTMLElement;
+        expect(adopt.hasAttribute('data-deleted-adopt')).toBe(true);
+        expect(adopt.getAttribute('aria-describedby')).toBe('wishes-deleted-text');
+        expect(fixture.nativeElement.querySelector('#wishes-deleted-text').textContent.trim()).toBe(
+          de.wishes.deleted.kept,
+        );
+        // Said once, through the focus: the region stays quiet.
+        expect(spoken(fixture)).not.toContain(de.wishes.deleted.kept);
+      });
+
+      it('says only "Wunsch gelöscht" without a way back, and takes the focus there', async () => {
+        vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+        const fixture = await pinned(ended(5));
+
+        remove(fixture, section(fixture, 'pinned'));
+        deletes[0].answer.error(
+          new HttpErrorResponse({ status: 404, error: { errorCode: 'wish_not_found' } }),
+        );
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        expect(section(fixture, 'pinned')).toBeNull();
+        expect(fixture.nativeElement.querySelector('[data-deleted-adopt]')).toBeNull();
+        const focused = document.activeElement as HTMLElement;
+        expect(focused.id).toBe('wishes-deleted-text');
+        expect(focused.textContent?.trim()).toBe(de.wishes.deleted.done);
+        expect(fixture.nativeElement.textContent).not.toContain(de.wishes.page.pinned.gone);
+      });
+
+      it('hands the focus to the header take-over once the notice is dismissed', async () => {
+        vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+        const fixture = await pinned(ended(5));
+        remove(fixture, section(fixture, 'pinned'));
+        deletes[0].answer.next();
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        buttonIn(fixture.nativeElement, de.wishes.deleted.dismiss).click();
+        fixture.detectChanges();
+        await fixture.whenStable();
+
+        expect((document.activeElement as HTMLElement).hasAttribute('data-header-adopt')).toBe(
+          true,
+        );
+      });
+    });
+
+    it('says a removal whose wish was deleted meanwhile with its own reason', () => {
+      const fixture = create();
+      settle(fixture, [], [wish(9)]);
+
+      removalEnds.next({
+        channelName: 'chan',
+        wishId: 9,
+        state: { kind: 'notBooked', deleted: true },
+      });
+      fixture.detectChanges();
+
+      expect(spoken(fixture)).toContain(de.wishes.remove.notBookedDeleted);
+      expect(spoken(fixture)).not.toContain(de.wishes.remove.notBooked);
     });
   });
 });

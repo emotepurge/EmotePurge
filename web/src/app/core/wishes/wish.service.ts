@@ -108,6 +108,16 @@ export class WishService {
   }
 
   /**
+   * Erases an ended wish. `endedAtUtc` is the string of the DTO the caller showed, passed through
+   * unchanged: Postgres keeps microseconds, a `Date` only milliseconds, so it must never be re-formatted
+   * (K7a plan W6). The server answers 204; a 404 `wish_not_found` means it is already gone.
+   */
+  deleteWish(channelName: string, wishId: number, endedAtUtc: string): Observable<void> {
+    const params = new HttpParams().set('endedAtUtc', endedAtUtc);
+    return this.http.delete<void>(`${this.base(channelName)}/${wishId}`, { params });
+  }
+
+  /**
    * Releases an open wish. The answer carries `extendedExpiresAtUtc`: set when the wish was merged into the
    * running one as an extension, `null` when it was approved on its own. Reachable with capture switched off.
    */

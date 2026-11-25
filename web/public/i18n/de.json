@@ -1154,7 +1154,8 @@
       "botAccountTokenSet": "Bot-Token gesetzt",
       "botAccountTokenDelete": "Bot-Token gelöscht",
       "botAccountKillSwitch": "Bot-Notaus geändert",
-      "botAccountTokenState": "Bot-Token als unbrauchbar markiert"
+      "botAccountTokenState": "Bot-Token als unbrauchbar markiert",
+      "wishDelete": "Wunsch gelöscht"
     },
     "details": {
       "emoteCount": {
@@ -2844,7 +2845,8 @@
       "approve": "Freigeben",
       "approveExtend": "Als Verlängerung freigeben",
       "reject": "Ablehnen",
-      "unlink": "Zuordnung lösen"
+      "unlink": "Zuordnung lösen",
+      "delete": "Löschen"
     },
     "row": {
       "probation": "Probezeit",
@@ -2918,7 +2920,9 @@
       "keep": "„{{ name }}“ dauerhaft behalten? Das Emote bleibt im Set, der Wunsch ist damit abgeschlossen.",
       "close": "Wunsch „{{ name }}“ schließen? Er endet, ohne dass in 7TV etwas geändert wird.",
       "reject": "Wunsch „{{ name }}“ ablehnen? In 7TV wird nichts geändert.\nDie Kanalpunkte erstattest du in Twitch, in der Warteschlange der Einlösungen.",
-      "unlink": "Zuordnung von „{{ name }}“ lösen? Der Wunsch ist danach wieder offen, und dieser Eintrag im Set wird ihm nicht noch einmal automatisch zugeordnet. In 7TV wird nichts geändert."
+      "unlink": "Zuordnung von „{{ name }}“ lösen? Der Wunsch ist danach wieder offen, und dieser Eintrag im Set wird ihm nicht noch einmal automatisch zugeordnet. In 7TV wird nichts geändert.",
+      "delete": "Wunsch „{{ name }}“ endgültig löschen? Wünschender und Einlösetext werden mitgelöscht.",
+      "deleteKept": "Wunsch „{{ name }}“ endgültig löschen? Wünschender und Einlösetext werden mitgelöscht. Das Emote bleibt im Set. Ist der Eintrag danach frei, kannst du es über „Bestand übernehmen“ mit neuer Laufzeit wieder auf Zeit setzen."
     },
     "pending": {
       "title": "Offen",
@@ -3136,7 +3140,7 @@
       "locked": {
         "held": "Gehört schon zu einem Wunsch.",
         "heldRunning": "Gehört zu einem laufenden Wunsch.",
-        "kept": "Ist als behaltener Wunsch geführt.",
+        "kept": "Ist als behaltener Wunsch geführt. Um den Eintrag neu zu verknüpfen: den Wunsch mit „Zum Wunsch“ öffnen, dort löschen, dann den Eintrag mit neuer Laufzeit übernehmen.",
         "runningElsewhere": "Für dieses Emote läuft schon ein Wunsch an einem anderen Eintrag.",
         "otherWish": "Für dieses Emote läuft ein anderer Wunsch."
       },
@@ -3209,7 +3213,7 @@
       "conflict": {
         "adopt": "Das Emote ist schon im Set. Übernimm den Eintrag, statt einen neuen Wunsch anzulegen.",
         "running": "Für dieses Emote läuft bereits ein Wunsch.",
-        "kept": "Dieses Emote ist bereits als behaltener Wunsch geführt.",
+        "kept": "Dieses Emote ist bereits als behaltener Wunsch geführt. Um den Eintrag neu zu verknüpfen: den Wunsch mit „Zum Wunsch“ öffnen, dort löschen, dann den Eintrag mit neuer Laufzeit übernehmen.",
         "other": "Für dieses Emote gibt es schon einen Wunsch.",
         "takeOver": "Bestand übernehmen"
       },
@@ -3294,7 +3298,13 @@
       "booked": "Aus 7TV entfernt.",
       "notBooked": "Entfernt in 7TV. Der Wunsch wurde inzwischen anders gebucht.",
       "reportPending": "Aus 7TV entfernt, aber die Meldung an Emote Purge ist nicht angekommen.",
-      "retryReport": "Erneut melden"
+      "retryReport": "Erneut melden",
+      "notBookedDeleted": "Aus 7TV entfernt. Der Wunsch wurde inzwischen gelöscht."
+    },
+    "deleted": {
+      "done": "Wunsch gelöscht.",
+      "kept": "Wunsch gelöscht. Das Emote bleibt im Set; ist der Eintrag danach frei, kannst du ihn mit neuer Laufzeit neu verknüpfen.",
+      "dismiss": "Schließen"
     }
   }
 }

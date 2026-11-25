@@ -21,6 +21,7 @@ const ALL_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>([
   'keep',
   'remove',
   'reAdd',
+  'delete',
 ]);
 
 const LABEL = de.wishes.actions;
@@ -181,6 +182,35 @@ describe('WishRow', () => {
     expect(extend.getAttribute('aria-disabled')).toBeNull();
     extend.click();
     expect(emitted).toEqual(['extend']);
+  });
+
+  describe('deleting an ended wish (K7a)', () => {
+    it('puts "Löschen" last, behind "Wieder hinzufügen", and gives it out', () => {
+      render(wish({ status: 'removed', endedAtUtc: '2026-11-17T10:00:00.1234567Z' }));
+
+      expect(names()).toEqual([LABEL.reAdd, LABEL.delete]);
+      button(LABEL.delete).click();
+      expect(emitted).toEqual(['delete']);
+    });
+
+    it('offers it on a coarse pointer: it writes nothing to 7TV', () => {
+      render(wish({ status: 'kept' }), { coarse: true });
+
+      expect(names()).toEqual([LABEL.delete]);
+    });
+
+    it('does not lock it while a 7TV run holds the start', () => {
+      render(wish({ status: 'expired', slotId: null }), {
+        sevenTvLocked: true,
+        lockDescriptionId: 'wishes-run-lock',
+      });
+
+      const remove = button(LABEL.delete);
+      expect(remove.getAttribute('aria-disabled')).toBeNull();
+      expect(remove.getAttribute('aria-describedby')).toBeNull();
+      remove.click();
+      expect(emitted).toEqual(['delete']);
+    });
   });
 
   describe('its own 7TV operation', () => {

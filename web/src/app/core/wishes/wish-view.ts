@@ -210,7 +210,8 @@ export type WishAction =
   | 'reAdd'
   | 'approve'
   | 'reject'
-  | 'unlink';
+  | 'unlink'
+  | 'delete';
 
 /** The actions that write to 7TV (the stars of the plan table); they vanish on a coarse pointer. */
 const SEVEN_TV_ACTIONS: ReadonlySet<WishAction> = new Set<WishAction>(['add7tv', 'remove']);
@@ -219,9 +220,15 @@ export function isSevenTvAction(action: WishAction): boolean {
   return SEVEN_TV_ACTIONS.has(action);
 }
 
-/** Actions that end a wish, or take a link back, and need a confirmation (plan 2.7, K6 2.10). */
+/** Actions that end a wish, take a link back or erase it, and need a confirmation (plan 2.7, K6 2.10, K7a). */
 export function isConfirmedAction(action: WishAction): boolean {
-  return action === 'keep' || action === 'close' || action === 'reject' || action === 'unlink';
+  return (
+    action === 'keep' ||
+    action === 'close' ||
+    action === 'reject' ||
+    action === 'unlink' ||
+    action === 'delete'
+  );
 }
 
 /**
@@ -281,7 +288,14 @@ export function wishActions(wish: WishRuleInput): WishAction[] {
       ];
     case 'removed':
     case 'removed_externally':
-      return ['reAdd'];
+      return ['reAdd', 'delete'];
+    // Ended wishes can be erased; no further condition (K7a plan 2.6): the server checks state and episode.
+    case 'kept':
+    case 'rejected':
+    case 'expired':
+    case 'closed':
+    case 'merged':
+      return ['delete'];
     default:
       return [];
   }

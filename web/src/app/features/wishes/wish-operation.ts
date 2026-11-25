@@ -119,7 +119,7 @@ export function wishRemovalOperationView(state: WishRemovalState | null): WishOp
       return {
         tone: 'problem',
         leadKey: null,
-        key: 'wishes.remove.notBooked',
+        key: state.deleted ? 'wishes.remove.notBookedDeleted' : 'wishes.remove.notBooked',
         spokenByPage: true,
       };
     case 'reportPending':

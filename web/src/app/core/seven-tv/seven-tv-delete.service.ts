@@ -137,10 +137,11 @@ export const ENTRY_BINDING_READ_TIMEOUT_MS = 20_000;
  *  of them passes `MAX_RATE_LIMIT_RETRIES`. */
 export const MAX_CONSECUTIVE_ENTRY_READ_FAILURES = 3;
 
-/** The oldest observation of its entry a wish-bound entry row's removal may go out on (#485, plan
- *  2.6 point 4, Sol-R3): measured from the start of the request that delivered the page with the
- *  entry to the moment the removal is let through. An older one is read once more; is that one too
- *  old as well, the row is skipped (`wishes.remove.tooSlow`). */
+/** The oldest observation a wish-bound entry row's removal may go out on (#485, plan 2.6 point 4,
+ *  Sol-R3; #500, E46, PR2-1): both the set's — measured from the start of the request that delivered
+ *  the page with the entry — and the wish's, measured from the start of its fresh read, each to the
+ *  moment the removal is let through. Is either older, the set and the wish are read once more; is
+ *  one of those too old as well, the row is skipped (`wishes.remove.tooSlow`). */
 export const WISH_OBSERVATION_MAX_AGE_MS = 5000;
 
 const PROCEED: StepGate = { kind: 'proceed' };
@@ -292,13 +293,17 @@ export interface DeleteRunSettlement {
 export type DeleteStartResult = { started: true; runId: string } | { started: false };
 
 /** Why the check of a wish binding stops a removal: the token is gone or another one, the
- *  authoritative active set is another one, or it could not be read (throttled, failed). */
-export type WishBindingSkipReason = 'tokenChanged' | 'setChanged' | 'setUnverified';
+ *  authoritative active set is another one, or it could not be read (throttled, failed); the wish
+ *  is no longer the one frozen at the click (gone, another state, slot or generation), or it could
+ *  not be read again (#500, E46). */
+export type WishBindingSkipReason =
+  'tokenChanged' | 'setChanged' | 'setUnverified' | 'wishChanged' | 'wishUnverified';
 
 /**
- * The "wish binding" of an entry row (#485, plan 2.6, Sol-R2-P1-1, Sol-R3): the row removes the entry
- * a wish holds, so before **every** attempt — the first and each one after a rate-limit pause — the
- * run checks, in this order, and skips the row without a request at the first deviation:
+ * The "wish binding" of an entry row (#485, plan 2.6, Sol-R2-P1-1, Sol-R3; #500, E46): the row
+ * removes the entry a wish holds, so before **every** attempt — the first and each one after a
+ * rate-limit pause — the run checks, in this order, and skips the row without a request at the
+ * first deviation:
  *
  * 1. the stored 7TV token is still `token`;
  * 2. the run's set is `activeEmoteSetId`, and `verifySetAndToken` (the caller's authoritative read
@@ -306,14 +311,20 @@ export type WishBindingSkipReason = 'tokenChanged' | 'setChanged' | 'setUnverifi
  *    skips too;
  * 3. a fresh read of the set (never a held one) shows the row's entry under its alias at exactly
  *    its add date;
- * 4. that observation is at most {@link WISH_OBSERVATION_MAX_AGE_MS} old when the removal is let
- *    through; otherwise the set is read once more and point 3 checked again, and is that observation
- *    too old as well, the row is skipped. This holds for every page, the last one of a multi-page
- *    read included, whose observation no verification re-read refreshes.
+ * 4. `verifyWish` (the caller's fresh read of the wish, compared with the wish frozen at the click)
+ *    finds it unchanged — a failed read skips too, it never pauses;
+ * 5. both observations — the set's, from the start of the request that delivered the page with the
+ *    entry, and the wish's, from the start of its read — are at most
+ *    {@link WISH_OBSERVATION_MAX_AGE_MS} old when the removal is let through; otherwise points 3 to
+ *    5 run exactly once more, and is an observation too old again, the row is skipped. This holds
+ *    for every page, the last one of a multi-page read included, whose observation no verification
+ *    re-read refreshes;
+ * 6. the token once more, since the reads take time.
  *
+ * A row whose entry the read shows gone or renamed skips 4 and 5: it is skipped for that anyway.
  * The token is a comparison value only: it lives in the run's memory, never in a row, the record or
  * the protocol. The other rules of the binding (three read failures in a row, a gap read, 7TV's rate
- * limit on the read as a pause) apply unchanged.
+ * limit on the set read as a pause) apply unchanged.
  */
 export interface WishEntryBinding {
   readonly activeEmoteSetId: string;
@@ -321,6 +332,10 @@ export interface WishEntryBinding {
   /** Never errors by contract; an error, an empty completion or a hang the caller gives no deadline
    *  are each treated as `setUnverified` (the first two) or left to the caller (the last). */
   verifySetAndToken(): Observable<WishBindingSkipReason | null>;
+  /** The fresh check of the wish (#500, E46): `null` when it still allows the removal. The same
+   *  contract as `verifySetAndToken`: an error or an empty completion are `wishUnverified`, a
+   *  deadline is the caller's. The request starts on subscription — its age counts from then. */
+  verifyWish(): Observable<WishBindingSkipReason | null>;
 }
 
 /** How an entry row's live entries at its add date decide its attempt (Plan-378 4.4 step 4). */
@@ -926,11 +941,12 @@ export class SevenTvDeleteService {
   }
 
   /**
-   * The gate in front of one attempt of a wish-bound entry row (#485, plan 2.6) — the four points of
-   * {@link WishEntryBinding}, in their order; never throws and never errors, every deviation is a
-   * skip with its reason. The three-strike rule of the binding reads applies first, as for every
-   * entry row. 7TV's rate limit on the set read is a pause like elsewhere: the engine asks this gate
-   * again afterwards, and the whole sequence runs again, the token and set checks included.
+   * The gate in front of one attempt of a wish-bound entry row (#485, plan 2.6; #500, E46) — the
+   * six points of {@link WishEntryBinding}, in their order; never throws and never errors, every
+   * deviation is a skip with its reason. The three-strike rule of the binding reads applies first,
+   * as for every entry row. 7TV's rate limit on the set read is a pause like elsewhere: the engine
+   * asks this gate again afterwards, and the whole sequence runs again, the token, set and wish
+   * checks included.
    */
   private bindWishBeforeRemove(
     context: EntryRunContext,
@@ -961,11 +977,12 @@ export class SevenTvDeleteService {
   }
 
   /**
-   * Points 3 and 4 of a wish binding: a fresh read, the generation, the age of the observation.
-   * The age is taken when the read has shown the entry at its add date — right before the removal
-   * would be let through, which then goes out in the same step. An observation older than
-   * `WISH_OBSERVATION_MAX_AGE_MS` costs one more read (`reread`), a second one too old skips the row.
-   * Last, the token once more: a logout during the reads must not send.
+   * Points 3 to 6 of a wish binding (plan 2.7, PR2-1): a fresh read of the set, the generation, the
+   * fresh check of the wish, then the age of both observations — taken after the wish check, right
+   * before the removal would be let through, which then goes out in the same step. An observation
+   * older than `WISH_OBSERVATION_MAX_AGE_MS` costs one more pass of set read and wish check
+   * (`reread`); a second one too old skips the row. Last, the token once more: a logout during the
+   * reads must not send.
    */
   private readAndGateWish(
     context: EntryRunContext,
@@ -986,19 +1003,34 @@ export class SevenTvDeleteService {
           case 'read':
             break;
         }
-        const live = outcome.read.entriesById?.get(emote.sevenTvEmoteId) ?? [];
-        if (bindEntry(entry, live).kind === 'proceed') {
-          const observedAt = observationOf(entry, live);
-          if (observedAt === null || Date.now() - observedAt > WISH_OBSERVATION_MAX_AGE_MS) {
-            return reread
-              ? of(this.skipWish(context, emote, 'tooSlow'))
-              : this.readAndGateWish(context, setId, emote, entry, binding, true);
-          }
-          if (this.tokenService.getToken() !== binding.token) {
-            return of(this.skipWish(context, emote, 'tokenChanged'));
-          }
+        const { read } = outcome;
+        const live = read.entriesById?.get(emote.sevenTvEmoteId) ?? [];
+        if (bindEntry(entry, live).kind !== 'proceed') {
+          // Gone or renamed: the row is skipped for that, without asking about the wish.
+          return of(this.gateEntry(context, emote, entry, read));
         }
-        return of(this.gateEntry(context, emote, entry, outcome.read));
+        return checkWish(binding).pipe(
+          concatMap(({ reason, startedAt }): Observable<StepGate> => {
+            if (reason !== null) {
+              return of(this.skipWish(context, emote, reason));
+            }
+            const observedAt = observationOf(entry, live);
+            const now = Date.now();
+            if (
+              observedAt === null ||
+              now - observedAt > WISH_OBSERVATION_MAX_AGE_MS ||
+              now - startedAt > WISH_OBSERVATION_MAX_AGE_MS
+            ) {
+              return reread
+                ? of(this.skipWish(context, emote, 'tooSlow'))
+                : this.readAndGateWish(context, setId, emote, entry, binding, true);
+            }
+            if (this.tokenService.getToken() !== binding.token) {
+              return of(this.skipWish(context, emote, 'tokenChanged'));
+            }
+            return of(this.gateEntry(context, emote, entry, read));
+          }),
+        );
       }),
     );
   }
@@ -1570,6 +1602,22 @@ function wishBindingsOf(
   return bindings;
 }
 
+/** The binding's check of the wish with the moment its request started; never errors — an error or
+ *  an empty completion is `wishUnverified`, never a pause (#500, E46). */
+function checkWish(
+  binding: WishEntryBinding,
+): Observable<{ reason: WishBindingSkipReason | null; startedAt: number }> {
+  return defer(() => {
+    const startedAt = Date.now();
+    return defer(() => binding.verifyWish()).pipe(
+      take(1),
+      defaultIfEmpty<WishBindingSkipReason | null, WishBindingSkipReason>('wishUnverified'),
+      catchError(() => of<WishBindingSkipReason>('wishUnverified')),
+      map((reason) => ({ reason, startedAt })),
+    );
+  });
+}
+
 /** When the entry of `entry` — at its add date, under its alias — was last observed in `live`;
  *  `null` when the read carried no observation for it. */
 function observationOf(
@@ -1688,6 +1736,8 @@ const WISH_BINDING_SKIP_KEY: Record<WishBindingSkipReason | 'tooSlow', SkipReaso
   tokenChanged: 'wishes.start.tokenChanged',
   setChanged: 'wishes.start.setChanged',
   setUnverified: 'wishes.start.setUnverified',
+  wishChanged: 'wishes.start.wishChanged',
+  wishUnverified: 'wishes.start.wishUnverified',
   tooSlow: 'wishes.remove.tooSlow',
 };
 

@@ -1154,7 +1154,8 @@
       "botAccountTokenSet": "Bot token set",
       "botAccountTokenDelete": "Bot token deleted",
       "botAccountKillSwitch": "Bot kill switch changed",
-      "botAccountTokenState": "Bot token marked unusable"
+      "botAccountTokenState": "Bot token marked unusable",
+      "wishDelete": "Wish deleted"
     },
     "details": {
       "emoteCount": {
@@ -2844,7 +2845,8 @@
       "approve": "Approve",
       "approveExtend": "Approve as extension",
       "reject": "Reject",
-      "unlink": "Unlink"
+      "unlink": "Unlink",
+      "delete": "Delete"
     },
     "row": {
       "probation": "Probation",
@@ -2918,7 +2920,9 @@
       "keep": "Keep “{{ name }}” for good? The emote stays in the set and the wish is done.",
       "close": "Close the wish “{{ name }}”? It ends without any change in 7TV.",
       "reject": "Reject the wish “{{ name }}”? Nothing changes in 7TV.\nRefund the channel points in Twitch, in the redemption queue.",
-      "unlink": "Unlink “{{ name }}”? The wish is open again, and this set entry is not linked to it automatically again. Nothing changes in 7TV."
+      "unlink": "Unlink “{{ name }}”? The wish is open again, and this set entry is not linked to it automatically again. Nothing changes in 7TV.",
+      "delete": "Delete wish “{{ name }}” for good? The requester and redemption text are deleted with it.",
+      "deleteKept": "Delete wish “{{ name }}” for good? The requester and redemption text are deleted with it. The emote stays in the set. If the entry is free afterwards, you can put it on a timer again via “Take over from the set” with a new duration."
     },
     "pending": {
       "title": "Open",
@@ -3136,7 +3140,7 @@
       "locked": {
         "held": "Already belongs to a wish.",
         "heldRunning": "Belongs to a running wish.",
-        "kept": "Is listed as a kept wish.",
+        "kept": "Is listed as a kept wish. To link the entry again, open the wish with “Go to wish”, delete it there, then take the entry over with a new duration.",
         "runningElsewhere": "A wish for this emote already runs on another entry.",
         "otherWish": "Another wish runs for this emote."
       },
@@ -3209,7 +3213,7 @@
       "conflict": {
         "adopt": "The emote is already in the set. Take the entry over instead of filing a new wish.",
         "running": "A wish for this emote is already running.",
-        "kept": "This emote is already listed as a kept wish.",
+        "kept": "This emote is already listed as a kept wish. To link the entry again, open the wish with “Go to wish”, delete it there, then take the entry over with a new duration.",
         "other": "There already is a wish for this emote.",
         "takeOver": "Take over from the set"
       },
@@ -3294,7 +3298,13 @@
       "booked": "Removed from 7TV.",
       "notBooked": "Removed in 7TV. The wish has been booked differently in the meantime.",
       "reportPending": "Removed from 7TV, but the report to Emote Purge did not get through.",
-      "retryReport": "Report again"
+      "retryReport": "Report again",
+      "notBookedDeleted": "Removed from 7TV. The wish has been deleted in the meantime."
+    },
+    "deleted": {
+      "done": "Wish deleted.",
+      "kept": "Wish deleted. The emote stays in the set; if the entry is free afterwards, you can link it again with a new duration.",
+      "dismiss": "Dismiss"
     }
   }
 }

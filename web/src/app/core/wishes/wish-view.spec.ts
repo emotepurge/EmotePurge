@@ -229,14 +229,19 @@ describe('wishActions (the action table, AK35)', () => {
       expected: ['extend', 'keep', 'close'],
     },
 
-    { name: 'removed', given: { status: 'removed' }, expected: ['reAdd'] },
-    { name: 'removed_externally', given: { status: 'removed_externally' }, expected: ['reAdd'] },
+    { name: 'removed', given: { status: 'removed' }, expected: ['reAdd', 'delete'] },
+    {
+      name: 'removed_externally',
+      given: { status: 'removed_externally' },
+      expected: ['reAdd', 'delete'],
+    },
 
-    { name: 'kept', given: { status: 'kept' }, expected: [] },
-    { name: 'closed', given: { status: 'closed' }, expected: [] },
-    { name: 'rejected', given: { status: 'rejected' }, expected: [] },
-    { name: 'expired', given: { status: 'expired' }, expected: [] },
-    { name: 'merged', given: { status: 'merged' }, expected: [] },
+    { name: 'kept', given: { status: 'kept' }, expected: ['delete'] },
+    { name: 'kept, no slot', given: { status: 'kept', ...noSlot }, expected: ['delete'] },
+    { name: 'closed', given: { status: 'closed' }, expected: ['delete'] },
+    { name: 'rejected', given: { status: 'rejected' }, expected: ['delete'] },
+    { name: 'expired', given: { status: 'expired' }, expected: ['delete'] },
+    { name: 'merged', given: { status: 'merged' }, expected: ['delete'] },
 
     { name: 'unknown status', given: { status: 'quarantined' }, expected: [] },
     {
@@ -271,6 +276,25 @@ describe('wishActions (the action table, AK35)', () => {
     }
   });
 
+  it('offers delete last and only on ended states', () => {
+    const ended = [
+      'removed',
+      'removed_externally',
+      'kept',
+      'rejected',
+      'expired',
+      'closed',
+      'merged',
+    ];
+    for (const row of table) {
+      const actions = wishActions(rule(row.given));
+      if (actions.includes('delete')) {
+        expect(ended, row.name).toContain(row.given.status);
+        expect(actions.at(-1), row.name).toBe('delete');
+      }
+    }
+  });
+
   it('never offers the destroying action before a building one', () => {
     for (const row of table) {
       const actions = wishActions(rule(row.given));
@@ -295,6 +319,7 @@ describe('wishActions (the action table, AK35)', () => {
       'approve',
       'reject',
       'unlink',
+      'delete',
     ];
     expect(all.filter(isSevenTvAction)).toEqual(['add7tv', 'remove']);
   });
@@ -313,8 +338,9 @@ describe('wishActions (the action table, AK35)', () => {
       'approve',
       'reject',
       'unlink',
+      'delete',
     ];
-    expect(all.filter(isConfirmedAction)).toEqual(['close', 'keep', 'reject', 'unlink']);
+    expect(all.filter(isConfirmedAction)).toEqual(['close', 'keep', 'reject', 'unlink', 'delete']);
   });
 });
 

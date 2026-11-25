@@ -18,8 +18,10 @@ import {
   WishRunStartDeps,
   WishStartAbortReason,
   WishStartCaller,
+  readWish,
   runWishStart,
   verifySetAndToken,
+  wishDeviation,
 } from '../../core/wishes/wish-run-start';
 import { WishRemovalConfirmData } from './wish-removal-confirm-dialog';
 
@@ -35,8 +37,10 @@ import { WishRemovalConfirmData } from './wish-removal-confirm-dialog';
  * no read of the page supplies any of it.
  *
  * **Before every attempt** the row carries the wish binding of the delete run (plan 2.6): the
- * confirmed token, the frozen active set and the start contract's own "set and token" check
- * (`verifySetAndToken`, always with `refresh`).
+ * confirmed token, the frozen active set, the start contract's own "set and token" check
+ * (`verifySetAndToken`, always with `refresh`) and, since #500 (E46, plan 2.7), a fresh read of the
+ * wish compared with the frozen one (`wishDeviation`), so a colleague's keep, delete or adopt during
+ * a rate-limit pause stops the retry.
  *
  * The confirm-time refusal of the delete chain (`confirmTimeRefusal`: a run holding the arbiter, a
  * token gone) is part of step 3b here (`decideWishStart` ii and iii, the token compared for
@@ -177,7 +181,7 @@ function startRun(
 
 /** The run's one row: the wish's entry by its frozen slot, alias and generation, with the binding. */
 export function wishEntryRow(
-  deps: Pick<WishRunStartDeps, 'emoteSetService' | 'tokenService'>,
+  deps: Pick<WishRunStartDeps, 'emoteSetService' | 'tokenService' | 'wishService'>,
   frozen: FrozenWishStart,
   target: WishRemovalTarget,
 ): DeleteQueueEmote {
@@ -194,6 +198,12 @@ export function wishEntryRow(
       activeEmoteSetId: target.emoteSetId,
       token: frozen.token,
       verifySetAndToken: () => verifySetAndToken(deps, frozen).pipe(map(bindingReason)),
+      // The start's own read and comparison (3b v), with its deadline: 404, another state, slot or
+      // generation is `wishChanged`; a failed, throttled or hung read is `wishUnverified`.
+      verifyWish: () =>
+        readWish(deps.wishService, frozen.channelName, frozen.wish.id).pipe(
+          map((read) => wishBindingReason(wishDeviation('remove', frozen.wish, read))),
+        ),
     },
   };
 }
@@ -208,5 +218,17 @@ function bindingReason(reason: WishStartAbortReason | null): WishBindingSkipReas
       return reason;
     default:
       return 'setUnverified';
+  }
+}
+
+/** The start contract's reasons a check of the wish can give, as the binding's own. */
+function wishBindingReason(reason: WishStartAbortReason | null): WishBindingSkipReason | null {
+  switch (reason) {
+    case null:
+      return null;
+    case 'wishChanged':
+      return 'wishChanged';
+    default:
+      return 'wishUnverified';
   }
 }

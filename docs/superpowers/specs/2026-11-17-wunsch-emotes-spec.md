@@ -8,6 +8,9 @@ Abschnitt 4 („Festlegungen dieser Spec“) und der Betreiber kann widerspreche
 Code einander widersprachen, hat der Betreiber entschieden; die Entscheide stehen in Abschnitt 17.
 
 Labels (Epic): `feat`, `epic`. Kinder: K1 bis K6, gebaut in der Reihenfolge K1, K2, K3, K6, K4, K5.
+**Nachtrag 2026-11-21:** Kind K7 steht als eigener Abschnitt vor dem Anhang, aufgeteilt in K7a (Löschen
+beendeter Wünsche, wird gebaut; E32, E34 bis E41, E44, E46; AK109 bis AK119, AK133, AK134) und K7b („Erneut auf Zeit“ aus `kept`,
+zurückgestellt; E27 bis E31, E33, E42, E43, E45; AK120 bis AK132).
 
 ## 1. Context
 
@@ -129,7 +132,7 @@ Zustände (`Wish.Status`, als Zeichenkette gespeichert, die Werte sind Vertrag):
 | `expired` | verfallen | offen geblieben bis `PendingExpiryDays` (K6) | ja |
 | `removed` | entfernt | über Emote Purge entfernt (Mensch oder Bot) | ja |
 | `removed_externally` | extern entfernt | außerhalb von Emote Purge entfernt | ja, mit Rückweg (E10) |
-| `kept` | behalten | Eintrag bleibt dauerhaft, Wunsch geschlossen | ja |
+| `kept` | behalten | Eintrag bleibt dauerhaft, Wunsch geschlossen | ja; ein Rückweg „Erneut auf Zeit“ ist als K7b spezifiziert, aber zurückgestellt |
 | `closed` | geschlossen | ohne Aktion in 7TV beendet | ja |
 | `merged` | zusammengeführt | ging als Verlängerung in einen laufenden Wunsch auf (K6), oder unterlag bei einer Kanal-Zusammenführung einem anderen laufenden Wunsch (Regel siehe 6.5) | ja |
 
@@ -187,6 +190,10 @@ Zeile, antwortet die Api 409 `wish_state_conflict`):
 | `removed_externally` | `active` oder `presented` | Abgleich binnen 6 h | genau ein neuer, unverknüpfter Slot derselben Emote-ID; Frist bleibt, kein Eigentum |
 | `removed_externally` | `removed` | Meldung der Browser-Engine binnen 6 h | löst den Wettlauf zwischen Sync und Erfolgsmeldung auf; `EndedAtUtc` bleibt dabei erhalten (Stand K3, Fußnote F7) |
 | `removed`, `removed_externally` | `approved` | Wieder hinzufügen | mit neuer Laufzeit, oder `Permanent = true`: dann führt der Abgleich nach `kept` statt nach `active` |
+| `kept` (mit `SlotId`) | `active` | Erneut auf Zeit (K7b, **zurückgestellt**) | Eintrag noch gehalten, kein anderer laufender Wunsch des Emotes; Start jetzt, neue Laufzeit, Generation neu gebunden, kein Bot-Eigentum (E27 bis E31) |
+
+**Löschen (K7a)** ist kein Übergang: Jeder Wunsch in einem Endzustand lässt sich hart löschen, mit Audit-Eintrag;
+ein gelöschter `kept`-Wunsch gibt seinen Slot sofort frei (E34, E35).
 
 `presented` hat **keinen Timeout** und keinen automatischen Ausgang (R3-12): Im manuellen Modus
 bleibt ein abgelaufener, unbehandelter Wunsch `presented` mit Grund `expired`, zählt im Zähler und
@@ -352,6 +359,7 @@ Nachtrag 2026-11-20: weitere Spalten für Twitch-Sitzung und Erneuerung in 18.2.
 | Erfassungslücken (K6) | `WishCaptureGap` = 30 Tage | Zeile löschen |
 | Beendete Wünsche | `EndedWish` = 365 Tage | Zeile löschen, 365 Tage nach `EndedAtUtc` |
 | Audit | unverändert `AuditLogEntry` = 365 Tage | |
+| Löschen von Hand (K7a) | keine Frist | ein Verwalter löscht einen beendeten Wunsch sofort und hart (E34, E35) |
 
 Beides läuft im bestehenden Tagesdurchlauf (`DataRetentionService.RunAsync`), also nur bei
 `Retention:Enforce = true`; der Trockenlauf meldet Zählwerte in der Summenzeile. Die Kontolöschung
@@ -523,6 +531,8 @@ In Baureihenfolge:
 | K6 | Chat-Erfassung und Belohnung anlernen: IRC-Tag, Anlernen, offene Wünsche mit Zuordnung, Freigeben, Ablehnen, Verfall, Lückenanzeige, samt Oberfläche | P1 | 7 Tage | offen | K1, K3 |
 | K4 | Bot-Backend: Token-Ablage und Admin-Seite, Schreib-Client, Warteschlange, Editor-Prüfung, Eigentum, Notaus, Doku | P2 | 6 Tage | offen | K1, K2 |
 | K5 | Bot-Frontend: Aktivierungsdialog mit Editor-Mutation (D7), Abschalten, Bot-Zustände auf den Karten | P2 | 2,5 Tage | offen | K3, K4, Probe „Editor-Mutation“ |
+| K7a | Nachtrag 2026-11-21: Löschen beendeter Wünsche | P2 | 2,75 Tage | spezifiziert, Issue #500, Plan `docs/plans/Plan-500-Wunsch-Emotes-Loeschen.md` | K1, K3, K6 |
+| K7b | Nachtrag 2026-11-21: „Erneut auf Zeit“ aus `kept` | P3 | etwa 2 Tage zusätzlich | **zurückgestellt** (Betreiber 2026-11-21), nur bei Bedarf | K7a |
 
 Die frühere „Scheibe 3 ohne Issue“ ist K6. Später und ohne Issue bleiben nur F10 (Bot nicht mehr
 anonym, Chat-Antworten) und die Punkte aus Abschnitt 15.
@@ -2709,6 +2719,547 @@ Aktion „Bot entfernen lassen“. Kein Backend außer dem, was K4 liefert.
 ## Abhängigkeiten
 
 K3, K4, Probe AK97.
+
+---
+
+# K7 (Nachtrag 2026-11-21): Löschen beendeter Wünsche (K7a) und Erneut auf Zeit (K7b, zurückgestellt)
+
+Labels: `feat`, `api`, `infrastructure`, `web`. Teil des Epics „Wunsch-Emotes mit Ablauf“. Hängt ab von
+K1, K3 und K6 (alle seit 2026-11-20 live). Stand der Codezitate: `main` bei `d27dbe7d`. Revisionen 2 und 3
+vom selben Tag arbeiten zwei Runden adversarialer Prüfung durch Codex Sol ein; Revision 4 teilt den Nachtrag
+auf Betreiberentscheid Y3 in **K7a** (Löschen, wird gebaut) und **K7b** (Erneut auf Zeit, zurückgestellt). Die
+Tabelle „Prüfbefunde K7“ am Ende ordnet jeden Befund einem der beiden Teile zu. Revision 5 (ebenfalls 2026-11-21)
+arbeitet die adversariale Prüfung des Plans #500 durch Sol ein (Block „Plan-Runde 1“ der Tabelle) und die
+Antworten des Betreibers auf die offenen Fragen des Plans; Stand der Codezitate dafür: `main` bei `dbc24973`.
+Revision 6 (2026-11-21) arbeitet die zweite Sol-Runde über den Plan ein (Block „Plan-Runde 2“); Stand der
+Codezitate: `main` bei `ac7982eb`.
+
+## Anlass
+
+Der Betreiber hat nach Freigabe 1 auf Prod zwei Lücken gefunden:
+
+1. **Nach „Behalten“ führt kein Weg zurück auf Zeit.** `KeepAsync` (`WishService.cs:485-500`) setzt
+   `kept`, beendet das Bot-Eigentum, und `StampStateChange` (`:1625`) setzt `EndedAtUtc`; die `SlotId`
+   bleibt. Ein `kept`-Wunsch hält seinen Eintrag, solange der im Set ist (Betreiberentscheidung 18.11.;
+   `HoldingStatuses` `WishService.cs:53`, partieller Index `IX_Wishes_SlotId_Live` `AppDbContext.cs:526-530`,
+   Freigabe erst durch `WishReconcileService.ReleaseKept` `:327`). „Bestand übernehmen“ zeigt für diesen
+   Eintrag deshalb nur „Zum Wunsch“, und am Wunsch gibt es keine Aktion: `WishTransitions.BuildRows`
+   (`:130-211`) kennt aus `kept` keinen Übergang, `wishActions` (`web/src/app/core/wishes/wish-view.ts:255-288`)
+   liefert `[]`.
+2. **Kein Wunsch lässt sich löschen.** Beendete Wünsche stehen im Bereich „Beendet“, bis die Retention sie
+   365 Tage nach `EndedAtUtc` entfernt (`RetentionPolicy.EndedWish`, `DataRetentionService.RunEndedWishesAsync`
+   `:462`).
+
+## Betreiberentscheidungen (2026-11-21, nicht neu aufzurollen)
+
+| # | Entscheid |
+|---|---|
+| Y1 | Neue Verwalter-Aktion an einem `kept`-Wunsch: **„Erneut auf Zeit“** mit einer Laufzeit in Tagen. Derselbe Wunsch wird wieder `active`; Identität und Historie bleiben. Die Regel „`kept` hält seinen Slot“ bleibt unverändert, ebenso „Bestand übernehmen“: Dort führt „Zum Wunsch“ zu der Zeile, an der die neue Aktion steht. **Zurückgestellt durch Y3 (K7b).** |
+| Y2 | **Löschen** für jeden beendeten Wunsch, hart, mit Audit-Eintrag. Das Löschen eines `kept`-Wunsches gibt seinen Slot sofort frei. **Wird als K7a gebaut.** |
+| Y3 | **Aufteilung:** K7a (Löschen) wird jetzt gebaut. K7b („Erneut auf Zeit“) bleibt spezifiziert und wird nur gebaut, wenn sich der Umweg über Löschen und „Bestand übernehmen“ als zu umständlich erweist. Leitfall: „30 Tage getestet, jetzt 7 Tage“ = den behaltenen Wunsch löschen (der Eintrag wird frei), dann „Bestand übernehmen“ mit der neuen Laufzeit (neuer Wunsch, neue ID). |
+| O1 | Ein `kept`-Wunsch, dessen Eintrag das Set verlassen hat, bekommt kein „Wieder hinzufügen“; er bietet nur „Löschen“. |
+| O2 | Für Kanalzeilen ohne gespeicherte Twitch-ID genügt der Login-Abgleich nicht: 409 `wish_channel_unbound`, bis die Identitätsprüfung die Zeile bindet (E41). |
+
+**Was der Umweg kostet, verglichen mit K7b:** Der neue Wunsch hat eine neue ID, `Source = adopted`, keinen
+Einlöser und keinen Einlösetext (beides ging mit dem gelöschten Wunsch), und die Kette im Aktivitätsprotokoll
+läuft über zwei IDs (`wish.delete` des alten, `wish.adopt` des neuen). Der Start ist wählbar: `adopt` nimmt
+`AddedAt` des Eintrags oder einen gesetzten Start; der Dialog wählt „ab jetzt“ vor, wenn der Ablauf sonst schon
+verstrichen wäre (F21). Für den Leitfall genügt das.
+
+---
+
+## K7a: Löschen beendeter Wünsche
+
+Wird jetzt gebaut. Keine Migration, kein neuer Schalter, kein Worker-Zweig, kein neuer Fehlercode, keine
+Änderung an Compose oder Runbook. Seit Revision 5 gehört eine Änderung an der Lösch-Engine des Browsers dazu (E46):
+die Wunschprüfung vor jedem Entfernversuch, ohne die der Leitfall einen frisch übernommenen Eintrag verlieren kann.
+
+### Festlegungen K7a (Betreiber kann widersprechen)
+
+| # | Festlegung | Grund |
+|---|---|---|
+| E32 | **Sperren:** erst die Kanalzeile, dann die Wunschzeile, dann die in den Wunsch verschmolzenen Wünsche, aufsteigend nach ID und **ohne Warten** (`NOWAIT`): Ist eines davon gesperrt, antwortet der Befehl sofort 409 `wish_state_conflict` (SQLSTATE `55P03`), und der Client bietet erneutes Versuchen an. Neue Kinder entstehen unter der Sperre nicht: Verschmolzen wird nur in laufende Wünsche (`MergeIntoRunning`, `MergeChannels`), der gelöschte ist beendet. Zwei gleichzeitige `DELETE` auf denselben Wunsch: einer 204, der andere 404; genau ein Audit-Eintrag. **Nur im eigenen Kanal (Plan-Runde 1, PR1-4):** Die Sperranweisung für Wunsch und Kinder trägt die Bedingung `ChannelId` = Kanal des Zugriffs; ein Wunsch eines anderen Kanals wird nie gesperrt, auch nicht kurz, und die Anfrage antwortet 404 `wish_not_found`, ohne zu warten. Die Wunschzeile selbst wird wartend gesperrt, die Kinder ohne Warten. | `RowLocks.LockWishesByIdsAsync` (`RowLocks.cs:134-146`) wählt global nach ID; ein Verwalter eines Kanals könnte sonst eine Wunschzeile eines fremden Kanals sperren und dessen Schreiber aufhalten, bevor der Dienst den Kanal prüft. Das Löschen ändert, wer einen Slot hält; Sync, Abgleich und `complete-removal` nehmen die Kanalzeile zuerst (`WishService.cs:16-31`), die K6-Befehle ebenso. Die Kinder vorab zu sperren macht das `ON DELETE SET NULL` der Datenbank zu einem Schritt, dessen Sperren der Befehl schon hält. Weil er auf die Kinder nicht wartet, wartet er nie auf eine Wunschzeile, während er eine andere hält; eine Verklemmung mit dem ungeordneten Retention-Stapel (Löschen wie Leeren der Einlöser-Daten) ist damit **für die Transaktion des Löschens** ausgeschlossen, und der Klick gibt nach statt der Retention (Prüfbefunde S5, R2-5). Die Zusage gilt nicht für den Abgleich, den das Löschen eines `kept` danach in eigener Transaktion anstößt (Plan-Runde 2, PR2-4): Er sperrt wie jeder Abgleich mehrere Wunschzeilen wartend und aufsteigend (`WishReconcileService.cs:157-166`) und kann mit dem ungeordneten Leeren der Einlöser-Daten verklemmen. Das gilt heute schon für jeden Abgleich nach einem Sync; K7a fügt einen Anlass hinzu, keine neue Art (RR19). |
+| E34 | **Löschen nur aus einem Endzustand:** genau `WishStatus.Ended` = `rejected`, `expired`, `removed`, `removed_externally`, `kept`, `closed`, `merged`. Jeder andere Zustand → 409 `wish_state_conflict`. Löschen ist kein Übergang und steht nicht in `WishTransitions`; die eine Bedingung ist `WishStatus.IsEnded`. Dazu muss das mitgeschickte `endedAtUtc` dem gespeicherten gleichen (Episodenbindung, E44), sonst ebenfalls 409 `wish_state_conflict`. | Die Oberfläche bietet Löschen nur an beendeten Zeilen an; der Fall entsteht nur im Wettlauf, und genau das meint der bestehende Code. Ein `removed_externally` verliert mit dem Löschen seinen Rückweg (E10); Folge der ausdrücklichen Aktion. |
+| E35 | **Wirkung des Löschens.** Die Zeile verschwindet samt Einlöser-Daten, eingelöstem Text und Hinweisen. `WishSlotExclusions` gehen per Kaskade mit (`AppDbContext.cs:653-662`). In den gelöschten verschmolzene Wünsche behalten `merged` und bekommen `MergedIntoWishId = null` (Fremdschlüssel `ON DELETE SET NULL`, `AppDbContext.cs:548-551`); die Oberfläche zeigt dort kein „Zum Wunsch“. Ist der gelöschte selbst `merged`, bleibt das Ziel unberührt. Bei `kept` mit `SlotId` fällt der Schlüssel in `IX_Wishes_SlotId_Live` mit der Zeile: Unmittelbar danach nennt `GET …/wishes/slots` den gelöschten Wunsch nicht mehr als Halter. Ob `adopt` den Eintrag dann annimmt, entscheidet `adopt` nach seinen eigenen Regeln (`WishService.cs:344-355`: läuft ein anderer Wunsch desselben Emotes, 409 `wish_already_running`); und der nach dem Commit angestoßene Abgleich darf den Eintrag einem offenen oder freigegebenen Wunsch zuordnen, dessen Fenster sein `AddedAt` deckt (6.3). Der Eintrag im 7TV-Set bleibt unberührt. **Dedupe:** Die Quittung (`WishCaptureReceipts`) hängt an keinem Wunsch; binnen ihrer Frist (`CaptureReceiptRetention`, 7 Tage) erzeugt dieselbe IRC-Nachricht keinen zweiten Wunsch. **Retention:** Hält der Tageslauf den Wunsch oder ein Kind gerade gesperrt (er löscht und leert in ungeordneten Stapeln, `DataRetentionService.cs:468-487`, `:508-533`), wartet der Befehl auf den Wunsch bzw. gibt bei einem Kind sofort mit 409 nach (E32); gegen die Transaktion des Löschens läuft der Tageslauf in jedem Fall durch (zum anschließenden Abgleich RR19). | Dasselbe FK-Verhalten wie beim Löschen durch die Retention. Kein Mitlöschen verschmolzener Wünsche: Jeder ist ein eigener Datensatz mit eigener Einlösung und Retention-Uhr. Eine Zuordnung nach dem Freiwerden ist gewolltes Verhalten des Abgleichs, kein Seiteneffekt, den K7 unterdrücken sollte. Beobachtungen der Erfassung stammen nur aus der laufenden Chat-Verbindung über eine begrenzte In-Memory-Warteschlange (`RewardObservationQueue`); ein Wiederabspielen nach Tagen gibt es nicht, die 7 Tage decken jede Pufferung um Größenordnungen. Ein gemeinsames Sperrprotokoll zwischen Api und Retention wäre für diesen Fall unverhältnismäßig; dass der seltene Klick nachgibt, kostet nichts. |
+| E36 | **Audit und Ereignisse:** neue Aktion `wish.delete`, atomar mit dem Speichern, Ziel (`wish`, id), Akteur der Verwalter, Details `wishId`, `sevenTvEmoteId`, `durationDays`, `fromStatus`. Nie Alias, Emote-Name, Login oder Einlösetext; kein `previousExpiresAtUtc`. **`wish.changed` ist eine Benachrichtigung nach bestem Bemühen**, wie im ganzen Epic: der Befehl veröffentlicht nach seinem Commit eines, ein danach angestoßener Abgleich bei sichtbarer Änderung ein zweites (`WishService.cs:1510-1516`, `WishReconcileService.cs:88-92`); ein Redis-Fehler wird geloggt und verschluckt (`WishChangedPublisher`). Clients vertragen doppelte Ereignisse (der Reload fasst sie zusammen) und holen beim Laden ohnehin frisch. | Wie die übrigen Wunsch-Befehle (`StageWishAudit`). `fromStatus` macht lesbar, was gelöscht wurde, ohne Personendaten. Das Löschen erledigt keine Fälligkeit. Eine dauerhafte Zustellung gibt es für kein Wunsch-Ereignis; K7a ist kein Anlass, sie einzuführen. |
+| E37 | **Zähler und Übersicht:** Das Löschen selbst ändert den Zähler der Kopfzeile nicht. Ordnet der danach angestoßene Abgleich einem offenen Wunsch den frei gewordenen Eintrag zu, verlässt dieser den Handlungsbedarf wie bei jeder Zuordnung. | Beendete Wünsche zählen weder als Handlungsbedarf noch als Probezeit (`WishOverviewService`, `ProbationStatuses = [active]`). |
+| E38 | **Wiederholtes Löschen:** Ein zweites `DELETE` auf dieselbe ID antwortet 404 `wish_not_found`. Der Client wertet 404 `wish_not_found` auf sein eigenes Löschen als erledigt (Liste neu laden, keine Fehlermeldung). Erfolg ist 204 ohne Rumpf. | Ohne Grabstein, den ein hartes Löschen ausschließt, ist „gab es nie“ nicht von „schon gelöscht“ zu unterscheiden. 204 wie `DELETE …/wishes/rewards/{rewardId}`. |
+| E39 | **Rolle:** Löschen darf jeder Verwalter, der für die **Kanalzeile über ihre Twitch-ID** bestätigt ist (E41), auch im Bot-Modus; kein `WishSettingsAuthorizationFilter`. | Wie Behalten, Schließen und Verlängern: D7 gilt nur für Kanal-Vorgaben (E17). Die Spur liefert das Audit-Log, das das Löschen überlebt. **Grenze (Plan-Runde 1, PR1-2):** Der Moderatorstatus kommt aus der geteilten Liste der moderierten Kanäle (`ModeratedChannelsProvider.cs:33-51`, Redis, TTL `Auth:ModCheckCacheTtlMinutes`, Standard 10 Minuten). Ein Moderator, dem Twitch die Rolle entzieht, kann bis zum Ablauf seines Eintrags weiter löschen. K7a nimmt das als Restrisiko RR16 hin und fragt Twitch für das Löschen nicht frisch: Dieselbe Liste berechtigt heute jedes andere harte Löschen eines Verwalters (Abstimmung, Tag, importierte Backfill-Daten), gelöscht werden nur beendete Wünsche ohne Wirkung in 7TV, das Audit-Log nennt den Akteur, der Betreiber kann den Eintrag über „Rollen-Cache invalidieren“ im Admin-Bereich sofort leeren (`ModRoleCache.cs:105`), und eine frische Abfrage hieße für jedes Löschen eine Helix-Pagination mit eigenem Fehlerbild (fail-closed bräuchte einen neuen Fehlercode). Eine frische Prüfung für alle harten Verwalter-Aktionen gemeinsam steht als Hinweis H6 bei #496. Der Betreiber hat RR16 am 2026-11-21 so hingenommen (dieselbe Regel wie für die übrigen harten Verwalter-Aktionen). |
+| E40 | **Kein Schalter, keine Migration.** Die Route liegt hinter `Wishes:Enabled` (404 `wishes_disabled`). | Am Modell-Snapshot geprüft: Die einzigen Verweise auf `Wishes` sind `MergedIntoWishId` (SET NULL) und `WishSlotExclusions.WishId` (CASCADE); das Löschen braucht nichts darüber hinaus. Es schreibt nicht nach 7TV, ein eigener Schalter schützte nichts, was `Wishes:Enabled` nicht schon schützt. |
+| E41 | **Zugriff über die Twitch-ID der Kanalzeile (Prüfbefund S1).** Die Route trägt hinter dem Gruppenfilter einen Filter, der wie `WishCaptureAccessFilter` `IChannelAccessService.ResolveWishCaptureAccessAsync` fragt, aber **ohne** den Erfassungsschalter: Kanalzeile fehlt → 404 `channel_not_found`; Zeile ohne `TwitchChannelId` → 409 `wish_channel_unbound` (bestehender Code); nicht auf der ID bestätigt → 403 in der Form des Verwalter-Filters. Der Dienst arbeitet auf `access.ChannelId` (`ResolveScopeAsync`, `WishService.cs:1158-1170`) und prüft nach der Kanalsperre erneut `IsConfirmedOn` gegen die gesperrte Zeile; weicht die ID inzwischen ab, neue `WishOutcome.AccessDenied` → 403 ohne Rumpf. K7a behebt das **lokal für seine Route** und wartet nicht auf #496, Punkt 2. | Der Gruppenfilter prüft Moderatoren über den Login (`ModeratorCheckService.cs:34`), der Dienst löst aber die gespeicherte Kanalzeile auf; `WishCaptureEndpointsTests.cs:605-644` zeigt, dass ein Moderator eines neuen Inhabers desselben Logins die alte Zeile erreicht. Für das harte, nicht umkehrbare Löschen ist das nicht hinnehmbar, und die Lösung existiert seit K6 (Twitch-ID, Global-Admin über ID, Moderation über `BroadcasterId`). #496 Punkt 2 (P3, ohne Termin) bleibt für die allgemeine Korrektur aller Verwalter-Routen offen; danach ist der K7-Filter überzählig, aber unschädlich. Eine Zeile ohne Twitch-ID verliert damit „Löschen“, bis die Identitätsprüfung (`TwitchIdentityReconcileWorker`, `ChannelIdentityService.cs:114`) sie bindet; die Oberfläche zeigt den Code als Meldung (Betreiberentscheid O2, 2026-11-21: so lassen). **Grenze (Prüfbefund R2-4):** Die Prüfung vertraut der gespeicherten ID. Trägt eine Zeile ohne ID schon Wünsche und wechselt ihr Login den Inhaber, bevor die Identitätsprüfung sie bindet, schreibt `BackfillIdAsync` (`ChannelIdentityService.cs:738-754`) die ID des neuen Inhabers allein über den Login nach, und E41 ließe dessen Moderatoren zu. K7 nimmt das als Restrisiko RR15 hin, statt es abzuwehren. |
+| E44 | **Löschen ist an die beendete Episode gebunden (Prüfbefund R2-3):** `DELETE …/wishes/{id}?endedAtUtc=<ISO-8601>` mit dem `endedAtUtc`, das die Bestätigung zeigte, verglichen auf Datenbankgenauigkeit (`SameInstant`); fehlt der Wert oder ist er nicht lesbar, 400 `invalid_request_body`; weicht er ab, 409 `wish_state_conflict`. | Eine Bestätigung darf nur den Wunsch in dem Ende löschen, das sie gezeigt hat. Die Entscheidungsversion trägt das nicht: Der Abgleich beendet und öffnet Wünsche, ohne sie zu erhöhen (`removed_externally` → `active` → `removed_externally`, `WishReconcileService.cs:658-698`). `EndedAtUtc` dagegen ist je beendeter Episode neu und wächst streng: Jeder Weg aus einem Endzustand leert es, jeder Eintritt setzt den Zeitpunkt dieses Endes (`StampStateChange`, `RemoveExternally`; das Ende nach einer Rückkehr liegt nach ihr), und nur der Wechsel `removed_externally` → `removed` behält es, also innerhalb derselben Episode. Die Version in K1 und der Abgleich bleiben unverändert; `WishDto` trägt `endedAtUtc` schon. **Grenze (Plan-Runde 1, PR1-3):** `EndedAtUtc` ist ein Zeitstempel, kein Zähler. Am Code hält, dass ein neues Ende nie einen Wert einer früheren Episode wiederverwendet: Der Abgleich nimmt `ArchivedAt` des Slots nur, wenn es nicht vor `SlotConfirmedAtUtc` liegt (`WishReconcileService.cs:366-369`), und jede Rückkehr setzt `SlotConfirmedAtUtc` auf jetzt (`HoldGeneration`, `:715-720`); jeder andere Eintritt setzt jetzt. Gleich wird ein späteres Ende einem früheren nur, wenn die Uhr zwischen zwei Episoden auf genau dieselbe Mikrosekunde zurückspringt. Dann löschte eine alte Bestätigung denselben, weiterhin beendeten Wunsch in einem späteren Ende, das sie nicht gezeigt hat; kein laufender Wunsch und kein 7TV-Eintrag ist betroffen. Ein eigener Episodenzähler bräuchte eine Migration und Schreibstellen im Worker (Abgleich, Ablauf, Erfassung, Zusammenführung); für dieses Restrisiko RR17 ist das unverhältnismäßig. |
+| E46 | **Wunschprüfung vor jedem Entfernversuch (Plan-Runde 1, PR1-1).** Das Entfernen aus der Karte (K3) prüft den Wunsch nicht nur beim Start, sondern **unmittelbar vor jedem Senden** an 7TV, auch vor jedem Wiederholungsversuch nach einer 429-Pause: Der Bindungs-Haken der Zeile (`WishEntryBinding`, `seven-tv-delete.service.ts:296-324`, gebaut in `wish-removal-flow.ts` `wishEntryRow`) bekommt eine zweite Prüfung, die den Wunsch frisch liest (`readWish`, `GET …/wishes/{id}`) und mit `wishDeviation` (`wish-run-start.ts:218-243`) gegen den eingefrorenen Stand vergleicht: dieselbe ID und dasselbe Emote, Zustand `active` oder `presented`, derselbe Slot, dieselbe Generation, Datum maßgeblich. Die Engine ruft sie nach der frischen Set-Lesung. **Frische beider Beobachtungen (Plan-Runde 2, PR2-1):** Unmittelbar vor dem Freigeben des `REMOVE` sind die Set-Beobachtung und die Wunschlesung, je ab dem Start ihrer Anfrage gemessen, höchstens `WISH_OBSERVATION_MAX_AGE_MS` (5 s) alt; die Altersprüfung steht damit **nach** der Wunschlesung. Ist eine zu alt, läuft die Folge aus Set-Lesung und Wunschlesung genau einmal neu; ist sie es wieder, wird die Zeile mit `tooSlow` übersprungen. Danach die letzte Token-Prüfung wie bisher. Jede Abweichung (auch 404) überspringt die Zeile mit Grund `wishChanged`, eine nicht mögliche Lesung mit `wishUnverified`; gesendet wird dann nichts. Keine `decisionVersion` (die bleibt K7b, E42). | Ohne diese Prüfung kann der Leitfall selbst einen Eintrag verlieren: Startet ein Verwalter die Entfernung, wartet die Engine nach einem 429 bis zu 60 Sekunden (`seven-tv-run-engine.ts:574-589`), und behält, löscht und übernimmt ein Kollege den Eintrag in dieser Zeit, sendet der Wiederholungsversuch das `REMOVE`: Das Tor vor jedem Versuch (`seven-tv-delete.service.ts:935-1001`) prüft nur Token, Set und Generation, und `adopt` behält die Generation des Eintrags. Erst danach käme das 404 des alten Wunsches. Mit der Prüfung scheitert der Versuch an der alten ID (404) und schon vorher an `kept`. Damit ist nebenbei die bestehende Lücke „Behalten während der Pause“ geschlossen; „Verlängern während der Pause“ (#496 H1) bleibt offen, weil ID, Zustand, Slot und Generation dabei gleich bleiben, und braucht nur noch `decisionVersion` im Vergleich; das ist auf Betreiberentscheid vom 2026-11-21 nicht Teil von K7a, sondern Issue #505. Zwischen der letzten Lesung und der Mutation bleibt ein Fenster von höchstens 5 s plus der Mutation (RR18). Ohne die Frischeprüfung nach der Wunschlesung könnte eine langsame, unveränderte Wunschantwort (die Lesung darf 20 s dauern, `WISH_START_READ_TIMEOUT_MS`) eine Set-Beobachtung über die 5 s hinaus verlängern, und das generationsblinde `REMOVE` träfe einen inzwischen ersetzten Eintrag gleichen Alias. |
+
+### Lebenszyklus und Datenmodell (Ergänzung zu den Abschnitten 5 und 6)
+
+**Löschen** ist kein Übergang und steht nicht in `WishTransitions`: Ein Wunsch in einem Zustand aus
+`WishStatus.Ended` darf gelöscht werden, danach gibt es die Zeile nicht mehr (E34, E35). Keine Migration
+(E40). Zu 6.5: Löschen von Hand wirkt sofort und vor jeder Frist. Kontolöschung und Kanal-Purge bleiben
+unverändert.
+
+### Implementation Details K7a
+
+**Core.** `AuditActions.WishDelete = "wish.delete"` mit Kommentar zu den Details (E36). `IWishService` bekommt
+`DeleteAsync` (Kanal, Wunsch-ID, erwartetes `EndedAtUtc`, Akteur, Zugriff) → `WishCommandResult`. `WishOutcome`
+bekommt `AccessDenied`. Erfolg von `DeleteAsync` trägt keinen Wunsch; der Handler antwortet darauf selbst mit
+204, weil `MapResult` einen Erfolg ohne Wunsch oder Einstellungen als unerreichbar behandelt
+(`WishEndpoints.cs:373-385`).
+
+**Infrastructure** (`WishService.DeleteAsync`). Kanalzeile sperren, dann den Wunsch (wartend, nur im eigenen Kanal),
+dann seine verschmolzenen Kinder aufsteigend ohne Warten (E32, `55P03` → 409); Zugriff gegen die gesperrte Zeile (E41), Zustand (E34) und
+Episode (E44) prüfen; Audit stagen, Zeile löschen, speichern, committen, `wish.changed`, bei einem `kept` mit
+`SlotId` den Abgleich anstoßen. SET NULL und Kaskade erledigt die Datenbank.
+
+**Api** (`WishEndpoints.cs`), Gruppe unverändert (400 Name, 401/403 Verwalter); dahinter der Zugriffsfilter aus
+E41; der Schalter wird wie bei den Belohnungs-Routen im Filter geprüft, damit ein abgeschaltetes Feature nicht
+mit einer Zugriffsablehnung antwortet:
+
+| Route | Rate-Limit | Query | Erfolg | Fehler |
+|---|---|---|---|---|
+| `DELETE …/wishes/{id:long}?endedAtUtc=<ISO-8601>` | `Bookkeeping` | Pflicht (Muster `DELETE …/rewards/learning?sessionId=`) | 204 | 400 `invalid_request_body`; 403; 404 `wish_not_found`, `channel_not_found`, `wishes_disabled`; 409 `wish_channel_unbound`, `wish_state_conflict` |
+
+**Regel 7:** kein neuer Fehlercode. Alle Codes der Route stehen schon in `ApiErrorCodes.cs`,
+`KNOWN_API_ERROR_CODES` und beiden Locale-Dateien (`wish_channel_unbound` seit K6). `AccessDenied` bildet auf
+403 ohne Rumpf ab, wie `WishRewardOutcome.AccessDenied`. Neu sind nur die Übersetzungen
+`audit.actions.wishDelete` und die Schlüssel der Oberfläche.
+
+**Oberfläche** (nur Absicht, Designsprache §4.2, §7, §8.1 und die Prüfliste „Neue UI bauen“):
+
+- `wishActions`: `kept` → `delete`; `removed` und `removed_externally` → `reAdd`, dann `delete`; `rejected`,
+  `expired`, `closed`, `merged` → `delete`. `delete` steht immer zuletzt (destruktiv). Keine 7TV-Aktion
+  (`isSevenTvAction` falsch), also auch auf grobem Zeiger (F19). `isConfirmedAction('delete')` ist wahr.
+- **Orte:** der Bereich „Beendet“ im Wünsche-Tab (`channel-wishes-page.ts`) und die angeheftete Zeile
+  (`?wish=`, `jumpTo` `:1194`), die „Zum Wunsch“ aus „Bestand übernehmen“ öffnet. Nicht in `my-wishes` und nicht
+  in „Handlungsbedarf“ oder „Laufend“.
+- **Löschen wird an jedem beendeten Wunsch angeboten**, ohne weitere Bedingung (Betreiber 2026-11-21).
+- **Bestätigung „Löschen“** über den bestehenden Bestätigungsweg der Zeile; gesendet wird das `endedAtUtc` der
+  Zeile, die die Bestätigung zeigte, als **unveränderter String aus dem DTO** (ein `Date` im Browser kennt nur
+  Millisekunden, die Datenbank Mikrosekunden). Inhalt: Der Wunsch verschwindet endgültig, samt Wünschendem und
+  Einlösetext; das Aktivitätsprotokoll behält die Aktionen; in 7TV wird nichts geändert. **Nur bei `kept` mit
+  `slotId`** zusätzlich, bedingt formuliert (Plan-Runde 1, PR1-6): Das Emote bleibt im Set, und der Eintrag lässt
+  sich danach in der Regel mit „Bestand übernehmen“ und neuer Laufzeit neu verknüpfen; ordnet der Abgleich ihn
+  vorher einem offenen Wunsch zu, zeigt der Dialog das. Ein `kept` ohne `slotId` (der Abgleich hat den Eintrag
+  freigegeben, `ReleaseKept`) bekommt den allgemeinen Text. Stufe wie das Löschen eines Eintrags (§4.2), Knopf
+  „Löschen“ ohne „…“. Danach geht der Fokus im Bereich „Beendet“ auf die nächste Zeile des Bereichs, sonst auf
+  dessen Überschrift.
+- **Leitfall (Y3):** Nach dem Löschen eines `kept`-Wunsches mit Eintrag zeigt die Seite einen Hinweis mit dem
+  Knopf „Bestand übernehmen“, der den Übernahme-Dialog **für das ganze Emote** öffnet (alle seine Einträge und
+  Aliase, `GET …/wishes/slots?sevenTvEmoteId=`) und darin **den frei gewordenen Eintrag vorauswählt**, sofern er
+  wählbar ist (Betreiber 2026-11-21). Der Dialog folgt seinen Regeln (Laufzeit, Start, F21).
+- **Angeheftete Zeile:** Nach dem Löschen der angehefteten Zeile wird die Anheftung geleert und der Fokus geht auf
+  den Lösch-Hinweis mit seinem Knopf „Bestand übernehmen“ (Betreiber 2026-11-21); ohne Weg zurück (kein `kept`
+  mit Eintrag) trägt der Hinweis nur „Wunsch gelöscht“ und nimmt ebenso den Fokus.
+- **Übernahme-Dialog und Eintrag-Dialog:** Verhalten unverändert. Der Sperrtext `wishes.adopt.locked.kept`
+  (`wish-adopt-dialog.ts:726`) und der Konflikttext `wishes.entry.conflict.kept` des Eintrag-Dialogs erklären
+  künftig denselben Weg: „Zum Wunsch“ und dort löschen, dann lässt sich der Eintrag mit neuer Laufzeit übernehmen
+  (Betreiber 2026-11-21).
+- **Lösch-Engine (E46):** neue Prüfung im Bindungs-Haken der Wunschzeile; zwei neue Gründe `wishChanged` und
+  `wishUnverified` mit Text in beiden Sprachen.
+- **Mobil:** die Aktion in der Zeile wie die übrigen Buchungen, die Bestätigung als Sheet wie die bestehenden;
+  der Fokus bleibt sichtbar über der Aktionsleiste (vgl. #497, #498).
+- **i18n** (de, en): `wishes.actions.delete`, `wishes.confirm.delete`, `wishes.confirm.deleteKept`, der Hinweis
+  nach dem Löschen samt Knopf, die neuen Texte von `wishes.adopt.locked.kept` und `wishes.entry.conflict.kept`, die
+  beiden Gründe aus E46, der Grund „inzwischen gelöscht“ des Entfernungsberichts, `audit.actions.wishDelete`.
+- `wish.service.ts`: eine Methode für das Löschen (mit `endedAtUtc`).
+
+**Löschen gegen Entfernen aus der Karte (Prüfbefund N3):** Entfernt ein Verwalter einen
+`removed_externally`-Eintrag binnen 6 Stunden in 7TV, während ein anderer den Wunsch löscht, antwortet
+`complete-removal` 404 `wish_not_found`. Das Entfernen in 7TV ist geschehen, nur die Buchung entfällt. Der Client
+trennt beides: Er meldet „aus 7TV entfernt; der Wunsch wurde inzwischen gelöscht“ und lädt neu, statt den
+Vorgang als gescheitert zu zeigen. (Im Code: `isFinalRefusal` in `web/src/app/core/wishes/wish-removal-tracker.ts`
+macht heute aus 409 und 404 `notBooked`; nur 404 mit `wish_not_found` bekommt den eigenen Grund.) Eine laufende
+Entfernung eines **aktiven** Wunsches, die in einer 429-Pause steht, während ein Kollege behält, löscht und neu
+übernimmt, fängt E46 vor dem nächsten Versuch ab; Revision 4 hatte sich hier fälschlich auf die Startprüfung
+verlassen (Plan-Runde 1, PR1-1).
+
+### Akzeptanzkriterien K7a
+109. **AK109** Löschen: Jeder der sieben Endzustände mit passendem `endedAtUtc` → 204, Zeile weg, ein
+     Audit-Eintrag `wish.delete` mit `fromStatus`; jeder der sechs übrigen Zustände → 409 `wish_state_conflict`,
+     Zeile unverändert; abweichendes `endedAtUtc` → 409; fehlendes oder unlesbares → 400; ein zweites `DELETE`
+     → 404. Episodenbindung (Prüfbefund R2-3): `removed_externally` (Ende T1) → Rückkehr durch den Abgleich →
+     erneut `removed_externally` (Ende T2 > T1) → `DELETE` mit T1 → 409, mit T2 → 204. Ebenso `removed` →
+     „Wieder hinzufügen“ → erneut `removed`: die Bestätigung des ersten Endes → 409. `removed_externally` →
+     `removed` durch den Entfernungsbericht (dieselbe Episode): `DELETE` mit dem gezeigten Ende → 204.
+     **Genauigkeit:** Ein Ende mit Mikrosekunden ungleich null, aus Postgres gelesen und als JSON des DTO
+     ausgeliefert, kommt als unveränderter String in der Query an und trifft (204); derselbe Wert plus eine
+     Mikrosekunde → 409. Der Nachweis ist zweigeteilt, weil kein Testprojekt HTTP und Postgres zusammen fährt:
+     Api-Rundreise (DTO-JSON → Query → Wert beim Dienst, tickgenau) und Dienst gegen Postgres (gelesener Wert,
+     als String formatiert und zurückgelesen → Erfolg, plus eine Mikrosekunde → Konflikt).
+110. **AK110** Wirkung des Löschens: Sperrzeilen in `WishSlotExclusions` weg; ein in den gelöschten
+     verschmolzener Wunsch bleibt `merged` mit `MergedIntoWishId` null; das Löschen eines `merged` lässt das Ziel
+     unverändert; `kept` mit Slot gelöscht → `GET …/wishes/slots` nennt den gelöschten Wunsch nicht als Halter;
+     ohne anderen laufenden Wunsch des Emotes → `adopt` 201; mit laufendem zweitem Alias → `adopt` 409
+     `wish_already_running`; mit einem offenen Wunsch, dessen Fenster das `AddedAt` des Eintrags deckt, ordnet
+     der angestoßene Abgleich ihm den Eintrag zu. Ein gelöschter erfasster Wunsch entsteht aus derselben
+     IRC-Nachricht binnen der Quittungsfrist nicht neu.
+111. **AK111** Zwei gleichzeitige `DELETE` auf denselben Wunsch → einmal 204, einmal 404, ein Audit-Eintrag.
+     `complete-removal` auf einen inzwischen gelöschten `removed_externally`-Wunsch → 404 `wish_not_found`.
+112. **AK112** Nebenläufigkeit mit der Retention (E32, E35; Prüfbefunde S5, R2-5, Plan-Runden 1 und 2), in der
+     eigenen Datenbank der Retention-Tests (die Retention arbeitet über alle Zeilen), mehrere Verbindungen: (a) **Der
+     echte Retention-Lauf** (`DataRetentionService.RunAsync`, nicht eine nachgestellte Anweisung) hält als Erster
+     genau ein verschmolzenes Kind gesperrt, je einmal beim Löschen nach 365 Tagen und einmal beim Leeren der
+     Einlöser-Daten. Deterministisch über eine Testschranke: ein nur im Test angelegter Zeilen-Trigger
+     (`AFTER DELETE` bzw. `AFTER UPDATE`, nur für dieses Kind) wartet auf eine Advisory-Sperre, die der Test hält;
+     wenn er läuft, hat die Anweisung die Zeile schon geändert und hält sie bis zum Ende ihrer Transaktion (ein
+     `BEFORE`-Trigger liefe dagegen vor der Zeilensperre). Eine `NOWAIT`-Probe von dritter Seite belegt die
+     Zeilensperre →
+     `DELETE` des Ziels antwortet sofort 409 `wish_state_conflict`; nach dem Lösen der Schranke endet der
+     Retention-Lauf ohne Fehler, und die gesäten fälligen Zeilen der späteren Kategorien (Erfassungslücke,
+     deaktivierter Kanal, Systemlast) sind entfernt. (b) Der Stapel hält das
+     Ziel → `DELETE` wartet und antwortet danach 404 (von der Retention gelöscht) bzw. 204. In keinem Fall meldet
+     Postgres eine Verklemmung.
+113. **AK113** Filter-Matrix der Route an den echten Routen (`Api.Tests`) wie AK13: ungültiger Name 400, nicht
+     eingeloggt 401, Nicht-Verwalter 403, 7TV-Editor ohne Mod-Status 403, Verwalter bei ausgeschaltetem Schalter
+     404 `wishes_disabled`, Nicht-Verwalter bei ausgeschaltetem Schalter 403. **Gleicher Login, andere Twitch-ID**
+     (Muster `WishCaptureEndpointsTests.cs:605-644`, echter `ChannelAccessService`) → 403 und kein Aufruf des
+     Dienstes; Zeile ohne Twitch-ID → 409 `wish_channel_unbound`. Im Bot-Modus darf ein auf der ID bestätigter
+     Twitch-Mod, der nicht aktiviert hat, löschen. Der Abbildungstest über jedes `WishOutcome` enthält
+     `AccessDenied` → 403 **ohne Rumpf** (eigener Fall, die Theorie liest sonst einen JSON-Rumpf); Erfolg → 204
+     ohne Rumpf, getrennt von `MapResult` geprüft; das Inventar der Wunsch-Routen im Schichtentest wächst von 26
+     auf 27.
+114. **AK114** Zugriff im Dienst (E41): Ändert sich die `TwitchChannelId` der Zeile zwischen Filter und Sperre,
+     antwortet der Befehl `AccessDenied`, nichts geschrieben.
+115. **AK115** Keine Migration: `dotnet ef migrations has-pending-model-changes` meldet nichts. Kein Audit-Eintrag
+     `wish.delete` enthält Alias, Emote-Namen, Login oder Einlösetext (AK19 erweitert).
+116. **AK116** Oberfläche: Aktionsliste je Zustand als Tabelle getestet (`delete` zuletzt, auch auf grobem
+     Zeiger, `kept` nur `delete`, an jedem beendeten Wunsch); Löschen verlangt die Bestätigung, deren Text nur bei
+     `kept` **mit** `slotId` den Weg über „Bestand übernehmen“ nennt (bei `kept` ohne `slotId` der allgemeine Text,
+     beide Fälle getestet), und sendet das `endedAtUtc` der gezeigten Zeile als unveränderten String; 404
+     `wish_not_found` auf das eigene Löschen zeigt keinen Fehler und lädt neu; 404 mit `wish_not_found` auf
+     `complete-removal` nach erfolgreichem 7TV-Entfernen meldet das Entfernen als geschehen mit dem Grund
+     „inzwischen gelöscht“, 409 und 404 mit anderem Code wie bisher; nach dem Löschen eines `kept` mit Eintrag
+     öffnet der Hinweis den Übernahme-Dialog für das ganze Emote mit dem frei gewordenen Eintrag vorausgewählt; nach
+     dem Löschen der angehefteten Zeile ist die Anheftung leer und der Fokus auf dem Hinweis; der Eintrag-Dialog
+     erklärt beim Konflikt mit einem `kept`-Wunsch denselben Weg; `wish.changed` lädt ohne Reload, auch zwei
+     Ereignisse kurz nacheinander, geprüft an einer Seite, die selbst nichts gelöscht hat.
+117. **AK117** `api-error-locales.spec.ts` bleibt grün; `audit.actions.wishDelete` und die neuen Schlüssel in
+     beiden Sprachen; im PR benannt, dass kein Fehlercode hinzukam.
+118. **AK118** E2E: behaltener Wunsch im Bereich „Beendet“, sein Eintrag im Mock **als von ihm gehalten** gesät
+     und vor dem Löschen im Übernahme-Dialog gesperrt → Löschen mit Bestätigung → Zeile weg, der Mock gibt den
+     Eintrag frei → Hinweis → „Bestand übernehmen“ (Eintrag vorausgewählt) mit 7 Tagen → neuer Wunsch mit
+     **anderer ID** im Bereich „Laufend“ (Leitfall Y3); „Zum Wunsch“ aus dem Übernahme-Dialog zeigt die angeheftete
+     Zeile mit „Löschen“, danach Fokus auf dem Hinweis; dasselbe in mobiler Breite.
+119. **AK119** Live-Verifikation (Regel 16) auf dem lokalen Stack gegen echtes 7TV mit dem Testkonto, im
+     Probe-Kanal: einen Eintrag übernehmen und behalten; „Bestand übernehmen“ zeigt nur „Zum Wunsch“ mit dem
+     neuen Sperrtext; dort löschen → an der Datenbank ist die Zeile weg, `wish.delete` steht im Protokoll, das
+     Set in 7TV ist unverändert; derselbe Eintrag lässt sich mit 7 Tagen übernehmen. Einen erfassten Wunsch
+     ablehnen und löschen; einen `removed`-Wunsch löschen. Ein zweiter Browser-Tab zeigt jede Änderung ohne
+     Reload. Das Set des Testkontos danach wiederherstellen. **Geprüftes Image (Plan-Runde 1):** Das Api-Image ist
+     aus dem Kandidatenstand gebaut und getaggt und läuft aus dem Compose-Projekt des Haupt-Checkouts ohne
+     Neubau; der Worker ist aus einem ausdrücklich genannten Stand von `main` gebaut (wie die Auslieferung „nur
+     Api“). Beide Image-IDs werden beim Bauen notiert und vor dem ersten Schritt mit denen der laufenden Container
+     verglichen; der geprüfte Stand ist als `HEAD` des ungepushten Feature-Branches festgehalten, und vor Push und PR wird
+     geprüft, dass `HEAD` sich seitdem nicht geändert hat (Regel 16 wie bei K6: Commits je Task auf dem
+     ungepushten Branch, Live-Gate vor Push und PR; Betreiber 2026-11-21).
+133. **AK133** Wunschprüfung vor jedem Entfernversuch (E46): Vitest an der Lösch-Engine und am Bindungs-Haken —
+     ein Versuch nach einer 429-Pause sendet kein `REMOVE`, wenn die frische Lesung des Wunsches 404 liefert,
+     einen anderen Zustand (`kept`), einen anderen Slot oder eine andere Generation zeigt oder scheitert
+     (`wishUnverified`); bei unverändertem Wunsch geht er durch, und die Prüfung läuft vor jedem Versuch erneut.
+     E2E mit zwei Verwaltern (`web/e2e/wishes-seven-tv.e2e.spec.ts`): Entfernung starten, 7TV antwortet 429, in der
+     Pause behält, löscht und übernimmt der andere Verwalter den Eintrag (im Mock: der alte Wunsch ist aus Detail
+     **und** Listen verschwunden, ein neuer Wunsch hält den Eintrag mit derselben Generation) → nach der Pause geht
+     **kein** weiteres `REMOVE` an 7TV und **kein** `complete-removal` an die Api; der abgeschlossene Lauf im Dock zeigt
+     den Grund `wishChanged`, auch nachdem die alte Karte verschwunden ist. Zusätzlich (PR2-1): eine unveränderte,
+     aber langsame Wunschantwort, die die Set-Beobachtung über 5 s altern lässt, führt zu genau einer Neulesung; ist
+     auch die zu alt, `tooSlow` ohne `REMOVE`.
+134. **AK134** Sperre nur im eigenen Kanal (E32): Hält eine zweite Verbindung eine Wunschzeile eines fremden Kanals,
+     antwortet `DELETE` mit deren ID sofort 404 `wish_not_found`, ohne zu warten, und sperrt sie nicht.
+
+### Testplan K7a
+
+| Ebene | Projekt | Was | Anzahl |
+|---|---|---|---|
+| Integration | `Infrastructure.Tests/Integration` (Postgres-Fixture), neue Teildateien `WishServiceTests.Delete.cs` und `WishServiceTests.DeleteRaces.cs` | AK109 bis AK112, AK114, AK115, AK134: Löschen je Zustand und Episode (samt Rückkehr und zweitem Ende, Mikrosekunden), Wettläufe, Sperre im eigenen Kanal, SET NULL, Kaskade, Freigabe des Slots samt Folgezuordnung und `adopt`, Dedupe, Zugriff unter Sperre, der echte Retention-Lauf als erster Sperrinhaber | +20 |
+| Api | `Api.Tests` | Filter-Matrix AK113 samt gleichem Login mit anderer ID, Abbildung `AccessDenied` ohne Rumpf, 204, Query-Pflicht, Rundreise mit Mikrosekunden, Routen-Inventar | +10 |
+| Vitest | `core/wishes`, `core/seven-tv`, `features/wishes` | `wishActions` (Tabelle), `isConfirmedAction`, Dienstmethode mit `HttpTestingController`, Wunschprüfung vor jedem Entfernversuch (AK133), 404 beim Löschen und beim Entfernungsbericht, Bestätigung in zwei Varianten, Hinweis mit Vorauswahl, Fokus (Regel 12: Verhalten, nicht Vorlage) | +14 |
+| Playwright | `web/e2e/wishes.e2e.spec.ts`, `web/e2e/wishes-seven-tv.e2e.spec.ts` | AK118, AK116 (Live-Ereignisse), AK133 (zwei Verwalter) | +4 |
+| Live | lokal, Probe-Kanal | AK119 | 1 Durchgang |
+
+Dazu `node scripts/coverage-local.mjs` vor dem PR. E2E nur ohne laufende Api auf `:5151`.
+
+### Files Reference K7a
+
+| Datei | Änderung |
+|---|---|
+| `src/EmotePurge.Core/Entities/AuditLogEntry.cs` | `WishDelete` |
+| `src/EmotePurge.Core/Services/IWishService.cs` | `DeleteAsync`, `WishOutcome.AccessDenied` |
+| `src/EmotePurge.Infrastructure/Services/WishService.cs` | `DeleteAsync` |
+| `src/EmotePurge.Infrastructure/Persistence/RowLocks.cs` | Wunschzeilen im eigenen Kanal sperren, wartend und mit `NOWAIT` |
+| `src/EmotePurge.Api/Endpoints/WishEndpoints.cs`, `src/EmotePurge.Api/Auth/` | Route, Zugriffsfilter nach E41 (Variante von `WishCaptureAccessFilter` ohne Erfassungsschalter), `MapResult` |
+| `web/src/app/core/wishes/wish-view.ts`, `wish.service.ts` | Aktion, Methode |
+| `web/src/app/features/wishes/channel-wishes-page.ts`, `wish-row.ts`, `wish-operation.ts`, `wish-adopt-dialog.ts` | Aktion, Bestätigung, Hinweis mit „Bestand übernehmen“, Vorauswahl im Dialog, Grund „inzwischen gelöscht“ |
+| `web/src/app/core/wishes/wish-removal-tracker.ts` | 404 `wish_not_found` auf `complete-removal` als eigener Grund |
+| `web/src/app/core/seven-tv/seven-tv-delete.service.ts`, `web/src/app/features/wishes/wish-removal-flow.ts` | Wunschprüfung vor jedem Entfernversuch (E46) |
+| `web/public/i18n/de.json`, `en.json` | Schlüssel |
+| `web/e2e/wishes.e2e.spec.ts`, `web/e2e/wishes-seven-tv.e2e.spec.ts`, `web/e2e/support/mocks.ts` | AK118, AK133; Mock: Art `delete`, Freigabe des gehaltenen Eintrags |
+| Tests unter `tests/EmotePurge.Infrastructure.Tests`, `tests/EmotePurge.Api.Tests` | siehe Testplan |
+| `docs/DECISIONS.md` | Eintrag 2026-11-21 steht schon (Spec-Commit); der Umsetzungs-PR ergänzt Abweichungen |
+| `docs/Feature-Ideen-2026-08-01.md`, `CLAUDE.md` | Statuszeile `A18` bzw. Umsetzungsstand beim Merge |
+
+### Abhängigkeiten, Auslieferung und Aufwand K7a
+
+K1, K3, K6. **Nicht** abhängig von #496 (E41 löst den Zugriff lokal). Keine Migration. Auslieferung: das
+Api-Image (enthält das Frontend) genügt; der Worker ist nicht betroffen, weil ein gelöschter Wunsch fehlt, was
+alle Läufe schon heute verkraften. Ein mitgezogenes Worker-Image schadet nicht. Den Deploy-Hinweis trotzdem
+gegen alle ausstehenden Migrationen prüfen. Kein Schalter (E40), keine Compose- oder Runbook-Änderung.
+Rollback auf das vorige Api-Image: gelöschte Wünsche kommen nur aus dem Backup zurück, sonst ändert sich nichts.
+Vor dem Deploy bestätigt der Betreiber, dass das letzte Backup wiederherstellbar ist (Restore-Probe nach
+`docs/Operations.md`), weil hartes Löschen nur so umkehrbar ist. **Umstellung offener Tabs (Plan-Runde 2, PR2-2):**
+E46 steckt im Frontend; ein vor dem Deploy geöffneter Tab führt die alte Lösch-Engine weiter aus (die Seite lädt bei
+einem neuen Stream nur Daten nach, nicht die App) und kann nach einer 429-Pause noch bis zu fünf Wiederholungen ohne
+Wunschprüfung senden. Für diese vom Betreiber geführte Instanz mit wenigen Verwaltern genügt eine Umstellungsregel statt
+eines Server-Wächters: Deploy in einer ruhigen Zeit ohne laufende Entfernung aus der Karte; danach laden die Verwalter
+die Seite neu, und in den ersten 10 Minuten nach dem Deploy wird kein behaltener Wunsch gelöscht, dessen Emote gerade
+entfernt wurde (die alte Engine wartet höchstens fünf Pausen von je bis zu 60 s). Die Regel steht in der
+PR-Beschreibung und im Deploy-Hinweis des Betreibers, nicht in `docs/Operations.md`, weil sie nur für diesen einen
+Wechsel gilt. Vom Betreiber am 2026-11-21 so angenommen, ohne technischen Wächter. **Aufwand: 2,75 Tage** (Revision 4: 1,5 Tage; Revision 5:
+2,5 Tage für E46 samt E2E mit zwei Verwaltern, die Sperre im eigenen Kanal und die schärferen Nebenläufigkeitstests;
+Revision 6: plus ein Viertel Tag für die Frischeprüfung nach der Wunschlesung und die Testschranke der Retention).
+
+**Restrisiko RR16 (Plan-Runde 1, PR1-2):** Ein Moderator, dem Twitch die Rolle entzieht, darf bis zum Ablauf seines
+Eintrags in der Liste der moderierten Kanäle (Standard 10 Minuten) weiter beendete Wünsche löschen. Begründung und
+Abhilfe für den Betreiber in E39.
+
+**Restrisiko RR17 (Plan-Runde 1, PR1-3):** Springt die Uhr zwischen zwei beendeten Episoden desselben Wunsches auf
+genau dieselbe Mikrosekunde zurück, trifft eine alte Bestätigung das spätere Ende (E44). Folge: Ein weiterhin
+beendeter Wunsch wird gelöscht; nichts Laufendes und nichts in 7TV.
+
+**Restrisiko RR18 (Plan-Runde 1, PR1-1; Plan-Runde 2, PR2-1):** Zwischen der letzten Wunschprüfung (E46) und dem
+`REMOVE` liegen höchstens 5 s plus die Mutation. Ändert ein Kollege genau in diesem Fenster den Wunsch, gewinnt 7TV; der Entfernungsbericht bucht dann nach
+E38/N3 nichts, und der Abgleich führt einen neu übernommenen Wunsch nach `removed_externally`. Dieselbe Klasse wie
+RR14.
+
+**Restrisiko RR19 (Plan-Runde 2, PR2-4):** Der Abgleich, den das Löschen eines `kept` mit Eintrag nach dem Commit
+anstößt, sperrt mehrere Wunschzeilen wartend in aufsteigender Reihenfolge; das ungeordnete Leeren der Einlöser-Daten
+durch die Retention kann mit ihm verklemmen. Wählt Postgres die Retention als Opfer, bricht ihr Tageslauf vor den
+späteren Kategorien ab; der Worker fängt den Fehler, protokolliert ihn, und der nächste Lauf holt alles nach. Fällt
+der Abgleich, holt ihn der nächste Sync nach. Die Lage besteht für jeden Abgleich nach einem Sync schon heute; K7a fügt
+nur einen Anlass hinzu. Eine geordnete Retention oder ein nachgebender Abgleich ist ein eigenes Thema (#496 H7).
+
+**Restrisiko RR15 (Prüfbefund R2-4):** Eine Kanalzeile ohne Twitch-ID, die schon Wünsche trägt, bekommt bei der
+Identitätsprüfung die ID des aktuellen Login-Inhabers allein über den Login (`BackfillIdAsync`,
+`ChannelIdentityService.cs:738-754`). Hat das Login in der Zwischenzeit den Inhaber gewechselt, könnten dessen
+Moderatoren die alten Wünsche löschen. Hingenommen: Zeilen ohne ID entstehen nur, wenn Helix beim Beitritt nicht
+antwortet, und die Identitätsprüfung bindet sie beim nächsten stündlichen Lauf; Twitch vergibt einen Login erst
+nach einer Sperrfrist neu, und die Neuvergabe müsste genau in dieses Fenster fallen. Dieselbe Grenze trägt die
+K6-Prüfung über die ID für die Belohnungsdaten schon heute. Eine Abwehr bräuchte einen Zeitstempel der Bindung
+(eine Migration) und eine Regel „Wünsche älter als die Bindung sind gesperrt“; das ist für K7a unverhältnismäßig
+und steht als Hinweis bei #496.
+
+---
+
+## K7b: Erneut auf Zeit (zurückgestellt, Betreiber 2026-11-21)
+
+**Zurückgestellt durch Y3.** Gebaut wird K7b nur, wenn sich der Umweg „Löschen, dann Bestand übernehmen“ (K7a)
+als zu umständlich erweist. K7b baut auf K7a auf: Zugriffsfilter und Regel aus E41 (der Filter deckt dann auch
+`renew`), Sperrreihenfolge E32 (Kanalzeile, dann Wunschzeile), best-effort-Ereignisse E36, die Aktion „Löschen“
+in derselben Zeile. Die Festlegungen und Akzeptanzkriterien unten sind der geprüfte Stand nach zwei Runden;
+vor dem Bau gegen den dann aktuellen Code nachprüfen. Zusätzlicher Aufwand gegenüber K7a: etwa 2 Tage
+(Dienstbefehl, Generation, Einlöser-Löschung, Compose- und Runbook-Zeile, Versionsprüfung im Entfernen, Dialog,
+Fälle).
+
+### Festlegungen K7b
+
+| # | Festlegung | Grund |
+|---|---|---|
+| E27 | **Erneut auf Zeit nur, solange der `kept`-Wunsch seinen Eintrag noch hält.** Unter Sperre geprüft: Zustand `kept`; `SlotId` gesetzt; der Slot ist übernehmbar (`WishService.AdoptableIn`: Kanal, nicht archiviert, kein unerledigter Seed); und die Freigabebedingung von `ReleaseKept` trifft nicht zu (kein `AddedAt` nach `SlotConfirmedAtUtc` und, falls bekannt, nach `SlotAddedAtUtc`; geprüft gegen die **alte** Generation, vor dem Neubinden nach E29). **Reihenfolge der Antworten:** Rumpf und Laufzeit (400) vor Zugriff (403, 409 `wish_channel_unbound`, E41) vor „Wunsch fehlt“ (404 `wish_not_found`) vor Zustand nicht `kept` (409 `wish_state_conflict`) vor Eintrag nicht mehr gehalten (409 `wish_not_in_set`) vor laufendem Wunsch desselben Emotes (409 `wish_already_running`, E31). Nach der Ablehnung `wish_not_in_set` stößt der Dienst den Abgleich an, und zwar **nach** dem Ende der Transaktion (Rollback, Sperren frei), nie innerhalb der Sperre; `RunTransitionAsync` kehrt bei einer Ablehnung heute vor seinem Abgleich-Haken zurück (`WishService.cs:1495-1499`), der Befehl braucht dafür also einen eigenen Pfad. Ein `kept`-Wunsch ohne Eintrag bietet in K7 nur „Löschen“; wer das Emote wieder auf Zeit will, trägt es neu nach (Handeintrag; `kept` zählt nicht als laufend, E13). | „Erneut auf Zeit“ bucht nur und schreibt nicht nach 7TV. Eine Frist für einen Eintrag, der nicht im Set ist, wäre eine Erinnerung an nichts, und der nächste Abgleich führte den Wunsch sofort nach `removed_externally` (`ReconcileLinked`, archivierter Slot). Der angestoßene Abgleich gibt den veralteten Link frei; innerhalb der eigenen Sperre liefe er gegen die eigene Kanalzeile. Ein `kept`-Wunsch ohne Eintrag bekommt kein „Wieder hinzufügen“ (Betreiberentscheid O1, 2026-11-21). |
+| E28 | **Start = jetzt, Ablauf = jetzt plus Laufzeit.** Laufzeit 1 bis 365 Tage (E1, `WishLimits`); ohne Angabe gilt der Kanal-Default `DefaultDurationDays`, mit dem auch der Dialog vorbelegt. **Hinweis zur Fälligkeit:** Ist das Datum des Slots nicht maßgeblich (vorläufig oder unbekannt), bleibt `StartsAtAuthoritative` falsch (E29), und K2 hält die Fälligkeit nach `WishExpiryPolicy.IsHeldBack` (`WishExpiryService.cs:147-150`) bis zu 24 Stunden nach dem Ablauf zurück, solange die Syncs frisch sind. Das gilt heute schon für „Bestand übernehmen“ mit „ab jetzt“ auf einem solchen Slot und wird für K7 hingenommen; ein vorläufiges Datum wird mit dem nächsten REST-Vollsync maßgeblich. | Mit dem alten `StartsAtUtc` (7TVs `addedAt`) wäre ein seit Monaten behaltener Eintrag sofort überfällig, derselbe Befund wie F21 bei „Bestand übernehmen“; dessen Variante „ab jetzt“ ist das Vorbild. Bewertungsfenster (E4) und Probezeit (E2) beginnen damit beim Erneuern. Die alte Laufzeit beschrieb einen anderen Aufenthalt; der Kanal-Default ist auch beim Verlängern die Größe (E12). Die Erinnerung pünktlich zum Takt auch auf undatierten Slots verlangte, die Autorität des Zeitgebers von der Autorität der Generation zu trennen (eine Spalte mehr, eine Regel mehr in K2 und im Abgleich); für den seltenen Fall eines behaltenen Eintrags ohne 7TV-Datum ist das unverhältnismäßig. |
+| E29 | **Felder beim Erneuern.** Gesetzt: `Status = active`, `StatusReason = null`, `StatusChangedAtUtc = jetzt`, `EndedAtUtc = null` (über `StampStateChange`); `DurationDays`, `StartsAtUtc`, `ExpiresAtUtc` nach E28; `ExtensionCount = 0`; `Permanent = false`; `ApprovedAtUtc = jetzt`; `LinkOrigin = adopted`; `Alias` = Name des Slots; `DecisionVersion` plus 1 und Einreihung leer (`CountDecision`, E25). **Generation neu binden** wie `HoldGeneration` im Abgleich (`WishReconcileService.cs:715-720`): Trägt der Slot ein `AddedAt`, dann `SlotAddedAtUtc` = dieses `AddedAt`, `SlotConfirmedAtUtc = jetzt`, `StartsAtAuthoritative` = `AddedAtFromRest` des Slots. Trägt er keines, bleiben `SlotAddedAtUtc` und `SlotConfirmedAtUtc` unverändert und `StartsAtAuthoritative` ist falsch. Unverändert: `SlotId`, `FirstActivatedAtUtc`, `CreatedAtUtc`, `Source`, `RewardId`, `RequestText`, `RequestedName`, `MatchKind`, `IrcMessageId` und Einlöser-Daten (vorbehaltlich E43), `MergedIntoWishId` und die Bot-Felder `BotWriteAtUtc`, `BotAttemptCount`, `BotNextAttemptAtUtc`. | Neubinden (Prüfbefund S3): Während `kept` kann ein REST-Datum das vorläufige Datum des Slots korrigieren, ohne dass `ReleaseKept` freigibt (das korrigierte Datum liegt nicht nach der Generation), und der Wunsch behält die alte Generation. Erneuern mit dem Flag des Slots, aber der alten Generation, ließe den ersten Abgleich in `ReconcileLinked` (`:412-443`) einen Generationswechsel sehen und den Wunsch nach `removed_externally` führen. Mit gebundener Generation sieht er `addedAt == generation`. `SlotConfirmedAtUtc = jetzt` nur bei datiertem Slot: Bei unbekannter Generation hielte der Abgleich einen Start gleich dem Bestätigungsstempel für einen Platzhalter aus dem Slot und zöge ihn auf das alte Datum (`ConfirmDate`, `startFromSlot`); bei bekannter Generation vergleicht er den Start mit der Generation, die nie „jetzt“ ist. `ApprovedAtUtc`: Der Klick ist die Freigabe dieses Aufenthalts wie bei `retry` und `re-add`; zugleich nimmt er den Wunsch aus der Datumskorrektur einer Chat-Zuordnung (`ReleasedByDateCorrection` verlangt `ApprovedAtUtc` null). `LinkOrigin = adopted`: Der Verwalter bestätigt den Eintrag von Hand (6.3); „Zuordnung lösen“ entfällt damit. `Alias`: Ein `kept`-Wunsch wird beim Umbenennen nicht nachgezogen. Die Bot-Felder sind Historie, K4 regelt sie. |
+| E30 | **Kein Bot-Eigentum.** `BotOwned` bleibt falsch, `BotOwnedAddedAtUtc` null. Bei Ablauf ergibt das im manuellen Modus `presented` (`expired`), im Bot-Modus `presented` (`not_bot_owned`), Zeilen 1 und 2 der Tabelle in K2; nie eine Einreihung. | Eigentum entsteht nur im Bestätigungsweg des Bots (Abschnitt 8) und ist mit „Behalten“ geendet. Der Bot entfernt einen erneuerten Wunsch also nie, und K2 schreibt ohnehin nie nach 7TV. Gewollt ist die Erinnerung bei Ablauf. |
+| E31 | **Läuft für dieselbe 7TV-Emote-ID schon ein anderer Wunsch** (`approved`, `unconfirmed`, `active`, `presented`; etwa ein zweiter Alias per „Bestand übernehmen“), antwortet die Api 409 `wish_already_running` mit `wishId` (bestehender Code). Geprüft unter Sperre über `FindRunningWishIdAsync`; der Index `IX_Wishes_ChannelId_SevenTvEmoteId_Running` bleibt der Gürtel (`SaveOrConflictAsync`). Offene Wünsche (`pending`) blockieren nicht. Nach dem Commit läuft der Abgleich, damit ihr Hinweis `already_running` sofort stimmt; ein danach freigegebener offener Wunsch desselben Emotes wird zur Verlängerung des erneuerten (E13, `merged`). | E13 gilt unverändert. Die Erfassung (K6) berührt K7 nicht: Sie legt nur offene Wünsche an, und der Abgleich ordnet ihnen den gehaltenen Eintrag weiter nicht zu. |
+| E33 | **Keine Grenze je Kanal.** „Erneut auf Zeit“ zählt nirgends mit. | Es gibt keine Obergrenze für laufende Wünsche (`MaxPendingPerChannel` und `MaxPendingPerRequester` zählen nur `pending`), und der Eintrag liegt schon im Set. |
+| E42 | **Entscheidungsversion bis an das Senden (Prüfbefunde S2, R2-1).** `WishDto` bekommt `decisionVersion` (der Wert von `Wish.DecisionVersion`). (a) **Entfernen aus der Karte (K3):** Seit Revision 5 liefert K7a die frische Wunschprüfung vor jedem Versuch schon (E46); K7b ergänzt nur `decisionVersion` im DTO und im Vergleich. Die vollständige Wunschprüfung (`wishDeviation`, `web/src/app/core/wishes/wish-run-start.ts:218-243`: Zustand, Slot, Generation, Autorität und **neu `decisionVersion`** gegen den beim Klick eingefrorenen Stand) läuft **vor jedem tatsächlichen Senden** an 7TV, auch vor jedem Wiederholungsversuch nach einer 429-Pause: Der Bindungs-Haken der Zeile (`wishBinding.verifySetAndToken`, `wish-removal-flow.ts:179-197`), den die Lösch-Engine vor jedem Versuch aufruft, liest dafür zusätzlich den Wunsch frisch (`GET …/wishes/{id}`) und überspringt die Zeile bei jeder Abweichung mit Grund `wishChanged`; ist die Lesung nicht möglich, wird übersprungen, nicht gesendet. (b) **Erneut auf Zeit** braucht selbst keine Version: Es gelingt nur aus `kept`, und ein doppeltes Erneuern zerstört nichts. (c) **Bereits gesendete Entfernung gegen Erneuern:** Hat ein Verwalter die Entfernung schon an 7TV gesendet, gewinnt 7TV. `complete-removal` (`WishService.cs:640-674`) bucht weiter ohne Versionsvergleich nach Slot und Generation; trifft der Bericht einen inzwischen erneuerten Wunsch auf demselben Slot und derselben Generation, wird dieser `removed`. | Wunsch-ID, Slot und Generation bleiben über „Behalten“ und „Erneut auf Zeit“ gleich, und die Startprüfung vergleicht heute nur diese; eine eingefrorene Entfernung liefe nach Behalten und Erneuern eines Kollegen durch. Nur beim Start zu prüfen reicht nicht: Die Lösch-Engine wartet nach einem 429 bis zu 60 Sekunden und versucht dann erneut (`seven-tv-run-engine.ts:574-589`, `:796-799`). Einen Versionsvergleich in `complete-removal` gibt es bewusst nicht: Der Bericht kommt erst nach dem Entfernen in 7TV, eine Ablehnung ließe den Eintrag fehlen und den Wunsch laufen. Zwischen der letzten Prüfung und der Mutation bleibt ein Fenster der Klasse RR14. Dieselbe Lücke besteht unabhängig von K7b für ein zwischenzeitliches „Verlängern“; sie steht als Hinweis bei #496 und wird, falls K7b nie kommt, dort geschlossen. |
+| E43 | **Erneuern verschiebt keine fällige Löschung von Einlöser-Daten (Prüfbefunde S4, R2-2).** Ist beim Erneuern `EndedAtUtc` älter als `RetentionPolicy.WishRequester` (30 Tage) und gilt `Retention:Enforce = true`, leert dasselbe Update `RequesterTwitchUserId`, `RequesterLogin`, `RequestText`, `RequestedName` und `IrcMessageId`, genau die Felder der Retention (`DataRetentionService.cs:502-533`). **Damit die Api den Schalter sieht,** bekommt der Dienst `api` in `docker-compose.yml` und `docker-compose.prod.yml` dieselbe Zeile `Retention__Enforce=${RETENTION_ENFORCE:-false}`, die heute nur der `worker` trägt (`docker-compose.prod.yml:199`, `docker-compose.yml:196`); `RetentionOptions` bindet die Api schon (`ServiceCollectionExtensions.cs:322-323`). `docs/Operations.md` (Retention, „Recommended procedure“) sagt künftig: nach einer Änderung von `RETENTION_ENFORCE` beide Container neu erstellen. | Die Retention wählt Kandidaten nach `EndedAtUtc` und prüft im Update erneut; ein Erneuern zwischen Frist und Tageslauf leerte `EndedAtUtc` und nähme die Daten aus der Regel, bis eine neue Frist abläuft. Im Befehl gelöscht, ist die Zusage „30 Tage nach Ende“ unabhängig von der Reihenfolge. `Enforce` gilt, weil ein Betreiber im Trockenlauf auch von der Retention keine Löschung bekommt; ein vom Schalter unabhängiges Leeren beim Erneuern bräche diese Zusage für genau die Betreiber, die den Trockenlauf bewusst gewählt haben. Die Variable an beide Container zu reichen ist eine Zeile je Compose-Datei und behält eine einzige Quelle. Dieselbe Lücke hat heute „Wieder hinzufügen“ aus `removed`; das ist nicht Teil von K7 (Hinweis für #496). |
+| E45 | **Audit, Ereignisse und Zähler beim Erneuern:** neue Aktion `wish.renew`, Details `wishId`, `sevenTvEmoteId`, `durationDays` (neue Laufzeit), `slotId`, dazu `requesterCleared: true`, wenn E43 griff; kein `previousExpiresAtUtc`. Ereignisse nach E36. Das Erneuern ändert den Zähler nicht; ein erneuerter Wunsch erscheint in `my-wishes`, sobald er in Probezeit ist (bei Laufzeit bis zum Vorlauf sofort, E2), und im Zähler erst bei Fälligkeit. Zwei gleichzeitige Erneuern: einer 200, der andere 409 `wish_state_conflict`. | Wie E36 und E37 in K7a, für die zweite Aktion. |
+
+### Lebenszyklus (Ergänzung zu Abschnitt 5, K7b)
+
+Statustabelle: `kept` wird ein Endzustand „mit Rückweg“ wie `removed_externally`, solange der Eintrag gehalten
+wird. Neue Zeile der Übergangstabelle:
+
+| Von | Nach | Auslöser | Bedingung und Wirkung |
+|---|---|---|---|
+| `kept` (mit `SlotId`) | `active` | Erneut auf Zeit (`renew`, K7b) | Eintrag noch gehalten (E27), kein anderer laufender Wunsch des Emotes (E31); Start jetzt, neue Laufzeit, Generation neu gebunden, kein Bot-Eigentum, `LinkOrigin = adopted` (E28 bis E30) |
+
+In `WishTransitions`: Aktion `WishAction.Renew = "renew"`, eine Zeile `kept` → `active` mit der Bedingung
+`HasSlot`. Ob der Slot noch lebt (E27), prüft der Dienst, nicht die Tabelle. Zur Retention (6.5): Erneuern leert
+`EndedAtUtc`; damit stehen die Uhren von `EndedWish` und `WishRequester` still, und für den laufenden Wunsch gilt
+wieder E14 (a). War die 30-Tage-Frist schon abgelaufen, leert der Befehl die Einlöser-Daten selbst (E43).
+
+### Implementation Details K7b
+
+**Core.** `WishAction.Renew`, Zeile in `WishTransitions.BuildRows`, `AuditActions.WishRenew = "wish.renew"`,
+`IWishService.RenewAsync` (Kanal, Wunsch-ID, Rumpf mit optionaler `DurationDays`, Akteur, Zugriff),
+`WishOutcome.NotInSet`, `WishDto.DecisionVersion` (E42).
+
+**Infrastructure** (`WishService.RenewAsync`). Laufzeit prüfen; Kanalzeile, dann Wunschzeile sperren; Zugriff
+gegen die gesperrte Zeile (E41); Übergang fragen; Slot lesen und E27 prüfen (die Freigabebedingung von
+`ReleaseKept` an genau einer Stelle gemeinsam nutzen, nicht nachbauen; dafür in `WishReconcileService` nur
+herauslösen); E31 prüfen; Felder nach E29 und gegebenenfalls E43 setzen; speichern, Audit, Commit,
+`wish.changed`, Abgleich. Die Ablehnung `NotInSet` stößt den Abgleich nach dem Rollback an (E27).
+
+**Api:** `POST …/wishes/{id:long}/renew`, `Bookkeeping`, Rumpf `{ "durationDays": 30 }` (Feld optional,
+`null` = Kanal-Default; fehlender Rumpf oder JSON `null` → 400 `invalid_request_body`, wie `re-add`); Erfolg 200
+`WishDto`; Fehler 400 `wish_duration_out_of_range`; 403; 404 `wish_not_found`, `channel_not_found`; 409
+`wish_channel_unbound`, `wish_state_conflict`, `wish_not_in_set`, `wish_already_running` (mit `wishId`). Hinter
+dem Zugriffsfilter aus K7a, mit Erfassungszugriff für die Antwort (Einlöser-Daten nur bei bestätigtem Zugriff).
+
+**Neuer Fehlercode** (Regel 7, alle Glieder im selben PR): `wish_not_in_set` (409, „der behaltene Wunsch hält
+keinen Eintrag im Set mehr“): `WishOutcome.NotInSet` und `MapResult`, `ApiErrorCodes.cs`,
+`KNOWN_API_ERROR_CODES`, `errors.api.wish_not_in_set` in `de.json` und `en.json`.
+
+**Konfiguration (E43):** `Retention__Enforce=${RETENTION_ENFORCE:-false}` auch am Dienst `api` in
+`docker-compose.yml` und `docker-compose.prod.yml`, Kommentar in `.env.example`, `docs/Operations.md` „beide
+Container neu erstellen“, Prod-Stack-Definition in Portainer vor dem Image ergänzen (`RETENTION_ENFORCE` ist
+dort seit 2026-09-24 `true`); DECISIONS-Eintrag im Umsetzungs-PR (Regel 3).
+
+**Oberfläche:** `wishActions` `kept` → `renew` (nur mit `slotId`), dann `delete`. Dialog „Erneut auf Zeit“ nach
+dem Muster von `wish-readd-dialog.ts`: Emote und Alias, Laufzeit vorbelegt mit dem Kanal-Default, Grenzen 1 bis
+365 vor dem Senden geprüft (Knopf gesperrt mit sichtbarem Grund wie AK33), Vorschau des Ablaufdatums, Hinweis,
+dass das Emote im Set bleibt, in 7TV nichts geändert wird und Emote Purge bei Ablauf erinnert. 409
+`wish_already_running` → Meldung mit „Zum Wunsch“; 409 `wish_not_in_set` → Meldung, Liste neu laden. Nach Erfolg
+springt die Seite zur Zeile im Bereich „Laufend“. `FrozenWish` trägt `decisionVersion`, der Bindungs-Haken der
+Entfernungszeile prüft sie vor jedem Versuch (E42). Der Sperrtext im Übernahme-Dialog nennt dann auch „Erneut auf
+Zeit“. i18n: `wishes.actions.renew`, `wishes.renew.*` (Titel, Einleitung, Laufzeit, Ablaufvorschau, Hinweis,
+Senden, `running`, `notInSet`), `errors.api.wish_not_in_set`, `audit.actions.wishRenew`.
+
+### Akzeptanzkriterien K7b
+120. **AK120** `WishTransitions`: `kept` mit `renew` und Slot → `active`; ohne Slot → nicht erlaubt; jeder
+     andere Zustand mit `renew` → nicht erlaubt. Die Matrix aus AK2 ist um die Aktion erweitert.
+121. **AK121** Erneuern, datierter maßgeblicher Slot, der während `kept` umbenannt wurde, `durationDays = 10` →
+     200; `status = active`, `startsAtUtc` = jetzt, `expiresAtUtc` = jetzt plus 10 Tage, `endedAtUtc` null,
+     `extensionCount` 0, `permanent` falsch, `botOwned` falsch, `linkOrigin = adopted`, `approvedAtUtc` = jetzt,
+     `slotId` unverändert, `slotAddedAtUtc` = `AddedAt` des Slots, `startsAtAuthoritative` wahr, `alias` = neuer
+     Name, `decisionVersion` plus 1; ein Audit-Eintrag `wish.renew`; danach ein echter Abgleichslauf → der
+     Wunsch bleibt `active` mit unverändertem Start und Ablauf.
+122. **AK122** Ohne `durationDays` gilt der Kanal-Default; 0 und 366 → 400 `wish_duration_out_of_range`; fehlender
+     Rumpf → 400 `invalid_request_body`.
+123. **AK123** Eintrag weg: Slot archiviert, Abgleich noch nicht gelaufen → 409 `wish_not_in_set`, nichts
+     geschrieben, kein Audit-Eintrag, und nach dem angestoßenen Abgleich ist die `SlotId` des Wunsches null.
+     Ebenso 409 `wish_not_in_set` für `kept` ohne `SlotId` und für einen Slot mit `AddedAt` nach
+     `SlotConfirmedAtUtc` und nach `SlotAddedAtUtc`. Ein Wunsch in `active`, `removed` oder `closed` → 409
+     `wish_state_conflict` (Vorrang vor `wish_not_in_set`); `durationDays = 0` auf einen fremden Zustand → 400.
+124. **AK124** Konflikt: Für dasselbe Emote läuft ein anderer Wunsch (zweiter Alias, übernommen) → 409
+     `wish_already_running` mit dessen ID. Ein offener Wunsch desselben Emotes blockiert nicht, trägt danach
+     `already_running`, und seine Freigabe verlängert den erneuerten Wunsch und endet als `merged`.
+125. **AK125** Zwei gleichzeitige `renew` → einmal 200, einmal 409, ein Audit-Eintrag. `renew` und `DELETE`
+     gleichzeitig → genau einer gelingt; der andere antwortet 409 bzw. 404.
+126. **AK126** Neubinden der Generation (Prüfbefund S3): `kept` mit vorläufiger Generation G, während `kept`
+     korrigiert REST das Datum des Slots auf G' < G (maßgeblich) → Erneuern gelingt, `slotAddedAtUtc` = G',
+     und der nächste echte Abgleich lässt den Wunsch `active` (nicht `removed_externally`). Variante mit
+     vorläufigem Slot: `startsAtAuthoritative` falsch, die spätere Bestätigung verschiebt den Start nicht.
+     Variante undatierter Slot: Generation und Bestätigungsstempel unverändert, Start bleibt nach dem nächsten
+     Abgleich „jetzt“ des Erneuerns.
+127. **AK127** Ablauf eines erneuerten Wunsches (Ablauf im Test in die Vergangenheit gelegt): maßgeblicher Slot,
+     manueller Modus → `presented` (`expired`) im nächsten Lauf; Bot-Modus → `presented` (`not_bot_owned`);
+     nie eine Einreihung. Undatierter Slot bei frischem Sync → zurückgehalten, solange der Ablauf weniger als
+     24 h zurückliegt, danach `presented` (E28). Ein erneuerter Wunsch aus der Chat-Erfassung lässt sich nicht
+     lösen (409), und die Datumskorrektur gibt ihn nicht frei.
+128. **AK128** Entscheidungsversion (E42 a): `WishDto` trägt `decisionVersion`. `wishDeviation` mit gleicher
+     Wunsch-ID, gleichem Slot, gleicher Generation, aber höherer Version → `wishChanged` (Fälle „behalten und
+     erneuert“ und „verlängert“ zwischen Klick und Senden). **Gedrosselter Wiederholungsversuch** (Prüfbefund R2-1,
+     Vitest mit gefälschten Timern): Der erste Versuch endet mit 429, während der Pause committen Behalten und
+     Erneuern (die frische Lesung liefert die höhere Version) → vor dem zweiten Versuch wird die Zeile mit
+     `wishChanged` übersprungen, keine Mutation an 7TV, kein `complete-removal`; eine fehlgeschlagene Lesung →
+     ebenfalls übersprungen. `complete-removal` auf einen inzwischen erneuerten Wunsch mit gleichem Slot und
+     gleicher Generation (Entfernen schon geschehen) → `removed`.
+129. **AK129** Einlöser-Daten (E43): `kept` mit `EndedAtUtc` vor 31 Tagen und Einlöser-Daten, `Retention:Enforce`
+     an → nach dem Erneuern sind die fünf Felder leer, `wish.renew` trägt `requesterCleared`; vor 29 Tagen →
+     unverändert; `Enforce` aus → unverändert. Beide Reihenfolgen gegen den Retention-Lauf (erst Retention, dann
+     Erneuern; erst Erneuern, dann Retention) enden mit leeren Feldern. Beide Compose-Dateien reichen
+     `Retention__Enforce` an `api` und `worker`; im lokalen Stack zeigt `printenv` im `api`-Container den Wert, und
+     ein überfälliger Wunsch, über die laufende Api erneuert, hat die Felder leer, bevor der Worker läuft.
+130. **AK130** Filter-Matrix von `renew` wie AK113 (gleicher Login mit anderer ID → 403, Zeile ohne ID → 409
+     `wish_channel_unbound`); Abbildung `NotInSet` → 409 `wish_not_in_set`; `api-error-locales.spec.ts` grün,
+     `KNOWN_API_ERROR_CODES` enthält `wish_not_in_set`; `audit.actions.wishRenew` in beiden Sprachen. Kein
+     Audit-Eintrag `wish.renew` enthält Alias, Emote-Namen, Login oder Einlösetext.
+131. **AK131** Oberfläche und E2E: `renew` nur bei `kept` mit Slot, vor `delete`; der Dialog belegt die Laufzeit
+     mit dem Kanal-Default vor und sperrt außerhalb 1 bis 365 mit Grund; behaltener Wunsch im Bereich „Beendet“ →
+     „Erneut auf Zeit“ → Zeile steht in „Laufend“; dasselbe in mobiler Breite.
+132. **AK132** Live-Verifikation (Regel 16): behalten, dort „Erneut auf Zeit“ mit 1 Tag → an der Datenbank
+     `active`, Start, Ablauf und Generation wie AK121, Audit-Eintrag da; nach dem nächsten Sync weiter `active`;
+     `ExpiresAtUtc` lokal in die Vergangenheit legen → nach höchstens einem Takt `presented` (`expired`).
+     Entfernen aus der Karte mit zwischenzeitlichem Verlängern in einem zweiten Tab → Abbruch ohne 7TV-Anfrage.
+     `printenv` im `api`-Container zeigt `Retention__Enforce`. Das Set des Testkontos danach wiederherstellen.
+
+### Testplan K7b
+
+| Ebene | Projekt | Was | Anzahl |
+|---|---|---|---|
+| Unit | `Infrastructure.Tests/Unit` | `WishTransitions` mit `renew` (AK120) | +3 |
+| Integration | `Infrastructure.Tests/Integration`, Teildatei `WishServiceTests.Renew.cs` | AK121 bis AK127, AK129: Felder, Generation mit dem echten Abgleich, Ablauf mit `WishExpiryService`, Konflikte, Vorrang der Antworten, Wettläufe, Einlöser-Daten in beiden Reihenfolgen | +16 |
+| Api | `Api.Tests` | AK130 | +5 |
+| Vitest | `core/wishes`, `features/wishes` | `wishActions` mit `renew`, `wishDeviation` mit Version, Bindungs-Haken mit frischer Lesung vor jedem Versuch samt gedrosseltem Wiederholungsversuch (AK128), Dialog | +9 |
+| Playwright | `web/e2e/wishes.e2e.spec.ts` | AK131 | +2 |
+| Live | lokal, Probe-Kanal | AK132 | 1 Durchgang |
+
+---
+
+## Prüfbefunde K7 (adversariale Prüfung durch Codex Sol, 2026-11-21)
+
+Jeder Befund ist an den zitierten Codestellen nachgeprüft. Spalte „Teil“: wo die Folge seit der Aufteilung (Y3)
+steht.
+
+| # | Befund | Urteil | Teil | Folge |
+|---|---|---|---|---|
+| S1 (P1) | Der Verwalter-Filter prüft Moderatoren über den Login, der Dienst arbeitet auf der gespeicherten Zeile; nach Neuvergabe eines Logins könnte ein Moderator des neuen Inhabers die Wünsche des alten Kanals hart löschen | angenommen, bestätigt (`ModeratorCheckService.cs:34`, `WishCaptureEndpointsTests.cs:605-644`) | K7a (K7b nutzt mit) | E41, AK113, AK114; lokal gelöst, unabhängig von #496 Punkt 2 |
+| S2 (P1) | Eine alte Entfernungsbestätigung kann einen frisch erneuerten Eintrag aus 7TV entfernen | angenommen, eingegrenzt | K7b; Fall „Verlängern“ als #496-Hinweis | E42, AK128. K7a braucht es nicht: der Umweg erzeugt eine neue Wunsch-ID, an der die Startprüfung scheitert |
+| S3 (P2) | Der erste Abgleich kann ein Erneuern zurücknehmen | angenommen, bestätigt (`WishReconcileService.cs:412-443`) | K7b | E29 (Generation neu binden), AK121, AK126 |
+| S4 (P2) | Erneuern kann die fällige Löschung von Einlöser-Daten verschieben | angenommen | K7b; „Wieder hinzufügen“ als #496-Hinweis | E43, AK129 |
+| S5 (P2) | `ON DELETE SET NULL` sperrt Kinder; mögliche Verklemmung mit der Retention | angenommen, in Runde 2 anders gelöst | K7a | E32 (Kinder ohne Warten), AK112 |
+| S6 (P2) | Erneuern auf undatiertem oder vorläufigem Slot wird bis zu 24 h zurückgehalten | angenommen, eingegrenzt | K7b | E28, AK127 |
+| S7 (P3) | Ein gelöschter erfasster Wunsch kann nach Ablauf der Quittung zurückkehren | eingegrenzt | K7a | E35, AK110: Zusage binnen der Quittungsfrist; danach keine Quelle (nur Live-Warteschlange ohne Persistenz) |
+| S8 (P3) | Freigeben eines behaltenen Slots garantiert weder `adopt` 201 noch einen stabilen Zähler | angenommen | K7a | E35, E37, AK110 |
+| S9 (P3) | „Genau ein `wish.changed`“ ist nicht erreichbar | angenommen | K7a (K7b nutzt mit) | E36, AK116 |
+| N1 | Vorrang der Fehler und Abgleich nach Ablehnung erst nach Freigabe der Sperren | angenommen | K7b | E27, AK123 |
+| N2 | Regel-7-Kette vollständig im selben PR | angenommen | K7b (K7a hat keinen neuen Code) | AK130; K7a: AK117 |
+| N3 | Fall „Löschen gegen Entfernungsbericht“ | angenommen | K7a | Absatz „Löschen gegen Entfernen aus der Karte“, AK111, AK116 |
+| R2-1 (P1) | Ein gedrosselter Wiederholungsversuch kann einen erneuerten Eintrag entfernen | angenommen, bestätigt (`wish-removal-flow.ts:179-197`, `seven-tv-run-engine.ts:574-589`, `:796-799`) | K7b; Fall „Verlängern“ als #496-Hinweis | E42 a, AK128 |
+| R2-2 (P1) | `Retention__Enforce` erreicht nur den Worker | angenommen, bestätigt (`docker-compose.prod.yml:199`, `docker-compose.yml:196`) | K7b | E43 (Variable auch an `api`, Runbook), AK129, AK132; K7a ändert keine Konfiguration |
+| R2-3 (P2) | Löschbestätigung aus einer früheren beendeten Episode | angenommen, bestätigt (`WishReconcileService.cs:658-698`) | K7a | E44 (`?endedAtUtc=`), AK109 |
+| R2-4 (P2) | Nur über den Login nachgetragene Twitch-ID hebelt E41 aus | eingegrenzt | K7a | RR15; Abwehr (Bindungszeitstempel, Migration) als #496-Hinweis |
+| R2-5 (P3) | Verklemmung kann auch das Leeren der Einlöser-Daten abbrechen | angenommen, anders gelöst | K7a | E32 (`NOWAIT`), AK112; kein Eingriff in `DataRetentionService` |
+
+**Plan-Runde 1** (Sol adversarial über Plan #500, Commit `62e81704`, 2026-11-21; Kürzel PR1-*n*). Jeder Befund am
+zitierten Code nachgeprüft.
+
+| # | Befund | Urteil | Teil | Folge |
+|---|---|---|---|---|
+| PR1-1 (P1) | Eine Entfernung, die in einer 429-Pause steht, übersteht Behalten → Löschen → Übernehmen eines Kollegen: das Tor vor jedem Versuch prüft nur Token, Set und Generation, `adopt` behält die Generation | angenommen, bestätigt (`seven-tv-delete.service.ts:935-1001`, `seven-tv-run-engine.ts:574-589`, `wish-run-start.ts:218-243` nur beim Start) | K7a | E46 (frische Wunschprüfung vor jedem Versuch, ohne `decisionVersion`), AK133 samt E2E mit zwei Verwaltern; N3-Absatz korrigiert; schließt nebenbei „Behalten während der Pause“; #496 H1 eingegrenzt, der Rest als #505; RR18 |
+| PR1-2 (P1) | Zwischengespeicherte Moderatorrechte (10 Minuten) erlauben nach dem Entzug noch ein hartes Löschen | bestätigt, **eingegrenzt** | K7a | E39 „Grenze“, RR16: dieselbe Liste berechtigt jedes andere harte Löschen eines Verwalters; nur beendete Wünsche, ohne 7TV-Wirkung, Audit nennt den Akteur, Admin kann den Eintrag sofort leeren; frische Helix-Abfrage samt fail-closed (neuer Code) für K7a unverhältnismäßig; allgemein als #496 H6; vom Betreiber am 2026-11-21 hingenommen |
+| PR1-3 (P2) | `EndedAtUtc` als Episodenmarke kann kollidieren | geprüft, **eingegrenzt** | K7a | E44 „Grenze“, RR17: am Code verwendet kein neues Ende einen Wert einer früheren Episode wieder (`WishReconcileService.cs:366-369`, `HoldGeneration` `:715-720`); offen nur ein Uhrsprung auf dieselbe Mikrosekunde, Folge begrenzt; ein Episodenzähler bräuchte Migration und Worker-Schreibstellen. Test für den Weg „altes `ArchivedAt` nach Rückkehr“ im Plan |
+| PR1-4 (P2) | Die Sperre der Wunschzeile wählt global nach ID und kann einen fremden Kanal aufhalten | angenommen, bestätigt (`RowLocks.cs:134-146`) | K7a | E32: Sperre nur im eigenen Kanal; AK134. Dieselbe Eigenschaft der bestehenden Befehle (`RunTransitionAsync`) als #496 H5 |
+| PR1-5 (P2) | Der Plan-Schnitt ließe T1 an seinem Gate scheitern (Abbildungstheorie über jedes `WishOutcome`, Routen-Inventar 26) | angenommen, bestätigt (`WishEndpointsTests.cs:415-422`, `:781-792`) | K7a (Plan) | AK113 präzisiert; im Plan landen `AccessDenied`, sein `MapResult`-Fall und der Test ohne Rumpf in einem Task |
+| PR1-6 (P2) | Die Bestätigung verspricht bei `kept` ohne Eintrag eine Neuverknüpfung | angenommen, bestätigt (`ReleaseKept` leert `SlotId` und behält `kept`) | K7a | Oberfläche: Text nur bei `kept` mit `slotId`, bedingt formuliert; AK116 |
+| PR1-7 (P3) | Der E2E-Mock beweist die Freigabe des Eintrags nicht | angenommen (`mocks.ts`: getrennte `slots` mit Halter) | K7a | AK118: gehalten säen, gesperrt prüfen, Halter beim `DELETE` leeren, neue ID prüfen |
+| PR1-8 (P3) | Das Live-Gate kann das falsche Api-Image prüfen | angenommen (`docker-compose.yml:43-46` baut aus dem eigenen Checkout) | K7a | AK119: Kandidat bauen und taggen, ohne Neubau starten, Image-IDs von Api und Worker im Protokoll |
+| Nächste Schritte | Rundreise mit Mikrosekunden, echte Retention als erster Sperrinhaber, Live-Ereignis von fremder Seite, Coverage-Schwerpunkte, Basis aktuelles `main` | angenommen | K7a | AK109, AK112, AK116; Plan Abschnitt 6; Branch auf `origin/main` (`dbc24973`) neu aufgesetzt |
+
+**Plan-Runde 2** (Sol adversarial über Plan #500 Revision 1, 2026-11-21; Kürzel PR2-*n*). Jeder Befund am zitierten
+Code nachgeprüft; Branch auf `origin/main` @ `ac7982eb` neu aufgesetzt.
+
+| # | Befund | Urteil | Teil | Folge |
+|---|---|---|---|---|
+| PR2-1 (P1) | E46 prüfte das Alter der 7TV-Beobachtung vor der Wunschlesung; eine langsame, unveränderte Wunschantwort (bis 20 s) ließe `REMOVE` auf einer über 5 s alten Beobachtung los | angenommen, bestätigt (`seven-tv-delete.service.ts:140-144`, `:989-1001`; `readWish` mit `WISH_START_READ_TIMEOUT_MS` 20 s) | K7a | E46: Altersprüfung über beide Beobachtungen nach der Wunschlesung, eine Neulesung der Folge, sonst `tooSlow`; AK133 |
+| PR2-2 (P2) | Vor dem Deploy geöffnete Tabs führen die alte Engine ohne E46 weiter | angenommen, bestätigt (`channel-wishes-page.ts:836-854` lädt nur Daten nach; kein Versionsabgleich im Frontend) | K7a | **Umstellungsregel** in der Auslieferung statt Server-Wächter: Deploy ohne laufende Entfernung, Neuladen, 10 Minuten kein Löschen eines gerade entfernten Emotes; für eine Betreiber-Instanz mit wenigen Verwaltern verhältnismäßig |
+| PR2-3 (P2) | AK112 war über die ID-Reihenfolge nicht garantiert und lief in der geteilten Datenbank | angenommen, bestätigt (`DataRetentionService.cs:468-487`, `:508-533`) | K7a | AK112: eigene Datenbank der Retention-Tests, Testschranke aus `AFTER`-Zeilen-Trigger und Advisory-Sperre, Pflicht der späteren Kategorien |
+| PR2-4 (P2) | Der nach dem Löschen angestoßene Abgleich kann mit dem Leeren der Einlöser-Daten verklemmen | bestätigt (`WishReconcileService.cs:157-166`), **eingegrenzt** | K7a | E32/E35: Zusage auf die Transaktion des Löschens begrenzt; RR19; besteht für jeden Abgleich schon heute (#496 H7) |
+| PR2-5 (P3) | AK133 verlangte den Grund an der gelöschten Zeile | angenommen | K7a | AK133: alter Wunsch aus Detail und Listen, Grund im Dock, kein weiteres `REMOVE`/`complete-removal` |
+| PR2-6 (P3) | Commits vor dem Live-Gate widersprechen Regel 16 | angenommen | K7a (Plan) | AK119 und Plan: Commits je Task auf dem ungepushten Feature-Branch, Live-Gate vor Push und PR, geprüfter `HEAD` festgehalten (Lesart wie bei K6, Betreiber 2026-11-21) |
+| PR2-7 (P3) | Herkunft des Worker-Images unbelegt | angenommen | K7a | AK119: beide Images aus genannten Ständen gebaut, IDs vor L1 verglichen |
+| PR2-8 (P3) | T5 fehlte die Erweiterung von `SkipReasonKey` | angenommen, bestätigt (`seven-tv-delete.service.ts:1687`, `seven-tv-run-engine.ts:145-160`) | K7a (Plan) | Plan T5; die Texte `wishes.start.wishChanged`/`wishUnverified` gibt es schon |
+
+## Hinweise für #496 (unabhängig von K7, nicht Teil von K7a)
+
+| # | Lücke im Bestand | Stelle | Möglicher Weg |
+|---|---|---|---|
+| H1 | Eine Entfernung aus der Karte bricht nicht ab, wenn zwischen Klick und Senden ein Kollege den Wunsch **verlängert** (gleiche ID, gleicher Slot, gleiche Generation), auch nicht im Wiederholungsversuch nach einer 429-Pause von bis zu 60 s | `wish-run-start.ts:218-243`, `wish-removal-flow.ts:179-197`, `seven-tv-run-engine.ts:574-589` | **Eingegrenzt durch K7a (E46):** die frische Prüfung vor jedem Versuch kommt mit K7a; offen bleibt nur `decisionVersion` im DTO und im Vergleich (E42 a aus K7b), ohne K7b baubar. Eigenes Issue #505 (Betreiber 2026-11-21) |
+| H5 | Die bestehenden Wunsch-Befehle sperren die Wunschzeile global nach ID, bevor sie den Kanal prüfen; ein Verwalter eines Kanals kann eine Zeile eines fremden Kanals kurz sperren | `RowLocks.cs:134-146`, `WishService.RunTransitionAsync` | Sperre mit `ChannelId` wie in K7a (E32) |
+| H6 | Harte Verwalter-Aktionen (Abstimmung, Tag, importierte Backfill-Daten, K7a) vertrauen der zwischengespeicherten Liste der moderierten Kanäle (bis 10 Minuten nach einem Rollenentzug) | `ModeratedChannelsProvider.cs:33-51` | gemeinsame frische Prüfung für harte Aktionen mit fail-closed, falls gewünscht (RR16) |
+| H7 | Jeder Abgleich sperrt mehrere Wunschzeilen wartend und aufsteigend, die Retention leert Einlöser-Daten ungeordnet; beide können verklemmen, und ein Opfer-Retention-Lauf bricht vor den späteren Kategorien ab (RR19) | `WishReconcileService.cs:157-166`, `DataRetentionService.cs:508-533` | Retention-Updates in ID-Reihenfolge sperren, oder der Abgleich gibt bei Sperrkonflikt nach |
+| H2 | „Wieder hinzufügen“ aus `removed` leert `EndedAtUtc` und kann damit eine schon fällige Löschung von Einlöser-Daten bis zum nächsten Ende aufschieben; die Api sieht `Retention:Enforce` heute nicht | `WishService.ReAddAsync` (`:533-586`), `DataRetentionService.cs:502-533`, `docker-compose*.yml` | E43 aus K7b sinngemäß für `re-add` |
+| H3 | Moderatoren werden über den Login geprüft (bekannt als #496 Punkt 2); K7a schützt nur seine eigene Route | `ModeratorCheckService.cs:34` | allgemeine Prüfung über die Twitch-ID, danach ist der K7a-Filter überzählig |
+| H4 | Zeilen ohne Twitch-ID bekommen die ID über den Login nachgetragen; vorhandene Wunsch- und Belohnungsdaten gehen damit an den aktuellen Login-Inhaber (RR15) | `ChannelIdentityService.cs:738-754` | Zeitstempel der Bindung und Sperre älterer Daten, falls gewünscht |
 
 ---
 
