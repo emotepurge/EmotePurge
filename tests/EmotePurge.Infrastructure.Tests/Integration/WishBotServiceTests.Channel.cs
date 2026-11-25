@@ -282,6 +282,19 @@ public partial class WishBotServiceTests
         AssertSignalledOnce(channel);
     }
 
+    // Plan 2.9: the filter found no channel under the name (the empty string), and a join created one without a Twitch id
+    // before the write. That row was never checked, and a non-admin never activates a row without a Twitch id: still
+    // channel_not_found, nothing written, no signal.
+    [Fact]
+    public async Task Activate_AfterAFilterThatFoundNoChannel_RefusesARowWithoutATwitchId()
+    {
+        var channel = await SeedChannelRowAsync(twitchId: null);
+
+        Assert.Equal(WishOutcome.ChannelNotFound, (await Sut().ActivateAsync(channel.Name, ModActor, string.Empty)).Outcome);
+        Assert.Null(await SettingsAsync(channel));
+        AssertNoSignal();
+    }
+
     [Fact]
     public async Task Activate_WithoutASettingsRow_CreatesOneWithTheDefaults()
     {

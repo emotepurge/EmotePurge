@@ -38,7 +38,8 @@ public interface IWishBotService
     /// <paramref name="checkedTwitchChannelId"/> binds the write to the channel the activation filter checked (E24): the
     /// Twitch id of <see cref="CheckActivationAccessAsync"/>'s answer, an empty string when it found no channel. Behind the
     /// channel lock a channel with another Twitch id (a rename and a rejoin moved the name meanwhile) is
-    /// <see cref="WishOutcome.ChannelNotFound"/>, nothing written. Null binds nothing: the filter checked no channel (a
+    /// <see cref="WishOutcome.ChannelNotFound"/>, nothing written; the empty string matches no channel, also not one
+    /// without a Twitch id. Null binds nothing: the filter checked no channel (a
     /// global admin by id, or a switch off).
     /// </summary>
     Task<WishCommandResult> ActivateAsync(

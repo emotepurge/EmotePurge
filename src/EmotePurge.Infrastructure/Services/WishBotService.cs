@@ -151,9 +151,11 @@ public sealed class WishBotService(
         }
 
         // E24 bound to the channel the filter checked: the name is resolved once more here, and a rename and a rejoin may
-        // have moved it to another channel since. That channel's editors were never asked.
+        // have moved it to another channel since. That channel's editors were never asked. The empty string (the filter
+        // found no channel) matches no row, also not one without a Twitch id that a join created meanwhile (plan 2.9).
         if (checkedTwitchChannelId is not null
-            && !string.Equals(locked.TwitchChannelId ?? string.Empty, checkedTwitchChannelId, StringComparison.Ordinal))
+            && (checkedTwitchChannelId.Length == 0
+                || !string.Equals(locked.TwitchChannelId, checkedTwitchChannelId, StringComparison.Ordinal)))
         {
             return WishCommandResult.Of(WishOutcome.ChannelNotFound);
         }
