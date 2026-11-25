@@ -538,6 +538,23 @@ public partial class WishBotPassTests
         Assert.Null(wish.FirstActivatedAtUtc);
     }
 
+    // Plan 2.1 point 1: kept has no expiry, whatever duration the wish carried before it became permanent.
+    [Fact]
+    public async Task APermanentWish_IsKept_WithoutAnExpiry()
+    {
+        var channel = await SeedBotChannelAsync();
+        var id = await SeedApprovedAsync(channel, configure: w =>
+        {
+            w.Permanent = true;
+            w.DurationDays = 7;
+        });
+
+        await RunPassAsync();
+
+        var wish = await LoadAsync(id);
+        Assert.Equal((WishStatus.Kept, (DateTime?)null), (wish.Status, wish.ExpiresAtUtc));
+    }
+
     // ------------------------------------------------------------------------------------ the frame of the queue
 
     // The budget (K6b-14): with two actions left only the two oldest approved are added (one action each, their answers

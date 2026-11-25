@@ -191,6 +191,71 @@ public partial class WishBotPassTests
         Assert.Equal(WishStatus.Approved, (await LoadAsync(id)).Status);
     }
 
+    // Set binding (2.5a (c)): the pre-read finds the emote in the attempt's set while the channel switches to another set.
+    // The hit says nothing about the new set: the never-sent intent only goes back (approved), never presented as
+    // already_in_set, and the next pass adds into the new set.
+    [Fact]
+    public async Task APreReadHitAfterASetChange_TakesTheIntentBack_WithoutPresenting()
+    {
+        var channel = await SeedBotChannelAsync();
+        var id = await SeedApprovedAsync(channel);
+        Set(SetA).Add(new SevenTvSetEntry((await LoadAsync(id)).SevenTvEmoteId, "SomeoneElsesAlias", Now.AddDays(-3), "01OWNER"));
+        Set(SetB);
+        _whileReading = async _ =>
+        {
+            await using var db = CreateDb();
+            await db.Channels.Where(c => c.Id == channel.Id).ExecuteUpdateAsync(u => u.SetProperty(c => c.ActiveEmoteSetId, SetB));
+        };
+
+        await RunPassAsync();
+
+        var wish = await LoadAsync(id);
+        Assert.Equal((WishStatus.Approved, (string?)null, SeededVersion + 1), (wish.Status, wish.StatusReason, wish.DecisionVersion));
+        AssertAttemptCleared(wish);
+        Assert.Empty(_addCalls);
+
+        _whileReading = null;
+        _clock.Advance(TimeSpan.FromSeconds(30));
+        await RunPassAsync();
+
+        Assert.Equal(SetB, Assert.Single(_addCalls).SetId);
+    }
+
+    // 2.6 point 5: past BotConfirmDeadlineAtUtc only the deadline step decides. A confirmation the queue reaches after its
+    // deadline is not read; one whose read crosses the deadline is not booked, even when the read shows the bot's entry.
+    // The deadline step presents both.
+    [Fact]
+    public async Task AConfirmationPastItsDeadline_IsNeitherReadNorBooked_TheDeadlineStepPresents()
+    {
+        var channel = await SeedBotChannelAsync();
+        var crossing = await SeedUnconfirmedAsync(channel, writtenSecondsAgo: (15 * 60) + 50, attempt: 4);
+        var overdue = await SeedUnconfirmedAsync(channel, writtenSecondsAgo: (16 * 60) + 1, attempt: 4);
+        foreach (var id in new[] { crossing, overdue })
+        {
+            var wish = await LoadAsync(id);
+            Set(SetA).Add(new SevenTvSetEntry(wish.SevenTvEmoteId, "Alias", wish.BotWriteAtUtc!.Value.AddSeconds(1), BotA));
+        }
+
+        _whileReading = _ =>
+        {
+            _clock.Advance(TimeSpan.FromSeconds(20));
+            return Task.CompletedTask;
+        };
+
+        await RunPassAsync();
+
+        Assert.Single(_readCalls);
+        foreach (var id in new[] { crossing, overdue })
+        {
+            var wish = await LoadAsync(id);
+            Assert.Equal((WishStatus.Unconfirmed, 4, false), (wish.Status, wish.BotAttemptCount, wish.BotOwned));
+        }
+
+        await RunDeadlineStepAsync();
+        Assert.Equal((WishStatus.Presented, WishStatusReason.Unconfirmed), StatusOf(await LoadAsync(crossing)));
+        Assert.Equal((WishStatus.Presented, WishStatusReason.Unconfirmed), StatusOf(await LoadAsync(overdue)));
+    }
+
     // 2.5a (g): a second runner raises the epoch between pre-read and re-check: nothing is sent, the lock counts as lost,
     // the intent stays for the successor's crash path.
     [Fact]

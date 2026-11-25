@@ -299,6 +299,14 @@ public sealed partial class WishBotPass
                 }
 
                 ClearAddAttempt(wish);
+
+                // The hit is in the attempt's set; when the channel's active set moved meanwhile, the never-sent intent
+                // only goes back, and the next pass adds into the new set (plan 2.5a (c), set binding).
+                if (!string.Equals(locked.ActiveEmoteSetId, intent.SetId, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
                 wish.Status = target;
                 wish.StatusReason = WishStatusReason.AlreadyInSet;
                 wish.StatusChangedAtUtc = now;
@@ -578,10 +586,12 @@ public sealed partial class WishBotPass
         IBotAccountSession session, string channelId, long wishId, CancellationToken cancellationToken)
     {
         var seen = await db.Wishes.AsNoTracking().FirstOrDefaultAsync(w => w.Id == wishId && w.ChannelId == channelId, cancellationToken);
+        // Past its deadline only the deadline step decides (2.6 point 5): no read, no booking here.
         if (seen is not { BotSetId: { } setId, BotNextAttemptAtUtc: { } planned }
             || !string.Equals(seen.Status, WishStatus.Unconfirmed, StringComparison.Ordinal)
             || planned > Now()
-            || seen.BotAttemptVersion != seen.DecisionVersion)
+            || seen.BotAttemptVersion != seen.DecisionVersion
+            || PastConfirmDeadline(seen, Now()))
         {
             return QueueStep.Continue;
         }
@@ -623,8 +633,11 @@ public sealed partial class WishBotPass
                 || wish.DecisionVersion != seen.DecisionVersion
                 || wish.BotAttemptVersion != wish.DecisionVersion
                 || wish.BotNextAttemptAtUtc != planned
-                || wish.BotAttemptCount != seen.BotAttemptCount)
+                || wish.BotAttemptCount != seen.BotAttemptCount
+                || wish.BotConfirmDeadlineAtUtc != seen.BotConfirmDeadlineAtUtc
+                || PastConfirmDeadline(wish, now))
             {
+                // Changed meanwhile, or the read crossed the deadline: the deadline step presents it.
                 return false;
             }
 
@@ -692,7 +705,11 @@ public sealed partial class WishBotPass
         wish.StatusChangedAtUtc = now;
         wish.EndedAtUtc = WishStatus.IsEnded(target) ? now : null;
         wish.StartsAtUtc = start;
-        wish.ExpiresAtUtc = WishSchedule.ExpiresAt(start, wish.DurationDays);
+
+        // kept has no expiry (2.1 point 1), whatever duration the wish carried before.
+        wish.ExpiresAtUtc = string.Equals(target, WishStatus.Active, StringComparison.Ordinal)
+            ? WishSchedule.ExpiresAt(start, wish.DurationDays)
+            : null;
         wish.StartsAtAuthoritative = true;
         wish.LinkOrigin = WishLinkOrigin.Bot;
         if (string.Equals(target, WishStatus.Active, StringComparison.Ordinal))
@@ -718,6 +735,9 @@ public sealed partial class WishBotPass
         wish.BotConfirmDeadlineAtUtc = null;
         wish.BotAttemptVersion = null;
     }
+
+    private static bool PastConfirmDeadline(Wish wish, DateTime now) =>
+        wish.BotConfirmDeadlineAtUtc is { } deadline && deadline <= now;
 
     // "Versuch leeren" for an add: the wish is as before the intent (its decision version stays counted).
     private static void ClearAddAttempt(Wish wish)
