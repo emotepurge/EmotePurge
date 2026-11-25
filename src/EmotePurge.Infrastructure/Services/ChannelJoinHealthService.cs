@@ -69,17 +69,22 @@ internal sealed class ChannelJoinHealthService : IChannelJoinHealthService
 
     private async Task<ChannelJoinHealthReport> FillAsync()
     {
-        using var abandon = new CancellationTokenSource();
+        var abandon = new CancellationTokenSource();
         var work = ReadAndEvaluateAsync(abandon.Token);
         try
         {
-            return await work.WaitAsync(FillDeadline, _time);
+            var report = await work.WaitAsync(FillDeadline, _time);
+            abandon.Dispose();
+            return report;
         }
         catch (Exception ex)
         {
-            // Whatever the cause (timeout, reader fault), the fill's answer is "not assessable".
-            abandon.Cancel();
+            // Whatever the cause (timeout, reader fault), the fill's answer is "not assessable", and it
+            // is given now: the abandoned read is cancelled off this path, because a cancellation
+            // callback (Npgsql opens a connection of its own to cancel a query) can block for as long
+            // as the outage that made the fill time out in the first place.
             _ = work.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            _ = CancelAbandonedAsync(abandon);
             _logger.LogWarning(ex, "Join health could not be evaluated; reporting it as unavailable");
             return new ChannelJoinHealthReport(ChannelJoinHealthStatus.Unavailable, (int)_grace.TotalSeconds, [], [], 0, 0);
         }
@@ -106,6 +111,24 @@ internal sealed class ChannelJoinHealthService : IChannelJoinHealthService
         {
             _logger.LogWarning(ex, "The active channel list could not be read for the join health check; reporting it as unavailable");
             return null;
+        }
+    }
+
+    // Runs the cancellation callbacks on the pool, never on the caller's path, and disposes the source
+    // only once no callback still runs on it.
+    private static async Task CancelAbandonedAsync(CancellationTokenSource abandon)
+    {
+        try
+        {
+            await Task.Run(abandon.Cancel);
+        }
+        catch (AggregateException)
+        {
+            // A throwing callback belongs to the abandoned read, not to the verdict.
+        }
+        finally
+        {
+            abandon.Dispose();
         }
     }
 }

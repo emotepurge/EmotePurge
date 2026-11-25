@@ -200,6 +200,44 @@ public class ChannelJoinHealthServiceTests
     }
 
     [Fact]
+    public async Task IsAlarming_WhenTheAbandonedReadsCancellationCallbackBlocks_StillAnswersAtTheDeadline()
+    {
+        // Npgsql cancels a running query over a connection of its own, inside the token's callback;
+        // during a database outage that callback blocks. The verdict must not wait for it.
+        using var release = new ManualResetEventSlim();
+        var callbackEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _reader.ReadAsync(Arg.Any<CancellationToken>()).Returns(call =>
+        {
+            call.Arg<CancellationToken>().Register(() =>
+            {
+                callbackEntered.TrySetResult();
+                release.Wait(TimeSpan.FromSeconds(30));
+            });
+            return new TaskCompletionSource<WorkerRosterSnapshot?>().Task;
+        });
+        var service = NewService();
+
+        try
+        {
+            var started = DateTime.UtcNow;
+            var call = service.IsAlarmingAsync();
+            await AdvanceUntilCompletedAsync(call, TimeSpan.FromMilliseconds(500));
+
+            Assert.True(await call);
+            Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(10), "the verdict waited for the cancellation callback");
+            // The abandoned read is still being cancelled; the cached answer does not wait for it either.
+            await callbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(release.IsSet);
+            Assert.True(await service.IsAlarmingAsync().WaitAsync(TimeSpan.FromSeconds(1)));
+            await _reader.Received(1).ReadAsync(Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
     public async Task IsAlarming_ACancelledWaiterThrowsButTheFillContinuesForTheNextCaller()
     {
         var gate = new TaskCompletionSource<WorkerRosterSnapshot?>();
