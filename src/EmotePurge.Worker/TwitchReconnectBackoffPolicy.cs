@@ -47,11 +47,11 @@ public enum TwitchSessionEndReason
     JoinSendTimeout,
 
     /// <summary>
-    /// A PART of ours stayed unechoed past <see cref="ChannelJoinTracker.PartEchoGrace"/> for a channel
-    /// that is wanted again and still unconfirmed (#516). TwitchLib then lists the channel as joined
-    /// and drops every plain JOIN for it, so no further echo can confirm it on this client; a fresh
-    /// client starts with an empty channel list and rejoins it. Raised on a live session and paced as
-    /// that session's end.
+    /// A PART of ours stayed unechoed past <see cref="ChannelJoinTracker.PartEchoGrace"/> after holding
+    /// back a JOIN echo of a channel that is wanted again and still unconfirmed (#516). TwitchLib took
+    /// that echo and lists the channel as joined, so it drops every plain JOIN for it and no further
+    /// echo can confirm it on this client; a fresh client starts with an empty channel list and rejoins
+    /// it. Raised on a live session and paced as that session's end.
     /// </summary>
     PartEchoMissing,
 

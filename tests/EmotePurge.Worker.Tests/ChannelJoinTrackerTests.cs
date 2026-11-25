@@ -408,16 +408,65 @@ public class ChannelJoinTrackerTests
     }
 
     [Fact]
-    public void TakeExpiredPart_DropsOnlyAnExpiredPendingPartOfAnUnconfirmedChannel()
+    public void TakeExpiredPart_ReportsAnExpiredPartThatHeldBackAnEcho_Once()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordPartSent("a", At(0));
+        tracker.BeginAttempt("a");
+        Assert.False(tracker.MarkConfirmed("a", At(1))); // held back: TwitchLib now lists the channel
+
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(9)));
+        Assert.True(tracker.TakeExpiredPartWithSuppressedEcho("a", At(10)));
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(11))); // already dropped: reported once
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("unknown", At(11)));
+    }
+
+    // Codex review round 4, P2: an expired PART that held no echo back is no reason to rebuild — TwitchLib
+    // does not list the channel, so the normal JOIN goes out. The marker is dropped all the same, and the
+    // next echo confirms.
+    [Fact]
+    public void TakeExpiredPart_DropsAnExpiredPartWithoutAHeldBackEcho_WithoutReportingIt()
     {
         var tracker = Connected();
         tracker.RecordIntent("a", At(0));
         tracker.RecordPartSent("a", At(0));
 
-        Assert.False(tracker.TakeExpiredPart("a", At(9)));
-        Assert.True(tracker.TakeExpiredPart("a", At(10)));
-        Assert.False(tracker.TakeExpiredPart("a", At(11))); // already dropped: reported once
-        Assert.False(tracker.TakeExpiredPart("unknown", At(11)));
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(10)));
+
+        tracker.BeginAttempt("a");
+        Assert.True(tracker.MarkConfirmed("a", At(11)));
+        tracker.MarkParted("a", At(20)); // no marker left: Twitch's own PART
+        Assert.False(tracker.IsConfirmed("a"));
+    }
+
+    [Fact]
+    public void TakeExpiredPart_ReportsNothingForAChannelNoLongerWanted_OrAfterTheLeaveForgotTheEcho()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordPartSent("a", At(0));
+        Assert.False(tracker.MarkConfirmed("a", At(1))); // held back
+        tracker.Remove("a"); // forgets the held-back echo
+
+        tracker.RecordIntent("a", At(2));
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(10)));
+
+        tracker.RecordPartSent("b", At(20));
+        Assert.False(tracker.MarkConfirmed("b", At(21))); // held back, but "b" is not wanted
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("b", At(30)));
+    }
+
+    [Fact]
+    public void ANewPart_StartsAFreshMarker_ThatHasHeldNothingBack()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordPartSent("a", At(0));
+        Assert.False(tracker.MarkConfirmed("a", At(1))); // held back
+        tracker.RecordPartSent("a", At(2));
+
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(12)));
     }
 
     [Fact]
@@ -426,11 +475,12 @@ public class ChannelJoinTrackerTests
         var tracker = Connected();
         tracker.RecordIntent("a", At(0));
         tracker.RecordPartSent("a", At(0));
+        Assert.False(tracker.MarkConfirmed("a", At(0.5))); // held back
 
         tracker.SetDisconnected(At(1)); // the rebuild
         tracker.SetConnected(At(2));
 
-        Assert.False(tracker.TakeExpiredPart("a", At(60)));
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(60)));
     }
 
     // Codex review round 3, P1: a confirmation accepted after the grace must not leave the expired
@@ -444,7 +494,7 @@ public class ChannelJoinTrackerTests
         tracker.RecordPartSent("a", At(0));
         tracker.BeginAttempt("a");
         Assert.True(tracker.MarkConfirmed("a", At(11)));
-        Assert.False(tracker.TakeExpiredPart("a", At(12)));
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(12)));
 
         tracker.MarkParted("a", At(20)); // Twitch parts us
 

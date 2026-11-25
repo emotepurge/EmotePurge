@@ -470,6 +470,68 @@ public class TwitchChatManagerJoinFailureTransportTests
         Assert.Contains(h.Logs, l => l.Level == LogLevel.Debug && l.Message.Contains("repeated"));
     }
 
+    // Codex review round 4, P2: the first JOIN was never answered, the leave's PART is never echoed,
+    // and the channel is wanted again only after the grace. No JOIN echo was held back, so TwitchLib
+    // does not list the channel: the convergence net's plain JOIN goes out and confirms, and nothing
+    // tears the healthy connection down.
+    [Fact]
+    public async Task AnExpiredPartThatHeldNoEchoBack_LetsTheNormalJoinConfirm_WithoutARebuild()
+    {
+        await using var h = await Harness.StartAsync();
+        await h.Manager.JoinChannelAsync(ChannelA); // never answered
+        await h.Manager.LeaveChannelAsync(ChannelA);
+        Assert.Equal(1, h.Transport.PartsSentFor(ChannelA)); // never echoed
+
+        h.Clock.Advance(TimeSpan.FromSeconds(60));
+        await h.Manager.EnsureJoinedAsync(ChannelA, h.Manager.CaptureLeaveStamp());
+        await h.WaitUntilAsync(() => h.Transport.JoinsSentFor(ChannelA) == 2);
+        await h.Transport.ReceiveAsync(h.JoinEcho(ChannelA));
+        await h.Transport.ReceiveAsync(h.NamesEnd(ChannelA));
+
+        Assert.True(h.Entry(ChannelA).JoinConfirmed);
+        Assert.DoesNotContain(h.Logs, l => l.EventId == TwitchChatManager.PartEchoMissingEvent);
+        Assert.DoesNotContain(h.Logs, l => l.Message.Contains("Verlust-Signal", StringComparison.Ordinal));
+        using var wait = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => h.Manager.WaitForReconnectRequestAsync(wait.Token));
+    }
+
+    // Codex review round 4, P2: the request belongs to the client whose PART held the echo back. Here
+    // the watchdog replaces that client after the marker is taken and before the request is offered
+    // (driven from the Warning that sits exactly between the two); the request must be discarded, not
+    // stamped with the successor's generation and tear the fresh connection down.
+    [Fact]
+    public async Task ARebuildRequestForAReplacedClient_IsDiscarded_AndDoesNotHitTheSuccessor()
+    {
+        await using var h = await Harness.StartAsync();
+        await h.Manager.JoinChannelAsync(ChannelA);
+        await h.Manager.LeaveChannelAsync(ChannelA);
+        await h.Manager.JoinChannelAsync(ChannelA);
+        await h.WaitUntilAsync(() => h.Transport.JoinsSentFor(ChannelA) == 2);
+        await h.Transport.ReceiveAsync(h.JoinEcho(ChannelA)); // held back: our PART looks pending
+        h.Clock.Advance(TimeSpan.FromSeconds(60));
+
+        Task<TwitchConnectOutcome>? rebuild = null;
+        h.OnLog = line =>
+        {
+            if (line.EventId == TwitchChatManager.PartEchoMissingEvent)
+            {
+                // ReconnectOnceAsync swaps the client synchronously before its first await.
+                rebuild = h.Manager.ReconnectOnceAsync(CancellationToken.None);
+            }
+        };
+        await h.Manager.EnsureJoinedAsync(ChannelA, h.Manager.CaptureLeaveStamp());
+        h.OnLog = null;
+
+        Assert.NotNull(rebuild);
+        Assert.True((await rebuild).HandshakeCompleted);
+        Assert.Single(h.Logs, l => l.EventId == TwitchChatManager.PartEchoMissingEvent);
+        var discarded = Assert.Single(h.Logs, l => l.Message.StartsWith("Verlust-Signal verworfen", StringComparison.Ordinal));
+        Assert.Contains("Client #1", discarded.Message);
+        Assert.DoesNotContain(h.Logs, l => l.Message.StartsWith("Verlust-Signal abgelegt", StringComparison.Ordinal));
+        using var wait = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => h.Manager.WaitForReconnectRequestAsync(wait.Token));
+    }
+
     private sealed record LogLine(LogLevel Level, EventId EventId, string Message);
 
     private sealed class CollectingLogger : ILogger<TwitchChatManager>
@@ -478,13 +540,20 @@ public class TwitchChatManagerJoinFailureTransportTests
 
         public IReadOnlyCollection<LogLine> Lines => _lines;
 
+        // Runs synchronously inside the logging call, on the logging thread.
+        public Action<LogLine>? OnLog { get; set; }
+
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
         public bool IsEnabled(LogLevel logLevel) => true;
 
         public void Log<TState>(
-            LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
-            _lines.Enqueue(new LogLine(logLevel, eventId, formatter(state, exception)));
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            var line = new LogLine(logLevel, eventId, formatter(state, exception));
+            _lines.Enqueue(line);
+            OnLog?.Invoke(line);
+        }
     }
 
     private sealed class Harness : IAsyncDisposable
@@ -523,6 +592,12 @@ public class TwitchChatManagerJoinFailureTransportTests
         public TwitchChatManager Manager { get; }
 
         public IReadOnlyCollection<LogLine> Logs => _logger.Lines;
+
+        public Action<LogLine>? OnLog
+        {
+            get => _logger.OnLog;
+            set => _logger.OnLog = value;
+        }
 
         // The lines that carry a join-failure event id (the ones the log viewer counts).
         public IReadOnlyList<LogLine> Events => _logger.Lines.Where(l => l.EventId.Name is not null).ToList();

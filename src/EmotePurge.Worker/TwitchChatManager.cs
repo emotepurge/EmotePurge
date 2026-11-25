@@ -288,7 +288,6 @@ public class TwitchChatManager(
         // Safety net driven by the periodic resync, which enumerates all active channels anyway:
         // covers lost Redis commands, joins that failed during boot recovery, and joins Twitch
         // never confirmed.
-        bool expiredPart;
         lock (_intentGate)
         {
             if (_tracker.IsConfirmed(channelName))
@@ -309,26 +308,44 @@ public class TwitchChatManager(
             }
 
             _tracker.RecordIntent(channelName, _time.GetUtcNow());
-            expiredPart = _tracker.TakeExpiredPart(channelName, _time.GetUtcNow());
         }
 
-        // A PART of ours that Twitch never echoed has just expired, so a JOIN echo that came inside
-        // the grace was taken for old membership and no further echo is coming: TwitchLib still lists
-        // the channel as joined and drops a plain JOIN silently. Repairing that by hand on this client
-        // would race TwitchLib's own channel list, so the watchdog rebuilds the client instead; the
-        // successor starts with an empty list, the rebuild's disconnect clears every pending PART, and
-        // the rejoin round sends a real JOIN. TakeExpiredPart reports each such PART once, and the
-        // signal slot coalesces with any loss already waiting. Outside _intentGate: RequestReconnect
-        // takes _clientStateGate, and the two are never nested.
-        if (expiredPart)
+        // A PART of ours that Twitch never echoed has expired after holding back a JOIN echo of this
+        // still wanted, unconfirmed channel: TwitchLib took that echo, lists the channel as joined and
+        // drops a plain JOIN silently, so no further echo is coming on this client. Repairing that by
+        // hand would race TwitchLib's own channel list, so the watchdog rebuilds the client instead;
+        // the successor starts with an empty list, the rebuild's disconnect clears every pending PART,
+        // and the rejoin round sends a real JOIN. An expired PART that held nothing back is only
+        // dropped, and the JOIN below goes out as usual. The marker is reported once, and the signal
+        // slot coalesces with any loss already waiting.
+        //
+        // The marker is taken and the generation read under _clientStateGate (not _intentGate; the
+        // two are never nested): every client swap clears all pending PARTs inside that same gate, so
+        // a marker found there belongs to the client current at that moment. The request carries that
+        // generation, not the one current when it is offered — if the client is replaced in between,
+        // the slot discards it, because the rebuild it asks for has already happened.
+        int? partOwnerGeneration = null;
+        lock (_clientStateGate)
+        {
+            if (_tracker.TakeExpiredPartWithSuppressedEcho(channelName, _time.GetUtcNow()))
+            {
+                partOwnerGeneration = Volatile.Read(ref _clientGeneration);
+            }
+        }
+
+        if (partOwnerGeneration is { } generation)
         {
             logger.LogWarning(
                 PartEchoMissingEvent,
                 "A PART of ours was never echoed and keeps a re-wanted channel from being confirmed — requesting a client rebuild.");
             logger.LogDebug("Rebuild requested for {Channel} (PART echo missing).", channelName);
-            RequestReconnect(
-                TwitchSessionEndReason.PartEchoMissing,
-                $"PART unechoed for more than {ChannelJoinTracker.PartEchoGrace.TotalSeconds}s.");
+            lock (_clientStateGate)
+            {
+                OfferSignal(
+                    generation,
+                    TwitchSessionEndReason.PartEchoMissing,
+                    $"PART unechoed for more than {ChannelJoinTracker.PartEchoGrace.TotalSeconds}s.");
+            }
         }
 
         await TryJoinAsync(channelName, TwitchJoinSource.ConvergenceNet, CancellationToken.None);

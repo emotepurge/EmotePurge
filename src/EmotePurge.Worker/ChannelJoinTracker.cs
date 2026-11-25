@@ -41,6 +41,9 @@ public readonly record struct ChannelJoinState(string Name, bool Confirmed, doub
 /// arrives while our PART is still pending answers a JOIN sent before that PART: it belongs to the
 /// membership the PART ends and neither confirms nor consumes the newer attempt. The PART echo then
 /// ends that membership without touching the newer wish, and the newer JOIN's echo confirms.
+/// A JOIN echo held back that way is noted on the pending PART: TwitchLib took it and now lists the
+/// channel as joined, so if the PART is never echoed, no plain JOIN for the channel leaves the process
+/// again (<see cref="TakeExpiredPartWithSuppressedEcho"/>).
 /// </para>
 /// <para>
 /// Thread-safe through one private lock, never held across an await and never calling out — the
@@ -61,9 +64,9 @@ public sealed class ChannelJoinTracker
 
     // Channels with one of our PARTs on the wire whose echo has not arrived yet. Independent of
     // _entries: the leave drops the wish before the PART is sent, and a re-activation adds a new one.
-    // The value is the time the PART went on the wire; a pending PART older than PartEchoGrace is
-    // treated as never echoed.
-    private readonly Dictionary<string, DateTimeOffset> _pendingParts = new(StringComparer.OrdinalIgnoreCase);
+    // The value holds the time the PART went on the wire (a pending PART older than PartEchoGrace is
+    // treated as never echoed) and whether a JOIN echo was held back because of it.
+    private readonly Dictionary<string, PendingPart> _pendingParts = new(StringComparer.OrdinalIgnoreCase);
 
     private bool _connected;
 
@@ -143,7 +146,9 @@ public sealed class ChannelJoinTracker
 
     /// <summary>
     /// Our own PART for the channel is on the wire: the attempt window closes, and the PART stays
-    /// pending until its echo (<see cref="MarkParted"/>) or a disconnect.
+    /// pending until its echo (<see cref="MarkParted"/>) or a disconnect. A new PART starts a new
+    /// marker: an earlier held-back echo no longer matters, because TwitchLib sends a PART only for
+    /// a channel it lists as joined and stops listing it once the PART's echo arrives.
     /// </summary>
     public void RecordPartSent(string name, DateTimeOffset now)
     {
@@ -154,7 +159,7 @@ public sealed class ChannelJoinTracker
                 entry.AttemptOpen = false;
             }
 
-            _pendingParts[name] = now;
+            _pendingParts[name] = new PendingPart(now, EchoSuppressed: false);
         }
     }
 
@@ -177,7 +182,8 @@ public sealed class ChannelJoinTracker
     /// <summary>
     /// Our own JOIN echo. Confirms only a wanted channel with an open attempt and no pending PART of
     /// ours (never inserts); returns whether it did. An echo while a PART is pending answers a JOIN
-    /// sent before that PART and leaves the newer attempt open. A PART pending for longer than
+    /// sent before that PART and leaves the newer attempt open; the pending PART notes that it held an
+    /// echo back (TwitchLib took that echo and lists the channel as joined). A PART pending for longer than
     /// <see cref="PartEchoGrace"/> no longer counts, so a PART Twitch never echoes cannot block forever;
     /// a confirmation drops such an expired marker, so a later PART from Twitch is read as Twitch's own
     /// and withdraws the confirmation instead of being taken for the old PART's echo.
@@ -186,8 +192,13 @@ public sealed class ChannelJoinTracker
     {
         lock (_gate)
         {
-            if (IsPartPending(name, now)
-                || !_entries.TryGetValue(name, out var entry) || entry.Confirmed || !entry.AttemptOpen)
+            if (IsPartPending(name, now))
+            {
+                _pendingParts[name] = _pendingParts[name] with { EchoSuppressed = true };
+                return false;
+            }
+
+            if (!_entries.TryGetValue(name, out var entry) || entry.Confirmed || !entry.AttemptOpen)
             {
                 return false;
             }
@@ -231,24 +242,25 @@ public sealed class ChannelJoinTracker
     }
 
     /// <summary>
-    /// Drops a pending PART of an unconfirmed channel once it is older than <see cref="PartEchoGrace"/>
-    /// and reports whether it did, so it reports each such PART once. The convergence net uses it to
-    /// learn that a JOIN echo it may have ignored will not come again (TwitchLib lists the channel as
-    /// joined and drops a plain JOIN), and requests a client rebuild; the rebuild's disconnect clears
-    /// every other pending PART as well.
+    /// Drops a pending PART once it is older than <see cref="PartEchoGrace"/>, and reports whether it
+    /// had held back a JOIN echo of a channel that is still wanted and unconfirmed — only then is no
+    /// further echo coming on this client (TwitchLib took the held-back one, lists the channel as
+    /// joined and drops a plain JOIN), and the convergence net requests a client rebuild. An expired
+    /// PART that held nothing back is dropped silently: TwitchLib does not list the channel, so the
+    /// normal JOIN goes out and its echo confirms. Each PART is reported at most once; the rebuild's
+    /// disconnect clears every other pending PART as well.
     /// </summary>
-    public bool TakeExpiredPart(string name, DateTimeOffset now)
+    public bool TakeExpiredPartWithSuppressedEcho(string name, DateTimeOffset now)
     {
         lock (_gate)
         {
-            if (!_pendingParts.TryGetValue(name, out var sentAt) || now - sentAt < PartEchoGrace
-                || (_entries.TryGetValue(name, out var entry) && entry.Confirmed))
+            if (!_pendingParts.TryGetValue(name, out var part) || now - part.SentAt < PartEchoGrace)
             {
                 return false;
             }
 
             _pendingParts.Remove(name);
-            return true;
+            return part.EchoSuppressed && _entries.TryGetValue(name, out var entry) && !entry.Confirmed;
         }
     }
 
@@ -287,11 +299,20 @@ public sealed class ChannelJoinTracker
         }
     }
 
-    /// <summary>Drops the channel (leave); a later intent starts fresh. Returns whether it existed.</summary>
+    /// <summary>
+    /// Drops the channel (leave); a later intent starts fresh. A pending PART stays pending but forgets
+    /// a held-back echo: the leave's own PART follows and starts a new marker. Returns whether the
+    /// channel existed.
+    /// </summary>
     public bool Remove(string name)
     {
         lock (_gate)
         {
+            if (_pendingParts.TryGetValue(name, out var part))
+            {
+                _pendingParts[name] = part with { EchoSuppressed = false };
+            }
+
             return _entries.Remove(name);
         }
     }
@@ -347,7 +368,9 @@ public sealed class ChannelJoinTracker
 
     // Precondition: the caller holds _gate. A clock that jumped backwards keeps the PART pending.
     private bool IsPartPending(string name, DateTimeOffset now) =>
-        _pendingParts.TryGetValue(name, out var sentAt) && now - sentAt < PartEchoGrace;
+        _pendingParts.TryGetValue(name, out var part) && now - part.SentAt < PartEchoGrace;
+
+    private readonly record struct PendingPart(DateTimeOffset SentAt, bool EchoSuppressed);
 
     private sealed class Entry
     {
