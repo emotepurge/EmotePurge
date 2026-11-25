@@ -130,13 +130,47 @@ export interface RosterChannel {
   sevenTvUserAcknowledged: boolean;
 }
 
-/** The ceilings the roster reports against. Two numbers on the Twitch side on purpose: one is
- *  Twitch's rule, the other is ours — the UI labels each with its provenance. */
+/** The ceilings the roster reports against. Two numbers on purpose: one is Twitch's rule (shown as
+ *  reference text only, it is not binding for our anonymous connection), the other is ours and the
+ *  denominator of the capacity bar — the UI labels each with its provenance. */
 export interface RosterCeilings {
   twitchConcurrentChannelLimit: number;
-  twitchJoinBudgetChannels: number;
   /** Our own admission cap (`Channels:MaxActiveChannels`); global admins may exceed it. */
   maxActiveChannels: number;
+}
+
+/** Verdict of the join evaluation (`GET /api/health/channels` uses the same one). */
+export type JoinHealthStatus = 'healthy' | 'starting' | 'unavailable' | 'failing';
+
+export interface JoinHealth {
+  status: JoinHealthStatus;
+  graceSeconds?: number;
+  /** Channels that currently count for the alarm. */
+  alarmingTotal?: number;
+  /** Overdue channels the alarm deliberately ignores (suspended, banned, ...). */
+  excludedTotal?: number;
+}
+
+/** Why Twitch did not confirm a join. Unknown codes from a newer server render as the generic text. */
+export type JoinFailureReason =
+  'noConfirmation' | 'channelSuspended' | 'concurrentChannelLimit' | 'banned';
+
+/** One channel the worker wants but Twitch has not confirmed, with the time that counts against it. */
+export interface IrcUnjoinedChannel {
+  channelName: string;
+  unconfirmedSeconds: number;
+  reason: JoinFailureReason | null;
+  overdue: boolean;
+  countsForAlarm: boolean;
+}
+
+/** One `missingIntent` row of GET /api/admin/roster: active in the database, no IRC wish in the worker. */
+export interface MissingIntentChannel {
+  channelName: string;
+  /** Since `max(TrackingResumedAt ?? CreatedAt, worker process start)`, at the roster's timestamp. */
+  waitingSeconds: number;
+  /** Past the grace period: counts for the alarm. */
+  overdue: boolean;
 }
 
 /**
@@ -152,6 +186,8 @@ export interface AdminRoster {
   snapshotAvailable: boolean;
   trackedChannelCount: number;
   ceilings: RosterCeilings;
+  /** Present with and without a snapshot. */
+  joinHealth?: JoinHealth;
   generatedAtUtc?: string;
   /** Staleness as a number, derived server-side — the TTL only ever says "gone", this says
    *  "present, and two minutes old". */
@@ -167,14 +203,21 @@ export interface AdminRoster {
   sevenTvAcknowledgedCount?: number;
   /** Capped lists with their untruncated totals alongside — a short list standing in silently for a
    *  long one would read as "almost fine" on the page where that matters most. */
-  missingFromIrc?: string[];
-  missingFromIrcTotal?: number;
   missingFromSevenTv?: string[];
   missingFromSevenTvTotal?: number;
   /** The other direction: the worker holds a channel the database no longer considers active — what
    *  a leave that never reached the worker looks like. */
   unknownToDatabase?: string[];
   unknownToDatabaseTotal?: number;
+  /** Capped (50) and ordered by the server: alarming, excluded, waiting; longest first. */
+  ircUnjoined?: IrcUnjoinedChannel[];
+  ircUnjoinedTotal?: number;
+  /** Active channels the worker holds no IRC wish for, decided by the server on the full roster
+   *  (disjoint from `ircUnjoined`). Capped (50), overdue first, then longest wait. Overdue ones count
+   *  for the alarm but have no unconfirmed-time row because the worker never tried them. */
+  missingIntent?: MissingIntentChannel[];
+  missingIntentTotal?: number;
+  missingIntentOverdueTotal?: number;
 }
 
 /** GET /api/admin/channels/{channelName} — the database row and the worker's view of it, side by

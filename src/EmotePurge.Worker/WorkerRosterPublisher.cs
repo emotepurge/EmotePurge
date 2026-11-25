@@ -73,7 +73,7 @@ public class WorkerRosterPublisher(
         }
     }
 
-    private WorkerRosterSnapshot BuildSnapshot()
+    internal WorkerRosterSnapshot BuildSnapshot()
     {
         // Union, not intersection: a channel present in only one of the two transports is exactly
         // the case worth showing, and an inner join would drop it.
@@ -88,7 +88,10 @@ public class WorkerRosterPublisher(
                 SevenTvEmoteSetId: null,
                 SevenTvEmoteSetAcknowledged: false,
                 SevenTvUserId: null,
-                SevenTvUserAcknowledged: false);
+                SevenTvUserAcknowledged: false,
+                IrcIntent: true,
+                entry.UnconfirmedSeconds,
+                entry.JoinFailureReason);
         }
 
         foreach (var state in subscriptionRegistry.GetChannelStates())
@@ -102,7 +105,11 @@ public class WorkerRosterPublisher(
                 state.EmoteSetId,
                 state.EmoteSetAcknowledged,
                 state.SevenTvUserId,
-                state.UserAcknowledged);
+                state.UserAcknowledged,
+                // False for a 7TV-only row: the IRC side has no wish for it.
+                ircSide?.IrcIntent ?? false,
+                ircSide?.IrcUnconfirmedSeconds,
+                ircSide?.IrcJoinFailureReason);
         }
 
         var channels = byChannel.Values
@@ -127,6 +134,7 @@ public class WorkerRosterPublisher(
             // single deploy.
             bootRecoveryGate.Completed.IsCompleted,
             truncated,
-            channels);
+            channels,
+            WorkerRosterSnapshot.CurrentSchemaVersion);
     }
 }

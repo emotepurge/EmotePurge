@@ -82,7 +82,7 @@ public class AdminRateLimitsEndpointTests : IClassFixture<ApiFactory>
 
         var policies = root.GetProperty("policies").EnumerateArray().ToList();
         // Every registered policy shows up, not only the one with traffic.
-        Assert.Equal(10, policies.Count);
+        Assert.Equal(11, policies.Count);
 
         var resync = policies.Single(p => p.GetProperty("name").GetString() == RateLimitPolicyNames.ChannelResync);
         Assert.Equal("fixed-window", resync.GetProperty("type").GetString());
@@ -99,6 +99,10 @@ public class AdminRateLimitsEndpointTests : IClassFixture<ApiFactory>
 
         var publicHealth = policies.Single(p => p.GetProperty("name").GetString() == RateLimitPolicyNames.PublicHealth);
         Assert.Equal("remote-ip", publicHealth.GetProperty("partition").GetString());
+
+        var publicChannelHealth = policies.Single(p => p.GetProperty("name").GetString() == RateLimitPolicyNames.PublicChannelHealth);
+        Assert.Equal("remote-ip", publicChannelHealth.GetProperty("partition").GetString());
+        Assert.Equal(10, publicChannelHealth.GetProperty("capacity").GetInt32());
 
         var lastRejection = root.GetProperty("lastLocalRejection");
         Assert.Equal(RateLimitPolicyNames.ChannelResync, lastRejection.GetProperty("policyName").GetString());
@@ -164,7 +168,7 @@ public class AdminRateLimitsEndpointTests : IClassFixture<ApiFactory>
         // The effective configuration is unaffected by a Redis outage — it comes from options, not
         // from the counter store.
         var policies = root.GetProperty("policies").EnumerateArray().ToList();
-        Assert.Equal(10, policies.Count);
+        Assert.Equal(11, policies.Count);
         Assert.All(policies, p =>
         {
             Assert.Equal(0, p.GetProperty("acceptedLastMinute").GetInt64());

@@ -302,6 +302,12 @@ public interface IChannelService
     // An id-less row never matches the lock here; the 7TV sync's gate on the resolved id covers it.
     Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default);
 
+    // The same channels as ListActiveChannelNamesAsync — same filter, same order, the names list is
+    // derived from this one so the rule exists once — each with the moment tracking last began
+    // (TrackingResumedAt ?? CreatedAt). The join health check (#516) compares that moment with the
+    // worker roster to find an active channel the worker holds no IRC wish for.
+    Task<IReadOnlyList<ActiveChannelActivation>> ListActiveChannelActivationsAsync(CancellationToken cancellationToken = default);
+
     // Publishes a RESYNC command for an active channel, making the worker re-resolve the full 7TV
     // truth immediately instead of waiting for the next periodic tick. Fire-and-forget by design:
     // the command protocol is one-way, so "triggered" means "published", not "completed" — the

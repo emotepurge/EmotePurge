@@ -483,6 +483,7 @@
       "title": "Channel roster",
       "status": {
         "complete": "Complete",
+        "failing": "Failing",
         "incomplete": "Incomplete",
         "starting": "Starting",
         "stale": "Stale",
@@ -497,13 +498,42 @@
       "ircConfirmed": "IRC join confirmed",
       "sevenTvAcknowledged": "7TV subscription acknowledged",
       "worker": "Worker instance",
-      "joinBudget": "Our join budget",
-      "joinBudgetWarning": "The join budget is {{percent}} % used.",
-      "joinBudgetCritical": "The join budget is {{percent}} % used — review before adding channels.",
-      "joinBudgetExceeded": "More tracked channels than the join budget ({{tracked}} / {{budget}}).",
-      "joinBudgetHint": "Self-imposed, not a hard stop: joins keep working above this number. What still bounds it is rejoin time after a reconnect (~0.6 s per channel) — sustained operation, real chat volume and worker memory beyond this point are unmeasured.",
-      "twitchLimitHint": "Twitch’s own limit is {{limit}} chatrooms joined at a time per account (since 2024-05-15, dev.twitch.tv/docs/chat).",
-      "missingIrc": "{{count}} channel(s) without a confirmed IRC join:",
+      "capacity": {
+        "label": "Active channels against our cap",
+        "valueText": "{{tracked}} of {{max}} channels",
+        "valueTextOver": "{{tracked}} of {{max}} channels, {{excess}} over the cap",
+        "near": "Close to the cap: {{tracked}} of {{max}} channels ({{percent}} %).",
+        "reached": "Cap reached ({{tracked}} / {{max}}): new channels are rejected, global admins are exempt.",
+        "over": "Over the cap ({{tracked}} / {{max}}): only global admins could still add.",
+        "rejectionsLink": "View rejected joins",
+        "hint": "Self-imposed cap (Channels:MaxActiveChannels), not a Twitch limit. It loses no data, it only turns away new channels.",
+        "twitchLimitHint": "Twitch documents {{limit}} concurrent chatrooms per named account (since 2024-05-15). Our anonymous connection was measured up to 240 channels without rejection on 2026-11-25; undocumented, so reference only."
+      },
+      "joinFailing": "{{count}} channel(s) without a confirmed join past the deadline. The alarm is active.",
+      "joinUnavailable": "The join evaluation is not possible right now. The join state is unknown.",
+      "unjoined": {
+        "heading": "{{count}} channel(s) without Twitch confirmation:",
+        "more": "and {{count}} more, the list is truncated.",
+        "seconds": "for {{value}} s",
+        "minutes": "for {{value}} min",
+        "overdue": "overdue",
+        "waiting": "waiting for confirmation",
+        "excluded": "rejected by Twitch, does not count for the alarm (remedy: leave the channel)"
+      },
+      "joinFailure": {
+        "reason": {
+          "noConfirmation": "No confirmation from Twitch",
+          "channelSuspended": "Channel suspended or deleted",
+          "concurrentChannelLimit": "Twitch concurrent channel limit reached",
+          "banned": "Account banned in the channel",
+          "unknown": "Reason unknown"
+        }
+      },
+      "notInWorker": {
+        "heading": "{{count}} channel(s) not in the worker:",
+        "overdue": "overdue, counts for the alarm",
+        "truncated": "The list is truncated."
+      },
       "missingSevenTv": "{{count}} channel(s) without an acknowledged 7TV subscription:",
       "unknownToDatabase": "{{count}} channel(s) in the worker the database no longer lists as active:"
     },

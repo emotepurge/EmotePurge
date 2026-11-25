@@ -14,14 +14,28 @@ export type UtilizationTone = 'success' | 'warning' | 'danger';
 export const WARN_AT_PERCENT = 80;
 export const CRITICAL_AT_PERCENT = 95;
 
+/** Per-bar override of the ladder; the default (80/95) belongs to the emote slot budget. */
+export interface UtilizationThresholds {
+  warnAt: number;
+  criticalAt: number;
+}
+
+const DEFAULT_THRESHOLDS: UtilizationThresholds = {
+  warnAt: WARN_AT_PERCENT,
+  criticalAt: CRITICAL_AT_PERCENT,
+};
+
 /**
  * Grades an *uncapped* percentage: callers cap their bar width at 100 for rendering, but a budget
  * at 120 % must grade `danger`, not whatever the capped value happens to be. Non-finite and
  * negative inputs grade `success` — absence of a measurable load is not a warning state.
  */
-export function utilizationTone(percent: number): UtilizationTone {
-  if (percent >= CRITICAL_AT_PERCENT) {
+export function utilizationTone(
+  percent: number,
+  thresholds: UtilizationThresholds = DEFAULT_THRESHOLDS,
+): UtilizationTone {
+  if (percent >= thresholds.criticalAt) {
     return 'danger';
   }
-  return percent >= WARN_AT_PERCENT ? 'warning' : 'success';
+  return percent >= thresholds.warnAt ? 'warning' : 'success';
 }

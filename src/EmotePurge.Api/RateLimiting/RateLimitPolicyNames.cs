@@ -29,6 +29,13 @@ internal static class RateLimitPolicyNames
     internal const string PublicHealth = "PublicHealth";
 
     /// <summary>
+    /// The anonymous <c>GET /api/health/channels</c> (#516), partitioned by remote IP like
+    /// <see cref="PublicHealth"/> but with its own counter: the two monitors poll on their own cadence,
+    /// and a spent budget on one must never turn the other's answer into a 429.
+    /// </summary>
+    internal const string PublicChannelHealth = "PublicChannelHealth";
+
+    /// <summary>
     /// The anonymous legal-pages endpoints (<c>GET /api/legal/availability</c>,
     /// <c>GET /api/legal/{kind}/{language}</c>, issue #247), partitioned by remote IP like
     /// <see cref="PublicHealth"/> — but its own policy, not a share of it. <c>PublicHealth</c>'s

@@ -446,6 +446,45 @@ public class RateLimitRejectionTests : IClassFixture<ApiFactory>
     }
 
     /// <summary>
+    /// #516: <c>GET /api/health/channels</c> has a budget of its own. Spending it yields 429 there while
+    /// <c>GET /api/health</c> from the same IP keeps answering its normal status (here 503, no snapshot),
+    /// and the other way round: exhausting <c>PublicHealth</c> leaves the channel check untouched.
+    /// </summary>
+    [Fact]
+    public async Task PublicChannelHealthBudget_ExhaustsIndependently_FromPublicHealth()
+    {
+        var joinHealth = Substitute.For<IChannelJoinHealthService>();
+        joinHealth.IsAlarmingAsync(Arg.Any<CancellationToken>()).Returns(false);
+        using var factory = CreateFactory(
+            new Dictionary<string, string>
+            {
+                ["RateLimiting:PublicChannelHealth:PermitLimit"] = TestPermitLimit.ToString(),
+                ["RateLimiting:PublicHealth:PermitLimit"] = TestPermitLimit.ToString(),
+            },
+            builder => builder.ConfigureTestServices(services => services.AddSingleton(joinHealth)));
+        using var client = factory.CreateClient();
+
+        using var rejected = await ExhaustAsync(() => client.GetAsync("/api/health/channels"), TestPermitLimit + 2);
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+
+        using var health = await client.GetAsync("/api/health");
+        Assert.NotEqual(HttpStatusCode.TooManyRequests, health.StatusCode);
+
+        // And the reverse, on a fresh host: a spent PublicHealth leaves the channel check alone.
+        using var second = CreateFactory(
+            new Dictionary<string, string>
+            {
+                ["RateLimiting:PublicHealth:PermitLimit"] = TestPermitLimit.ToString(),
+            },
+            builder => builder.ConfigureTestServices(services => services.AddSingleton(joinHealth)));
+        using var secondClient = second.CreateClient();
+        using var healthRejected = await ExhaustAsync(() => secondClient.GetAsync("/api/health"), TestPermitLimit + 2);
+        Assert.Equal(HttpStatusCode.TooManyRequests, healthRejected.StatusCode);
+        using var channels = await secondClient.GetAsync("/api/health/channels");
+        Assert.Equal(HttpStatusCode.OK, channels.StatusCode);
+    }
+
+    /// <summary>
     /// A host of its own whose ChannelResync budget is spent in two requests. Its own, because a rate
     /// limiter is host state: a shared one would carry spent permits between test cases, and a
     /// logging provider has to be registered at startup anyway.

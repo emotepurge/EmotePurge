@@ -7,7 +7,9 @@ using TwitchLib.Client;
 using TwitchLib.Client.Enums;
 using TwitchLib.Client.Events;
 using TwitchLib.Client.Models;
+using Microsoft.Extensions.Configuration;
 using TwitchLib.Communication.Clients;
+using TwitchLib.Communication.Interfaces;
 using TwitchLib.Communication.Models;
 
 namespace EmotePurge.Worker;
@@ -29,8 +31,20 @@ public class TwitchChatManager(
     IExcludedChatterFilter excludedChatterFilter,
     WorkerStats stats,
     WishOptions wishOptions,
-    IRewardObservationSink rewardObservationSink) : ITwitchChatManager
+    IRewardObservationSink rewardObservationSink,
+    TimeProvider? timeProvider = null,
+    Func<IClient>? transportFactory = null,
+    IConfiguration? configuration = null) : ITwitchChatManager
 {
+    // Log events of a join that did not complete (plan #516, E2/E8). The names are what the log viewer
+    // filters on (event:TwitchJoinRejected); the numbers only keep the pair distinct.
+    internal static readonly EventId JoinRejectedEvent = new(51601, "TwitchJoinRejected");
+    internal static readonly EventId JoinUnconfirmedEvent = new(51602, "TwitchJoinUnconfirmed");
+
+    // A PART of ours Twitch never echoed blocks a re-wanted channel on this client; the convergence net
+    // asks the watchdog for a rebuild (51603 is ChannelCapacityReached in ChannelService).
+    internal static readonly EventId PartEchoMissingEvent = new(51604, "TwitchPartEchoMissing");
+
     // Twitch permits 20 joins per 10 seconds on a non-verified connection, and TwitchLib paces them
     // not at all: JOINs bypass its ThrottlingService (that one only covers chat messages) and its
     // queue advances as fast as confirmations arrive — 126–231ms per channel, measured against
@@ -77,13 +91,29 @@ public class TwitchChatManager(
     // branch in OnMessageReceived is never entered, not even for a line with the reward tag (AK65).
     private readonly bool _wishCaptureActive = wishOptions.CaptureActive;
 
-    // Desired channels, not confirmed ones — the value records whether Twitch confirmed the JOIN.
-    // Tracking intent instead of success is what makes a failed join retryable (see TryJoinAsync
-    // and EnsureJoinedAsync).
-    private readonly ConcurrentDictionary<string, bool> _desiredChannels = new(StringComparer.OrdinalIgnoreCase);
+    // Window in which a second JOIN for the same channel on the same wire is the tail of one attempt,
+    // not a new one: TwitchLib's own join timeout is 5s (see JoinConfirmationTimeout).
+    private static readonly TimeSpan SameAttemptWindow = TimeSpan.FromSeconds(5);
+
+    // The pass-through transport decorator of each client, so that WireUpClient can attach the hook
+    // (it knows the TwitchClient, CreateClient builds the pair). Weak: a retired client goes away.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<TwitchClient, WireObservingClient> WireObservers = new();
+
+    // Where every timestamp that reaches the tracker comes from; the tracker itself has no clock.
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
+
+    // Desired channels, not confirmed ones. Tracking intent instead of success is what makes a failed
+    // join retryable (see TryJoinAsync and EnsureJoinedAsync). The tracker also owns the connected
+    // flag for its accrual clock (plan #516, E1): that flag is set at every SetConnected call below,
+    // inside the same lock (_clientStateGate), and an intent is inserted under _intentGate. Both
+    // paths end in the tracker's own latch, and *there* RecordIntent reads the connected flag — so
+    // either the handshake starts the new clock or the insert does, never neither and never a clock
+    // that runs while disconnected. Latch order: _intentGate or _clientStateGate outside, the
+    // tracker's own lock innermost; the tracker never calls out.
+    private readonly ChannelJoinTracker _tracker = new();
 
     // Which channels were left since a given roster read (see ChannelLeaveLedger). Both it and every
-    // add to or removal from _desiredChannels in JoinChannelAsync, EnsureJoinedAsync and
+    // add to or removal from the tracker's intents in JoinChannelAsync, EnsureJoinedAsync and
     // LeaveChannelAsync run under _intentGate: a LEAVE landing between EnsureJoinedAsync's "was it
     // left?" and its "record the intent" would otherwise be undone by exactly the stale JOIN the
     // ledger exists to stop. No await runs inside it. The confirmation flips (OnJoinedChannel, the
@@ -95,7 +125,7 @@ public class TwitchChatManager(
     // one answers "is the socket alive", this one answers "is *this* channel alive" — the question
     // a support case actually asks, and one the global figure hides: a single busy channel keeps it
     // fresh while thirty others sit silently unjoined. Same OrdinalIgnoreCase comparer as
-    // _desiredChannels above, or `HandOfBlood` and `handofblood` become two roster rows.
+    // the tracker's names, or `HandOfBlood` and `handofblood` become two roster rows.
     private readonly ConcurrentDictionary<string, long> _lastMessageByChannelTicks = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _joinGate = new(1, 1);
     private readonly SemaphoreSlim _reconnectLock = new(1, 1);
@@ -116,15 +146,34 @@ public class TwitchChatManager(
     // runs inside any of its critical sections (grep for `lock (_clientStateGate)` — every one of
     // them is straight-line field work), and nothing that holds it ever acquires _reconnectLock, so
     // it is only ever the *inner* latch (ReconnectOnceAsync takes _reconnectLock first, then this)
-    // and there is no cycle to deadlock on. The only other latch taken from inside it is the signal
-    // slot's own, always in that direction and never the reverse.
+    // and there is no cycle to deadlock on. The only other latches taken from inside it are the
+    // signal slot's and the join tracker's own, always in that direction and never the reverse.
+    //
+    // Third property (plan #516, E2): nothing may call *synchronously into TwitchLib* while holding
+    // it. The wire observer (WireObservingClient) takes this gate from inside TwitchLib's send path
+    // — our own join loop, or TwitchLib's read loop advancing its join queue — so a gate holder that
+    // called a TwitchLib method which sends (JoinChannelAsync, LeaveChannelAsync, ConnectAsync) would
+    // wait for a send that waits for the gate. Checked against every critical section here: they
+    // only detach/attach handlers (Initialize and the event add/remove do not send), swap fields,
+    // offer signals and write tracker state.
     private readonly Lock _clientStateGate = new();
+
+    // Per channel: when a JOIN for it last went out on the wire (UTC ticks), for the same-attempt
+    // guard in OnOutgoingLine. Only touched under _clientStateGate; cleared on every disconnect.
+    private readonly Dictionary<string, long> _lastWireJoinTicks = new(StringComparer.OrdinalIgnoreCase);
 
     // The one place a loss becomes a rebuild. Deliberately not injected: it is this manager's own
     // state, and the loop reaches it only through WaitForReconnectRequestAsync.
     private readonly TwitchReconnectSignalSlot _signalSlot = new();
 
-    private volatile TwitchClient _client = CreateClient(loggerFactory);
+    // Logins whose outgoing JOINs the transport decorator swallows — a probe for the "Twitch never
+    // answers" case, set only by Worker:Debug:SilentJoinChannels (plan #516, E10). Empty in production.
+    private readonly HashSet<string> _silentJoinChannels = ReadSilentJoinChannels(configuration);
+
+    // The boot client. A field initialiser cannot read _silentJoinChannels, so the (tiny) key is read
+    // once more here; every rebuild below uses the field.
+    private volatile TwitchClient _client = CreateClient(
+        loggerFactory, transportFactory, ReadSilentJoinChannels(configuration));
 
     // Counted from 1 for the boot client and never reset: it is both the key of the signal slot's
     // generation rule and the rebuild id in every log line about a connection.
@@ -152,6 +201,11 @@ public class TwitchChatManager(
 
     public bool IsConnected => Volatile.Read(ref _connected) == 1;
 
+    // Test access to the current client and the tracker (InternalsVisibleTo the worker tests only).
+    internal TwitchClient CurrentClient => _client;
+
+    internal ChannelJoinTracker Tracker => _tracker;
+
     public DateTime? LastMessageReceivedUtc => ReadTimestamp(ref _lastMessageReceivedUtcTicks);
 
     public DateTime? LastFrameReceivedUtc => ReadTimestamp(ref _lastFrameReceivedUtcTicks);
@@ -160,6 +214,13 @@ public class TwitchChatManager(
 
     public void Initialize()
     {
+        if (_silentJoinChannels.Count > 0)
+        {
+            logger.LogWarning(
+                "Worker:Debug:SilentJoinChannels is set — outgoing JOINs for {Count} channel(s) are dropped on purpose (live probe only).",
+                _silentJoinChannels.Count);
+        }
+
         // Under the gate like every other wiring step, although nothing races with it at boot:
         // _unwireCurrentClient and _client are the gate's state, and one unguarded writer is how
         // an invariant quietly stops being one.
@@ -208,7 +269,7 @@ public class TwitchChatManager(
             // A roster-checked JOIN is newer than any stale roster read still in flight, so it
             // clears the channel's leave entry rather than being blocked by it.
             _leaveLedger.Forget(channelName);
-            _desiredChannels.AddOrUpdate(channelName, false, (_, confirmed) => confirmed);
+            _tracker.RecordIntent(channelName, _time.GetUtcNow());
         }
 
         await TryJoinAsync(channelName, TwitchJoinSource.Command, CancellationToken.None);
@@ -229,7 +290,7 @@ public class TwitchChatManager(
         // never confirmed.
         lock (_intentGate)
         {
-            if (_desiredChannels.TryGetValue(channelName, out var confirmed) && confirmed)
+            if (_tracker.IsConfirmed(channelName))
             {
                 return;
             }
@@ -246,7 +307,45 @@ public class TwitchChatManager(
                 return;
             }
 
-            _desiredChannels.AddOrUpdate(channelName, false, (_, stored) => stored);
+            _tracker.RecordIntent(channelName, _time.GetUtcNow());
+        }
+
+        // A PART of ours that Twitch never echoed has expired after holding back a JOIN echo of this
+        // still wanted, unconfirmed channel: TwitchLib took that echo, lists the channel as joined and
+        // drops a plain JOIN silently, so no further echo is coming on this client. Repairing that by
+        // hand would race TwitchLib's own channel list, so the watchdog rebuilds the client instead;
+        // the successor starts with an empty list, the rebuild's disconnect clears every pending PART,
+        // and the rejoin round sends a real JOIN. An expired PART that held nothing back is only
+        // dropped, and the JOIN below goes out as usual. The marker is reported once, and the signal
+        // slot coalesces with any loss already waiting.
+        //
+        // The marker is taken and the generation read under _clientStateGate (not _intentGate; the
+        // two are never nested): every client swap clears all pending PARTs inside that same gate, so
+        // a marker found there belongs to the client current at that moment. The request carries that
+        // generation, not the one current when it is offered — if the client is replaced in between,
+        // the slot discards it, because the rebuild it asks for has already happened.
+        int? partOwnerGeneration = null;
+        lock (_clientStateGate)
+        {
+            if (_tracker.TakeExpiredPartWithSuppressedEcho(channelName, _time.GetUtcNow()))
+            {
+                partOwnerGeneration = Volatile.Read(ref _clientGeneration);
+            }
+        }
+
+        if (partOwnerGeneration is { } generation)
+        {
+            logger.LogWarning(
+                PartEchoMissingEvent,
+                "A PART of ours was never echoed and keeps a re-wanted channel from being confirmed — requesting a client rebuild.");
+            logger.LogDebug("Rebuild requested for {Channel} (PART echo missing).", channelName);
+            lock (_clientStateGate)
+            {
+                OfferSignal(
+                    generation,
+                    TwitchSessionEndReason.PartEchoMissing,
+                    $"PART unechoed for more than {ChannelJoinTracker.PartEchoGrace.TotalSeconds}s.");
+            }
         }
 
         await TryJoinAsync(channelName, TwitchJoinSource.ConvergenceNet, CancellationToken.None);
@@ -262,7 +361,7 @@ public class TwitchChatManager(
         lock (_intentGate)
         {
             _leaveLedger.RecordLeave(channelName);
-            _desiredChannels.TryRemove(channelName, out _);
+            _tracker.Remove(channelName);
         }
 
         // A left channel's last message time would otherwise outlive it for the process lifetime and
@@ -294,18 +393,22 @@ public class TwitchChatManager(
     public IReadOnlyList<TwitchRosterEntry> GetRoster()
     {
         // Built from the desired set, not from the message dictionary: a channel we want and never
-        // got a single message from is exactly the row worth showing, and it exists only here.
-        var roster = new List<TwitchRosterEntry>(_desiredChannels.Count);
-        foreach (var (channelName, joinConfirmed) in _desiredChannels)
+        // got a single message from is exactly the row worth showing, and it exists only here. One
+        // tracker snapshot, so confirmation, waited seconds and reason of a row are one consistent
+        // reading (already ordered by name, ordinal).
+        var states = _tracker.Snapshot(_time.GetUtcNow());
+        var roster = new List<TwitchRosterEntry>(states.Count);
+        foreach (var state in states)
         {
-            var ticks = _lastMessageByChannelTicks.TryGetValue(channelName, out var stored) ? stored : 0;
+            var ticks = _lastMessageByChannelTicks.TryGetValue(state.Name, out var stored) ? stored : 0;
             roster.Add(new TwitchRosterEntry(
-                channelName,
-                joinConfirmed,
-                ticks == 0 ? null : new DateTime(ticks, DateTimeKind.Utc)));
+                state.Name,
+                state.Confirmed,
+                ticks == 0 ? null : new DateTime(ticks, DateTimeKind.Utc),
+                state.Confirmed ? null : (int)Math.Min(int.MaxValue, Math.Floor(state.UnconfirmedSeconds)),
+                state.Reason));
         }
 
-        roster.Sort(static (left, right) => string.CompareOrdinal(left.ChannelName, right.ChannelName));
         return roster;
     }
 
@@ -348,7 +451,6 @@ public class TwitchChatManager(
                 UnwireClient();
                 SetConnected(false);
                 Interlocked.Exchange(ref _sessionStartedUtcTicks, 0);
-                MarkAllChannelsUnconfirmed();
 
                 // Condemn the generation being retired — every attempt, successful or failed, and
                 // not only the one whose signal the loop took out of the slot. A failed attempt's
@@ -361,7 +463,7 @@ public class TwitchChatManager(
                 // Step 3 — a fresh object, never OpenAsync() on the old one: a reused client drags
                 // along TwitchLib's half-emptied join queue and its _currentlyJoiningChannels flag,
                 // while a new one has an empty queue and exactly one read loop (E3).
-                newClient = CreateClient(loggerFactory);
+                newClient = CreateClient(loggerFactory, transportFactory, _silentJoinChannels);
                 // The generation is drawn before wiring, because the handlers capture it
                 // (WireUpClient) rather than reading it when they fire.
                 generation = Interlocked.Increment(ref _clientGeneration);
@@ -386,7 +488,7 @@ public class TwitchChatManager(
 
     public async Task<TwitchRejoinOutcome> RejoinDesiredChannelsAsync(CancellationToken ct)
     {
-        var channels = _desiredChannels.Keys.ToArray();
+        var channels = _tracker.Names().ToArray();
         if (channels.Length == 0)
         {
             return new TwitchRejoinOutcome(0, 0, 0, false);
@@ -529,7 +631,7 @@ public class TwitchChatManager(
             // Re-checked *after* the gate, immediately before sending: a LEAVE that arrives while
             // this join waited its turn would otherwise still be joined, and nobody would ever part
             // it again — the intent it would be parted by is already gone (G5, R9).
-            if (!_desiredChannels.ContainsKey(channelName))
+            if (!_tracker.Contains(channelName))
             {
                 logger.LogDebug(
                     "JOIN für {Channel} verworfen — der Channel ist zwischenzeitlich nicht mehr gewünscht.",
@@ -621,10 +723,11 @@ public class TwitchChatManager(
 
     private bool AllConfirmed(string[] channels)
     {
+        var states = StatesByName();
         foreach (var channelName in channels)
         {
             // A channel that left the desired set mid-round is not pending — it is gone.
-            if (_desiredChannels.TryGetValue(channelName, out var confirmed) && !confirmed)
+            if (states.TryGetValue(channelName, out var confirmed) && !confirmed)
             {
                 return false;
             }
@@ -635,11 +738,12 @@ public class TwitchChatManager(
 
     private TwitchRejoinOutcome TallyRejoin(string[] channels, bool aborted)
     {
+        var states = StatesByName();
         var desired = 0;
         var confirmed = 0;
         foreach (var channelName in channels)
         {
-            if (!_desiredChannels.TryGetValue(channelName, out var joinConfirmed))
+            if (!states.TryGetValue(channelName, out var joinConfirmed))
             {
                 // Left mid-round: counted in neither figure, so a deliberate LEAVE can never show
                 // up as an unconfirmed channel. The round then closes as "N-1 gewünscht,
@@ -655,6 +759,19 @@ public class TwitchChatManager(
         }
 
         return new TwitchRejoinOutcome(desired, confirmed, desired - confirmed, aborted);
+    }
+
+    // One tracker reading as name → confirmed, so a round's figures come from a single consistent view.
+    private Dictionary<string, bool> StatesByName()
+    {
+        var states = _tracker.Snapshot(_time.GetUtcNow());
+        var byName = new Dictionary<string, bool>(states.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var state in states)
+        {
+            byName[state.Name] = state.Confirmed;
+        }
+
+        return byName;
     }
 
     public Task SimulateServerReconnectAsync() => _client.OnReadLineTestAsync(":tmi.twitch.tv RECONNECT");
@@ -791,12 +908,13 @@ public class TwitchChatManager(
         var connected = Bind<OnConnectedEventArgs>(_ => OnConnected(client, generation));
         var reconnected = Bind<OnConnectedEventArgs>(_ => OnReconnected(client, generation));
         var disconnected = Bind<OnDisconnectedArgs>(_ => OnDisconnected(client, generation));
-        var joinConfirmationFailed = Bind<OnFailureToReceiveJoinConfirmationArgs>(OnFailureToReceiveJoinConfirmation);
+        var joinConfirmationFailed = Bind<OnFailureToReceiveJoinConfirmationArgs>(
+            e => OnFailureToReceiveJoinConfirmation(client, generation, e));
         var connectionError = Bind<OnConnectionErrorArgs>(e => OnConnectionError(client, generation, e));
         var joinedChannel = Bind<OnJoinedChannelArgs>(e => OnJoinedChannel(client, generation, e));
-        var leftChannel = Bind<OnLeftChannelArgs>(OnLeftChannel);
+        var leftChannel = Bind<OnLeftChannelArgs>(e => OnLeftChannel(client, generation, e));
         var messageReceived = Bind<OnMessageReceivedArgs>(OnMessageReceived);
-        var sendReceiveData = Bind<OnSendReceiveDataArgs>(OnSendReceiveData);
+        var sendReceiveData = Bind<OnSendReceiveDataArgs>(e => OnSendReceiveData(client, generation, e));
 
         client.OnConnected += connected;
         client.OnReconnected += reconnected;
@@ -807,6 +925,15 @@ public class TwitchChatManager(
         client.OnLeftChannel += leftChannel;
         client.OnMessageReceived += messageReceived;
         client.OnSendReceiveData += sendReceiveData;
+
+        // The wire hook: bound to this client and generation like every handler above. The decorator
+        // exists for every client CreateClient builds; a client without one (nothing builds it) simply
+        // reports no attempts.
+        var wire = WireObservers.TryGetValue(client, out var observer) ? observer : null;
+        if (wire is not null)
+        {
+            wire.Hook = (command, channel) => OnOutgoingChannelCommand(client, generation, command, channel);
+        }
 
         // The detach closure holds the very delegate instances registered above — see UnwireClient.
         _unwireCurrentClient = () =>
@@ -820,6 +947,10 @@ public class TwitchChatManager(
             client.OnLeftChannel -= leftChannel;
             client.OnMessageReceived -= messageReceived;
             client.OnSendReceiveData -= sendReceiveData;
+            if (wire is not null)
+            {
+                wire.Hook = null;
+            }
         };
     }
 
@@ -835,7 +966,7 @@ public class TwitchChatManager(
     /// </summary>
     private void UnwireClient() => _unwireCurrentClient?.Invoke();
 
-    private Task OnConnected(TwitchClient source, int generation)
+    internal Task OnConnected(TwitchClient source, int generation)
     {
         // Bound identity, same as every other handler below — but the guard here cannot go through
         // SignalFromHandler: this handler doesn't signal, it *sets* the very fields
@@ -883,7 +1014,7 @@ public class TwitchChatManager(
         return Task.CompletedTask;
     }
 
-    private Task OnDisconnected(TwitchClient source, int generation)
+    internal Task OnDisconnected(TwitchClient source, int generation)
     {
         // Identity first, before any state change or log line (same rule as OnConnected and
         // OnJoinedChannel): this handler flips the connection-wide flag and unconfirms every
@@ -909,7 +1040,6 @@ public class TwitchChatManager(
             // chat matching for every channel without a trace. Marking the channels unconfirmed
             // lets the rejoin round and EnsureJoinedAsync verify them again.
             SetConnected(false);
-            MarkAllChannelsUnconfirmed();
             logger.LogWarning("TwitchClient getrennt.");
             SignalFromHandler(source, generation, TwitchSessionEndReason.Disconnected, "TwitchLib meldet OnDisconnected.");
         }
@@ -917,17 +1047,78 @@ public class TwitchChatManager(
         return Task.CompletedTask;
     }
 
-    private Task OnFailureToReceiveJoinConfirmation(OnFailureToReceiveJoinConfirmationArgs e)
+    internal Task OnFailureToReceiveJoinConfirmation(
+        TwitchClient source, int generation, OnFailureToReceiveJoinConfirmationArgs e)
     {
-        // Since the rejoin left the read loop (E2), this line means again what it says: Twitch
-        // really did not confirm the join within TwitchLib's 5s window. Before the rebuild, our own
-        // throttled rejoin blocked that loop and produced this warning for joins whose confirmation
-        // had long arrived. The channel stays in _desiredChannels as unconfirmed, so the round's
-        // "K offen" figure counts it and EnsureJoinedAsync retries it.
-        logger.LogWarning(
-            "Twitch hat den Join für {Channel} nicht bestätigt. Details: {Details}",
-            e.Exception.Channel, e.Exception.Details);
+        // Two sources feed this callback (TwitchLib 4.0.1, pinned by TwitchJoinNoticeTwitchLibTests):
+        // the 5s timer, with Details == null, and msg_channel_suspended, with Twitch's text in Details.
+        // Only the timer is booked here. The suspension was booked from the raw NOTICE in
+        // OnSendReceiveData, which runs before TwitchLib sends its next queued JOIN; this callback
+        // arrives after that JOIN, possibly a retry for the same channel, and booking here would pin
+        // the rejection on the retry. Details is only ever tested for null; the text is neither read
+        // nor logged (plan #516, E2).
+        if (e.Exception.Details is not null)
+        {
+            return Task.CompletedTask;
+        }
+
+        var channel = e.Exception.Channel?.TrimStart('#') ?? string.Empty;
+        RecordJoinFailure(source, generation, channel, TwitchJoinFailureReasons.NoConfirmation);
         return Task.CompletedTask;
+    }
+
+    // Books a failure for the client that reported it and logs the outcome — identity check and booking
+    // in one critical section (like every state-changing handler), the log line outside it.
+    private void RecordJoinFailure(TwitchClient source, int generation, string channel, string reason)
+    {
+        JoinFailureOutcome outcome;
+        lock (_clientStateGate)
+        {
+            if (!ReferenceEquals(source, _client))
+            {
+                outcome = JoinFailureOutcome.Ignored;
+                logger.LogDebug(
+                    "Join failure ({Reason}) of an already replaced client (Client #{Generation}) discarded.",
+                    reason, generation);
+            }
+            else
+            {
+                outcome = _tracker.RecordFailure(channel, reason);
+                if (reason == TwitchJoinFailureReasons.ChannelSuspended)
+                {
+                    // TwitchLib drops this attempt on the same line and may send the next JOIN for the
+                    // channel right after it; that JOIN is a new attempt, not the tail of this one.
+                    _tracker.EndAttempt(channel);
+                }
+            }
+        }
+
+        switch (outcome)
+        {
+            case JoinFailureOutcome.Changed when reason == TwitchJoinFailureReasons.ConcurrentChannelLimit:
+                logger.LogError(
+                    JoinRejectedEvent,
+                    "Twitch rejected the join for {Channel}: {Reason}. The account is over its concurrent channel limit.",
+                    channel, reason);
+                break;
+            case JoinFailureOutcome.Changed when reason == TwitchJoinFailureReasons.NoConfirmation:
+                logger.LogWarning(
+                    JoinUnconfirmedEvent,
+                    "Twitch did not confirm the join for {Channel}: {Reason}.",
+                    channel, reason);
+                break;
+            case JoinFailureOutcome.Changed:
+                logger.LogWarning(
+                    JoinRejectedEvent,
+                    "Twitch rejected the join for {Channel}: {Reason}.",
+                    channel, reason);
+                break;
+            case JoinFailureOutcome.Repeated:
+                logger.LogDebug(
+                    "Join failure for {Channel} repeated: {Reason}.",
+                    channel, reason);
+                break;
+        }
     }
 
     private Task OnConnectionError(TwitchClient source, int generation, OnConnectionErrorArgs e)
@@ -988,7 +1179,7 @@ public class TwitchChatManager(
         return Task.CompletedTask;
     }
 
-    private Task OnJoinedChannel(TwitchClient source, int generation, OnJoinedChannelArgs e)
+    internal Task OnJoinedChannel(TwitchClient source, int generation, OnJoinedChannelArgs e)
     {
         // Same defect class as OnConnected, on a different field: _desiredChannels is keyed by
         // channel name only, not by client, so a stale confirmation from an abandoned-but-still-
@@ -1008,27 +1199,98 @@ public class TwitchChatManager(
             }
 
             // Only a confirmed join stops EnsureJoinedAsync from retrying it every minute. Under
-            // the gate together with the check, because MarkAllChannelsUnconfirmed runs inside the
+            // the gate together with the check, because the disconnect reset runs inside the
             // swap: a confirmation that passed its check just before it would otherwise be written
             // back *after* it and mark a channel confirmed that the successor never joined.
-            // TryUpdate deliberately does not insert: a confirmation arriving after a leave must
-            // not resurrect the channel as desired.
-            _desiredChannels.TryUpdate(e.Channel, true, false);
-            logger.LogInformation("Channel {Channel} gejoint.", e.Channel);
+            // MarkConfirmed deliberately does not insert, and only confirms inside an open attempt
+            // window (a JOIN of ours seen on the wire): a late echo after a leave and re-activation
+            // must not confirm the new wish (plan #516, R3-H3). Nor does an echo that arrives while our
+            // own PART is still pending: it answers a JOIN sent before that PART (Codex review, round 2).
+            if (_tracker.MarkConfirmed(e.Channel, _time.GetUtcNow()))
+            {
+                logger.LogInformation("Channel {Channel} gejoint.", e.Channel);
+            }
+            else
+            {
+                logger.LogDebug(
+                    "JOIN echo for {Channel} ignored — not wanted, already confirmed, no attempt open or our PART still pending.",
+                    e.Channel);
+            }
         }
 
         return Task.CompletedTask;
     }
 
-    private Task OnLeftChannel(OnLeftChannelArgs e)
+    internal Task OnLeftChannel(TwitchClient source, int generation, OnLeftChannelArgs e)
     {
+        // Our own PART echo. Identity-checked like the other state-changing handlers: the echo of a
+        // replaced client must not unconfirm a channel the successor joined. For a wanted, confirmed
+        // channel (Twitch parted us) MarkParted withdraws the confirmation so the convergence net joins
+        // it again; the echo of a PART we sent only clears that pending PART and leaves the wish, a
+        // newer one after a re-activation included, untouched (plan #516, R3-H3; Codex review, round 2).
+        lock (_clientStateGate)
+        {
+            if (!ReferenceEquals(source, _client))
+            {
+                logger.LogDebug(
+                    "Left {Channel} (Client #{Generation}) — already replaced client, discarded.",
+                    e.Channel, generation);
+                return Task.CompletedTask;
+            }
+
+            _tracker.MarkParted(e.Channel, _time.GetUtcNow());
+        }
+
         // Named only at Debug, like the rest of the leave path (see LeaveChannelAsync).
         logger.LogInformation("Left a channel.");
         logger.LogDebug("Left {Channel}.", e.Channel);
         return Task.CompletedTask;
     }
 
-    private Task OnSendReceiveData(OnSendReceiveDataArgs e)
+    // Runs inline in TwitchLib's send path (see the _clientStateGate comment for the latch rules).
+    // A JOIN on the wire opens the attempt window for a wanted, unconfirmed channel; a PART closes it
+    // and stays pending in the tracker until its echo.
+    internal void OnOutgoingChannelCommand(TwitchClient source, int generation, OutgoingChannelCommand command, string channel)
+    {
+        lock (_clientStateGate)
+        {
+            if (!ReferenceEquals(source, _client))
+            {
+                return;
+            }
+
+            OnOutgoingLine(command, channel);
+        }
+    }
+
+    // Precondition: the caller holds _clientStateGate and has checked the client identity.
+    private void OnOutgoingLine(OutgoingChannelCommand command, string channel)
+    {
+        if (command == OutgoingChannelCommand.Part)
+        {
+            _lastWireJoinTicks.Remove(channel);
+            _tracker.RecordPartSent(channel, _time.GetUtcNow());
+            return;
+        }
+
+        // TwitchLib queues a JOIN it has not sent yet without looking at that queue, so a channel
+        // joined twice in a row can reach the wire twice. The second line is the tail of the first
+        // attempt while that is still open and young: it must not clear a concrete reason (a ban
+        // notice) the first one already earned. Once the window has passed (TwitchLib's own timeout),
+        // or a suspended notice has ended the attempt (RecordJoinFailure closes it), a JOIN is a
+        // genuine new attempt again.
+        var nowTicks = _time.GetUtcNow().UtcTicks;
+        var sameAttempt = _lastWireJoinTicks.TryGetValue(channel, out var last)
+            && nowTicks - last < SameAttemptWindow.Ticks
+            && _tracker.IsAttemptOpen(channel);
+        _lastWireJoinTicks[channel] = nowTicks;
+        if (!sameAttempt)
+        {
+            _tracker.BeginAttempt(channel);
+        }
+    }
+
+    internal Task OnSendReceiveData(TwitchClient source, int generation, OnSendReceiveDataArgs e)
     {
         // Any received IRC line proves the socket is alive — including the server PING Twitch sends
         // roughly every five minutes even when every joined channel is silent. This is the liveness
@@ -1036,10 +1298,29 @@ public class TwitchChatManager(
         // Raised inline from TwitchClient's receive loop for every line, and a synchronous throw
         // here would sever the multicast chain before TwitchLib's own handlers run (verified against
         // TwitchLib.Client 4.0.1, _client_OnMessage) — so this handler must stay allocation-free and
-        // exception-free: one branch, one Interlocked store.
+        // exception-free: one branch, one Interlocked store, and for NOTICE lines only the join-failure booking below.
         if (e.Direction == SendReceiveDirection.Received)
         {
             Interlocked.Exchange(ref _lastFrameReceivedUtcTicks, DateTime.UtcNow.Ticks);
+
+            // The join notices: the concurrent-channel limit and a ban, which TwitchLib hands to no
+            // failure callback, and a suspended channel, which it hands over only after it has already
+            // sent the next queued JOIN. This line runs before TwitchLib parses the line, so it still
+            // sees the attempt the notice answers. One allocation-free command test per line; only a
+            // NOTICE reaches the parser and the gate.
+            // Must never throw (see above), hence the catch.
+            try
+            {
+                if (TwitchJoinNoticeParser.IsNotice(e.Data)
+                    && TwitchJoinNoticeParser.TryParse(e.Data, out var reason, out var channel))
+                {
+                    RecordJoinFailure(source, generation, channel, reason);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Join notice handling failed.");
+            }
         }
 
         return Task.CompletedTask;
@@ -1165,17 +1446,44 @@ public class TwitchChatManager(
         return Task.CompletedTask;
     }
 
-    private void MarkAllChannelsUnconfirmed()
+    // Precondition: the caller holds _clientStateGate. The tracker's connected flag moves with the
+    // manager's in the same critical section (plan #516, E1). Going to false is also the former
+    // "mark every channel unconfirmed": the tracker freezes the clocks, unconfirms all channels and
+    // closes all attempts.
+    private void SetConnected(bool value)
     {
-        foreach (var channelName in _desiredChannels.Keys)
+        Interlocked.Exchange(ref _connected, value ? 1 : 0);
+        var now = _time.GetUtcNow();
+        if (value)
         {
-            _desiredChannels.TryUpdate(channelName, false, true);
+            _tracker.SetConnected(now);
+        }
+        else
+        {
+            _tracker.SetDisconnected(now);
+            _lastWireJoinTicks.Clear();
         }
     }
 
-    private void SetConnected(bool value) => Interlocked.Exchange(ref _connected, value ? 1 : 0);
+    private static HashSet<string> ReadSilentJoinChannels(IConfiguration? configuration)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var raw = configuration?["Worker:Debug:SilentJoinChannels"];
+        if (!string.IsNullOrWhiteSpace(raw))
+        {
+            foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                set.Add(part.TrimStart('#').ToLowerInvariant());
+            }
+        }
 
-    private static TwitchClient CreateClient(ILoggerFactory loggerFactory)
+        return set;
+    }
+
+    private static TwitchClient CreateClient(
+        ILoggerFactory loggerFactory,
+        Func<IClient>? transportFactory,
+        IReadOnlySet<string> silentJoinChannels)
     {
         // TwitchClient hands this factory to its own internal ILogger<TwitchClient> (category
         // TwitchLib.Client.TwitchClient) and logs a parse failure with the raw, unredacted IRC line
@@ -1183,8 +1491,9 @@ public class TwitchChatManager(
         // Wrapping here, not swapping the factory in DI, keeps every other logger in the process
         // (including this class's own) unaffected.
         var redactingLoggerFactory = new RedactingTwitchClientLoggerFactory(loggerFactory);
-        return new TwitchClient(
-            client: new WebSocketClient(
+        // The transport is replaceable for tests (plan #516, T3); production always builds the real
+        // WebSocketClient, and either way it sits behind the observing decorator.
+        var wire = new WireObservingClient(transportFactory?.Invoke() ?? new WebSocketClient(
                 // NoReconnectionPolicy does not mean "never reconnect", it means "exactly one
                 // connect attempt per object": verified against TwitchLib.Communication 2.0.1, it
                 // is ReconnectionPolicy(reconnectInterval: 0, maxAttempts: 1), and
@@ -1197,8 +1506,10 @@ public class TwitchChatManager(
                 // attempts was silently exhausted, leaving the worker offline for >45min — is
                 // structurally impossible rather than merely fixed.
                 new ClientOptions(new NoReconnectionPolicy()),
-                redactingLoggerFactory.CreateLogger<WebSocketClient>()),
-            loggerFactory: redactingLoggerFactory);
+                redactingLoggerFactory.CreateLogger<WebSocketClient>()), silentJoinChannels);
+        var client = new TwitchClient(client: wire, loggerFactory: redactingLoggerFactory);
+        WireObservers.Add(client, wire);
+        return client;
     }
 
     /// <summary>

@@ -64,5 +64,18 @@ public static class WorkerHealthEndpoints
                 ? StatusCodes.Status200OK
                 : StatusCodes.Status503ServiceUnavailable);
         }).RequireRateLimiting(RateLimitPolicyNames.PublicHealth);
+
+        // The channel-level twin (#516): 200 while every channel the worker is meant to be in is
+        // confirmed or still within its grace, 503 when one is overdue or the verdict cannot be
+        // reached. Payload-free like /api/health, with a counter of its own. The verdict (5 s cache,
+        // grace, exclusions) lives in IChannelJoinHealthService; the handler only maps it. Never a
+        // container HEALTHCHECK target: a channel-level fault must not restart a healthy container.
+        app.MapGet("/api/health/channels", async (IChannelJoinHealthService joinHealth, CancellationToken ct) =>
+        {
+            var alarming = await joinHealth.IsAlarmingAsync(ct);
+            return Results.StatusCode(alarming
+                ? StatusCodes.Status503ServiceUnavailable
+                : StatusCodes.Status200OK);
+        }).RequireRateLimiting(RateLimitPolicyNames.PublicChannelHealth);
     }
 }

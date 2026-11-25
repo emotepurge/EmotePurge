@@ -483,6 +483,7 @@
       "title": "Channel-Roster",
       "status": {
         "complete": "Vollständig",
+        "failing": "Fehlerhaft",
         "incomplete": "Lückenhaft",
         "starting": "Startet",
         "stale": "Veraltet",
@@ -497,13 +498,42 @@
       "ircConfirmed": "IRC-Join bestätigt",
       "sevenTvAcknowledged": "7TV-Subscription bestätigt",
       "worker": "Worker-Instanz",
-      "joinBudget": "Unser Join-Budget",
-      "joinBudgetWarning": "Das Join-Budget ist zu {{percent}} % ausgeschöpft.",
-      "joinBudgetCritical": "Das Join-Budget ist zu {{percent}} % ausgeschöpft — vor weiteren Channels prüfen.",
-      "joinBudgetExceeded": "Mehr getrackte Channels als Join-Budget ({{tracked}} / {{budget}}).",
-      "joinBudgetHint": "Selbst gesetzt, kein Riegel: Joins laufen auch über dieser Zahl weiter. Was noch bindet, ist die Rejoin-Dauer nach einem Reconnect (~0,6 s je Channel) — Dauerbetrieb, echtes Chat-Volumen und Worker-Speicher darüber hinaus sind ungemessen.",
-      "twitchLimitHint": "Twitchs eigenes Limit liegt bei {{limit}} gleichzeitig gejointen Chatrooms je Account (seit 2024-05-15, dev.twitch.tv/docs/chat).",
-      "missingIrc": "{{count}} Channel ohne bestätigten IRC-Join:",
+      "capacity": {
+        "label": "Aktive Channels gegen unsere Obergrenze",
+        "valueText": "{{tracked}} von {{max}} Channels",
+        "valueTextOver": "{{tracked}} von {{max}} Channels, {{excess}} über der Obergrenze",
+        "near": "Nahe an der Obergrenze: {{tracked}} von {{max}} Channels ({{percent}} %).",
+        "reached": "Obergrenze erreicht ({{tracked}} / {{max}}): neue Channels werden abgelehnt, globale Admins sind ausgenommen.",
+        "over": "Über der Obergrenze ({{tracked}} / {{max}}): nur globale Admins konnten noch hinzufügen.",
+        "rejectionsLink": "Abgelehnte Joins ansehen",
+        "hint": "Selbst gesetzte Obergrenze (Channels:MaxActiveChannels), kein Twitch-Limit. Sie verliert keine Daten, sie weist nur neue Channels ab.",
+        "twitchLimitHint": "Twitch nennt {{limit}} gleichzeitige Chatrooms je benanntem Konto (seit 2024-05-15). Unsere anonyme Verbindung wurde am 2026-11-25 bis 240 Channels ohne Ablehnung gemessen; undokumentiert, deshalb nur zur Orientierung."
+      },
+      "joinFailing": "{{count}} Channel ohne bestätigten Join über die Frist hinaus. Der Alarm läuft.",
+      "joinUnavailable": "Die Join-Auswertung ist gerade nicht möglich. Der Zustand der Joins ist unbekannt.",
+      "unjoined": {
+        "heading": "{{count}} Channel ohne Twitch-Bestätigung:",
+        "more": "und {{count}} weitere, die Liste ist gekürzt.",
+        "seconds": "seit {{value}} s",
+        "minutes": "seit {{value}} min",
+        "overdue": "überfällig",
+        "waiting": "wartet auf Bestätigung",
+        "excluded": "von Twitch abgelehnt, zählt nicht für den Alarm (Abhilfe: Channel verlassen)"
+      },
+      "joinFailure": {
+        "reason": {
+          "noConfirmation": "Keine Bestätigung von Twitch",
+          "channelSuspended": "Channel gesperrt oder gelöscht",
+          "concurrentChannelLimit": "Twitch-Limit gleichzeitiger Channels erreicht",
+          "banned": "Account im Channel gebannt",
+          "unknown": "Grund unbekannt"
+        }
+      },
+      "notInWorker": {
+        "heading": "{{count}} Channel nicht im Worker:",
+        "overdue": "überfällig, zählt für den Alarm",
+        "truncated": "Die Liste ist gekürzt."
+      },
       "missingSevenTv": "{{count}} Channel ohne bestätigte 7TV-Subscription:",
       "unknownToDatabase": "{{count}} Channel im Worker, die die Datenbank nicht mehr als aktiv führt:"
     },

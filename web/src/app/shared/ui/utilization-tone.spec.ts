@@ -38,4 +38,30 @@ describe('utilizationTone', () => {
   it('grades a negative percentage as success', () => {
     expect(utilizationTone(-5)).toBe('success');
   });
+
+  describe('with custom thresholds (channel capacity: 90 / 100)', () => {
+    const capacity = { warnAt: 90, criticalAt: 100 };
+
+    it('stays success just below the custom warn threshold', () => {
+      expect(utilizationTone(89.9, capacity)).toBe('success');
+    });
+
+    it('warns exactly at 90', () => {
+      expect(utilizationTone(90, capacity)).toBe('warning');
+    });
+
+    it('stays warning just below 100', () => {
+      expect(utilizationTone(99.9, capacity)).toBe('warning');
+    });
+
+    it('alarms exactly at 100 and above', () => {
+      expect(utilizationTone(100, capacity)).toBe('danger');
+      expect(utilizationTone(130, capacity)).toBe('danger');
+    });
+
+    it('leaves the default ladder untouched when no thresholds are passed', () => {
+      expect(utilizationTone(85)).toBe('warning');
+      expect(utilizationTone(96)).toBe('danger');
+    });
+  });
 });

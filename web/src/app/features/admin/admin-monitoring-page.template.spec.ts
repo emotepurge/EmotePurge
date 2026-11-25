@@ -148,7 +148,6 @@ const ROSTER: AdminRoster = {
   trackedChannelCount: 12,
   ceilings: {
     twitchConcurrentChannelLimit: 100,
-    twitchJoinBudgetChannels: 100,
     maxActiveChannels: 80,
   },
   bootRecoveryCompleted: true,

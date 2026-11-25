@@ -10,7 +10,17 @@ namespace EmotePurge.Worker;
 /// Last chat message seen in *this* channel. Null means none since the worker started, which for a
 /// quiet channel is normal and for a busy one is the strongest available hint that the join is dead.
 /// </param>
-public readonly record struct TwitchRosterEntry(string ChannelName, bool JoinConfirmed, DateTime? LastMessageUtc);
+/// <param name="UnconfirmedSeconds">
+/// Seconds this channel has waited unconfirmed, counting only time the client was connected (the
+/// accrual clock of <see cref="ChannelJoinTracker"/>); null once confirmed.
+/// </param>
+/// <param name="JoinFailureReason">Why the last join attempt failed, or null (see <c>TwitchJoinFailureReasons</c>).</param>
+public readonly record struct TwitchRosterEntry(
+    string ChannelName,
+    bool JoinConfirmed,
+    DateTime? LastMessageUtc,
+    int? UnconfirmedSeconds = null,
+    string? JoinFailureReason = null);
 
 /// <summary>
 /// One reconnect signal. <see cref="ClientGeneration"/> identifies the <c>TwitchClient</c> instance

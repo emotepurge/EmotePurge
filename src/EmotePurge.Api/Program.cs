@@ -220,6 +220,10 @@ builder.Services.AddRateLimiter(options =>
     // (every 30 s, from localhost) and the external uptime monitor (every 60 s).
     AddFixedWindowPolicy(RateLimitPolicyNames.PublicHealth, rateLimits.PublicHealth);
 
+    // GET /api/health/channels (#516): anonymous and IP-partitioned like PublicHealth, but its own
+    // counter, so neither monitor can exhaust the other's budget.
+    AddFixedWindowPolicy(RateLimitPolicyNames.PublicChannelHealth, rateLimits.PublicChannelHealth);
+
     // GET /api/legal/availability and GET /api/legal/{kind}/{language} (issue #247): anonymous and
     // IP-partitioned like PublicHealth above, but its own policy — see RateLimitPolicyNames.PublicLegal
     // for why the two must not share a counter (Codex Sol review of #247, P2).

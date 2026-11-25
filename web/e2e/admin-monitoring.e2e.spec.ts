@@ -157,6 +157,96 @@ test.describe('recorded errors row', () => {
   });
 });
 
+test.describe('roster card: join status and capacity (#516)', () => {
+  const rosterCard = (page: Page) =>
+    page.locator('section', { has: page.getByRole('heading', { name: 'Channel-Roster' }) });
+
+  async function open(page: Page, roster: Parameters<typeof mockAdminRoster>[1]): Promise<void> {
+    await installLiveStub(page);
+    await mockAuthMe(page, ADMIN_USER);
+    await mockWorkerHealth(page, 'connected');
+    await mockAdminHealth(page);
+    await mockAdminRoster(page, roster);
+    await mockAdminLogStatus(page);
+    await mockAdminDashboardLoad(page);
+    await mockAdminDashboardActivity(page);
+    await mockAdminRateLimits(page);
+    await mockAdminRateLimitsTrend(page);
+    await page.goto('/admin/monitoring');
+    await expect(page.getByRole('heading', { name: 'Batch-Flush' })).toBeVisible();
+  }
+
+  test('a silent overdue channel and a limit-rejected channel both show reason and state', async ({
+    page,
+  }) => {
+    await open(page, {
+      joinHealthStatus: 'failing',
+      ircUnjoined: [
+        {
+          channelName: 'stilleskanal',
+          unconfirmedSeconds: 900,
+          reason: 'noConfirmation',
+          overdue: true,
+          countsForAlarm: true,
+        },
+        {
+          channelName: 'vollerkanal',
+          unconfirmedSeconds: 200,
+          reason: 'concurrentChannelLimit',
+          overdue: true,
+          countsForAlarm: true,
+        },
+      ],
+    });
+
+    const unjoined = rosterCard(page).getByTestId('roster-unjoined');
+    await expect(unjoined).toContainText('#stilleskanal');
+    await expect(unjoined).toContainText('Keine Bestätigung von Twitch');
+    await expect(unjoined).toContainText('#vollerkanal');
+    await expect(unjoined).toContainText('Twitch-Limit gleichzeitiger Channels erreicht');
+    await expect(unjoined).toContainText('überfällig');
+    await expect(rosterCard(page)).toContainText('Fehlerhaft');
+  });
+
+  test('an excluded channel says it does not count for the alarm', async ({ page }) => {
+    await open(page, {
+      ircUnjoined: [
+        {
+          channelName: 'gebannt',
+          unconfirmedSeconds: 400,
+          reason: 'banned',
+          overdue: true,
+          countsForAlarm: false,
+        },
+      ],
+    });
+
+    await expect(rosterCard(page).getByTestId('roster-unjoined')).toContainText(
+      'zählt nicht für den Alarm',
+    );
+  });
+
+  test('an overdue channel without any worker intent is marked in "Nicht im Worker"', async ({
+    page,
+  }) => {
+    await open(page, {
+      missingIntent: [{ channelName: 'ohnewunsch', waitingSeconds: 900, overdue: true }],
+    });
+
+    const section = rosterCard(page).getByTestId('roster-not-in-worker');
+    await expect(section).toContainText('#ohnewunsch');
+    await expect(section).toContainText('überfällig, zählt für den Alarm');
+  });
+
+  test('90 % of the cap shows the warning line next to the bar', async ({ page }) => {
+    await open(page, { trackedChannelCount: 72, maxActiveChannels: 80 });
+
+    await expect(rosterCard(page).getByTestId('roster-capacity')).toContainText(
+      'Nahe an der Obergrenze',
+    );
+  });
+});
+
 test.describe('wish capture row (#486)', () => {
   const wishRow = (page: Page) =>
     page.locator('section', { has: page.getByRole('heading', { name: 'Wunsch-Erfassung' }) });

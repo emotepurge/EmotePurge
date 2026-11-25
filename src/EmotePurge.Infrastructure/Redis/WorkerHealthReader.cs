@@ -43,10 +43,9 @@ public class WorkerRosterReader(IConnectionMultiplexer connectionMultiplexer, IL
 {
     public async Task<WorkerRosterSnapshot?> ReadAsync(CancellationToken cancellationToken = default)
     {
-        RedisValue value;
         try
         {
-            value = await connectionMultiplexer.GetDatabase().StringGetAsync(WorkerHealthKeys.Roster);
+            return await ReadCoreAsync(strict: false);
         }
         catch (Exception ex) when (ex is RedisException or TimeoutException)
         {
@@ -57,13 +56,32 @@ public class WorkerRosterReader(IConnectionMultiplexer connectionMultiplexer, IL
             logger.LogWarning(ex, "Lesen des Worker-Roster-Snapshots fehlgeschlagen — behandle als fehlenden Key.");
             return null;
         }
+    }
 
-        if (value.IsNullOrEmpty)
+    public Task<WorkerRosterSnapshot?> ReadStrictAsync(CancellationToken cancellationToken = default) =>
+        ReadCoreAsync(strict: true);
+
+    private async Task<WorkerRosterSnapshot?> ReadCoreAsync(bool strict)
+    {
+        // Strict: no catch, and only an absent key is null. The join health check must tell a failed
+        // read (unavailable) from a missing key, which inside the Api's cold-start window is only
+        // "starting"; a key that is present but empty, JSON null or undecodable is a broken
+        // snapshot, not a missing one, and throws.
+        var value = await connectionMultiplexer.GetDatabase().StringGetAsync(WorkerHealthKeys.Roster);
+        if (value.IsNull)
         {
             return null;
         }
 
-        return JsonSerializer.Deserialize<WorkerRosterSnapshot>(value.ToString(), JsonSerializerOptions.Web);
+        if (!strict && value.IsNullOrEmpty)
+        {
+            return null;
+        }
+
+        var snapshot = JsonSerializer.Deserialize<WorkerRosterSnapshot>(value.ToString(), JsonSerializerOptions.Web);
+        return snapshot is null && strict
+            ? throw new InvalidOperationException("The worker roster key holds a value that is not a roster snapshot.")
+            : snapshot;
     }
 }
 

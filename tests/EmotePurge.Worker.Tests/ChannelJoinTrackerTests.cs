@@ -1,0 +1,730 @@
+using Xunit;
+using EmotePurge.Core.Services;
+using EmotePurge.Worker;
+
+namespace EmotePurge.Worker.Tests;
+
+public class ChannelJoinTrackerTests
+{
+    private static readonly DateTimeOffset T0 = new(2026, 11, 25, 12, 0, 0, TimeSpan.Zero);
+
+    private static DateTimeOffset At(double seconds) => T0.AddSeconds(seconds);
+
+    private static double Waiting(ChannelJoinTracker tracker, string name, double atSeconds) =>
+        tracker.Snapshot(At(atSeconds)).Single(s => s.Name == name).UnconfirmedSeconds;
+
+    private static ChannelJoinTracker Connected()
+    {
+        var tracker = new ChannelJoinTracker();
+        tracker.SetConnected(At(0));
+        return tracker;
+    }
+
+    [Fact]
+    public void IsAttemptOpen_FollowsTheWindow()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        Assert.False(tracker.IsAttemptOpen("a"));
+        Assert.False(tracker.IsAttemptOpen("unknown"));
+
+        tracker.BeginAttempt("a");
+        Assert.True(tracker.IsAttemptOpen("a"));
+
+        tracker.RecordPartSent("a", At(0));
+        Assert.False(tracker.IsAttemptOpen("a"));
+    }
+
+    // ---- accrual clock ----
+
+    [Fact]
+    public void Intent_WhileConnected_StartsRunningImmediately()
+    {
+        var tracker = Connected();
+
+        Assert.True(tracker.RecordIntent("a", At(10)));
+
+        Assert.Equal(5, Waiting(tracker, "a", 15));
+    }
+
+    [Fact]
+    public void Intent_ForExistingChannel_ChangesNothing()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+
+        Assert.False(tracker.RecordIntent("a", At(50)));
+
+        Assert.Equal(60, Waiting(tracker, "a", 60));
+    }
+
+    [Fact]
+    public void Intent_WhileDisconnected_DoesNotRun_ThenRunsFromConnect()
+    {
+        var tracker = new ChannelJoinTracker();
+        tracker.RecordIntent("a", At(0));
+
+        Assert.Equal(0, Waiting(tracker, "a", 100));
+
+        tracker.SetConnected(At(100));
+
+        Assert.Equal(7, Waiting(tracker, "a", 107));
+    }
+
+    [Fact]
+    public void LongDisconnect_RightAfterIntent_CountsZero()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(10));
+        tracker.SetDisconnected(At(10));
+
+        Assert.Equal(0, Waiting(tracker, "a", 100_000));
+    }
+
+    [Fact]
+    public void Accrual_SumsOnlyTheConnectedSections()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.SetDisconnected(At(10)); // 10 s counted
+        tracker.SetConnected(At(1_000));
+        tracker.SetDisconnected(At(1_005)); // +5
+        tracker.SetConnected(At(5_000));
+
+        Assert.Equal(15 + 3, Waiting(tracker, "a", 5_003));
+    }
+
+    [Fact]
+    public void SetConnected_Twice_DoesNotDoubleCount()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.SetConnected(At(50));
+
+        Assert.Equal(60, Waiting(tracker, "a", 60));
+    }
+
+    [Fact]
+    public void SetDisconnected_Twice_DoesNotDoubleAdd()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.SetDisconnected(At(10));
+        tracker.SetDisconnected(At(500));
+
+        Assert.Equal(10, Waiting(tracker, "a", 1_000));
+    }
+
+    [Fact]
+    public void Snapshot_MidSection_IncludesTheRunningPart()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.SetDisconnected(At(4));
+        tracker.SetConnected(At(100));
+
+        Assert.Equal(4 + 6, Waiting(tracker, "a", 106));
+    }
+
+    [Fact]
+    public void ClockGoingBackwards_YieldsZeroNeverNegative()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(100));
+
+        Assert.Equal(0, Waiting(tracker, "a", 50));
+
+        tracker.SetDisconnected(At(40));
+        Assert.Equal(0, Waiting(tracker, "a", 1_000));
+    }
+
+    [Fact]
+    public void FormerlyConfirmedChannel_StartsAtZeroAfterDisconnect()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.MarkConfirmed("a", At(1));
+        tracker.SetDisconnected(At(500));
+        tracker.SetConnected(At(600));
+
+        Assert.False(tracker.IsConfirmed("a"));
+        Assert.Equal(5, Waiting(tracker, "a", 605));
+    }
+
+    [Fact]
+    public void NeverConfirmedChannel_KeepsItsSumAcrossDisconnect()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.SetDisconnected(At(30));
+        tracker.SetConnected(At(90));
+
+        Assert.Equal(30, Waiting(tracker, "a", 90));
+    }
+
+    [Fact]
+    public void Confirmation_ResetsTheClock_AndClearsTheReason()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.RecordFailure("a", TwitchJoinFailureReasons.NoConfirmation);
+
+        Assert.True(tracker.MarkConfirmed("a", At(1)));
+
+        var state = tracker.Snapshot(At(99)).Single();
+        Assert.True(state.Confirmed);
+        Assert.Equal(0, state.UnconfirmedSeconds);
+        Assert.Null(state.Reason);
+    }
+
+    [Fact]
+    public void Remove_DropsTheEntry_AndALaterIntentStartsFresh()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+
+        Assert.True(tracker.Remove("a"));
+        Assert.False(tracker.Contains("a"));
+
+        tracker.RecordIntent("a", At(100));
+        Assert.Equal(10, Waiting(tracker, "a", 110));
+    }
+
+    [Fact]
+    public void Confirmation_AfterRemove_DoesNotInsert()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.Remove("a");
+
+        Assert.False(tracker.MarkConfirmed("a", At(1)));
+        Assert.False(tracker.Contains("a"));
+    }
+
+    [Fact]
+    public void Names_AreCaseInsensitive()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("HandOfBlood", At(0));
+
+        Assert.True(tracker.Contains("handofblood"));
+        Assert.False(tracker.RecordIntent("HANDOFBLOOD", At(1)));
+        tracker.BeginAttempt("HANDOFBLOOD");
+        Assert.True(tracker.MarkConfirmed("handofblood", At(1)));
+        Assert.True(tracker.IsConfirmed("HandOfBlood"));
+        Assert.Single(tracker.Names());
+    }
+
+    [Fact]
+    public void Snapshot_IsOrderedOrdinalByName()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("b", At(0));
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordIntent("c", At(0));
+
+        Assert.Equal(["a", "b", "c"], tracker.Snapshot(At(1)).Select(s => s.Name));
+    }
+
+    // ---- attempt window ----
+
+    [Fact]
+    public void Echo_WithoutOpenAttempt_DoesNotConfirm()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+
+        Assert.False(tracker.MarkConfirmed("a", At(1)));
+        Assert.False(tracker.IsConfirmed("a"));
+    }
+
+    [Fact]
+    public void Echo_AfterTimeoutInTheSameAttempt_StillConfirms()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.RecordFailure("a", TwitchJoinFailureReasons.NoConfirmation);
+
+        Assert.True(tracker.MarkConfirmed("a", At(1)));
+    }
+
+    [Fact]
+    public void PartOnTheWire_ClosesTheAttempt()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.RecordPartSent("a", At(0));
+
+        Assert.False(tracker.MarkConfirmed("a", At(1)));
+    }
+
+    [Fact]
+    public void BeginAttempt_OnConfirmedChannel_ChangesNothing()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.MarkConfirmed("a", At(1));
+
+        tracker.BeginAttempt("a");
+
+        Assert.True(tracker.IsConfirmed("a"));
+        Assert.False(tracker.MarkConfirmed("a", At(1)));
+    }
+
+    [Fact]
+    public void BeginAttempt_OnUnknownChannel_DoesNotInsert()
+    {
+        var tracker = Connected();
+
+        tracker.BeginAttempt("ghost");
+
+        Assert.False(tracker.Contains("ghost"));
+    }
+
+    [Fact]
+    public void Disconnect_ClosesAllAttempts()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.SetDisconnected(At(1));
+        tracker.SetConnected(At(2));
+
+        Assert.False(tracker.MarkConfirmed("a", At(1)));
+    }
+
+    [Fact]
+    public void LateEcho_AfterLeaveAndReactivation_DoesNotConfirmTheNewIntent()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.Remove("a");
+        tracker.RecordIntent("a", At(10)); // re-wanted, no JOIN on the wire yet
+
+        Assert.False(tracker.MarkConfirmed("a", At(1)));
+        Assert.False(tracker.IsConfirmed("a"));
+    }
+
+    // ---- PART echo ----
+
+    [Fact]
+    public void PartEcho_OnConfirmedChannel_WithdrawsTheConfirmation_ClockRuns()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.MarkConfirmed("a", At(1));
+
+        tracker.MarkParted("a", At(100));
+
+        Assert.False(tracker.IsConfirmed("a"));
+        Assert.Equal(8, Waiting(tracker, "a", 108));
+        // a new attempt is possible again
+        tracker.BeginAttempt("a");
+        Assert.True(tracker.MarkConfirmed("a", At(1)));
+    }
+
+    [Fact]
+    public void PartEcho_OnConfirmedChannel_WhileDisconnected_DoesNotRun()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.MarkConfirmed("a", At(1));
+        tracker.SetDisconnected(At(10));
+
+        // confirmation is already gone after the disconnect; the echo must not start a clock
+        tracker.MarkParted("a", At(20));
+
+        Assert.Equal(0, Waiting(tracker, "a", 1_000));
+    }
+
+    [Fact]
+    public void PartEcho_OnUnconfirmedChannel_LeavesClockAndAttemptUntouched()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+
+        tracker.MarkParted("a", At(50));
+
+        Assert.Equal(60, Waiting(tracker, "a", 60));
+        Assert.True(tracker.MarkConfirmed("a", At(1))); // attempt still open
+    }
+
+    [Fact]
+    public void PartEcho_OnUnknownChannel_DoesNothing()
+    {
+        var tracker = Connected();
+
+        tracker.MarkParted("ghost", At(1));
+
+        Assert.False(tracker.Contains("ghost"));
+    }
+
+    // ---- pending own PART (Codex review, round 2) ----
+
+    [Fact]
+    public void JoinEcho_WhileOurPartIsPending_BelongsToTheOldMembership_AndTheNewEchoConfirmsAfterThePartEcho()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.Remove("a");
+        tracker.RecordPartSent("a", At(0));
+        tracker.RecordIntent("a", At(10));
+        tracker.BeginAttempt("a");
+
+        Assert.False(tracker.MarkConfirmed("a", At(1))); // the old JOIN's echo
+        Assert.True(tracker.IsAttemptOpen("a"));
+
+        tracker.MarkParted("a", At(11)); // our PART's echo
+        Assert.False(tracker.IsConfirmed("a"));
+        Assert.True(tracker.IsAttemptOpen("a"));
+        Assert.Equal(2, Waiting(tracker, "a", 12));
+
+        Assert.True(tracker.MarkConfirmed("a", At(1))); // the new JOIN's echo
+    }
+
+    [Fact]
+    public void AMissingPartEcho_StopsBlockingJoinEchoesAfterTheGrace_AndAStaleEchoInsideItIsStillRejected()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordPartSent("a", At(0));
+        tracker.BeginAttempt("a");
+
+        Assert.False(tracker.MarkConfirmed("a", At(9.9))); // inside the grace: old membership
+        Assert.True(tracker.IsAttemptOpen("a"));
+
+        Assert.True(tracker.MarkConfirmed("a", At(10))); // grace over: the PART was never echoed
+    }
+
+    [Fact]
+    public void TakeExpiredPart_ReportsAnExpiredPartThatHeldBackAnEcho_Once()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordPartSent("a", At(0));
+        tracker.BeginAttempt("a");
+        Assert.False(tracker.MarkConfirmed("a", At(1))); // held back: TwitchLib now lists the channel
+
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(9)));
+        Assert.True(tracker.TakeExpiredPartWithSuppressedEcho("a", At(10)));
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(11))); // already dropped: reported once
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("unknown", At(11)));
+    }
+
+    // Codex review round 4, P2: an expired PART that held no echo back is no reason to rebuild — TwitchLib
+    // does not list the channel, so the normal JOIN goes out. The marker is dropped all the same, and the
+    // next echo confirms.
+    [Fact]
+    public void TakeExpiredPart_DropsAnExpiredPartWithoutAHeldBackEcho_WithoutReportingIt()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordPartSent("a", At(0));
+
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(10)));
+
+        tracker.BeginAttempt("a");
+        Assert.True(tracker.MarkConfirmed("a", At(11)));
+        tracker.MarkParted("a", At(20)); // no marker left: Twitch's own PART
+        Assert.False(tracker.IsConfirmed("a"));
+    }
+
+    [Fact]
+    public void TakeExpiredPart_ReportsNothingForAChannelNoLongerWanted_OrAfterTheLeaveForgotTheEcho()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordPartSent("a", At(0));
+        Assert.False(tracker.MarkConfirmed("a", At(1))); // held back
+        tracker.Remove("a"); // forgets the held-back echo
+
+        tracker.RecordIntent("a", At(2));
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(10)));
+
+        tracker.RecordPartSent("b", At(20));
+        Assert.False(tracker.MarkConfirmed("b", At(21))); // held back, but "b" is not wanted
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("b", At(30)));
+    }
+
+    [Fact]
+    public void ANewPart_StartsAFreshMarker_ThatHasHeldNothingBack()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordPartSent("a", At(0));
+        Assert.False(tracker.MarkConfirmed("a", At(1))); // held back
+        tracker.RecordPartSent("a", At(2));
+
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(12)));
+    }
+
+    [Fact]
+    public void TakeExpiredPart_ReportsNothingAfterADisconnect()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordPartSent("a", At(0));
+        Assert.False(tracker.MarkConfirmed("a", At(0.5))); // held back
+
+        tracker.SetDisconnected(At(1)); // the rebuild
+        tracker.SetConnected(At(2));
+
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(60)));
+    }
+
+    // Codex review round 3, P1: a confirmation accepted after the grace must not leave the expired
+    // marker behind, or Twitch's own later PART is taken for the old PART's echo and the channel stays
+    // confirmed without receiving chat.
+    [Fact]
+    public void AConfirmationAfterTheGrace_DropsTheExpiredPart_SoTwitchsLaterPartWithdrawsIt()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordPartSent("a", At(0));
+        tracker.BeginAttempt("a");
+        Assert.True(tracker.MarkConfirmed("a", At(11)));
+        Assert.False(tracker.TakeExpiredPartWithSuppressedEcho("a", At(12)));
+
+        tracker.MarkParted("a", At(20)); // Twitch parts us
+
+        Assert.False(tracker.IsConfirmed("a"));
+        Assert.Equal(5, Waiting(tracker, "a", 25));
+    }
+
+    [Fact]
+    public void OurPartEcho_LeavesTheNewWishsClockAndReasonUntouched()
+    {
+        var tracker = Connected();
+        tracker.RecordPartSent("a", At(0));
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.RecordFailure("a", TwitchJoinFailureReasons.NoConfirmation);
+
+        tracker.MarkParted("a", At(5));
+
+        var state = tracker.Snapshot(At(30)).Single();
+        Assert.Equal(30, state.UnconfirmedSeconds);
+        Assert.Equal(TwitchJoinFailureReasons.NoConfirmation, state.Reason);
+    }
+
+    [Fact]
+    public void APartEchoAfterOurOwnPartEcho_IsTwitchsOwn_AndWithdrawsTheConfirmation()
+    {
+        var tracker = Connected();
+        tracker.RecordPartSent("a", At(0));
+        tracker.MarkParted("a", At(1)); // our own, answered
+        tracker.RecordIntent("a", At(2));
+        tracker.BeginAttempt("a");
+        Assert.True(tracker.MarkConfirmed("a", At(1)));
+
+        tracker.MarkParted("a", At(3));
+
+        Assert.False(tracker.IsConfirmed("a"));
+    }
+
+    [Fact]
+    public void Disconnect_DropsThePendingPart()
+    {
+        var tracker = Connected();
+        tracker.RecordPartSent("a", At(0));
+        tracker.RecordIntent("a", At(0));
+        tracker.SetDisconnected(At(1));
+        tracker.SetConnected(At(2));
+        tracker.BeginAttempt("a");
+
+        Assert.True(tracker.MarkConfirmed("a", At(1)));
+    }
+
+    [Fact]
+    public void APendingPart_ConcernsOnlyItsOwnChannel()
+    {
+        var tracker = Connected();
+        tracker.RecordPartSent("a", At(0));
+        tracker.RecordIntent("b", At(0));
+        tracker.BeginAttempt("b");
+
+        Assert.True(tracker.MarkConfirmed("B", At(1)));
+    }
+
+    // ---- reasons ----
+
+    [Fact]
+    public void Limit_ThenTimeoutInTheSameAttempt_KeepsTheLimit()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+
+        Assert.Equal(JoinFailureOutcome.Changed,
+            tracker.RecordFailure("a", TwitchJoinFailureReasons.ConcurrentChannelLimit));
+        Assert.Equal(JoinFailureOutcome.Repeated,
+            tracker.RecordFailure("a", TwitchJoinFailureReasons.NoConfirmation));
+
+        Assert.Equal(TwitchJoinFailureReasons.ConcurrentChannelLimit, tracker.Snapshot(At(1)).Single().Reason);
+    }
+
+    [Fact]
+    public void Suspended_NewAttempt_Timeout_ReplacesTheReason()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.RecordFailure("a", TwitchJoinFailureReasons.ChannelSuspended);
+
+        tracker.BeginAttempt("a");
+        var outcome = tracker.RecordFailure("a", TwitchJoinFailureReasons.NoConfirmation);
+
+        Assert.Equal(JoinFailureOutcome.Changed, outcome);
+        Assert.Equal(TwitchJoinFailureReasons.NoConfirmation, tracker.Snapshot(At(1)).Single().Reason);
+    }
+
+    [Fact]
+    public void EndAttempt_ClosesTheWindow_KeepsTheReason_AndALateEchoNoLongerConfirms()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.RecordFailure("a", TwitchJoinFailureReasons.ChannelSuspended);
+
+        tracker.EndAttempt("a");
+
+        Assert.False(tracker.IsAttemptOpen("a"));
+        Assert.False(tracker.MarkConfirmed("a", At(1)));
+        Assert.Equal(TwitchJoinFailureReasons.ChannelSuspended, tracker.Snapshot(At(1)).Single().Reason);
+    }
+
+    [Fact]
+    public void EndAttempt_ThenANewAttemptThatTimesOut_ReplacesTheSuspension()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.RecordFailure("a", TwitchJoinFailureReasons.ChannelSuspended);
+        tracker.EndAttempt("a");
+
+        tracker.BeginAttempt("a");
+
+        Assert.True(tracker.IsAttemptOpen("a"));
+        Assert.Equal(JoinFailureOutcome.Changed, tracker.RecordFailure("a", TwitchJoinFailureReasons.NoConfirmation));
+        Assert.Equal(TwitchJoinFailureReasons.NoConfirmation, tracker.Snapshot(At(1)).Single().Reason);
+    }
+
+    [Fact]
+    public void EndAttempt_OnAnUnknownChannel_ChangesNothing()
+    {
+        var tracker = Connected();
+
+        tracker.EndAttempt("a");
+
+        Assert.Empty(tracker.Snapshot(At(0)));
+    }
+
+    [Fact]
+    public void OldReason_StaysVisibleUntilTheNewAttemptHasAnOutcome()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.RecordFailure("a", TwitchJoinFailureReasons.Banned);
+
+        tracker.BeginAttempt("a");
+
+        Assert.Equal(TwitchJoinFailureReasons.Banned, tracker.Snapshot(At(1)).Single().Reason);
+    }
+
+    [Fact]
+    public void Timeout_Twice_IsARepeat()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+
+        Assert.Equal(JoinFailureOutcome.Changed,
+            tracker.RecordFailure("a", TwitchJoinFailureReasons.NoConfirmation));
+        Assert.Equal(JoinFailureOutcome.Repeated,
+            tracker.RecordFailure("a", TwitchJoinFailureReasons.NoConfirmation));
+    }
+
+    [Fact]
+    public void SameConcreteReason_Twice_IsARepeat_DifferentOneChanges()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+
+        Assert.Equal(JoinFailureOutcome.Changed, tracker.RecordFailure("a", TwitchJoinFailureReasons.Banned));
+        Assert.Equal(JoinFailureOutcome.Repeated, tracker.RecordFailure("a", TwitchJoinFailureReasons.Banned));
+        Assert.Equal(JoinFailureOutcome.Changed,
+            tracker.RecordFailure("a", TwitchJoinFailureReasons.ChannelSuspended));
+    }
+
+    [Fact]
+    public void Failure_OnConfirmedChannel_IsIgnored()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.MarkConfirmed("a", At(1));
+
+        Assert.Equal(JoinFailureOutcome.Ignored, tracker.RecordFailure("a", TwitchJoinFailureReasons.Banned));
+        Assert.Null(tracker.Snapshot(At(1)).Single().Reason);
+    }
+
+    [Fact]
+    public void Failure_OnUnknownChannel_IsIgnored_AndDoesNotInsert()
+    {
+        var tracker = Connected();
+
+        Assert.Equal(JoinFailureOutcome.Ignored, tracker.RecordFailure("ghost", TwitchJoinFailureReasons.Banned));
+        Assert.False(tracker.Contains("ghost"));
+    }
+
+    [Fact]
+    public void Reason_SurvivesDisconnect_UntilConfirmation()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.RecordFailure("a", TwitchJoinFailureReasons.ConcurrentChannelLimit);
+        tracker.SetDisconnected(At(5));
+        tracker.SetConnected(At(6));
+
+        Assert.Equal(TwitchJoinFailureReasons.ConcurrentChannelLimit, tracker.Snapshot(At(7)).Single().Reason);
+    }
+
+    // ---- concurrency ----
+
+    [Fact]
+    public async Task ParallelIntentsAgainstConnectionFlips_LoseNoTransition_AndNeverLeaveAnIdleClock()
+    {
+        var tracker = new ChannelJoinTracker();
+        const int channels = 400;
+
+        var intents = Task.Run(() => Parallel.For(0, channels, i => tracker.RecordIntent($"c{i}", T0)));
+        var flips = Task.Run(() =>
+        {
+            for (var i = 0; i < 200; i++)
+            {
+                tracker.SetConnected(T0);
+                tracker.SetDisconnected(T0);
+            }
+        });
+        await Task.WhenAll(intents, flips);
+
+        Assert.Equal(channels, tracker.Names().Count);
+
+        // Connection is up at the end: every channel must be accruing, none may be stuck without a clock.
+        tracker.SetConnected(T0);
+        Assert.All(tracker.Snapshot(At(10)), s => Assert.Equal(10, s.UnconfirmedSeconds));
+    }
+}

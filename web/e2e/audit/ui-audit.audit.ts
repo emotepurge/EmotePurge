@@ -1254,7 +1254,11 @@ const SCENARIOS: Scenario[] = [
       // banners and deficit lists rather than the all-green layout.
       await mockAdminRoster(page, {
         trackedChannelCount: 24,
-        missingFromIrc: ['sensitron', 'olaf_olaf_son'],
+        joinHealthStatus: 'failing',
+        missingIntent: [
+          { channelName: 'sensitron', waitingSeconds: 900, overdue: true },
+          { channelName: 'olaf_olaf_son', waitingSeconds: 40, overdue: false },
+        ],
         missingFromSevenTv: ['sensitron'],
       });
       await adminDashboard(page, {
@@ -1264,9 +1268,9 @@ const SCENARIOS: Scenario[] = [
     },
   },
   {
-    // Both capacity bars in their early-warning band (86 % subscriptions, 90 % join budget): the
-    // amber fills plus their mandatory text lines are a distinct page state the happy path and the
-    // degraded scenario never reach.
+    // Both capacity bars in their early-warning band (86 % subscriptions, 90 % of our own channel
+    // cap, 72 / 80): the amber fills plus their mandatory text lines and the roster's log link are a
+    // distinct page state the happy path and the degraded scenario never reach.
     slug: 'admin-monitoring-near-capacity',
     path: '/admin/monitoring',
     setup: async (page) => {
@@ -1274,7 +1278,7 @@ const SCENARIOS: Scenario[] = [
       await mockAdminHealth(page, {
         sevenTv: { desiredSubscriptionCount: 430, desiredChannelCount: 215 },
       });
-      await mockAdminRoster(page, { trackedChannelCount: 18 });
+      await mockAdminRoster(page, { trackedChannelCount: 72, maxActiveChannels: 80 });
       await adminDashboard(page);
     },
   },

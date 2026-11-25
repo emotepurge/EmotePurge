@@ -29,6 +29,13 @@ public class ChannelService(
     // Attempts in total, not retries: the first try plus two more on a deadlock (R5).
     private const int BroadcasterPurgeMaxAttempts = 3;
 
+    /// <summary>
+    /// The warning for a join the active-channel cap turned away. A named id (516xx, the numbering of
+    /// the #516 join-failure events in <c>TwitchChatManager</c>) makes the rejections countable in the
+    /// log viewer as <c>event:ChannelCapacityReached</c>.
+    /// </summary>
+    public static readonly EventId CapacityReachedEvent = new(51603, "ChannelCapacityReached");
+
     public async Task<ChannelJoinResult> JoinAsync(
         string channelName,
         AuditActor actor,
@@ -390,8 +397,12 @@ public class ChannelService(
         // Since #245 the same query also hides a row whose id the broadcaster locked.
         db.LoadActiveChannelByTwitchIdReadOnlyAsync(twitchChannelId, excludedChannelFilter, broadcasterChannelLocks, cancellationToken);
 
-    public async Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default) =>
+        (await ListActiveChannelActivationsAsync(cancellationToken)).Select(a => a.ChannelName).ToList();
+
+    public async Task<IReadOnlyList<ActiveChannelActivation>> ListActiveChannelActivationsAsync(CancellationToken cancellationToken = default)
     {
+        // The one place the "meant to be in" rule lives; ListActiveChannelNamesAsync is derived from it.
         // AsNoTracking because every caller only ever reads the names: this runs once per minute
         // forever in SevenTvPeriodicResyncWorker, and tracking entities nobody mutates is pure cost.
         // The broadcaster lock (#245) is the opposite of the env list below: a table that changes at
@@ -402,7 +413,7 @@ public class ChannelService(
             .AsNoTracking()
             .Where(c => c.IsBotActive)
             .Where(c => !broadcasterChannelLocks.Locks.Any(l => l.TwitchChannelId == c.TwitchChannelId))
-            .Select(c => new { c.ChannelName, c.TwitchChannelId })
+            .Select(c => new { c.ChannelName, c.TwitchChannelId, c.TrackingResumedAt, c.CreatedAt })
             .OrderBy(row => row.ChannelName)
             .ToListAsync(cancellationToken);
 
@@ -416,7 +427,7 @@ public class ChannelService(
         // reconcile's own deactivation stays the durable, database-side step.
         return activeRows
             .Where(row => !excludedChannelFilter.IsExcluded(row.TwitchChannelId))
-            .Select(row => row.ChannelName)
+            .Select(row => new ActiveChannelActivation(row.ChannelName, row.TrackingResumedAt ?? row.CreatedAt))
             .ToList();
     }
 
@@ -839,6 +850,7 @@ public class ChannelService(
             if (activeChannelCount >= channelCapacityOptions.MaxActiveChannels)
             {
                 logger.LogWarning(
+                    CapacityReachedEvent,
                     "Join for {ChannelName} rejected: the active-channel cap of {MaxActiveChannels} is reached ({ActiveChannelCount} channels active).",
                     channel.ChannelName, channelCapacityOptions.MaxActiveChannels, activeChannelCount);
                 return ChannelJoinResult.Failed(ChannelJoinStatus.CapacityReached);
