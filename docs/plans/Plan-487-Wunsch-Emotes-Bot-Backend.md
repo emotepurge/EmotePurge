@@ -1064,7 +1064,7 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
   Kanal über `platform = TWITCH` und `platformId = Channel.TwitchChannelId`; ein Eintrag mit `user = null` macht den ganzen Read
   `Unavailable` (fail-closed: welcher Kanal gemeint ist, bliebe offen, und ein falsches `not_editor` setzte aus); ein `user` ohne
   Twitch-Verbindung kann kein Kanal von Emote Purge sein und wird übergangen. T8b prüft vor dem Merge mit einem Read am Testkonto
-  (der Bot ist dort `ACCEPTED`), dass `user.connections` im öffentlichen Read gefüllt ist; ist es leer, gilt der Rückfall oben.
+  (der Bot ist dort `ACCEPTED`), dass `user.connections` im öffentlichen Read gefüllt ist; ist es leer, gilt der Rückfall oben. **(T8b-Live, 2026-11-25):** ein einzelner öffentlicher Read ohne Token (die Abfrage oben, `curl` gegen `https://7tv.io/v4/gql`, `id` = Bot-Konto) antwortete HTTP 200 mit genau einem Eintrag: `userId` = 7TV-ID von olaf_olaf_son, `state = ACCEPTED`, `addedAt` 2026-11-24T17:33:52.502+00:00, `permissions.emoteSet.manage = true`, `user.connections` = `[{ platform: TWITCH, platformId: "1340084534" }]`. Die Twitch-ID kommt also im selben öffentlichen Read; der Rückfall über `ResolveSevenTvIdentityAsync` wird nicht gebaut. Die Antwort steht wortgleich als Fixture in `SevenTvApiClientEditorForTests`.
   **Aufrufquelle [E]:** der Read läuft über `SevenTvApiClient.FetchV4PageAsync` unter `RateLimitCallSources.SevenTvBot` (bestehend,
   kein neuer Locale-Eintrag; derselbe Verbraucher, die Schleife des Bot-Kontos, derselbe v4-Endpunkt); ein 429 des Reads ist für
   ihn `Unavailable` (keine Pause des Kontos, kein Aussetzen).

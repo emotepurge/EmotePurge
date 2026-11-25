@@ -42,6 +42,13 @@ public interface ISevenTvApiClient
     // review round); the authorization path keeps the unbudgeted pair on purpose. Never null.
     Task<SevenTvEditorGrantsLookup> LookUpEditorGrantsAsync(string twitchUserId, CancellationToken cancellationToken = default);
 
+    // The bot account's editor read (#487 plan 2.5b, Revision 6b K6b-13): 7TV's public v4 user(id).editorFor, without a
+    // token, telemetry under seventv-bot. Every owner the account is an editor or invited editor of, with state,
+    // the "manage emote sets" permission and the owner's Twitch connection, in one request. An entry without a Twitch
+    // connection is left out (it cannot be a channel of ours); an entry whose owner is null, a missing user, a GraphQL
+    // error and a 429 (either disguise) make the whole read Unavailable, never an empty list. Never null.
+    Task<SevenTvEditorForResult> GetEditorForAsync(string sevenTvUserId, CancellationToken cancellationToken = default);
+
     // A read-only, paginated preview of an arbitrary 7TV emote set — the foreign-channel-import
     // source (spec 2026-09-09), distinct from every method above in that the caller need not own,
     // moderate, or even track the channel the set belongs to. Uses the v4 GQL emoteSet(id) query, not
