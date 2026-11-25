@@ -206,7 +206,7 @@ const STATUS_TONES: Record<string, HealthTone> = {
                   <li class="flex flex-wrap items-baseline gap-x-2">
                     <a
                       [routerLink]="['/admin/channels', row.name]"
-                      class="text-accent-fg underline-offset-2 hover:underline"
+                      class="inline-flex min-h-11 min-w-6 items-center text-accent-fg underline-offset-2 hover:underline lg:min-h-6"
                     >
                       #{{ row.name }}
                     </a>
@@ -238,7 +238,7 @@ const STATUS_TONES: Record<string, HealthTone> = {
                   <li>
                     <a
                       [routerLink]="['/admin/channels', item.name]"
-                      class="text-accent-fg underline-offset-2 hover:underline"
+                      class="inline-flex min-h-11 min-w-6 items-center text-accent-fg underline-offset-2 hover:underline lg:min-h-6"
                     >
                       #{{ item.name }}
                     </a>
@@ -270,7 +270,7 @@ const STATUS_TONES: Record<string, HealthTone> = {
                   <li>
                     <a
                       [routerLink]="['/admin/channels', name]"
-                      class="text-accent-fg underline-offset-2 hover:underline"
+                      class="inline-flex min-h-11 min-w-6 items-center text-accent-fg underline-offset-2 hover:underline lg:min-h-6"
                     >
                       #{{ name }}
                     </a>
