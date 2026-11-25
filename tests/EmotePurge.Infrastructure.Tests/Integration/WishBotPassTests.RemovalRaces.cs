@@ -411,26 +411,40 @@ public partial class WishBotPassTests
         Assert.NotNull(wish.RemovalQueuedAtUtc);
     }
 
-    // The last check before the write comes after the last statement of the send transaction: the statement timeouts set
-    // right before removeEmote take a minute, past the proof's minute and the write budget. Nothing is sent, the attempt
+    // The last check before the write comes after the last statement of the send transaction. The proof (fresh, so not
+    // refreshed between the two transactions) ages to 59 s while the send transaction's first lock waits, before its
+    // deadline starts, so the re-check and the fresh read still pass; the statement timeouts set right before removeEmote
+    // take 2 s more: the proof is past its minute, while the write still fits the budget. Nothing is sent, the attempt
     // goes back with the queue kept.
     [Fact]
     public async Task TimeSpentInTheLastStatementBeforeTheWrite_SendsNothing()
     {
-        var channel = await SeedBotChannelAsync();
+        var channel = await SeedBotChannelAsync(proofAt: Now);
         var id = await SeedOwnedAsync(channel, WishStatus.Active);
-        var armed = false;
+        var firstLockArmed = false;
+        var lastStatementArmed = false;
         _readStub = (number, _, _) =>
         {
-            armed = number == 2;
+            firstLockArmed = number == 1;
+            lastStatementArmed = number == 2;
             return null;
         };
         var hook = new CommandHook(
-            command => armed && command.Contains("set_config", StringComparison.Ordinal),
+            command => (firstLockArmed && command.Contains("FROM \"Channels\"", StringComparison.Ordinal) && command.Contains("FOR SHARE", StringComparison.Ordinal))
+                || (lastStatementArmed && command.Contains("set_config", StringComparison.Ordinal)),
             _ =>
             {
-                armed = false;
-                _clock.Advance(TimeSpan.FromSeconds(61));
+                if (firstLockArmed)
+                {
+                    firstLockArmed = false;
+                    _clock.Advance(TimeSpan.FromSeconds(59));
+                }
+                else
+                {
+                    lastStatementArmed = false;
+                    _clock.Advance(TimeSpan.FromSeconds(2));
+                }
+
                 return Task.CompletedTask;
             });
         await using var db = fixture.CreateTaggedDbContext("wish-bot-last-statement", [hook], databaseName: DatabaseName);
