@@ -73,8 +73,8 @@ public sealed record SevenTvSetEntry(string EmoteId, string Alias, DateTime? Add
 /// does (<see cref="SevenTvWriteResult{T}"/>). A sealed class with factories, so a result can only be built in one of its
 /// valid shapes: <see cref="RetryAfter"/> exists for <see cref="SevenTvWriteOutcome.RateLimited"/>, for an
 /// <see cref="SevenTvWriteOutcome.Ok"/> whose answer carried a rate limit somewhere below the proven operation (plan #487
-/// K6e-4) and for an <see cref="SevenTvWriteOutcome.Unavailable"/> mutation whose answer carried one without the proof of
-/// success; <see cref="Rejection"/> for <see cref="SevenTvWriteOutcome.Rejected"/> only.
+/// K6e-4) and for an <see cref="SevenTvWriteOutcome.Unavailable"/> mutation whose answer carried one (no proof of success,
+/// or errors that classify it so); <see cref="Rejection"/> for <see cref="SevenTvWriteOutcome.Rejected"/> only.
 /// </summary>
 public sealed class SevenTvWriteResult
 {
@@ -134,8 +134,8 @@ public sealed class SevenTvWriteResult
     public static SevenTvWriteResult Unavailable() => UnavailableResult;
 
     /// <summary>
-    /// A mutation without the proof of success whose answer carried a rate limit (plan #487 K6e-4): whether 7TV wrote stays
-    /// open, the wait must be honoured all the same.
+    /// An unavailable mutation (no proof of success, or errors that classify it so) whose answer carried a rate limit (plan
+    /// #487 K6e-4): whether 7TV wrote stays open, the wait must be honoured all the same.
     /// </summary>
     public static SevenTvWriteResult Unavailable(TimeSpan retryAfter)
     {

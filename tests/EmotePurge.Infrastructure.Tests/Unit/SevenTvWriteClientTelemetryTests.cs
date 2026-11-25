@@ -116,6 +116,27 @@ public class SevenTvWriteClientTelemetryTests
         Assert.Equal([429, 429, 429], telemetry.Observations.Select(o => o.StatusCode));
     }
 
+    // K6e-4, one rule for every Unavailable of a mutation: a pathless 5xx error classifies the answer, and a rate limit
+    // below the mutation field still gives it the wait of the whole answer, for add, remove and accept alike.
+    [Fact]
+    public async Task ClassifiedUnavailableMutations_WithANestedRateLimit_CarryRetryAfter()
+    {
+        var down = Error("down", null, 500);
+        var (client, telemetry) = Create(new ScriptedHttpHandler()
+            .ThenOk("""{"data":{"emoteSets":{"emoteSet":{"addEmote":null}}},"errors":[""" + down + "," + Error("slow", null, 429, AddPath, Hint("retry-after", "30")) + "]}")
+            .ThenOk("""{"data":{"emoteSets":{"emoteSet":{"removeEmote":null}}},"errors":[""" + down + "," + Error("slow", null, 429, """["emoteSets","emoteSet","removeEmote","emotes"]""") + "]}")
+            .ThenOk("""{"data":{"userEditors":{"editor":{"updateState":null}}},"errors":[""" + down + "," + Error("slow", "RATE_LIMIT_EXCEEDED", null, """["userEditors","editor","updateState","x"]""") + "]}"));
+
+        var added = await client.AddEmoteAsync(Token, SetId, EmoteId, Alias);
+        var removed = await client.RemoveEmoteAsync(Token, SetId, EmoteId, Alias);
+        var accepted = await client.AcceptEditorInvitationAsync(Token, BotId, OwnerId);
+
+        Assert.Equal((SevenTvWriteOutcome.Unavailable, TimeSpan.FromSeconds(30)), (added.Outcome, added.Status.RetryAfter!.Value));
+        Assert.Equal((SevenTvWriteOutcome.Unavailable, SevenTvGqlReply.DefaultRetryAfter), (removed.Outcome, removed.RetryAfter!.Value));
+        Assert.Equal((SevenTvWriteOutcome.Unavailable, SevenTvGqlReply.DefaultRetryAfter), (accepted.Outcome, accepted.RetryAfter!.Value));
+        Assert.Equal([429, 429, 429], telemetry.Observations.Select(o => o.StatusCode));
+    }
+
     [Fact]
     public async Task OkWithoutRateLimit_HasNoRetryAfter_AndIsCountedAs200()
     {

@@ -33,8 +33,9 @@ namespace EmotePurge.Infrastructure.BotAccount;
 /// <see cref="RateLimitCallSources.SevenTvBot"/>, once, at <c>PostAsync</c>: a rate limit anywhere in the answer's
 /// <c>errors</c> (also below the mutation field) counts as 429 although the HTTP status is 200. A call that got no
 /// answer (timeout, connection failure) reports nothing, as the handler would not. A rate limit below the proven
-/// operation also sets <see cref="SevenTvWriteResult.RetryAfter"/> on an <see cref="SevenTvWriteOutcome.Ok"/>, and on the
-/// <see cref="SevenTvWriteOutcome.Unavailable"/> of a mutation without its proof; the caller books the pause.
+/// operation also sets <see cref="SevenTvWriteResult.RetryAfter"/> on an <see cref="SevenTvWriteOutcome.Ok"/>, and on every
+/// <see cref="SevenTvWriteOutcome.Unavailable"/> of a mutation (without its proof, or classified so by its errors); the
+/// caller books the pause.
 /// </para>
 /// </remarks>
 public sealed partial class SevenTvWriteClient(
@@ -93,7 +94,7 @@ public sealed partial class SevenTvWriteClient(
 
         if (reply.Errors.Count > 0)
         {
-            return Failed<string>("verify", exchange.HttpStatus, reply.Errors);
+            return Failed<string>("verify", exchange, reply.Errors);
         }
 
         var me = reply.Field(VerifyPath);
@@ -145,7 +146,7 @@ public sealed partial class SevenTvWriteClient(
             // Fail-closed: any error on any page means the list cannot be trusted to be complete.
             if (reply.Errors.Count > 0)
             {
-                return Failed<IReadOnlyList<SevenTvSetEntry>>("read", exchange.HttpStatus, reply.Errors);
+                return Failed<IReadOnlyList<SevenTvSetEntry>>("read", exchange, reply.Errors);
             }
 
             var set = reply.Field(SetPath);
@@ -204,7 +205,7 @@ public sealed partial class SevenTvWriteClient(
         var errorsOnMutation = reply.ErrorsNotBelow(AddEmotePath);
         if (errorsOnMutation.Count > 0)
         {
-            return Failed<IReadOnlyList<SevenTvSetEntry>>("add", exchange.HttpStatus, errorsOnMutation);
+            return Failed<IReadOnlyList<SevenTvSetEntry>>("add", exchange, errorsOnMutation);
         }
 
         // The proof of success (plan 2.4, S6-4): the mutation field itself, carrying the requested set's id.
@@ -212,7 +213,7 @@ public sealed partial class SevenTvWriteClient(
         if (returnedSet is not { ValueKind: JsonValueKind.Object } set || !SameId(set, setId))
         {
             LogOutcome("add", SevenTvWriteResult.Unavailable(), exchange.HttpStatus, null);
-            return SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Failed(UnprovenResult(exchange));
+            return SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Failed(UnavailableOf(exchange));
         }
 
         // The entries are a bonus. An error below the mutation field (only the `emotes` selection can carry one once the
@@ -251,7 +252,7 @@ public sealed partial class SevenTvWriteClient(
         var errorsOnMutation = reply.ErrorsNotBelow(RemoveEmotePath);
         if (errorsOnMutation.Count > 0)
         {
-            return Failed("remove", exchange.HttpStatus, errorsOnMutation);
+            return Failed("remove", exchange, errorsOnMutation);
         }
 
         if (reply.Field(RemoveEmotePath) is { ValueKind: JsonValueKind.Object })
@@ -260,7 +261,7 @@ public sealed partial class SevenTvWriteClient(
         }
 
         LogOutcome("remove", SevenTvWriteResult.Unavailable(), exchange.HttpStatus, null);
-        return UnprovenResult(exchange);
+        return UnavailableOf(exchange);
     }
 
     public async Task<SevenTvWriteResult> AcceptEditorInvitationAsync(
@@ -286,7 +287,7 @@ public sealed partial class SevenTvWriteClient(
         var errorsOnMutation = reply.ErrorsNotBelow(AcceptInvitationPath);
         if (errorsOnMutation.Count > 0)
         {
-            return Failed("accept", exchange.HttpStatus, errorsOnMutation);
+            return Failed("accept", exchange, errorsOnMutation);
         }
 
         if (reply.Field(AcceptInvitationPath) is { ValueKind: JsonValueKind.Object } editor
@@ -296,7 +297,7 @@ public sealed partial class SevenTvWriteClient(
         }
 
         LogOutcome("accept", SevenTvWriteResult.Unavailable(), exchange.HttpStatus, null);
-        return UnprovenResult(exchange);
+        return UnavailableOf(exchange);
     }
 
     private async Task<Exchange> PostAsync(
@@ -424,8 +425,9 @@ public sealed partial class SevenTvWriteClient(
     private static SevenTvWriteResult OkResult(Exchange exchange) =>
         exchange.RateLimitWait is { } wait ? SevenTvWriteResult.Ok(wait) : SevenTvWriteResult.Ok();
 
-    // A mutation without its proof (K6e-4): the outcome stays open, a rate limit anywhere in the answer still pauses.
-    private static SevenTvWriteResult UnprovenResult(Exchange exchange) =>
+    // An Unavailable answer (K6e-4): a mutation without its proof or one its errors classify so. The outcome stays open, a
+    // rate limit anywhere in the answer still pauses.
+    private static SevenTvWriteResult UnavailableOf(Exchange exchange) =>
         exchange.RateLimitWait is { } wait ? SevenTvWriteResult.Unavailable(wait) : SevenTvWriteResult.Unavailable();
 
     private static bool HasSevenTvErrorShape(string body)
@@ -443,14 +445,22 @@ public sealed partial class SevenTvWriteClient(
         }
     }
 
-    private SevenTvWriteResult<T> Failed<T>(string operation, HttpStatusCode? status, IReadOnlyList<SevenTvGqlError> errors)
+    private SevenTvWriteResult<T> Failed<T>(string operation, Exchange exchange, IReadOnlyList<SevenTvGqlError> errors)
         where T : class
-        => SevenTvWriteResult<T>.Failed(Failed(operation, status, errors));
+        => SevenTvWriteResult<T>.Failed(Failed(operation, exchange, errors));
 
-    private SevenTvWriteResult Failed(string operation, HttpStatusCode? status, IReadOnlyList<SevenTvGqlError> errors)
+    // The errors classify the answer; an Unavailable still carries the wait of a rate limit anywhere in the whole answer
+    // (K6e-4), as an unproven mutation does. Where the errors are the whole answer (verify, read) a rate
+    // limit classifies as RateLimited first, so the rule only ever adds the wait of one below a mutation field.
+    private SevenTvWriteResult Failed(string operation, Exchange exchange, IReadOnlyList<SevenTvGqlError> errors)
     {
         var result = SevenTvGqlReply.Classify(errors);
-        LogOutcome(operation, result, status, errors);
+        if (result.Outcome == SevenTvWriteOutcome.Unavailable)
+        {
+            result = UnavailableOf(exchange);
+        }
+
+        LogOutcome(operation, result, exchange.HttpStatus, errors);
         return result;
     }
 
