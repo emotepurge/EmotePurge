@@ -7,7 +7,9 @@ using TwitchLib.Client;
 using TwitchLib.Client.Enums;
 using TwitchLib.Client.Events;
 using TwitchLib.Client.Models;
+using Microsoft.Extensions.Configuration;
 using TwitchLib.Communication.Clients;
+using TwitchLib.Communication.Interfaces;
 using TwitchLib.Communication.Models;
 
 namespace EmotePurge.Worker;
@@ -30,8 +32,15 @@ public class TwitchChatManager(
     WorkerStats stats,
     WishOptions wishOptions,
     IRewardObservationSink rewardObservationSink,
-    TimeProvider? timeProvider = null) : ITwitchChatManager
+    TimeProvider? timeProvider = null,
+    Func<IClient>? transportFactory = null,
+    IConfiguration? configuration = null) : ITwitchChatManager
 {
+    // Log events of a join that did not complete (plan #516, E2/E8). The names are what the log viewer
+    // filters on (event:TwitchJoinRejected); the numbers only keep the pair distinct.
+    internal static readonly EventId JoinRejectedEvent = new(51601, "TwitchJoinRejected");
+    internal static readonly EventId JoinUnconfirmedEvent = new(51602, "TwitchJoinUnconfirmed");
+
     // Twitch permits 20 joins per 10 seconds on a non-verified connection, and TwitchLib paces them
     // not at all: JOINs bypass its ThrottlingService (that one only covers chat messages) and its
     // queue advances as fast as confirmations arrive — 126–231ms per channel, measured against
@@ -153,7 +162,14 @@ public class TwitchChatManager(
     // state, and the loop reaches it only through WaitForReconnectRequestAsync.
     private readonly TwitchReconnectSignalSlot _signalSlot = new();
 
-    private volatile TwitchClient _client = CreateClient(loggerFactory);
+    // Logins whose outgoing JOINs the transport decorator swallows — a probe for the "Twitch never
+    // answers" case, set only by Worker:Debug:SilentJoinChannels (plan #516, E10). Empty in production.
+    private readonly HashSet<string> _silentJoinChannels = ReadSilentJoinChannels(configuration);
+
+    // The boot client. A field initialiser cannot read _silentJoinChannels, so the (tiny) key is read
+    // once more here; every rebuild below uses the field.
+    private volatile TwitchClient _client = CreateClient(
+        loggerFactory, transportFactory, ReadSilentJoinChannels(configuration));
 
     // Counted from 1 for the boot client and never reset: it is both the key of the signal slot's
     // generation rule and the rebuild id in every log line about a connection.
@@ -194,6 +210,13 @@ public class TwitchChatManager(
 
     public void Initialize()
     {
+        if (_silentJoinChannels.Count > 0)
+        {
+            logger.LogWarning(
+                "Worker:Debug:SilentJoinChannels is set — outgoing JOINs for {Count} channel(s) are dropped on purpose (live probe only).",
+                _silentJoinChannels.Count);
+        }
+
         // Under the gate like every other wiring step, although nothing races with it at boot:
         // _unwireCurrentClient and _client are the gate's state, and one unguarded writer is how
         // an invariant quietly stops being one.
@@ -398,7 +421,7 @@ public class TwitchChatManager(
                 // Step 3 — a fresh object, never OpenAsync() on the old one: a reused client drags
                 // along TwitchLib's half-emptied join queue and its _currentlyJoiningChannels flag,
                 // while a new one has an empty queue and exactly one read loop (E3).
-                newClient = CreateClient(loggerFactory);
+                newClient = CreateClient(loggerFactory, transportFactory, _silentJoinChannels);
                 // The generation is drawn before wiring, because the handlers capture it
                 // (WireUpClient) rather than reading it when they fire.
                 generation = Interlocked.Increment(ref _clientGeneration);
@@ -843,12 +866,13 @@ public class TwitchChatManager(
         var connected = Bind<OnConnectedEventArgs>(_ => OnConnected(client, generation));
         var reconnected = Bind<OnConnectedEventArgs>(_ => OnReconnected(client, generation));
         var disconnected = Bind<OnDisconnectedArgs>(_ => OnDisconnected(client, generation));
-        var joinConfirmationFailed = Bind<OnFailureToReceiveJoinConfirmationArgs>(OnFailureToReceiveJoinConfirmation);
+        var joinConfirmationFailed = Bind<OnFailureToReceiveJoinConfirmationArgs>(
+            e => OnFailureToReceiveJoinConfirmation(client, generation, e));
         var connectionError = Bind<OnConnectionErrorArgs>(e => OnConnectionError(client, generation, e));
         var joinedChannel = Bind<OnJoinedChannelArgs>(e => OnJoinedChannel(client, generation, e));
         var leftChannel = Bind<OnLeftChannelArgs>(e => OnLeftChannel(client, generation, e));
         var messageReceived = Bind<OnMessageReceivedArgs>(OnMessageReceived);
-        var sendReceiveData = Bind<OnSendReceiveDataArgs>(OnSendReceiveData);
+        var sendReceiveData = Bind<OnSendReceiveDataArgs>(e => OnSendReceiveData(client, generation, e));
 
         client.OnConnected += connected;
         client.OnReconnected += reconnected;
@@ -981,17 +1005,66 @@ public class TwitchChatManager(
         return Task.CompletedTask;
     }
 
-    private Task OnFailureToReceiveJoinConfirmation(OnFailureToReceiveJoinConfirmationArgs e)
+    internal Task OnFailureToReceiveJoinConfirmation(
+        TwitchClient source, int generation, OnFailureToReceiveJoinConfirmationArgs e)
     {
-        // Since the rejoin left the read loop (E2), this line means again what it says: Twitch
-        // really did not confirm the join within TwitchLib's 5s window. Before the rebuild, our own
-        // throttled rejoin blocked that loop and produced this warning for joins whose confirmation
-        // had long arrived. The channel stays in _desiredChannels as unconfirmed, so the round's
-        // "K offen" figure counts it and EnsureJoinedAsync retries it.
-        logger.LogWarning(
-            "Twitch hat den Join für {Channel} nicht bestätigt. Details: {Details}",
-            e.Exception.Channel, e.Exception.Details);
+        // Two sources feed this callback (TwitchLib 4.0.1, pinned by TwitchJoinNoticeTwitchLibTests):
+        // the 5s timer, with Details == null, and msg_channel_suspended, with Twitch's text in Details.
+        // Details is only ever tested for null here; the text is neither read nor logged (plan #516, E2).
+        var channel = e.Exception.Channel?.TrimStart('#') ?? string.Empty;
+        var reason = e.Exception.Details is null
+            ? TwitchJoinFailureReasons.NoConfirmation
+            : TwitchJoinFailureReasons.ChannelSuspended;
+        RecordJoinFailure(source, generation, channel, reason);
         return Task.CompletedTask;
+    }
+
+    // Books a failure for the client that reported it and logs the outcome — identity check and booking
+    // in one critical section (like every state-changing handler), the log line outside it.
+    private void RecordJoinFailure(TwitchClient source, int generation, string channel, string reason)
+    {
+        JoinFailureOutcome outcome;
+        lock (_clientStateGate)
+        {
+            if (!ReferenceEquals(source, _client))
+            {
+                outcome = JoinFailureOutcome.Ignored;
+                logger.LogDebug(
+                    "Join failure ({Reason}) of an already replaced client (Client #{Generation}) discarded.",
+                    reason, generation);
+            }
+            else
+            {
+                outcome = _tracker.RecordFailure(channel, reason);
+            }
+        }
+
+        switch (outcome)
+        {
+            case JoinFailureOutcome.Changed when reason == TwitchJoinFailureReasons.ConcurrentChannelLimit:
+                logger.LogError(
+                    JoinRejectedEvent,
+                    "Twitch rejected the join for {Channel}: {Reason}. The account is over its concurrent channel limit.",
+                    channel, reason);
+                break;
+            case JoinFailureOutcome.Changed when reason == TwitchJoinFailureReasons.NoConfirmation:
+                logger.LogWarning(
+                    JoinUnconfirmedEvent,
+                    "Twitch did not confirm the join for {Channel}: {Reason}.",
+                    channel, reason);
+                break;
+            case JoinFailureOutcome.Changed:
+                logger.LogWarning(
+                    JoinRejectedEvent,
+                    "Twitch rejected the join for {Channel}: {Reason}.",
+                    channel, reason);
+                break;
+            case JoinFailureOutcome.Repeated:
+                logger.LogDebug(
+                    "Join failure for {Channel} repeated: {Reason}.",
+                    channel, reason);
+                break;
+        }
     }
 
     private Task OnConnectionError(TwitchClient source, int generation, OnConnectionErrorArgs e)
@@ -1160,7 +1233,7 @@ public class TwitchChatManager(
         }
     }
 
-    private Task OnSendReceiveData(OnSendReceiveDataArgs e)
+    internal Task OnSendReceiveData(TwitchClient source, int generation, OnSendReceiveDataArgs e)
     {
         // Any received IRC line proves the socket is alive — including the server PING Twitch sends
         // roughly every five minutes even when every joined channel is silent. This is the liveness
@@ -1168,10 +1241,26 @@ public class TwitchChatManager(
         // Raised inline from TwitchClient's receive loop for every line, and a synchronous throw
         // here would sever the multicast chain before TwitchLib's own handlers run (verified against
         // TwitchLib.Client 4.0.1, _client_OnMessage) — so this handler must stay allocation-free and
-        // exception-free: one branch, one Interlocked store.
+        // exception-free: one branch, one Interlocked store, and for NOTICE lines only the join-failure booking below.
         if (e.Direction == SendReceiveDirection.Received)
         {
             Interlocked.Exchange(ref _lastFrameReceivedUtcTicks, DateTime.UtcNow.Ticks);
+
+            // The join notices TwitchLib does not hand to any callback (concurrent-channel limit, ban).
+            // One allocation-free command test per line; only a NOTICE reaches the parser and the gate.
+            // Must never throw (see above), hence the catch.
+            try
+            {
+                if (TwitchJoinNoticeParser.IsNotice(e.Data)
+                    && TwitchJoinNoticeParser.TryParse(e.Data, out var reason, out var channel))
+                {
+                    RecordJoinFailure(source, generation, channel, reason);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Join notice handling failed.");
+            }
         }
 
         return Task.CompletedTask;
@@ -1316,7 +1405,25 @@ public class TwitchChatManager(
         }
     }
 
-    private static TwitchClient CreateClient(ILoggerFactory loggerFactory)
+    private static HashSet<string> ReadSilentJoinChannels(IConfiguration? configuration)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var raw = configuration?["Worker:Debug:SilentJoinChannels"];
+        if (!string.IsNullOrWhiteSpace(raw))
+        {
+            foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                set.Add(part.TrimStart('#').ToLowerInvariant());
+            }
+        }
+
+        return set;
+    }
+
+    private static TwitchClient CreateClient(
+        ILoggerFactory loggerFactory,
+        Func<IClient>? transportFactory,
+        IReadOnlySet<string> silentJoinChannels)
     {
         // TwitchClient hands this factory to its own internal ILogger<TwitchClient> (category
         // TwitchLib.Client.TwitchClient) and logs a parse failure with the raw, unredacted IRC line
@@ -1324,7 +1431,9 @@ public class TwitchChatManager(
         // Wrapping here, not swapping the factory in DI, keeps every other logger in the process
         // (including this class's own) unaffected.
         var redactingLoggerFactory = new RedactingTwitchClientLoggerFactory(loggerFactory);
-        var wire = new WireObservingClient(new WebSocketClient(
+        // The transport is replaceable for tests (plan #516, T3); production always builds the real
+        // WebSocketClient, and either way it sits behind the observing decorator.
+        var wire = new WireObservingClient(transportFactory?.Invoke() ?? new WebSocketClient(
                 // NoReconnectionPolicy does not mean "never reconnect", it means "exactly one
                 // connect attempt per object": verified against TwitchLib.Communication 2.0.1, it
                 // is ReconnectionPolicy(reconnectInterval: 0, maxAttempts: 1), and
@@ -1337,7 +1446,7 @@ public class TwitchChatManager(
                 // attempts was silently exhausted, leaving the worker offline for >45min — is
                 // structurally impossible rather than merely fixed.
                 new ClientOptions(new NoReconnectionPolicy()),
-                redactingLoggerFactory.CreateLogger<WebSocketClient>()));
+                redactingLoggerFactory.CreateLogger<WebSocketClient>()), silentJoinChannels);
         var client = new TwitchClient(client: wire, loggerFactory: redactingLoggerFactory);
         WireObservers.Add(client, wire);
         return client;

@@ -19,8 +19,12 @@ namespace EmotePurge.Worker;
 /// TwitchLib could be holding, and it must never throw: a hook exception is swallowed here so the
 /// line is always forwarded.
 /// </para>
+/// <para>
+/// It can also swallow outgoing JOINs for a configured set of logins (debug key
+/// <c>Worker:Debug:SilentJoinChannels</c>), after reporting them; the set is empty in production.
+/// </para>
 /// </summary>
-internal sealed class WireObservingClient(IClient inner) : IClient
+internal sealed class WireObservingClient(IClient inner, IReadOnlySet<string>? silentJoinChannels = null) : IClient
 {
     private volatile Action<OutgoingChannelCommand, string>? _hook;
 
@@ -98,6 +102,17 @@ internal sealed class WireObservingClient(IClient inner) : IClient
             {
                 // The line must go out whatever the observer does.
             }
+        }
+
+        // Live-probe seam (plan #516, E10, Worker:Debug:SilentJoinChannels): an outgoing JOIN for a
+        // listed login is reported above as an attempt like a real one, then never leaves the process,
+        // which is exactly what a JOIN Twitch never answers looks like to TwitchLib. Empty in production.
+        if (silentJoinChannels is { Count: > 0 }
+            && TryParseChannelCommand(message, out var silentCommand, out var silentChannel)
+            && silentCommand == OutgoingChannelCommand.Join
+            && silentJoinChannels.Contains(silentChannel))
+        {
+            return Task.FromResult(true);
         }
 
         return inner.SendAsync(message);

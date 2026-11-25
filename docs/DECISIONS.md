@@ -10,6 +10,23 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-11-25 — Join-failure detection and capacity display (#516)
+
+**Betrifft:** `src/EmotePurge.Worker/ChannelJoinTracker.cs` · `src/EmotePurge.Worker/TwitchJoinNoticeParser.cs` · `src/EmotePurge.Worker/WireObservingClient.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs` · `src/EmotePurge.Core/Services/TwitchJoinFailureReasons.cs` · `tests/EmotePurge.Worker.Tests/TwitchChatManagerJoinFailureTransportTests.cs` · `tests/EmotePurge.Worker.Tests/TwitchJoinNoticeTwitchLibTests.cs` · `docs/plans/Plan-516-Join-Fehler-Erkennung.md`
+
+The full plan is `docs/plans/Plan-516-Join-Fehler-Erkennung.md`; this entry grows with the tasks that change a contract. It follows the entry above ("detect join rejections before raising our own cap").
+
+**Worker join state (T1 to T3).**
+- *One accrual clock per channel* in `ChannelJoinTracker`, which replaces the old desired-channels dictionary. Only time in which the client is connected (handshake `004` seen) and the channel is unconfirmed counts; a disconnect freezes the sum, only a confirmation resets it, and a channel that was confirmed before a disconnect starts again at zero. Wish, connected flag and clock share one latch (the tracker's own, innermost under `_intentGate` and `_clientStateGate`), so there is no wish without a running clock in a live session.
+- *Reasons are classified by source, not guessed.* `OnFailureToReceiveJoinConfirmation` carries `Details` only for `msg_channel_suspended` (`channelSuspended`); the timer raises it with `Details == null` (`noConfirmation`). TwitchLib hands the concurrent-channel-limit notice and `msg_banned` to no failure callback, so `OnSendReceiveData` runs an allocation-free NOTICE test and the pure `TwitchJoinNoticeParser` on the raw line (`concurrentChannelLimit`, `banned`). A concrete reason is replaced only by the outcome of a newer attempt; a timeout of the same attempt never overwrites it. Twitch's text is never read or logged.
+- *An attempt starts at the wire, not at `TryJoinAsync`.* TwitchLib silently drops a JOIN for a channel it still lists as joined, so only the line that actually leaves the process is a real attempt. The transport is always wrapped in `WireObservingClient`, which reports each outgoing `JOIN #x` / `PART #x` to the manager before forwarding; a dropped duplicate JOIN never touches the tracker (a ban notice followed by a duplicate join and the timeout stays `banned`).
+- *Our own JOIN echo confirms only inside an open attempt; our own PART echo withdraws a confirmation.* A late echo of an old attempt after leave and re-activation cannot confirm the new wish, and a Twitch-initiated PART makes the convergence net join again. Remaining gap: if Twitch did not echo PART and an old JOIN echo fell into a new attempt, the confirmation would be wrong until the next rebuild. Measured 2026-11-25 (T2): Twitch does echo our own PART.
+- *Not `OnUnaccountedFor`.* Subscribing to it disables TwitchLib's `LogUnaccountedFor`, on which the redaction chain of #246 relies.
+- *Log events are a new convention:* join failures carry a named `EventId` (`TwitchJoinRejected` for `concurrentChannelLimit` at Error and `channelSuspended`/`banned` at Warning, `TwitchJoinUnconfirmed` for `noConfirmation` at Warning), one line per first occurrence or change of the reason per process, repeats at Debug. The names are what the log viewer filters on (`event:TwitchJoinRejected`).
+- *Transport seam.* `TwitchChatManager` takes an optional transport factory (tests substitute a scripted `IClient` and drive TwitchLib's real receive path). The debug key `Worker:Debug:SilentJoinChannels` (comma-separated logins, never set in compose files) makes the decorator swallow outgoing JOINs for those channels after reporting them, to probe the "Twitch never answers" case; the worker logs a Warning at start when it is set.
+
+---
+
 ### 2026-11-25 — Twitch channel capacity: stay on the anonymous IRC connection; detect join rejections before raising our own cap
 
 **Betrifft:** `CLAUDE.md` ("Bekannte offene Grenzen") · `src/EmotePurge.Api/Health/WorkerCapacity.cs` · `src/EmotePurge.Infrastructure/Services/ChannelCapacityOptions.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs`
