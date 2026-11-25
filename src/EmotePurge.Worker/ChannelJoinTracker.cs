@@ -221,6 +221,15 @@ public sealed class ChannelJoinTracker
         }
     }
 
+    /// <summary>Whether the channel is wanted and has an open attempt window.</summary>
+    public bool IsAttemptOpen(string name)
+    {
+        lock (_gate)
+        {
+            return _entries.TryGetValue(name, out var entry) && entry.AttemptOpen;
+        }
+    }
+
     public bool IsConfirmed(string name)
     {
         lock (_gate)

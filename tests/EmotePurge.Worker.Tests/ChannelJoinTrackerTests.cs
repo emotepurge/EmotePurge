@@ -20,6 +20,21 @@ public class ChannelJoinTrackerTests
         return tracker;
     }
 
+    [Fact]
+    public void IsAttemptOpen_FollowsTheWindow()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        Assert.False(tracker.IsAttemptOpen("a"));
+        Assert.False(tracker.IsAttemptOpen("unknown"));
+
+        tracker.BeginAttempt("a");
+        Assert.True(tracker.IsAttemptOpen("a"));
+
+        tracker.RecordPartSent("a");
+        Assert.False(tracker.IsAttemptOpen("a"));
+    }
+
     // ---- accrual clock ----
 
     [Fact]
