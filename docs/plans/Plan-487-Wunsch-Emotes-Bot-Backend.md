@@ -3,10 +3,14 @@
 Erstellt am 2026-11-20 im Worktree `EmotePurge-wt-487` (Branch `feat/487-wish-bot`, Basis `origin/main` @ `801e64a6`; K1
 (#492), K2 (#493), K3 (#494) und K6 (#495) gemergt, seit 2026-11-20 auf Prod live und eingeschaltet, Bot-Modus existiert noch
 nicht). Alle Codestellen dieses Plans sind an diesem Stand gelesen.
-**Status: Revision 6e (2026-11-25): Schiedsspruch Fable über K6d-3 und K6d-4, Sol über Revision 6d (3 × P2, 2 × P3), zehn
+**Status: Revision 6f (2026-11-25): Sol über Revision 6e (4 × P2 zu T8c und T10), vier Punkte (Tabelle „Revision 6f“), alle
+übernommen: die Lock-Probe läuft nie unter Zeilensperre, `idle_in_transaction_session_timeout` als serverseitiger Rückhalt der
+Sperrfrist, Zähler des festsitzenden Auftrags je Auftragsgeneration und Runner-Epoche, die Pause wird am Durchgangsende
+nachgebucht; keine Migration, kein Fehlercode, keine Audit-Aktion. Die adversarialen Plan-Runden sind damit abgeschlossen;
+die Umsetzung von T8c und T10 prüft Sol im Pflicht-Review vor dem Merge.** Revision 6e (2026-11-25): Schiedsspruch Fable über K6d-3 und K6d-4, Sol über Revision 6d (3 × P2, 2 × P3), zehn
 Punkte (Tabelle „Revision 6e“): beide Schiedssprüche umgesetzt, alle fünf Sol-Befunde übernommen (der fünfte durch den
 zweiten Schiedsspruch), vier Punkte aus der Durchsicht der PR-2-Tasks; eine Sperrfrist statt des reinen HTTP-Budgets, keine
-Migration, kein neuer Fehlercode, eine neue Audit-Aktion (`wish.botInvitationUnresolved`).** Revision 6d (2026-11-25): Sol über
+Migration, kein neuer Fehlercode, eine neue Audit-Aktion (`wish.botInvitationUnresolved`). Revision 6d (2026-11-25): Sol über
 Revision 6c, 6 × P2, 3 × P3, zehn Punkte (Tabelle „Revision 6d“), neun übernommen, einer als Restrisiko nicht übernommen (K6d-3,
 seit Revision 6e durch Schiedsspruch mit Audit, K6e-1); zwei gemeinsame Regeln (Sperrbudget, Kontomeldung), keine Migration,
 der Fehlercode aus K6c-1 entfällt wieder, eine neue Audit-Aktion. Revision 6c (2026-11-25): Sol über Revision 6b gegen den gemergten PR-1-Code, 1 × P1, 5 × P2, 2 × P3, alle acht
@@ -337,9 +341,9 @@ eine neue Audit-Aktion (`wish.botInvitationUnresolved`), ein neues Detail an `wi
 |---|---|---|---|---|
 | K6e-1 | **Schiedsspruch** über K6d-3 (späte Annahme nach negativer Auflösung): Urteil (c) | **umgesetzt** | Die Regel aus 6d bleibt (keine Aufbewahrung des Versuchs, keine manuelle Klärung), dazu ein Audit: die negative Auflösung eines Annahmeversuchs, dessen **Zustimmung nicht mehr gilt** (Zweig „`invited` oder `not_editor`“ in 2.5b, bisher „ohne Audit“), schreibt im selben Commit genau ein **`wish.botInvitationUnresolved`** (Akteur System, Kanal gesetzt, Details nur `attemptedAtUtc`). Versuch, `BotActivationError` und `BotConsentSevenTvUserId` werden wie bisher geleert; kein neuer Feldwert, kein Fehlercode. Bei noch gültiger Zustimmung bleibt es ohne Audit. Damit ist der Abbruch ohne geklärte Wirkung nachvollziehbar, auch wenn 7TV die Annahme danach doch ausführt (R23) | Konstante und `audit.actions.*` in beiden Locales: T7 (wie `wish.botInvitationAbandoned`); Buchung und Tests: T8c; Runbook-Satz: T13; R23 |
 | K6e-2 | **Schiedsspruch** über K6d-4 (`activate` gibt den Versuch auf): Urteil (a); zugleich Sols P3 Nr. 5 („Aufgabe-Audit verliert die ID des früheren Bot-Kontos“: `activate` überschreibt `BotConsentSevenTvUserId`, `botAccount.tokenSet` nennt nur das Ablaufdatum) | **umgesetzt**; Sols P3 Nr. 5 damit **übernommen** | Die Festlegung aus 6d bleibt. Präzisierung: die Details von `wish.botInvitationAbandoned` tragen zusätzlich **`abandonedBotSevenTvUserId`**, die bisher gebundene 7TV-ID (öffentlich, kein Tokenmaterial), neben `attemptedAtUtc`. So weiß das Runbook, welches Konto der Inhaber in 7TV austragen soll, falls die Annahme doch gewirkt hat | T7 (Detail, Test im bestehenden Wechselfall: alte ID im Audit, neue in der Anfrage); T13 |
-| K6e-3 | Sol P2 Nr. 1: Das 25-s-Budget begrenzt die Sperrdauer nicht. Hält: `RowLocks` und `BotAccountFence` sperren mit je einem eigenen Statement unter Npgsqls Standard-Timeout von 30 s; nach der Kanalsperre können Wunsch- und Credentials-Sperre zusammen über 30 s warten, bevor das Budget vor dem HTTP-Aufruf geprüft wird; die Probe (`ProbeLockAsync`, eigene Verbindung) sowie Buchung und Commit nach einem fristgerechten Aufruf haben keine Grenze | **übernommen** | **[E] Sperrfrist, eine Regel für jede Transaktion des Runners und des Wunsch-Teils, die eine Zeilensperre nimmt:** ab dem Erwerb der **ersten** Sperre läuft eine monotone Frist (`TimeProvider`-Zeitstempel, nicht die Wanduhr) **F = Erwerb + 28 s**. (1) **Jedes Statement danach** (weitere Sperren, Epochen-Zaun, Buchung, beigetretene Pause, Audit) läuft unter `SET LOCAL statement_timeout` = Restzeit bis F, vor jedem Statement neu gesetzt; Postgres zählt das Warten auf eine Sperre in diese Zeit, eine eigene Zeitrechnung für jede Sperre entfällt. Ist die Restzeit aufgebraucht, wird das Statement nicht mehr abgeschickt. Die erste Sperre selbst wartet höchstens 10 s (`statement_timeout`), sie hält davor nichts. (2) **HTTP** bleibt im Budget aus 6d: jede Anfrage muss mit ihrem Zeitlimit bis **F − 3 s** (= Erwerb + 25 s) enden; die 3 s sind die Reserve für Probe, Buchung und Commit. (3) Die **Lock-Probe** unter Sperre läuft mit Kommando-Timeout von höchstens 2 s und nie über F; ein Ablauf zählt als Lock-Verlust. (4) **Ablauf** (Statement-Timeout, Probe, keine Restzeit) → Rollback, alle Sperren frei. Vor dem Senden wirkt das wie ein Nein: nicht senden, den nachweislich nie gesendeten Versuch in eigener kurzer Transaktion (selbe Regel) bedingt zurücknehmen; scheitert auch das, bleibt der Versuch offen und wird nach 2.5a (e) bzw. per Read (2.5b) aufgelöst. Nach einer möglicherweise gesendeten Mutation bleibt der Versuch zur Auflösung offen (2.5a (e), (h), 2.5b), nichts wird gebucht. Wartende (Vollsync, Kanalbefehle, `PUT /kill-switch`) bleiben so unter 30 s. Einfacher als eine reine Zeitrechnung: ein fester `lock_timeout` je Sperre summiert sich über mehrere Sperren und deckt Probe und Buchung nicht; eine Frist mit der Restzeit als `statement_timeout` ist eine Subtraktion an einer Stelle, die Durchsetzung macht Postgres. Form `BotAccountLockDeadline` (neben `BotAccountFence`, rein bis auf das Setzen) | T8c (Frist, Probe-Zeitlimit, erste Nutzer Annahme und Rücknahme); T9, T10 nutzen sie |
+| K6e-3 | Sol P2 Nr. 1: Das 25-s-Budget begrenzt die Sperrdauer nicht. Hält: `RowLocks` und `BotAccountFence` sperren mit je einem eigenen Statement unter Npgsqls Standard-Timeout von 30 s; nach der Kanalsperre können Wunsch- und Credentials-Sperre zusammen über 30 s warten, bevor das Budget vor dem HTTP-Aufruf geprüft wird; die Probe (`ProbeLockAsync`, eigene Verbindung) sowie Buchung und Commit nach einem fristgerechten Aufruf haben keine Grenze | **übernommen** | **[E] Sperrfrist, eine Regel für jede Transaktion des Runners und des Wunsch-Teils, die eine Zeilensperre nimmt:** ab dem Erwerb der **ersten** Sperre läuft eine monotone Frist (`TimeProvider`-Zeitstempel, nicht die Wanduhr) **F = Erwerb + 28 s**. (1) **Jedes Statement danach** (weitere Sperren, Epochen-Zaun, Buchung, beigetretene Pause, Audit) läuft unter `SET LOCAL statement_timeout` = Restzeit bis F, vor jedem Statement neu gesetzt; Postgres zählt das Warten auf eine Sperre in diese Zeit, eine eigene Zeitrechnung für jede Sperre entfällt. Ist die Restzeit aufgebraucht, wird das Statement nicht mehr abgeschickt. Die erste Sperre selbst wartet höchstens 10 s (`statement_timeout`), sie hält davor nichts. (2) **HTTP** bleibt im Budget aus 6d: jede Anfrage muss mit ihrem Zeitlimit bis **F − 3 s** (= Erwerb + 25 s) enden; die 3 s sind die Reserve für Probe, Buchung und Commit. ~~(3) Die **Lock-Probe** unter Sperre läuft mit Kommando-Timeout von höchstens 2 s und nie über F; ein Ablauf zählt als Lock-Verlust.~~ (Revision 6f, K6f-1: die Probe läuft nie unter Zeilensperre; dazu `idle_in_transaction_session_timeout` als Rückhalt.) (4) **Ablauf** (Statement-Timeout, Probe, keine Restzeit) → Rollback, alle Sperren frei. Vor dem Senden wirkt das wie ein Nein: nicht senden, den nachweislich nie gesendeten Versuch in eigener kurzer Transaktion (selbe Regel) bedingt zurücknehmen; scheitert auch das, bleibt der Versuch offen und wird nach 2.5a (e) bzw. per Read (2.5b) aufgelöst. Nach einer möglicherweise gesendeten Mutation bleibt der Versuch zur Auflösung offen (2.5a (e), (h), 2.5b), nichts wird gebucht. Wartende (Vollsync, Kanalbefehle, `PUT /kill-switch`) bleiben so unter 30 s. Einfacher als eine reine Zeitrechnung: ein fester `lock_timeout` je Sperre summiert sich über mehrere Sperren und deckt Probe und Buchung nicht; eine Frist mit der Restzeit als `statement_timeout` ist eine Subtraktion an einer Stelle, die Durchsetzung macht Postgres. Form `BotAccountLockDeadline` (neben `BotAccountFence`, rein bis auf das Setzen) | T8c (Frist, Probe-Zeitlimit, erste Nutzer Annahme und Rücknahme); T9, T10 nutzen sie |
 | K6e-4 | Sol P2 Nr. 2: Ein 429 in der Add-Antwort erreicht die Kontopause nicht. Hält: `AddEmoteAsync` gibt bei bewiesenem Mutationsfeld `Ok` zurück und wertet Fehler unterhalb des Felds nicht aus, `Classify` läuft dort nicht; dieselbe Lücke haben `RemoveEmoteAsync` und `AcceptEditorInvitationAsync` (`ErrorsNotBelow`) | **übernommen** | **[E]** Trägt eine Antwort irgendwo in `errors` ein Rate-Limit (Prädikat `SevenTvGqlError.IsRateLimit` aus K6d-9), setzt der Client auch bei `Ok` die vorhandene Eigenschaft **`RetryAfter`** des Ergebnisses (`ClampRetryAfter` des ersten Hinweises); das Ergebnis bleibt `Ok`, der Sendenachweis bleibt erhalten. Die Kontomeldung (2.5a (i)) gilt für jedes Ergebnis mit gesetztem `RetryAfter`: der Aufrufer bucht `Ok` wie sonst und `PauseAsync` im selben Commit (K6c-3), danach kein Aufruf mit dem Token im Durchgang. Einfacher als ein zweites Ergebnisfeld: die Eigenschaft gibt es schon | T8a (Client, Tests); T8c (Annahme), T9 (Hinzufügen), T10 (Entfernen, Reparatur) buchen |
-| K6e-5 | Sol P2 Nr. 3: Die Seitenfrist kann einen Löschauftrag festsetzen. Hält: vor jeder Seite muss das volle Zeitlimit von 10 s bis zur Lesefrist passen; eine regelmäßig 6 s dauernde erste Seite verhindert Seite 2 in jedem Takt, die Einreihung bleibt ohne Ende | **übernommen** | **[E]** (a) Unter Sperre bekommt **jede Seite** eines Reads als Zeitlimit den kleineren Wert aus 10 s und der Restzeit bis zur Lesefrist; eine Seite mit weniger als 1 s Restzeit wird nicht mehr angefragt, ein Abbruch an der Frist ist `Unavailable` (Read nicht möglich), nie eine Ausnahme. Schreibaufrufe behalten ihr volles Zeitlimit (ein abgebrochenes Schreiben wäre ungeklärt). (b) **Sichtbarer Ausweg:** scheitert ein Entfernungsauftrag in Transaktion 1 oder 2 ohne Senden an Read oder Frist (Read nicht möglich, Frist eines Reads, Schreibaufruf passt nicht, Sperrfrist; nicht bei `Unauthorized`, `RateLimited` oder einem Nein der Vorprüfung, die ihre eigenen Wege haben) in **drei Durchgängen in Folge**, und liegt der erste davon **mindestens 15 Minuten** zurück, legt der Runner den Auftrag vor: in kurzer Buchung unter der Wunsch-Sperre, bedingt auf `RemovalQueuedVersion = DecisionVersion` und keinen offenen Versuch, mit denselben Werten wie der Rückfall-Lauf für diesen Wunsch (`active` → `presented` (`bot_unavailable`), Einreihung leer; `presented` mit Auftrag → Auftrag leer, Grund bleibt), ein `wish.changed`, eine Warnzeile mit Wunsch-ID und Zahl, kein Audit (2.11). Vorhandener Grund, kein neuer Feldwert; „Bot entfernen lassen“ reiht neu ein. Der Zähler liegt im Speicher des Wunsch-Teils je Wunsch-ID und `RemovalQueuedVersion`, ein anderes Ergebnis setzt ihn zurück, ein Neustart oder Runner-Wechsel beginnt bei null (keine Spalte). Die 15 Minuten entsprechen der Frist für 7TV-Störungen (2.3, 2.5a (e)), damit eine kurze Störung keine Aufträge vorlegt | T10 (Seitenzeitlimit im Client, Zähler, Vorlage) |
+| K6e-5 | Sol P2 Nr. 3: Die Seitenfrist kann einen Löschauftrag festsetzen. Hält: vor jeder Seite muss das volle Zeitlimit von 10 s bis zur Lesefrist passen; eine regelmäßig 6 s dauernde erste Seite verhindert Seite 2 in jedem Takt, die Einreihung bleibt ohne Ende | **übernommen** | **[E]** (a) Unter Sperre bekommt **jede Seite** eines Reads als Zeitlimit den kleineren Wert aus 10 s und der Restzeit bis zur Lesefrist; eine Seite mit weniger als 1 s Restzeit wird nicht mehr angefragt, ein Abbruch an der Frist ist `Unavailable` (Read nicht möglich), nie eine Ausnahme. Schreibaufrufe behalten ihr volles Zeitlimit (ein abgebrochenes Schreiben wäre ungeklärt). (b) **Sichtbarer Ausweg:** scheitert ein Entfernungsauftrag in Transaktion 1 oder 2 ohne Senden an Read oder Frist (Read nicht möglich, Frist eines Reads, Schreibaufruf passt nicht, Sperrfrist; nicht bei `Unauthorized`, `RateLimited` oder einem Nein der Vorprüfung, die ihre eigenen Wege haben) in **drei Durchgängen in Folge**, und liegt der erste davon **mindestens 15 Minuten** zurück, legt der Runner den Auftrag vor: in kurzer Buchung unter der Wunsch-Sperre, bedingt auf ~~`RemovalQueuedVersion = DecisionVersion`~~ die gezählte Auftragsgeneration (Revision 6f, K6f-2) und keinen offenen Versuch, mit denselben Werten wie der Rückfall-Lauf für diesen Wunsch (`active` → `presented` (`bot_unavailable`), Einreihung leer; `presented` mit Auftrag → Auftrag leer, Grund bleibt), ein `wish.changed`, eine Warnzeile mit Wunsch-ID und Zahl, kein Audit (2.11). Vorhandener Grund, kein neuer Feldwert; „Bot entfernen lassen“ reiht neu ein. Der Zähler liegt im Speicher des Wunsch-Teils je ~~Wunsch-ID und `RemovalQueuedVersion`~~ Auftragsgeneration (Revision 6f, K6f-2), ein anderes Ergebnis setzt ihn zurück, ~~ein Neustart oder Runner-Wechsel beginnt bei null~~ eine andere Runner-Epoche verwirft alle Zähler (Revision 6f, K6f-3) (keine Spalte). Die 15 Minuten entsprechen der Frist für 7TV-Störungen (2.3, 2.5a (e)), damit eine kurze Störung keine Aufträge vorlegt | T10 (Seitenzeitlimit im Client, Zähler, Vorlage) |
 | K6e-6 | Sol P3 Nr. 4: Eine kurze Kontopause stoppt den laufenden Durchgang nicht. Hält: `ClampRetryAfter` nimmt 1 s an, `MayCallSevenTv` gibt nach Ablauf sofort frei; das 429 der Token-Prüfung bucht der Runner schon vor der Session | **übernommen** | **[E]** Ein in diesem Durchgang gesehenes 429 (aus der Token-Prüfung des Runners vor der Session oder aus `PauseAsync`, gleich ob die Buchung traf) macht **`TokenUsable`** bis zum Ende des Durchgangs falsch; die Pause in der Datenbank bleibt die Grenze über Durchgänge hinweg. Wirkt über die vorhandene Stufe `TokenUsable` der Kontovorprüfung, ohne neue Stufe | T8c (Session); T8b-Definition von `TokenUsable` erweitert |
 | K6e-7 | (Durchsicht) 2.9 `DELETE` „leert `BotInvitationRetryAtUtc`; ist ein Annahmeversuch offen, bleiben Versuch und gebundene ID stehen“ gegen T7 („beide Stempel und die ID bleiben“) und K6b-1 (die Sperre ist bei offenem Versuch das Merkmal „endete in `Rejected`“) | **behoben** | Bei offenem Annahmeversuch bleibt auch `BotInvitationRetryAtUtc` stehen (T7 gilt); ohne offenen Versuch leert `DELETE` sie wie bisher | 2.9; T7 unverändert |
 | K6e-8 | (Durchsicht) T7, Grenzfälle Revision 6a: „mit offenem Annahmeversuch bleibt die gebundene ID stehen“ gilt seit K6d-4 nur bei gleicher ID | **behoben** | Satz eingeschränkt auf „gleiche ID“, mit Verweis auf den Wechselfall | T7 |
@@ -353,6 +357,41 @@ Statement, Probe höchstens 2 s), `RetryAfter` auch bei `Ok`, Seitenzeitlimit au
 nach drei Abbrüchen über 15 Minuten, `TokenUsable` falsch nach einem 429 im Durchgang, Audit `wish.botInvitationUnresolved`,
 Detail `abandonedBotSevenTvUserId`. **Unverändert:** Schema und Migration, PR-Schnitt, Task-Schnitt und Reihenfolge, [F7],
 AK-Bestand, HTTP-Budget von 25 s.
+
+### Revision 6f (2026-11-25): Sol über Revision 6e
+
+Eingang: Sol `gpt-6.2-sol` adversarial über Revision 6e, 4 × P2 zu T8c und T10 (hängende Lock-Probe, Vorlage gegen einen neu
+eingereihten Auftrag, Zähler über einen Lock-Wiedererwerb, Fristrollback verwirft die 429-Pause). Jeder Befund am Plan und am Code
+(`origin/main` @ `e1d6210f`) nachgeprüft: `BotAccountRunner.EnsureLockAsync` (`:134–191`), `ProbeLockAsync` (`:193–226`),
+`VerifyAsync` (`:287–328`), `BookPauseAsync` (`:402–421`), `BookAsync` (`:424–452`), `Session` (`:544–578`), `BotAccountFence`,
+`WishService.SupersedeActiveDecisionsAsync` (`:1378–1399`), die Einreihung in `WishExpiryService` (`:153–164`). Alle vier halten
+und sind übernommen. **Die adversarialen Plan-Runden sind damit abgeschlossen;** die Umsetzung von T8c und T10 prüft Sol im
+Pflicht-Review vor dem Merge (Regel 22). Leitlinie dieser Runde: nichts Neues neben die Sperrfrist stellen, sondern zwei Regeln
+vereinfachen (die Probe verlässt den gesperrten Abschnitt; die Pause wird am Durchgangsende idempotent nachgebucht) und zwei
+Bedingungen schärfen. **Keine Migration, keine Spalte, kein Fehlercode, keine Audit-Aktion.**
+
+| # | Befund | Status | Festlegung | Lieferant |
+|---|---|---|---|---|
+| K6f-1 | Sol P2 Nr. 1: Eine hängende Lock-Probe kann Notaus und Kanal-`DELETE` über 30 s blockieren. Hält: Revision 6e legte die Probe unter Sperre (2.5a (c) „Reihenfolge vor dem Senden: Probe, …“); sie fragt auf der eigenen Lock-Verbindung (`ProbeLockAsync`), `statement_timeout` wirkt nur auf Statements der Arbeitsverbindung, nicht auf deren Leerlauf, während der Client auf Probe oder Npgsqls Abbruchpfad wartet. Heute (PR 1) läuft die Probe nur außerhalb von Zeilensperren: `VerifyAsync` probt vor und nach dem HTTP-Aufruf, `BookAsync` öffnet die Transaktion erst danach | **übernommen** | **[E] (1) Die Probe läuft nie, solange eine Zeilensperre gehalten wird:** vor einer Transaktion mit Zeilensperre und nach ihrem Ende, nie dazwischen. Unter Sperre trägt allein der Epochen-Zaun: die Nachprüfung hält die Credentials-Zeile mit der eigenen Epoche `FOR SHARE`, bevor gesendet wird, die Erhöhung eines Nachfolgers wartet darauf (2.5a (g)); Senden und Buchen bis zum Commit sind also auch nach einem Lock-Verlust gedeckt. Die Probe war unter Sperre nur der billige Abbruch, nie die Garantie; der Befund entfällt damit strukturell, ohne neue Zeitrechnung. Das Kommando-Timeout der Probe (höchstens 2 s, Ablauf = Lock-Verlust) bleibt und schützt nur noch den Durchgang vor dem Hängen. **(2) Serverseitiger Rückhalt** gegen jeden anderen Hänger des Clients (Stub ohne Zeitlimit, Threadpool, GC): `BotAccountLockDeadline` setzt mit `statement_timeout` im selben Statement **`idle_in_transaction_session_timeout`** per `SET LOCAL`, vor der ersten Sperre 10 s bzw. 28 s, danach beide = Restzeit bis F, neu gesetzt vor jedem Statement, **vor jedem HTTP-Aufruf unter Sperre** und vor dem Commit. Ein Leerlauf nach dem Setzen endet so serverseitig spätestens bei F: Postgres beendet die Sitzung, alle Sperren sind frei. Der Runner sieht beim nächsten Statement einen Verbindungsfehler und nimmt den Pfad des Fristablaufs (2.5a (c)); der nächste Durchgang bekommt eine neue Verbindung. Ein Fehler am Commit selbst gilt als unklar: nichts wird als gebucht angenommen, die Buchungen sind bedingt (2.5a (f)), Auflösung nach (e). Npgsqls Kommando-Timeout von 30 s liegt über jeder Restzeit, Postgres bricht also immer zuerst ab; Npgsqls Abbruchpfad über eine zweite Verbindung kommt auf der Arbeitsverbindung nicht zum Zug. Postgres 16 (Compose, Testcontainers) kennt kein `transaction_timeout` (erst ab 17), daher der Leerlauf-Timeout | T8c (Probe aus dem gesperrten Abschnitt, Rückhalt in `BotAccountLockDeadline`, Tests); T9, T10 nutzen beides |
+| K6f-2 | Sol P2 Nr. 2: Die Vorlage eines festsitzenden Auftrags (K6e-5) kann einen neu eingereihten Auftrag treffen. Hält: `SupersedeActiveDecisionsAsync` erhöht `DecisionVersion` und leert die Einreihung (`WishService.cs:1378–1399`), der Ablauf-Lauf reiht einen weiter fälligen `active` mit `RemovalQueuedVersion = DecisionVersion` neu ein (`WishExpiryService.cs:153–164`); `RemovalQueuedVersion = DecisionVersion` gilt dann auch für V+1. Zudem leert Transaktion 1 (2.7, „nicht berechtigt“) die Einreihung ohne Versionswechsel, die nächste Einreihung trägt dieselbe Version | **übernommen** | **[E]** Der Zähler gilt **einer Auftragsgeneration** = (Wunsch-ID, `RemovalQueuedVersion`, `RemovalQueuedAtUtc`), wie der Durchgang sie zuletzt gelesen hat (unter der Wunsch-Sperre, sonst aus der Auswahl); eine andere Generation beginnt bei null. Die Vorlage bucht bedingt auf **alle drei** gezählten Werte, `DecisionVersion` = gezählte Version, den Status wie bisher und keinen offenen Versuch; trifft sie nichts, wird nichts gebucht und der Zähler verworfen. Eine Bedingung mehr in derselben Buchung, kein neuer Zustand | T10 |
+| K6f-3 | Sol P2 Nr. 3: Ein Lock-Wiedererwerb in derselben Runner-Instanz zählt alte Abbrüche mit. Hält: `EnsureLockAsync` erwirbt nach gescheiterter Probe im selben Objekt neu und erhöht `RunnerEpoch` (`BotAccountRunner.cs:134–183`); der Wunsch-Teil lebt über Durchgänge, seine Zähler bleiben; die neue Session trägt die neue Epoche, der Zaun lässt die Buchung durch. Dazwischen kann ein zweiter Runner denselben Auftrag bearbeitet haben | **übernommen** | **[E]** Der Wunsch-Teil merkt sich die `RunnerEpoch`, unter der seine Zähler entstanden sind, und **verwirft alle Zähler, sobald eine Session eine andere Epoche trägt** (Prüfung am Anfang jedes Durchgangs des Wunsch-Teils). Jede Epoche ist eine eigene Lock-Haltung; was dazwischen geschah, sieht der Zähler nicht, also beginnt er neu. Ersetzt in K6e-5 „ein Neustart oder Runner-Wechsel beginnt bei null“ durch eine Regel, die Neustart, Runner-Wechsel und Wiedererwerb derselben Instanz gleich behandelt | T10 |
+| K6f-4 | Sol P2 Nr. 4: Ein Fristrollback verwirft die beigetretene 429-Pause. Hält: K6c-3 bucht `PausedUntilUtc` im Commit des Aufrufers; endet dessen Transaktion ohne Commit (Sperrfrist, Statement-Fehler, Rückhalt aus K6f-1), ist die Pause weg; K6e-6 sperrt nur den laufenden Durchgang, der nächste ruft mit dem Token (etwa der Wiederaufnahme-Read) | **übernommen** | **[E]** Die Session merkt sich die größte gemeldete Pause als **absolute Frist** samt `IdentityVersion`, einmal bei der Meldung berechnet. Beigetreten wird wie bisher (K6c-3, atomar mit der Rücknahme eines nie gesendeten Versuchs). **Am Ende jedes Durchgangs** (auch nach einer Ausnahme des Wunsch-Teils) bucht der Runner diese Frist **noch einmal** in eigener kurzer Transaktion über den vorhandenen Pfad ohne offene Transaktion (an `IdentityVersion`, gezäunt, Sperrfrist), bedingt darauf, dass sie die gespeicherte Frist verlängert (nur dann Treffer und Warnzeile). War die Pause im Commit, trifft das nichts; war die Transaktion zurückgerollt, ist sie jetzt gesichert, bevor der nächste Durchgang und dessen Kontovorprüfung beginnen. Im laufenden Durchgang ruft nach K6e-6 ohnehin nichts mehr mit dem Token. **Der Vorschlag „die Pause zuerst in eigener kurzer Transaktion buchen“ geht nicht:** die Pause ist erst mit der HTTP-Antwort bekannt, also bei gehaltener Credentials-Zeile `FOR SHARE` (Zaun); eine zweite Transaktion, die `PausedUntilUtc` schreibt, wartet auf genau diese Sperre der eigenen Arbeitstransaktion, eine Selbstblockade bis zum Timeout. Das Nachbuchen am Durchgangsende ist ein Aufruf an einer Stelle, idempotent, ohne neue Schnittstelle für den Wunsch-Teil und ohne neues Rennen (die Bedingung verlängert nur). **Übergabe bei Lock-Verlust:** die Nachbuchung ist gezäunt; ist die Epoche weg, bucht der Vorgänger nichts (Restfall unten) | T8c (Session, Runner, Tests); Fall in T10 |
+
+**Restfälle, bewusst nicht weiter geschlossen:** (1) **K6f-1:** Ein Hänger des Clients direkt nach einem *anderen* Statement als
+dem Setzen (etwa nach einer langen, aber fristgerechten Sperrwartezeit) endet serverseitig erst bei F plus der Dauer dieses
+Statements. Geschlossen wäre das nur mit einem zweiten Setzen nach jedem Statement oder mit `transaction_timeout` (Postgres 17);
+beides kostet mehr, als der Fall wert ist, der einen Hänger **und** eine lange Sperrwartezeit im selben Moment braucht.
+Schlimmste Folge: ein wartender Befehl läuft in Npgsqls 30-s-Timeout. Ein Verwalter sieht beim Notaus bzw. beim Abschalten des
+Bots eine Fehlermeldung, ein Betreiber im Log; Behebung: den Befehl wiederholen, er trifft dann eine freie Zeile. (2) **K6f-4:**
+Geht der Lock zwischen Rollback und Nachbuchung verloren, bucht niemand die Pause. Schlimmste Folge: der Nachfolger sendet
+während der laufenden Retry-After-Frist eine Anfrage, bekommt ein weiteres 429 und bucht die Pause selbst. Sichtbar nur als
+zweite Warnzeile „7TV answered 429“ im Worker-Log; nichts zu tun.
+
+**Geändert:** Status, 2.5 (Advisory-Lock), 2.5a ((c), (g), (i)), 2.5b (Ablauf), 2.7 (Sperrdauer, festsitzender Auftrag), Tabelle
+„Revision 6e“ (K6e-3, K6e-5 markiert), Abschnitt 3 (Tabelle T8c, T10; T8c, T10), R3. **Neu:** Probe nie unter Zeilensperre,
+`idle_in_transaction_session_timeout` neben `statement_timeout`, Auftragsgeneration und Epoche am Zähler, Nachbuchung der Pause
+am Durchgangsende. **Unverändert:** Schema und Migration, PR-Schnitt, Task-Schnitt und Reihenfolge, [F7], AK-Bestand,
+HTTP-Budget von 25 s, Sperrfrist F = erste Sperre + 28 s.
 
 ### Revision 5a (2026-11-20): Neutrale Benennung der kontoweiten Teile
 
@@ -787,7 +826,8 @@ Nutzer, kein Platzhalter. K4 sorgt nur dafür, dass die Namen den Weg nicht verb
   `BotAccountSignal` (Form von `ChatLogBackfillSignal`), gesetzt in `Worker.cs` beim Präfix `BOTACCOUNT:` (neu in `BotCommands`).
 - **Advisory-Lock [P]:** eigener Schlüssel `emotepurge:bot-account`, gehalten auf eigener Verbindung für die Lebensdauer der
   Schleife (Befund 11). Ohne Lock schreibt die Instanz nichts, liest nichts aus 7TV und versucht es im nächsten Takt erneut
-  (AK81). Gehalten wird er nicht nur beim Holen: die Probe ist eine Schranke vor und nach jedem 7TV-Aufruf, beim Commit zählt
+  (AK81). Gehalten wird er nicht nur beim Holen: die Probe ist eine Schranke vor und nach jedem 7TV-Aufruf (Revision 6f, K6f-1: nie, solange eine
+  Zeilensperre gehalten wird; dort trägt der Zaun), beim Commit zählt
   die Runner-Epoche (2.5a (g)). Rückfall-Lauf (2.8) und Fristschritt brauchen den Lock nicht.
 - **Ein Durchgang, in dieser Reihenfolge [E]:** (0) **Fristschritt [E] (R2-7)**, jeden Takt **vor** dem Lock-Versuch, rein lokal,
   ohne Token, 7TV, 429-Pause und Aktionsbudget, je Wunsch Zeilensperre und bedingtes Update: `unconfirmed` mit
@@ -905,8 +945,18 @@ Eigentum, (d)), `BotConfirmDeadlineAtUtc` (Revision 2: Ende der E11-Frist, (e)),
   danach (weitere Sperren, Epochen-Zaun, Buchung, beigetretene Pause, Audit) läuft unter `SET LOCAL statement_timeout` = Restzeit
   bis F, vor jedem Statement neu gesetzt (Postgres zählt das Sperrwarten mit); ohne Restzeit wird es nicht abgeschickt. Die erste
   Sperre wartet höchstens 10 s (sie hält davor nichts). HTTP endet mit seinem Zeitlimit bis F − 3 s (= Budgetende); die 3 s
-  bleiben für Probe, Buchung und Commit. Die Lock-Probe läuft unter Sperre mit Kommando-Timeout von höchstens 2 s und nie über F,
-  ein Ablauf zählt als Lock-Verlust; Reihenfolge vor dem Senden: Probe, Budgetprüfung, `MarkWriteSent()`, Aufruf. Läuft die
+  bleiben für ~~Probe,~~ Buchung und Commit. ~~Die Lock-Probe läuft unter Sperre mit Kommando-Timeout von höchstens 2 s und nie über F,
+  ein Ablauf zählt als Lock-Verlust; Reihenfolge vor dem Senden: Probe, Budgetprüfung, `MarkWriteSent()`, Aufruf.~~ **(Revision 6f,
+  K6f-1)** Die Lock-Probe läuft **nie, solange eine Zeilensperre gehalten wird**: vor der Transaktion (vor (a), vor der
+  Sende-Transaktion) und nach ihrem Ende; Kommando-Timeout höchstens 2 s, ein Ablauf zählt als Lock-Verlust. Unter Sperre trägt
+  allein der Epochen-Zaun (g), den die Nachprüfung vor dem Senden schon hält. Reihenfolge: Probe und Warten auf den
+  Schreibabstand ohne Sperre, dann in der Transaktion Sperren, Nachprüfung samt Zaun, Budgetprüfung, `MarkWriteSent()`, Aufruf,
+  Buchung, Commit. **Rückhalt (K6f-1):** mit `statement_timeout` setzt die Frist im selben Statement
+  `idle_in_transaction_session_timeout` per `SET LOCAL` (vor der ersten Sperre 10 s bzw. 28 s, danach beide = Restzeit bis F),
+  neu gesetzt vor jedem Statement, vor jedem HTTP-Aufruf unter Sperre und vor dem Commit. Hängt der Client im Leerlauf, beendet
+  Postgres die Sitzung spätestens bei F, alle Sperren sind frei; der Runner sieht beim nächsten Statement einen
+  Verbindungsfehler und nimmt den Pfad des Fristablaufs; ein Fehler am Commit gilt als unklar (nichts als gebucht angenommen,
+  (e), (f)). Läuft die
   Frist ab → Rollback, alle Sperren frei; vor dem Senden wie ein Nein (nie gesendeten Versuch in eigener kurzer Transaktion unter
   derselben Regel bedingt zurücknehmen; scheitert auch das, bleibt er offen und wird nach (e) bzw. per Read, 2.5b, aufgelöst),
   nach einer möglicherweise gesendeten Mutation bleibt der Versuch zur Auflösung offen und nichts wird gebucht. Gilt für jede
@@ -943,7 +993,9 @@ Eigentum, (d)), `BotConfirmDeadlineAtUtc` (Revision 2: Ende der E11-Frist, (e)),
   erhöht `DecisionVersion`, `re-add` und `retry` leeren die Versuchsfelder, die Phase bleibt dabei stehen (2.1 Punkt 2, 2.9). Der
   Beleg ist an den Stempel gebunden, weil ihn bei offener Phase niemand neu schreibt (2.7 Transaktion 1).
 - **(g) Lock und Runner-Epoche [B] F6 (R2-3, abgestuft).** Die Probe nach Muster `HoldsLoopLockAsync` (nie ein Neuerwerb) bleibt
-  der billige Abbruch vor (a), vor dem Senden und nach jedem 7TV-Aufruf. **Beim Commit** zählt die Epoche: der Runner erhöht
+  der billige Abbruch vor (a), vor dem Senden und nach jedem 7TV-Aufruf (Revision 6f, K6f-1: jeweils außerhalb einer Transaktion
+  mit Zeilensperre, also vor deren Beginn bzw. nach deren Ende; unter Sperre trägt allein der Zaun, den die Sende-Transaktion
+  vor dem Aufruf schon hält). **Beim Commit** zählt die Epoche: der Runner erhöht
   `RunnerEpoch` nach dem Lock-Erwerb und merkt sich den Wert; jede Runner-Transaktion, die bucht oder sendet, liest die
   Credentials-Zeile `FOR SHARE` mit `RunnerEpoch = <eigener Wert>`, sonst Rollback und Abbruch des Durchgangs. Weil die Erhöhung
   des Nachfolgers auf dieses `FOR SHARE` wartet, endet eine laufende Sende-Transaktion des Vorgängers vollständig vor dem ersten
@@ -972,7 +1024,13 @@ Eigentum, (d)), `BotConfirmDeadlineAtUtc` (Revision 2: Ende der E11-Frist, (e)),
   Sperre die Pause sehen). Ausgenommen ist der unauthentifizierte Editor-Read (429 → `Unavailable`, 2.5b). **(Revision 6e,
   K6e-4)** Als `RateLimited` zählt auch jedes `Ok` mit gesetztem `RetryAfter` (2.4): der Aufrufer bucht das `Ok` wie sonst (samt
   Sendenachweis) und die Pause im selben Commit. **(K6e-6)** Das Ende der Token-Aufrufe hängt nicht an der Länge der Pause: nach
-  einem 429 ist `TokenUsable` bis zum Ende des Durchgangs falsch (2.5).
+  einem 429 ist `TokenUsable` bis zum Ende des Durchgangs falsch (2.5). **(Revision 6f, K6f-4)** Die Session merkt sich die
+  größte gemeldete Pause als absolute Frist samt `IdentityVersion` (einmal bei der Meldung berechnet); am Ende jedes Durchgangs,
+  auch nach einer Ausnahme des Wunsch-Teils, bucht der Runner sie noch einmal in eigener kurzer Transaktion (an
+  `IdentityVersion`, gezäunt, Sperrfrist, bedingt darauf, dass sie die gespeicherte Frist verlängert). Nach einem Commit mit
+  beigetretener Pause trifft das nichts; nach einem Rollback (Sperrfrist, Rückhalt, Statement-Fehler) sichert es die Pause vor
+  dem nächsten Durchgang. Ist die Epoche weg, bucht der Vorgänger nichts; der Nachfolger läuft höchstens in ein weiteres 429
+  und bucht es selbst.
 
 ### 2.5b Editor-Prüfung und Einladungen (Revision 6; T3, T8; seit Revision 6b T8b für den Read, T8c für die Annahme) [B] F7
 
@@ -1035,8 +1093,8 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
   der Runner den Grund bucht (T6). Der Tausch über die Maschinenroute behält die Bot-ID (2.13) und ändert daran nichts, ebenso ein
   Hand-`PUT` mit demselben Konto. Ein aktivierter Kanal ohne gebundene ID (gibt es nicht, Befund 20) gilt als abweichend.
 - **Ablauf [E]:** Die Annahme schreibt in die **Editor-Beziehung**, nicht in ein Set: sie ist kein Versuch nach 2.5a (keine
-  Wunsch-Zeile, kein `BotSetId`, keine setweite Serialisierung), läuft aber unter denselben Schranken: Lock-Probe und
-  Runner-Epoche (2.5a (g)), Kontostufen (`BotAccountPreflight`) und Deckung, `WriteDelaySeconds`, eine Aktion des Budgets.
+  Wunsch-Zeile, kein `BotSetId`, keine setweite Serialisierung), läuft aber unter denselben Schranken: Lock-Probe (Revision 6f, K6f-1: vor und nach
+  jeder Transaktion, nie unter Sperre) und Runner-Epoche (2.5a (g)), Kontostufen (`BotAccountPreflight`) und Deckung, `WriteDelaySeconds`, eine Aktion des Budgets.
   **Revision 6a (S6-1):** zuerst der **Annahmeversuch** in eigener, committeter Transaktion (unter der Kanalsperre, bedingt auf
   die eben geprüfte Lage: Anfrage-Stempel bzw. `BotModeEnabled`, gebundene Bot-ID, kein offener Versuch, Sperre erreicht, Epoche):
   `BotInvitationAttemptAtUtc = jetzt`; trifft das Update nichts, wird nicht gesendet. Gesendet wird danach in einer Transaktion
@@ -1257,17 +1315,23 @@ erst nach der Annahme durch das Konto selbst (`ACCEPTED`). Der Bot kann per API 
   paginierter Read mit jeder Seite, zusammen höchstens im Sperrbudget von 25 s (Revision 6d, K6d-5, 2.5a (c)); in Transaktion 1
   endet die Frist des Reads am Budgetende, dann wird nichts festgeschrieben, die Einreihung bleibt**; in 2 und 4 ist die
   Kanalzeile `FOR SHARE` gehalten (2.5a (c)). **(Revision 6e, K6e-3, K6e-5)** Jede Seite bekommt den kleineren Wert aus 10 s und
-  der Restzeit bis zur Lesefrist; alle vier Transaktionen samt Sperrwarten, Probe und Buchung enden in der Sperrfrist (erste
-  Sperre + 28 s).
+  der Restzeit bis zur Lesefrist; alle vier Transaktionen samt Sperrwarten~~, Probe~~ und Buchung enden in der Sperrfrist (erste
+  Sperre + 28 s; Revision 6f, K6f-1: die Probe liegt zwischen den Transaktionen, der Leerlauf-Timeout sichert die Frist
+  serverseitig).
 - **Festsitzender Auftrag (Revision 6e, K6e-5) [E]:** scheitert ein Entfernungsauftrag in Transaktion 1 oder 2 ohne Senden an
   Read oder Frist (Read nicht möglich, Frist eines Reads, Schreibaufruf passt nicht ins Budget, Sperrfrist abgelaufen) in drei
   Durchgängen in Folge, und liegt der erste davon mindestens 15 Minuten zurück, legt der Runner ihn vor: kurze Buchung unter der
-  Wunsch-Sperre, bedingt auf `RemovalQueuedVersion = DecisionVersion` und keinen offenen Versuch; Werte wie im Rückfall-Lauf für
+  Wunsch-Sperre, bedingt auf ~~`RemovalQueuedVersion = DecisionVersion`~~ **die gezählte Auftragsgeneration (Revision 6f,
+  K6f-2): `RemovalQueuedVersion`, `RemovalQueuedAtUtc` und `DecisionVersion` gleich den gezählten Werten** und keinen offenen
+  Versuch (trifft sie nichts, wird nichts gebucht und der Zähler verworfen); Werte wie im Rückfall-Lauf für
   diesen einen Wunsch (`active` → `presented` (`bot_unavailable`), Einreihung leer; `presented` mit Auftrag → Auftrag leer, Grund
   bleibt), ein `wish.changed`, eine Warnzeile mit Wunsch-ID und Zahl der Abbrüche, kein Audit. `Unauthorized`, `RateLimited` und
   ein Nein der Vorprüfung zählen nicht (sie haben ihre eigenen Wege: Prüfung, Pause, Rückfall); jedes andere Ergebnis setzt den
-  Zähler zurück. Der Zähler liegt im Speicher des Wunsch-Teils je Wunsch-ID und `RemovalQueuedVersion`; ein Neustart oder
-  Runner-Wechsel beginnt bei null (keine Spalte). „Bot entfernen lassen“ (`bot-remove`) reiht danach neu ein. Ein Befehl während Transaktion 2 wartet und trifft danach den neuen Zustand (409, AK83); zwischen den Transaktionen antwortet er
+  Zähler zurück. Der Zähler liegt im Speicher des Wunsch-Teils je ~~Wunsch-ID und `RemovalQueuedVersion`~~ **Auftragsgeneration
+  (Wunsch-ID, `RemovalQueuedVersion`, `RemovalQueuedAtUtc`, wie zuletzt gelesen; Revision 6f, K6f-2)**; ~~ein Neustart oder
+  Runner-Wechsel beginnt bei null~~ **alle Zähler verfallen, sobald eine Session eine andere `RunnerEpoch` trägt als die, unter
+  der sie entstanden (Revision 6f, K6f-3; Neustart, Runner-Wechsel und Wiedererwerb derselben Instanz sind Fälle davon)**
+  (keine Spalte). „Bot entfernen lassen“ (`bot-remove`) reiht danach neu ein. Ein Befehl während Transaktion 2 wartet und trifft danach den neuen Zustand (409, AK83); zwischen den Transaktionen antwortet er
   sofort 409 (2.5a (b)) [P]: beobachtbar dasselbe. Risiko R3.
 
 ### 2.8 Token-Haushalt, Rückfall, Notaus (T5, T8)
@@ -1551,9 +1615,9 @@ geteilten Wunsch-Code ändert, hat einen Regressionsfall „Bot-Modus aus: unver
 | ~~T8~~ | ~~Runner: Vorprüfung, Kanalzustände, v4-Editor-Read, Annahme von Einladungen nach [F7], Aktivierung bestätigen, Aussetzen, Rückfall-Lauf (auch im Ablauf-Lauf)~~ (Revision 6b, K6b-9: geteilt in T8a bis T8c) | ~~opus~~ | 2 |
 | T8a | Telemetrie des Schreib-Clients unter `seventv-bot`: verkleidetes 429 zählt als 429, der Client meldet jede Antwort selbst (Revision 6b, K6b-9); `RetryAfter` auch an einem `Ok` (Revision 6e, K6e-4) | sonnet | 2 |
 | T8b | Runner Ia: v4-Editor-Read, `BotAccountPreflight` und `WishBotPreflight`, Kanalzustände, Aussetzen und Aufnehmen, Rückfall-Lauf samt Aufruf im Ablauf-Lauf (Revision 6b, K6b-9); `TokenUsable` und Prüfung nach jedem Lock-Erwerb (Revision 6c, K6c-5); roher Zustand `ACCEPTED` im Editor-Ergebnis (Revision 6d, K6d-2); Rückfall-Lauf im Ablauf-Lauf aus einem Statement (Revision 6e, K6e-9) | opus | 2 |
-| T8c | Runner Ib: Annahme von Einladungen nach [F7], Annahmeversuch, Zustimmung an die Bot-ID, Sperre, Frist, Bestätigung der Aktivierung, Kanalsperre `FOR SHARE` (Revision 6b, K6b-9); `PauseAsync` in der Sende-Transaktion, Altersgrenze des Annahmeversuchs (Revision 6c, K6c-3, K6c-4); Sperrbudget, Kontomeldung in der Session, `MarkWriteSent()` (Revision 6d, K6d-5, K6d-6, K6d-8); Sperrfrist, Buchung von `wish.botInvitationUnresolved`, `TokenUsable` nach einem 429 (Revision 6e, K6e-1, K6e-3, K6e-6) | opus | 2 |
+| T8c | Runner Ib: Annahme von Einladungen nach [F7], Annahmeversuch, Zustimmung an die Bot-ID, Sperre, Frist, Bestätigung der Aktivierung, Kanalsperre `FOR SHARE` (Revision 6b, K6b-9); `PauseAsync` in der Sende-Transaktion, Altersgrenze des Annahmeversuchs (Revision 6c, K6c-3, K6c-4); Sperrbudget, Kontomeldung in der Session, `MarkWriteSent()` (Revision 6d, K6d-5, K6d-6, K6d-8); Sperrfrist, Buchung von `wish.botInvitationUnresolved`, `TokenUsable` nach einem 429 (Revision 6e, K6e-1, K6e-3, K6e-6); Probe nie unter Sperre, Leerlauf-Rückhalt, Nachbuchung der Pause am Durchgangsende (Revision 6f, K6f-1, K6f-4) | opus | 2 |
 | T9 | Runner: Hinzufügen und Bestätigen; Gerüst der Warteschlange (Revision 6b, K6b-14); Pause aus einem `Ok` mit `RetryAfter` (Revision 6e, K6e-4) | opus | 2 |
-| T10 | Runner: Entfernen, Reparatur, Erkennungsgrenze, `bot-remove` ausführen; Frist an `ReadSetEntriesAsync` im Schreib-Client, Bindung der Prüfphase an `BotRepairAtUtc` (Revision 6d, K6d-1, K6d-5); Seitenzeitlimit aus der Restzeit, Vorlage eines festsitzenden Auftrags (Revision 6e, K6e-5) | opus | 2 |
+| T10 | Runner: Entfernen, Reparatur, Erkennungsgrenze, `bot-remove` ausführen; Frist an `ReadSetEntriesAsync` im Schreib-Client, Bindung der Prüfphase an `BotRepairAtUtc` (Revision 6d, K6d-1, K6d-5); Seitenzeitlimit aus der Restzeit, Vorlage eines festsitzenden Auftrags (Revision 6e, K6e-5); Zähler je Auftragsgeneration und Runner-Epoche (Revision 6f, K6f-2, K6f-3) | opus | 2 |
 | T11b | T11a erweitert um Kanalrouten, Hinzufügen, Entfernen | sonnet | 2 |
 | T13 | Doku-Abschluss: Operations, Architectur, CLAUDE.md, DECISIONS | sonnet | 2 |
 | T14 | Live-Verifikation AK93 (Abschnitt 5) | Orchestrator mit Betreiber | 2 |
@@ -2124,8 +2188,9 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   `attemptedAtUtc`; Konstante aus T7), Versuch, `BotActivationError` und `BotConsentSevenTvUserId` leer wie bisher; bei gültiger
   Zustimmung kein Audit. **(K6e-3)** die Sperrfrist als Form `BotAccountLockDeadline` neben `BotAccountFence` (F = erste Sperre
   + 28 s, monoton über `TimeProvider`; Restzeit; „passt ein Zeitlimit bis F − 3 s“; Lesefrist für Seiten) samt dem Setzen von
-  `SET LOCAL statement_timeout` vor jedem Statement nach der ersten Sperre und 10 s für die erste; die Lock-Probe unter Sperre
-  mit Kommando-Timeout von höchstens 2 s, nie über F (Änderung an `ProbeLockAsync`, PR-1-Code); angewandt auf die Sende- und
+  `SET LOCAL statement_timeout` vor jedem Statement nach der ersten Sperre und 10 s für die erste; ~~die Lock-Probe unter Sperre
+  mit Kommando-Timeout von höchstens 2 s, nie über F~~ die Lock-Probe mit Kommando-Timeout von höchstens 2 s, nie unter
+  Zeilensperre (Revision 6f, K6f-1) (Änderung an `ProbeLockAsync`, PR-1-Code); angewandt auf die Sende- und
   Rücknahme-Transaktionen der Annahme und auf `BookAsync` des Runners (Token-Haushalt, beigetretene Pause); T9 und T10 nutzen
   dieselbe Form. **(K6e-4)** ein `Ok` der Annahme mit `RetryAfter` bucht die Pause im Commit der Sende-Transaktion neben
   `wish.botAcceptInvitation`. **(K6e-6)** `TokenUsable` falsch bis zum Ende des Durchgangs nach jedem gesehenen 429 (Token-Prüfung
@@ -2145,6 +2210,27 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   Aufruf mit dem Token im Durchgang (Stub zählt). **(K6e-6)** Annahme `RateLimited` mit `Retry-After: 1`, danach die Uhr um 2 s
   vorgerückt → kein weiterer Aufruf mit dem Token im Durchgang (Stub zählt), der nächste Durchgang ruft wieder; ebenso ein 429
   der Token-Prüfung mit `Retry-After: 1` vor der Session → der Durchgang ruft 7TV mit dem Token nicht.
+- **Revision 6f, T8c, Liefert zusätzlich:** **(K6f-1)** die Probe nie unter Zeilensperre: probt wird vor jeder Transaktion mit
+  Zeilensperre und nach ihrem Ende, nie dazwischen (Annahmeversuch, Sende-Transaktion und Rücknahme der Annahme als erste Nutzer;
+  `BookAsync` des Runners tut das schon). `BotAccountLockDeadline` setzt mit `statement_timeout` im selben Statement
+  `idle_in_transaction_session_timeout` (vor der ersten Sperre 10 s bzw. 28 s, danach Restzeit bis F; vor jedem Statement, vor
+  jedem HTTP-Aufruf unter Sperre, vor dem Commit); ein Verbindungsfehler nach einem serverseitigen Abbruch und ein Fehler am Commit
+  nehmen den Pfad des Fristablaufs. **(K6f-4)** die Session merkt sich die größte gemeldete Pause (absolute Frist,
+  `IdentityVersion`); der Runner bucht sie am Ende jedes Durchgangs, auch nach einer Ausnahme des Wunsch-Teils, noch einmal über
+  den Pfad ohne offene Transaktion, bedingt auf Verlängerung; `BookPauseAsync` nimmt dafür die absolute Frist statt `RetryAfter`
+  (PR-1-Code). Beide Punkte in den DECISIONS-Absatz (Regel 3).
+- **Revision 6f, T8c, Grenzfälle (echtes Postgres):** **(K6f-1)** ein Session-Dekorator lässt `HoldsLockAsync` 40 s hängen, während
+  eine Annahme ansteht; `PUT /kill-switch` und `DELETE …/wishes/bot` starten in diesem Moment → beide committen in unter 5 s, und
+  `pg_locks` zeigt während der hängenden Probe keine Zeilensperre des Arbeits-Backends. **(K6f-1, Rückhalt)** der Schreib-Stub der
+  Annahme ignoriert sein Zeitlimit und hängt 40 s; `PUT /kill-switch` wartet auf die Credentials-Zeile, `DELETE …/wishes/bot` auf
+  die Kanalzeile → Postgres beendet die Sitzung bei F, beide committen vor ihrem 30-s-Timeout (gemessen ab ihrem Start), der
+  Annahmeversuch bleibt offen und wird per Read aufgelöst (2.5b), der nächste Durchgang derselben Runner-Instanz läuft mit neuer
+  Verbindung normal; Unit der Frist: vor einem HTTP-Aufruf stehen beide Werte auf der Restzeit. **(K6f-4)** Annahme `Ok` mit
+  `RetryAfter` 60 s, ein Interceptor rückt die monotone Uhr vor dem Commit über F → Rollback, keine Buchung der Annahme; nach dem
+  Durchgang steht `PausedUntilUtc` auf Meldezeitpunkt + 60 s (nicht neu berechnet); der nächste Durchgang innerhalb der Frist ruft
+  7TV mit dem Token nicht (Stub zählt: kein `users.me`, kein Read), nach der Frist löst er den Versuch per Read auf; dasselbe mit
+  `RateLimited` statt `Ok`; Pause im Commit und Nachbuchung → derselbe Wert, die Nachbuchung trifft nichts (eine Warnzeile); ein
+  zweiter Runner erhöht die Epoche vor der Nachbuchung → nichts gebucht, Lock-Verlust gemeldet.
 - **Tests:** **[T8b]** Unit Preflight-Reihenfolge (jede Stufe einzeln falsch), Integration AK79, AK80, AK85 Betrieb, Ablauf-Lauf mit
   ausgeschaltetem Bot leert eingereihte Wünsche und löst offene Versuche auf ([W8], 2.5a (e)), Beleg bleibt als Prüfphase.
   **Revision 6:** **[T8b]** Unit der Zuordnung Editor-Eintrag → Ergebnis (`editor`, `invited`, `not_editor`) und **[T8c]** der Annahme-Entscheidung
@@ -2290,7 +2376,8 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   versucht; Seite 2 verkleidetes 429 → `PausedUntilUtc` im Commit der Rücknahme; Nach-Read und Prüf-Read mit 429 → Pause gebucht,
   Versuch bzw. Phase bleiben offen.
 - **Revision 6e, Liefert zusätzlich:** **(K6e-5)** das Seitenzeitlimit aus der Restzeit im Client (oben) und der festsitzende
-  Auftrag nach 2.7: Zähler im Speicher des Wunsch-Teils je Wunsch-ID und `RemovalQueuedVersion` (Abbrüche ohne Senden an Read oder
+  Auftrag nach 2.7: Zähler im Speicher des Wunsch-Teils je ~~Wunsch-ID und `RemovalQueuedVersion`~~ Auftragsgeneration und
+  Runner-Epoche (Revision 6f, K6f-2, K6f-3) (Abbrüche ohne Senden an Read oder
   Frist; nicht `Unauthorized`, `RateLimited`, Nein der Vorprüfung), nach drei in Folge mit dem ersten mindestens 15 min zurück die
   Vorlage mit den Werten des Rückfall-Laufs für diesen Wunsch, ein `wish.changed`, eine Warnzeile, kein Audit. **(K6e-3)**
   Transaktion 1, 2, 3, 4, die Rücknahmen und die Buchungen der Prüfphase unter der Sperrfrist aus T8c. **(K6e-4)** `removeEmote`
@@ -2308,10 +2395,30 @@ nicht auf der Devbox → Ursache (Netz, Sperre) klären; scheitert er überall (
   Rücknahme scheiterte → keine Vorlage, 2.5a (e) gilt. **(K6e-3, echtes Postgres)** Transaktion 2: `removeEmote` (Stub 9 s) als
   späteste passende Sendung, danach rückt ein Interceptor die monotone Uhr vor der Buchung über F → keine Buchung, Rollback,
   wartender Vollsync und `PUT /kill-switch` committen ohne Timeout, der Versuch bleibt offen, der nächste Durchgang löst nach
-  2.5a (e) über den Nach-Read auf, kein zweites `removeEmote`; die Lock-Probe nach `removeEmote` auf einer getrennten
-  Lock-Verbindung → Lock-Verlust, keine Buchung, Versuch offen. **(K6e-4)** `removeEmote` `Ok` mit `RetryAfter` → `PausedUntilUtc`
+  2.5a (e) über den Nach-Read auf, kein zweites `removeEmote`; ~~die Lock-Probe nach `removeEmote` auf einer getrennten
+  Lock-Verbindung → Lock-Verlust, keine Buchung, Versuch offen~~ (Revision 6f, K6f-1) die Lock-Verbindung wird während
+  `removeEmote` beendet → Transaktion 2 endet unter dem gehaltenen Zaun wie sonst (bei `Ok` nichts weiter), die Probe vor
+  Transaktion 3 meldet Lock-Verlust, kein Nach-Read, keine Buchung, Versuch offen, der Nachfolger löst nach 2.5a (e) auf. **(K6e-4)** `removeEmote` `Ok` mit `RetryAfter` → `PausedUntilUtc`
   im Commit von Transaktion 2, kein Nach-Read in diesem Durchgang (Stub zählt), im nächsten Durchgang nach der Pause `removed`
   über 2.5a (e) (`outcome: resumed`); Reparatur `Ok` mit `RetryAfter` → `wish.botRepair` mit `outcome` und Pause in einem Commit.
+- **Revision 6f, Liefert zusätzlich:** **(K6f-2)** Zähler je Auftragsgeneration (Wunsch-ID, `RemovalQueuedVersion`,
+  `RemovalQueuedAtUtc`, wie zuletzt gelesen), Vorlage bedingt auf alle drei gezählten Werte und `DecisionVersion` = gezählte
+  Version; trifft sie nichts, wird der Zähler verworfen. **(K6f-3)** der Wunsch-Teil verwirft alle Zähler, sobald eine Session
+  eine andere `RunnerEpoch` trägt. **(K6f-1)** Transaktion 1 bis 4, Rücknahmen und Buchungen der Prüfphase ohne Probe unter
+  Sperre, mit dem Rückhalt aus T8c.
+- **Revision 6f, Grenzfälle:** **(K6f-2, Sols Fall)** drei Abbrüche über 15 min für die Generation (V, t1); zwischen drittem
+  Abbruch und Vorlage (Interceptor) ändert ein Verwalter die Schwelle (`DecisionVersion` V+1, Einreihung leer) und der Ablauf-Lauf
+  reiht neu ein (V+1, t2) → die Vorlage trifft nichts, der Wunsch bleibt `active` und eingereiht, kein `wish.changed`, der Zähler
+  für (V+1, t2) beginnt bei null; ebenso leert Transaktion 1 die Einreihung „nicht berechtigt“ ohne Versionswechsel und der
+  Ablauf-Lauf reiht neu ein (V, t3) → die früheren Abbrüche zählen nicht für (V, t3). **(K6f-3)** dieselbe Runner- und
+  Wunsch-Teil-Instanz: zwei Abbrüche unter Epoche E, die Lock-Verbindung wird beendet, ein zweiter Runner übernimmt (E+1) und gibt
+  den Lock wieder ab, die erste Instanz erwirbt neu (E+2) → ein weiterer Abbruch legt nicht vor, erst drei unter E+2 mit 15 min
+  seit dem ersten davon. **(K6f-1, echtes Postgres)** Transaktion 2: der Stub von `removeEmote` ignoriert sein Zeitlimit und hängt
+  40 s, Vollsync und `PUT /kill-switch` warten → Postgres beendet die Sitzung bei F, beide committen vor ihrem 30-s-Timeout, der
+  Versuch bleibt offen, der nächste Durchgang löst über den Nach-Read nach 2.5a (e) auf, kein zweites `removeEmote`. **(K6f-4)**
+  `removeEmote` `Ok` mit `RetryAfter` 60 s, ein Interceptor rückt die Uhr vor dem Commit über F → Rollback, nach dem Durchgang
+  `PausedUntilUtc` = Meldezeitpunkt + 60 s; der nächste Durchgang innerhalb der Frist ruft 7TV mit dem Token nicht (kein Nach-Read,
+  Stub zählt), danach `removed` über 2.5a (e) (`outcome: resumed`).
 - **Grenzfälle:** Abweichung je eines der vier Merkmale; Eintrag schon weg; zweiter Alias desselben Emotes bleibt; Reparatur
   scheitert; Ersatz zwischen Vor-Read und `removeEmote` (Stub; seit Revision 6a zwischen dem frischen Vor-Read in Transaktion 2
   und `removeEmote`, das Restfenster) mit und ohne vorher gesehenen Slot; `extend` nach Auswahl und vor
@@ -2802,7 +2909,7 @@ Host (`infra-docs`); danach Stufe 0 (Spec 12 Punkt 7), erst dann der erste Pilot
 |---|---|---|
 | R1 | 7TV ändert JWT, Schema oder Editor-Modell (RR3) | Rückfall ist Normalpfad; fail-closed im Client; DECISIONS „unofficial“ |
 | R2 | Erkennungsgrenze (RR2): Ersatz zwischen Vor-Read und `removeEmote` wird entfernt | wie Spec 8; Pilotmessung ist untere Schranke. **Revision 6a (S6-5):** der Vor-Read liegt jetzt unter den Sperren direkt vor dem Senden; offen bleibt nur das Fenster zwischen seiner Antwort und der Ausführung von `removeEmote` bei 7TV (unter einer Sekunde), weil 7TV keine bedingte Mutation kennt |
-| R3 | Bot hält Wunsch-Sperre und Kanalzeile (`FOR SHARE`) bis ~20 s über HTTP; Vollsync, Abgleich und Kanalbefehle warten | ~~höchstens zwei Aufrufe je Transaktion~~ Sperrbudget von 25 s für alle HTTP-Anfragen unter Sperre, Seiten eines Reads eingeschlossen (Revision 6d, K6d-5), eine Aktion zur Zeit, 10-s-Timeouts, unter dem 30-s-Standard-Timeout der Wartenden (2.5a (c)); **Revision 6e (K6e-3):** dazu die Sperrfrist (erste Sperre + 28 s, `statement_timeout` je Statement, Probe höchstens 2 s), die auch Sperrwarten, Probe, Buchung und Commit begrenzt; im Live-Lauf gemessen. **G0:** `addEmote` antwortete in bis zu 4,4 s (zwei von fünf über 3,5 s), `removeEmote` in 476 ms, die Annahme in 536 ms; alles unter dem 10-s-Zeitlimit, das deshalb bleibt |
+| R3 | Bot hält Wunsch-Sperre und Kanalzeile (`FOR SHARE`) bis ~20 s über HTTP; Vollsync, Abgleich und Kanalbefehle warten | ~~höchstens zwei Aufrufe je Transaktion~~ Sperrbudget von 25 s für alle HTTP-Anfragen unter Sperre, Seiten eines Reads eingeschlossen (Revision 6d, K6d-5), eine Aktion zur Zeit, 10-s-Timeouts, unter dem 30-s-Standard-Timeout der Wartenden (2.5a (c)); **Revision 6e (K6e-3):** dazu die Sperrfrist (erste Sperre + 28 s, `statement_timeout` je Statement, Probe höchstens 2 s), die auch Sperrwarten, Probe, Buchung und Commit begrenzt; **Revision 6f (K6f-1):** keine Probe mehr unter Sperre, dazu `idle_in_transaction_session_timeout` als serverseitiger Rückhalt; im Live-Lauf gemessen. **G0:** `addEmote` antwortete in bis zu 4,4 s (zwei von fünf über 3,5 s), `removeEmote` in 476 ms, die Annahme in 536 ms; alles unter dem 10-s-Zeitlimit, das deshalb bleibt |
 | R4 | Token gestohlen (RR4) | Siegel, Notaus, Editor je Kanal; Runbook |
 | R5 | Änderungen an geteiltem Wunsch-Code treffen den live laufenden manuellen Modus | Regressionsfälle je Task (Befund 20), Bot-Schalter bleibt aus |
 | R6 | Eigentum geht durch Datumsheuristik (Plan-483 R10) oder Token-Wechsel verloren | Vorlage statt Entfernen, sichere Richtung; dokumentiert |
