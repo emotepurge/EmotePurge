@@ -96,4 +96,11 @@ public interface IWorkerRosterReader
     /// which is itself the answer, not an error.
     /// </summary>
     Task<WorkerRosterSnapshot?> ReadAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Like <see cref="ReadAsync"/>, but <c>null</c> means only that the key is absent; a failed read
+    /// (Redis unreachable or timing out) throws instead. For the join health check, where a missing
+    /// roster inside the Api's cold-start window is "starting" but a failed read is "unavailable".
+    /// </summary>
+    Task<WorkerRosterSnapshot?> ReadStrictAsync(CancellationToken cancellationToken = default);
 }

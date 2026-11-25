@@ -43,10 +43,9 @@ public class WorkerRosterReader(IConnectionMultiplexer connectionMultiplexer, IL
 {
     public async Task<WorkerRosterSnapshot?> ReadAsync(CancellationToken cancellationToken = default)
     {
-        RedisValue value;
         try
         {
-            value = await connectionMultiplexer.GetDatabase().StringGetAsync(WorkerHealthKeys.Roster);
+            return await ReadStrictAsync(cancellationToken);
         }
         catch (Exception ex) when (ex is RedisException or TimeoutException)
         {
@@ -57,7 +56,13 @@ public class WorkerRosterReader(IConnectionMultiplexer connectionMultiplexer, IL
             logger.LogWarning(ex, "Lesen des Worker-Roster-Snapshots fehlgeschlagen — behandle als fehlenden Key.");
             return null;
         }
+    }
 
+    public async Task<WorkerRosterSnapshot?> ReadStrictAsync(CancellationToken cancellationToken = default)
+    {
+        // No catch: the join health check must tell a failed read (unavailable) from a missing key,
+        // which inside the Api's cold-start window is only "starting".
+        var value = await connectionMultiplexer.GetDatabase().StringGetAsync(WorkerHealthKeys.Roster);
         if (value.IsNullOrEmpty)
         {
             return null;

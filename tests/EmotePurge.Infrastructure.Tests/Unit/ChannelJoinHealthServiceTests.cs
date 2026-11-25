@@ -1,10 +1,13 @@
 using EmotePurge.Core.Services;
+using EmotePurge.Infrastructure.Redis;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fakes;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using NSubstitute;
+using StackExchange.Redis;
 using Xunit;
 
 namespace EmotePurge.Infrastructure.Tests.Unit;
@@ -85,7 +88,7 @@ public class ChannelJoinHealthServiceTests
     [Fact]
     public async Task IsAlarming_ForAHealthyRoster_IsFalse()
     {
-        _reader.ReadAsync(Arg.Any<CancellationToken>()).Returns(Roster());
+        _reader.ReadStrictAsync(Arg.Any<CancellationToken>()).Returns(Roster());
         StubDesired();
 
         Assert.False(await NewService().IsAlarmingAsync());
@@ -94,7 +97,7 @@ public class ChannelJoinHealthServiceTests
     [Fact]
     public async Task IsAlarming_ForAnOverdueChannel_IsTrue()
     {
-        _reader.ReadAsync(Arg.Any<CancellationToken>()).Returns(Roster(Unconfirmed("a", 999, TwitchJoinFailureReasons.NoConfirmation)));
+        _reader.ReadStrictAsync(Arg.Any<CancellationToken>()).Returns(Roster(Unconfirmed("a", 999, TwitchJoinFailureReasons.NoConfirmation)));
         StubDesired();
 
         Assert.True(await NewService().IsAlarmingAsync());
@@ -103,7 +106,7 @@ public class ChannelJoinHealthServiceTests
     [Fact]
     public async Task IsAlarming_ForAColdStart_IsFalse()
     {
-        _reader.ReadAsync(Arg.Any<CancellationToken>()).Returns((WorkerRosterSnapshot?)null);
+        _reader.ReadStrictAsync(Arg.Any<CancellationToken>()).Returns((WorkerRosterSnapshot?)null);
         var services = new ServiceCollection().BuildServiceProvider();
         var service = new ChannelJoinHealthService(
             _reader, services.GetRequiredService<IServiceScopeFactory>(), new ChannelJoinHealthOptions(), _time, _log,
@@ -115,33 +118,56 @@ public class ChannelJoinHealthServiceTests
     [Fact]
     public async Task IsAlarming_ForAMissingRosterAfterTheColdStartWindow_IsTrue()
     {
-        _reader.ReadAsync(Arg.Any<CancellationToken>()).Returns((WorkerRosterSnapshot?)null);
+        _reader.ReadStrictAsync(Arg.Any<CancellationToken>()).Returns((WorkerRosterSnapshot?)null);
 
         Assert.True(await NewService().IsAlarmingAsync());
+    }
+
+    // Codex review round 2: through the real roster reader, a Redis read failure must stay a failed
+    // fill (503) even inside the Api's cold-start window; only a genuinely missing key is "starting".
+    [Fact]
+    public async Task IsAlarming_WhenTheRedisReadFailsDuringTheColdStart_IsTrue()
+    {
+        var database = Substitute.For<IDatabase>();
+        database.StringGetAsync(Arg.Any<RedisKey>()).Returns<RedisValue>(_ =>
+            throw new RedisConnectionException(ConnectionFailureType.UnableToConnect, CommandFlags.None, "redis down", null, CommandStatus.Unknown));
+
+        Assert.True(await ColdStartServiceOver(database).IsAlarmingAsync());
+        Assert.Equal(1, Warnings);
+    }
+
+    [Fact]
+    public async Task IsAlarming_WhenTheRosterKeyIsMissingDuringTheColdStart_IsFalse()
+    {
+        var database = Substitute.For<IDatabase>();
+        database.StringGetAsync(Arg.Any<RedisKey>()).Returns(RedisValue.Null);
+
+        Assert.False(await ColdStartServiceOver(database).IsAlarmingAsync());
+        Assert.Equal(0, Warnings);
     }
 
     [Fact]
     public async Task IsAlarming_WithinFiveSeconds_FillsOnceAndThenRefills()
     {
-        _reader.ReadAsync(Arg.Any<CancellationToken>()).Returns(Roster());
+        _reader.ReadStrictAsync(Arg.Any<CancellationToken>()).Returns(Roster());
         StubDesired();
         var service = NewService();
 
         await service.IsAlarmingAsync();
         _time.Advance(TimeSpan.FromSeconds(4));
         await service.IsAlarmingAsync();
-        await _reader.Received(1).ReadAsync(Arg.Any<CancellationToken>());
+        await _reader.Received(1).ReadStrictAsync(Arg.Any<CancellationToken>());
 
         _time.Advance(TimeSpan.FromSeconds(2));
         await service.IsAlarmingAsync();
-        await _reader.Received(2).ReadAsync(Arg.Any<CancellationToken>());
+        await _reader.Received(2).ReadStrictAsync(Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task IsAlarming_ConcurrentCallers_ShareOneFill()
     {
         var gate = new TaskCompletionSource<WorkerRosterSnapshot?>();
-        _reader.ReadAsync(Arg.Any<CancellationToken>()).Returns(_ => gate.Task);
+        _reader.ReadStrictAsync(Arg.Any<CancellationToken>()).Returns(_ => gate.Task);
         StubDesired();
         var service = NewService();
 
@@ -150,13 +176,13 @@ public class ChannelJoinHealthServiceTests
         gate.SetResult(Roster());
         await Task.WhenAll(first, second);
 
-        await _reader.Received(1).ReadAsync(Arg.Any<CancellationToken>());
+        await _reader.Received(1).ReadStrictAsync(Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task IsAlarming_WhenTheReaderThrows_IsUnavailable_CachedAndWarnsOncePerWindow()
     {
-        _reader.ReadAsync(Arg.Any<CancellationToken>()).Returns<WorkerRosterSnapshot?>(_ => throw new InvalidOperationException("redis down"));
+        _reader.ReadStrictAsync(Arg.Any<CancellationToken>()).Returns<WorkerRosterSnapshot?>(_ => throw new InvalidOperationException("redis down"));
         var service = NewService();
 
         for (var i = 0; i < 5; i++)
@@ -164,19 +190,19 @@ public class ChannelJoinHealthServiceTests
             Assert.True(await service.IsAlarmingAsync());
         }
 
-        await _reader.Received(1).ReadAsync(Arg.Any<CancellationToken>());
+        await _reader.Received(1).ReadStrictAsync(Arg.Any<CancellationToken>());
         Assert.Equal(1, Warnings);
 
         _time.Advance(TimeSpan.FromSeconds(6));
         Assert.True(await service.IsAlarmingAsync());
-        await _reader.Received(2).ReadAsync(Arg.Any<CancellationToken>());
+        await _reader.Received(2).ReadStrictAsync(Arg.Any<CancellationToken>());
         Assert.Equal(2, Warnings);
     }
 
     [Fact]
     public async Task IsAlarming_WhenTheDatabaseFails_IsUnavailableAndCachedForFiveSeconds()
     {
-        _reader.ReadAsync(Arg.Any<CancellationToken>()).Returns(Roster());
+        _reader.ReadStrictAsync(Arg.Any<CancellationToken>()).Returns(Roster());
         _channels.ListActiveChannelActivationsAsync(Arg.Any<CancellationToken>()).Returns<IReadOnlyList<ActiveChannelActivation>>(_ => throw new InvalidOperationException("db down"));
         var service = NewService();
 
@@ -190,7 +216,7 @@ public class ChannelJoinHealthServiceTests
     [Fact]
     public async Task IsAlarming_WhenTheReaderHangsAndIgnoresItsToken_IsUnavailableAfterTwoSeconds()
     {
-        _reader.ReadAsync(Arg.Any<CancellationToken>()).Returns(_ => new TaskCompletionSource<WorkerRosterSnapshot?>().Task);
+        _reader.ReadStrictAsync(Arg.Any<CancellationToken>()).Returns(_ => new TaskCompletionSource<WorkerRosterSnapshot?>().Task);
         var call = NewService().IsAlarmingAsync();
 
         await AdvanceUntilCompletedAsync(call, TimeSpan.FromMilliseconds(500));
@@ -206,7 +232,7 @@ public class ChannelJoinHealthServiceTests
         // during a database outage that callback blocks. The verdict must not wait for it.
         using var release = new ManualResetEventSlim();
         var callbackEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _reader.ReadAsync(Arg.Any<CancellationToken>()).Returns(call =>
+        _reader.ReadStrictAsync(Arg.Any<CancellationToken>()).Returns(call =>
         {
             call.Arg<CancellationToken>().Register(() =>
             {
@@ -229,7 +255,7 @@ public class ChannelJoinHealthServiceTests
             await callbackEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
             Assert.False(release.IsSet);
             Assert.True(await service.IsAlarmingAsync().WaitAsync(TimeSpan.FromSeconds(1)));
-            await _reader.Received(1).ReadAsync(Arg.Any<CancellationToken>());
+            await _reader.Received(1).ReadStrictAsync(Arg.Any<CancellationToken>());
         }
         finally
         {
@@ -241,7 +267,7 @@ public class ChannelJoinHealthServiceTests
     public async Task IsAlarming_ACancelledWaiterThrowsButTheFillContinuesForTheNextCaller()
     {
         var gate = new TaskCompletionSource<WorkerRosterSnapshot?>();
-        _reader.ReadAsync(Arg.Any<CancellationToken>()).Returns(_ => gate.Task);
+        _reader.ReadStrictAsync(Arg.Any<CancellationToken>()).Returns(_ => gate.Task);
         StubDesired();
         var service = NewService();
         using var cts = new CancellationTokenSource();
@@ -254,7 +280,22 @@ public class ChannelJoinHealthServiceTests
         gate.SetResult(Roster(Unconfirmed("a", 999, TwitchJoinFailureReasons.NoConfirmation)));
 
         Assert.True(await next);
-        await _reader.Received(1).ReadAsync(Arg.Any<CancellationToken>());
+        await _reader.Received(1).ReadStrictAsync(Arg.Any<CancellationToken>());
+    }
+
+    // An Api process ten seconds old, reading the roster through the real reader over the given database.
+    private ChannelJoinHealthService ColdStartServiceOver(IDatabase database)
+    {
+        var multiplexer = Substitute.For<IConnectionMultiplexer>();
+        multiplexer.GetDatabase().Returns(database);
+        var services = new ServiceCollection().BuildServiceProvider();
+        return new ChannelJoinHealthService(
+            new WorkerRosterReader(multiplexer, NullLogger<WorkerRosterReader>.Instance),
+            services.GetRequiredService<IServiceScopeFactory>(),
+            new ChannelJoinHealthOptions(),
+            _time,
+            _log,
+            _time.GetUtcNow().UtcDateTime.AddSeconds(-10));
     }
 
     private async Task AdvanceUntilCompletedAsync(Task task, TimeSpan step)

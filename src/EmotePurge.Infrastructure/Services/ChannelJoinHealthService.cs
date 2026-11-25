@@ -92,7 +92,9 @@ internal sealed class ChannelJoinHealthService : IChannelJoinHealthService
 
     private async Task<ChannelJoinHealthReport> ReadAndEvaluateAsync(CancellationToken ct)
     {
-        var snapshot = await _rosterReader.ReadAsync(ct);
+        // The strict read: a failed Redis read throws into FillAsync and becomes "unavailable", while
+        // only a genuinely missing key reaches the policy as null (which may be "starting").
+        var snapshot = await _rosterReader.ReadStrictAsync(ct);
         return await EvaluateAsync(snapshot, ct);
     }
 

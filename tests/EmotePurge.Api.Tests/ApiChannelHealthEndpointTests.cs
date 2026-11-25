@@ -120,6 +120,7 @@ public class ApiChannelHealthEndpointTests : IClassFixture<ApiFactory>
     {
         var reader = Substitute.For<IWorkerRosterReader>();
         reader.ReadAsync(Arg.Any<CancellationToken>()).Returns(snapshot);
+        reader.ReadStrictAsync(Arg.Any<CancellationToken>()).Returns(snapshot);
         return reader;
     }
 

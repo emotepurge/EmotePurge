@@ -59,4 +59,25 @@ public class RedisReaderFailureModeTests
 
         Assert.Null(result);
     }
+
+    // The join health check's read (Codex review round 2): a failed read must not look like a missing key.
+    [Fact]
+    public async Task WorkerRosterReader_ReadStrictAsync_RedisConnectionFails_Throws()
+    {
+        var reader = new WorkerRosterReader(BuildFailingConnectionMultiplexer(), NullLogger<WorkerRosterReader>.Instance);
+
+        await Assert.ThrowsAsync<RedisConnectionException>(() => reader.ReadStrictAsync());
+    }
+
+    [Fact]
+    public async Task WorkerRosterReader_ReadStrictAsync_MissingKey_ReturnsNull()
+    {
+        var database = Substitute.For<IDatabase>();
+        database.StringGetAsync(Arg.Any<RedisKey>()).Returns(RedisValue.Null);
+        var connectionMultiplexer = Substitute.For<IConnectionMultiplexer>();
+        connectionMultiplexer.GetDatabase().Returns(database);
+        var reader = new WorkerRosterReader(connectionMultiplexer, NullLogger<WorkerRosterReader>.Instance);
+
+        Assert.Null(await reader.ReadStrictAsync());
+    }
 }
