@@ -1162,7 +1162,8 @@ public class TwitchChatManager(
             // back *after* it and mark a channel confirmed that the successor never joined.
             // MarkConfirmed deliberately does not insert, and only confirms inside an open attempt
             // window (a JOIN of ours seen on the wire): a late echo after a leave and re-activation
-            // must not confirm the new wish (plan #516, R3-H3).
+            // must not confirm the new wish (plan #516, R3-H3). Nor does an echo that arrives while our
+            // own PART is still pending: it answers a JOIN sent before that PART (Codex review, round 2).
             if (_tracker.MarkConfirmed(e.Channel))
             {
                 logger.LogInformation("Channel {Channel} gejoint.", e.Channel);
@@ -1170,7 +1171,7 @@ public class TwitchChatManager(
             else
             {
                 logger.LogDebug(
-                    "JOIN echo for {Channel} ignored — not wanted, already confirmed or no attempt open.",
+                    "JOIN echo for {Channel} ignored — not wanted, already confirmed, no attempt open or our PART still pending.",
                     e.Channel);
             }
         }
@@ -1182,9 +1183,9 @@ public class TwitchChatManager(
     {
         // Our own PART echo. Identity-checked like the other state-changing handlers: the echo of a
         // replaced client must not unconfirm a channel the successor joined. For a wanted, confirmed
-        // channel (Twitch parted us, or a late echo) MarkParted withdraws the confirmation so the
-        // convergence net joins it again; after our own leave the entry is already gone and nothing
-        // happens (plan #516, R3-H3).
+        // channel (Twitch parted us) MarkParted withdraws the confirmation so the convergence net joins
+        // it again; the echo of a PART we sent only clears that pending PART and leaves the wish, a
+        // newer one after a re-activation included, untouched (plan #516, R3-H3; Codex review, round 2).
         lock (_clientStateGate)
         {
             if (!ReferenceEquals(source, _client))
@@ -1205,7 +1206,8 @@ public class TwitchChatManager(
     }
 
     // Runs inline in TwitchLib's send path (see the _clientStateGate comment for the latch rules).
-    // A JOIN on the wire opens the attempt window for a wanted, unconfirmed channel; a PART closes it.
+    // A JOIN on the wire opens the attempt window for a wanted, unconfirmed channel; a PART closes it
+    // and stays pending in the tracker until its echo.
     internal void OnOutgoingChannelCommand(TwitchClient source, int generation, OutgoingChannelCommand command, string channel)
     {
         lock (_clientStateGate)

@@ -39,6 +39,9 @@ internal sealed class FakeIrcTransport : IClient
     public int JoinsSentFor(string channel) =>
         _sent.Count(line => string.Equals(line, $"JOIN #{channel}", StringComparison.OrdinalIgnoreCase));
 
+    public int PartsSentFor(string channel) =>
+        _sent.Count(line => string.Equals(line, $"PART #{channel}", StringComparison.OrdinalIgnoreCase));
+
     public async Task<bool> OpenAsync()
     {
         IsConnected = true;

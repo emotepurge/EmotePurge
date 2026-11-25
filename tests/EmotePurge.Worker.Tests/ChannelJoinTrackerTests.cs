@@ -369,6 +369,85 @@ public class ChannelJoinTrackerTests
         Assert.False(tracker.Contains("ghost"));
     }
 
+    // ---- pending own PART (Codex review, round 2) ----
+
+    [Fact]
+    public void JoinEcho_WhileOurPartIsPending_BelongsToTheOldMembership_AndTheNewEchoConfirmsAfterThePartEcho()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.Remove("a");
+        tracker.RecordPartSent("a");
+        tracker.RecordIntent("a", At(10));
+        tracker.BeginAttempt("a");
+
+        Assert.False(tracker.MarkConfirmed("a")); // the old JOIN's echo
+        Assert.True(tracker.IsAttemptOpen("a"));
+
+        tracker.MarkParted("a", At(11)); // our PART's echo
+        Assert.False(tracker.IsConfirmed("a"));
+        Assert.True(tracker.IsAttemptOpen("a"));
+        Assert.Equal(2, Waiting(tracker, "a", 12));
+
+        Assert.True(tracker.MarkConfirmed("a")); // the new JOIN's echo
+    }
+
+    [Fact]
+    public void OurPartEcho_LeavesTheNewWishsClockAndReasonUntouched()
+    {
+        var tracker = Connected();
+        tracker.RecordPartSent("a");
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.RecordFailure("a", TwitchJoinFailureReasons.NoConfirmation);
+
+        tracker.MarkParted("a", At(5));
+
+        var state = tracker.Snapshot(At(30)).Single();
+        Assert.Equal(30, state.UnconfirmedSeconds);
+        Assert.Equal(TwitchJoinFailureReasons.NoConfirmation, state.Reason);
+    }
+
+    [Fact]
+    public void APartEchoAfterOurOwnPartEcho_IsTwitchsOwn_AndWithdrawsTheConfirmation()
+    {
+        var tracker = Connected();
+        tracker.RecordPartSent("a");
+        tracker.MarkParted("a", At(1)); // our own, answered
+        tracker.RecordIntent("a", At(2));
+        tracker.BeginAttempt("a");
+        Assert.True(tracker.MarkConfirmed("a"));
+
+        tracker.MarkParted("a", At(3));
+
+        Assert.False(tracker.IsConfirmed("a"));
+    }
+
+    [Fact]
+    public void Disconnect_DropsThePendingPart()
+    {
+        var tracker = Connected();
+        tracker.RecordPartSent("a");
+        tracker.RecordIntent("a", At(0));
+        tracker.SetDisconnected(At(1));
+        tracker.SetConnected(At(2));
+        tracker.BeginAttempt("a");
+
+        Assert.True(tracker.MarkConfirmed("a"));
+    }
+
+    [Fact]
+    public void APendingPart_ConcernsOnlyItsOwnChannel()
+    {
+        var tracker = Connected();
+        tracker.RecordPartSent("a");
+        tracker.RecordIntent("b", At(0));
+        tracker.BeginAttempt("b");
+
+        Assert.True(tracker.MarkConfirmed("B"));
+    }
+
     // ---- reasons ----
 
     [Fact]

@@ -308,6 +308,40 @@ public class TwitchChatManagerJoinFailureTransportTests
         Assert.Equal(75, h.Entry(ChannelA).UnconfirmedSeconds);
     }
 
+    // Codex review round 2: leave and re-activation while the first JOIN is still awaited, so our PART
+    // and the new JOIN are both on the wire before Twitch answers the first one, late. Twitch answers in
+    // send order: the old JOIN echo, our PART echo, the new JOIN echo. The old echo belongs to the
+    // membership the PART ends and must not consume the new attempt; the new echo confirms.
+    [Fact]
+    public async Task ALateOldJoinEcho_OurPartEcho_AndTheNewJoinEcho_ConfirmTheNewAttempt()
+    {
+        await using var h = await Harness.StartAsync();
+        await h.Manager.JoinChannelAsync(ChannelA); // attempt 1, still awaited by TwitchLib
+        await h.Manager.LeaveChannelAsync(ChannelA);
+        Assert.Equal(1, h.Transport.PartsSentFor(ChannelA));
+        await h.Manager.JoinChannelAsync(ChannelA); // queued behind attempt 1, sent after its timeout
+        await h.WaitUntilAsync(() => h.Transport.JoinsSentFor(ChannelA) == 2);
+        Assert.True(h.Manager.Tracker.IsAttemptOpen(ChannelA));
+
+        await h.Transport.ReceiveAsync(h.JoinEcho(ChannelA));
+        await h.Transport.ReceiveAsync(h.NamesEnd(ChannelA));
+        Assert.False(h.Entry(ChannelA).JoinConfirmed);
+        Assert.True(h.Manager.Tracker.IsAttemptOpen(ChannelA));
+
+        await h.Transport.ReceiveAsync(h.PartEcho(ChannelA));
+        Assert.False(h.Entry(ChannelA).JoinConfirmed);
+        Assert.True(h.Manager.Tracker.IsAttemptOpen(ChannelA));
+
+        h.Clock.Advance(TimeSpan.FromSeconds(3));
+        await h.Transport.ReceiveAsync(h.JoinEcho(ChannelA));
+        await h.Transport.ReceiveAsync(h.NamesEnd(ChannelA));
+
+        var entry = h.Entry(ChannelA);
+        Assert.True(entry.JoinConfirmed);
+        Assert.Null(entry.UnconfirmedSeconds);
+        Assert.Null(entry.JoinFailureReason);
+    }
+
     [Fact]
     public async Task ATwitchInitiatedPart_OfAConfirmedChannel_WithdrawsTheConfirmation_AndTheNextEnsureSendsAgain()
     {

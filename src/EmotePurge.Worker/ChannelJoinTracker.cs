@@ -36,6 +36,13 @@ public readonly record struct ChannelJoinState(string Name, bool Confirmed, doub
 /// same channel on the wire right after it, which must count as a new attempt.
 /// </para>
 /// <para>
+/// Our own PART on the wire is also tracked on its own, apart from the wish and the attempt window,
+/// until Twitch echoes it (or the connection goes). Twitch answers in send order, so a JOIN echo that
+/// arrives while our PART is still pending answers a JOIN sent before that PART: it belongs to the
+/// membership the PART ends and neither confirms nor consumes the newer attempt. The PART echo then
+/// ends that membership without touching the newer wish, and the newer JOIN's echo confirms.
+/// </para>
+/// <para>
 /// Thread-safe through one private lock, never held across an await and never calling out — the
 /// innermost latch in <see cref="TwitchChatManager"/>.
 /// </para>
@@ -44,6 +51,10 @@ public sealed class ChannelJoinTracker
 {
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.OrdinalIgnoreCase);
+
+    // Channels with one of our PARTs on the wire whose echo has not arrived yet. Independent of
+    // _entries: the leave drops the wish before the PART is sent, and a re-activation adds a new one.
+    private readonly HashSet<string> _pendingParts = new(StringComparer.OrdinalIgnoreCase);
 
     private bool _connected;
 
@@ -80,7 +91,8 @@ public sealed class ChannelJoinTracker
 
     /// <summary>
     /// The connection is gone or being rebuilt: running clocks stop with their time added, every
-    /// channel becomes unconfirmed (a formerly confirmed one restarts at zero) and every attempt closes.
+    /// channel becomes unconfirmed (a formerly confirmed one restarts at zero), every attempt closes and
+    /// no PART is pending any more (the old connection's echoes never reach the new one).
     /// </summary>
     public void SetDisconnected(DateTimeOffset now)
     {
@@ -102,6 +114,8 @@ public sealed class ChannelJoinTracker
                 entry.RunningSince = null;
                 entry.AttemptOpen = false;
             }
+
+            _pendingParts.Clear();
         }
     }
 
@@ -118,7 +132,10 @@ public sealed class ChannelJoinTracker
         }
     }
 
-    /// <summary>Our own PART for the channel is on the wire: the attempt window closes.</summary>
+    /// <summary>
+    /// Our own PART for the channel is on the wire: the attempt window closes, and the PART stays
+    /// pending until its echo (<see cref="MarkParted"/>) or a disconnect.
+    /// </summary>
     public void RecordPartSent(string name)
     {
         lock (_gate)
@@ -127,6 +144,8 @@ public sealed class ChannelJoinTracker
             {
                 entry.AttemptOpen = false;
             }
+
+            _pendingParts.Add(name);
         }
     }
 
@@ -147,14 +166,16 @@ public sealed class ChannelJoinTracker
     }
 
     /// <summary>
-    /// Our own JOIN echo. Confirms only a wanted channel with an open attempt (never inserts);
-    /// returns whether it did.
+    /// Our own JOIN echo. Confirms only a wanted channel with an open attempt and no pending PART of
+    /// ours (never inserts); returns whether it did. An echo while a PART is pending answers a JOIN
+    /// sent before that PART and leaves the newer attempt open.
     /// </summary>
     public bool MarkConfirmed(string name)
     {
         lock (_gate)
         {
-            if (!_entries.TryGetValue(name, out var entry) || entry.Confirmed || !entry.AttemptOpen)
+            if (_pendingParts.Contains(name)
+                || !_entries.TryGetValue(name, out var entry) || entry.Confirmed || !entry.AttemptOpen)
             {
                 return false;
             }
@@ -170,13 +191,21 @@ public sealed class ChannelJoinTracker
     }
 
     /// <summary>
-    /// Our own PART echo. For a wanted, confirmed channel it withdraws the confirmation (clock at
-    /// zero, running if connected) so the convergence retry applies again; otherwise nothing changes.
+    /// Our own PART echo. The echo of a PART we sent ends only the membership that PART left: the
+    /// pending PART clears and the wish (a newer one, if the channel was re-activated) is untouched.
+    /// Any other PART echo (Twitch parted us) withdraws the confirmation of a wanted, confirmed
+    /// channel (clock at zero, running if connected) so the convergence retry applies again;
+    /// otherwise nothing changes.
     /// </summary>
     public void MarkParted(string name, DateTimeOffset now)
     {
         lock (_gate)
         {
+            if (_pendingParts.Remove(name))
+            {
+                return;
+            }
+
             if (_entries.TryGetValue(name, out var entry) && entry.Confirmed)
             {
                 entry.Confirmed = false;
