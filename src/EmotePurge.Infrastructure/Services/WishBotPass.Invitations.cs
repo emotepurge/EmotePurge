@@ -313,9 +313,10 @@ public sealed partial class WishBotPass
     }
 
     // The acceptance did not take effect, decided by a read that began after the attempt's window. Consent ended meanwhile
-    // → attempt, error, binding and wait cleared, one wish.botInvitationUnresolved (K6e-1). The attempt ended in Rejected →
-    // "not accepted" like LackingPrivileges: the request ends (invitation_not_accepted), an activated channel is
-    // invitation_pending, the wait stays. Otherwise only the attempt goes; the policy then decides as without one.
+    // → attempt, error, binding and wait cleared, one wish.botInvitationUnresolved (K6e-1). The attempt ended in Rejected
+    // and the read may decide the request (EndsAsNotAccepted) → "not accepted" like LackingPrivileges: the request ends
+    // (invitation_not_accepted), an activated channel is invitation_pending, the wait stays. Otherwise (also a request made
+    // anew after the read began) only the attempt goes, the wait stays; the policy then decides as without one.
     private bool ResolveNotAccepted(ChannelWishSettings settings, string channelName, WishBotInvitationDecision decision, DateTime now)
     {
         var attemptAt = settings.BotInvitationAttemptAtUtc!.Value;
@@ -331,7 +332,7 @@ public sealed partial class WishBotPass
             return true;
         }
 
-        if (!decision.EndedInRejected)
+        if (!decision.EndsAsNotAccepted)
         {
             return false;
         }

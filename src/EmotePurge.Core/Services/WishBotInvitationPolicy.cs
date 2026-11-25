@@ -33,12 +33,15 @@ public enum WishBotInvitationAction
 
 /// <summary>
 /// One decision of <see cref="WishBotInvitationPolicy.Decide"/>. Only the fields of its <see cref="Action"/> are set.
+/// <see cref="EndsAsNotAccepted"/> (with <see cref="WishBotInvitationAction.ResolveNotAccepted"/>): the attempt ended in
+/// <c>Rejected</c> and the read may decide what the attempt stood for, so the request ends with
+/// <c>invitation_not_accepted</c> or the activated channel turns <c>invitation_pending</c>; otherwise only the attempt goes.
 /// </summary>
 public readonly record struct WishBotInvitationDecision(
     WishBotInvitationAction Action,
     DateTime? ReadStartedAfterUtc = null,
     bool ConsentGone = false,
-    bool EndedInRejected = false,
+    bool EndsAsNotAccepted = false,
     string? Error = null,
     string? OwnerSevenTvUserId = null)
 {
@@ -58,7 +61,8 @@ public readonly record struct WishBotInvitationDecision(
 /// read leaves it open. The consent still applies while a request or an activation stands (bound to that id).</item>
 /// <item><b>A request</b> (not activated, request stamp set) waits while the account is unavailable, ends with
 /// <c>bot_account_changed</c> when bound to another account (no read needed), waits while the channel is not covered,
-/// is decided only by a read that began at or after its stamp (an older one asks for a fresh read), is confirmed by
+/// is decided only by a read that began at or after its stamp (an older one asks for a fresh read;
+/// <see cref="ReadMayDecideRequest"/>, also for an attempt's <c>Rejected</c>), is confirmed by
 /// <c>editor</c>, accepts on <c>invited</c> once the retry stamp is reached, and ends with
 /// <c>not_editor</c> only from a read that began at or after request + <c>EditorVisibilitySeconds</c> (S6-3).</item>
 /// <item><b>An activated channel</b> accepts on <c>invited</c> when covered, available, bound to the current account and
@@ -175,10 +179,14 @@ public static class WishBotInvitationPolicy
         var from = NegativeResolutionFrom(attemptAt, editorVisibility);
         if (read.StartedAtUtc >= from)
         {
-            // A retry stamp later than the attempt can only come from this attempt: it ended in Rejected (K6b-1).
+            // A retry stamp later than the attempt can only come from this attempt: it ended in Rejected (K6b-1). That ends
+            // a request only on a read that may decide it: a request made anew after this read began (a DELETE and a new
+            // request while it ran) is not ended by it; the attempt goes alone and the request waits for a read of its own.
             var endedInRejected = settings.BotInvitationRetryAtUtc is { } retry && retry > attemptAt;
             return new WishBotInvitationDecision(
-                WishBotInvitationAction.ResolveNotAccepted, ConsentGone: consentGone, EndedInRejected: endedInRejected);
+                WishBotInvitationAction.ResolveNotAccepted,
+                ConsentGone: consentGone,
+                EndsAsNotAccepted: endedInRejected && ReadMayDecideRequest(settings, read));
         }
 
         return nowUtc >= from
@@ -212,10 +220,8 @@ public static class WishBotInvitationPolicy
             return WishBotInvitationDecision.Nothing;
         }
 
-        // Only a read that began at or after the request decides it (plan 2.9 "Bestätigung im Worker", Sol-P2-6): an older
-        // one, from the one-minute cache or a pass before, was made for a request cancelled since or for none at all.
         var requestedAt = settings.BotActivationRequestedAtUtc!.Value;
-        if (read!.StartedAtUtc < requestedAt)
+        if (!ReadMayDecideRequest(settings, read!))
         {
             return nowUtc >= requestedAt
                 ? new WishBotInvitationDecision(WishBotInvitationAction.ReadAgain, ReadStartedAfterUtc: requestedAt)
@@ -234,7 +240,7 @@ public static class WishBotInvitationPolicy
 
         // not_editor (also ACCEPTED without "manage"): decides only a read that began after the visibility window (S6-3).
         var visibleFrom = requestedAt + editorVisibility;
-        if (read.StartedAtUtc >= visibleFrom)
+        if (read!.StartedAtUtc >= visibleFrom)
         {
             return new WishBotInvitationDecision(WishBotInvitationAction.EndRequest, Error: WishBotChannelReasons.NotEditor);
         }
@@ -243,6 +249,15 @@ public static class WishBotInvitationPolicy
             ? new WishBotInvitationDecision(WishBotInvitationAction.ReadAgain, ReadStartedAfterUtc: visibleFrom)
             : WishBotInvitationDecision.Nothing;
     }
+
+    // The one freshness rule for every decision of a read about an activation request (plan 2.9 "Bestätigung im Worker",
+    // Sol-P2-6): confirmation, acceptance, not_editor and the end by an attempt's Rejected. Only a read that began at or
+    // after the request's stamp decides it; an older one, from the one-minute cache or a pass before, was made for a
+    // request cancelled since or for none at all. True when no request is pending (an activated channel, or none).
+    private static bool ReadMayDecideRequest(ChannelWishSettings settings, BotAccountEditorRead read) =>
+        settings.BotModeEnabled
+        || settings.BotActivationRequestedAtUtc is not { } requestedAt
+        || read.StartedAtUtc >= requestedAt;
 
     // The read's verdict for the channel, only when the read belongs to the current account and identity (plan 2.3).
     private static BotAccountEditorEntry? EntryOf(BotAccountEditorRead? read, BotAccountAvailabilityState account, string? twitchChannelId) =>

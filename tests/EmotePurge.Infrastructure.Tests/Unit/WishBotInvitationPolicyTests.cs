@@ -68,11 +68,12 @@ public class WishBotInvitationPolicyTests
             Decide(settings, Read(BotA, from, entry), now: from));
     }
 
-    // K6b-1: a retry stamp later than the attempt marks "ended in Rejected"; one before it is an older wait.
+    // K6b-1: a retry stamp later than the attempt marks "ended in Rejected", which books "not accepted"; one before it is
+    // an older wait.
     [Theory]
     [InlineData(15, true)]
     [InlineData(-1, false)]
-    public void ARetryStampAfterTheAttempt_MarksEndedInRejected(int retryMinutesAfterAttempt, bool endedInRejected)
+    public void ARetryStampAfterTheAttempt_EndsAsNotAccepted(int retryMinutesAfterAttempt, bool endsAsNotAccepted)
     {
         var attemptAt = Now.AddMinutes(-10);
         var settings = Settings(enabled: true, attemptAt: attemptAt, retryAt: attemptAt.AddMinutes(retryMinutesAfterAttempt));
@@ -80,7 +81,24 @@ public class WishBotInvitationPolicyTests
         var decision = Decide(settings, Read(BotA, Now, ("PENDING", true)));
 
         Assert.Equal(WishBotInvitationAction.ResolveNotAccepted, decision.Action);
-        Assert.Equal(endedInRejected, decision.EndedInRejected);
+        Assert.Equal(endsAsNotAccepted, decision.EndsAsNotAccepted);
+    }
+
+    // Plan 2.9 (Sol-P2-6) for the attempt's Rejected: a read that began before the request (made anew while the read ran)
+    // resolves the attempt alone and does not end the request; one that began at or after its stamp ends it.
+    [Fact]
+    public void ARejectedAttempt_EndsOnlyARequestTheReadMayDecide()
+    {
+        var attemptAt = Now.AddMinutes(-10);
+        var requestedAt = Now.AddSeconds(5);
+        var settings = Settings(requestedAt: requestedAt, attemptAt: attemptAt, retryAt: attemptAt.AddMinutes(15));
+
+        Assert.Equal(
+            new WishBotInvitationDecision(WishBotInvitationAction.ResolveNotAccepted),
+            Decide(settings, Read(BotA, Now, ("PENDING", true)), now: Now.AddSeconds(10)));
+        Assert.Equal(
+            new WishBotInvitationDecision(WishBotInvitationAction.ResolveNotAccepted, EndsAsNotAccepted: true),
+            Decide(settings, Read(BotA, requestedAt, ("PENDING", true)), now: Now.AddSeconds(10)));
     }
 
     // Only a read for the bound id resolves; an unavailable read leaves the attempt open whatever its age, and an open

@@ -823,6 +823,58 @@ public partial class WishBotPassTests
         Assert.Empty(await AuditsAsync(AuditActions.WishBotActivate));
     }
 
+    // The same for an attempt that ended in Rejected (K6b-1): the forced read that resolves it is held, and meanwhile a
+    // manager cancels the request and asks anew (the attempt and its wait stay). That read (no acceptance) began before
+    // the new request: it resolves the old attempt alone and does not end the new request with invitation_not_accepted.
+    // The request waits for a read of its own, also in the next pass within the read's cached minute, which reads 7TV
+    // again and is decided by that read (an editor now: confirmed).
+    [Fact]
+    public async Task ARequestMadeAnewWhileARejectedAttemptIsResolved_IsNotEndedByThatRead()
+    {
+        _visibilitySeconds = 0;
+        await SeedAccountAsync(BotA);
+        var channel = await SeedRequestAsync();
+        Editors(BotA, (channel.TwitchId, "PENDING", true));
+        _acceptResults.Enqueue(SevenTvWriteResult.Rejected(SevenTvWriteRejection.Unknown));
+        _acceptTakesEffect = false;
+        var attemptAt = Now;
+
+        await RunPassAsync();
+        var settings = await SettingsAsync(channel);
+        Assert.Equal(
+            ((DateTime?)attemptAt, (DateTime?)attemptAt.AddMinutes(15)),
+            (settings.BotInvitationAttemptAtUtc, settings.BotInvitationRetryAtUtc));
+
+        _clock.Advance(TimeSpan.FromSeconds(41));
+        HoldNextRead();
+        var pass = RunPassAsync();
+        await _heldReadEntered!.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        await DeleteBotAsync(channel);
+        _clock.Advance(TimeSpan.FromSeconds(5));
+        await ActivateAsync(channel);
+        var renewed = Now;
+        ReleaseHeldRead();
+        await pass;
+
+        settings = await SettingsAsync(channel);
+        Assert.Equal(
+            (false, (DateTime?)renewed, (string?)null, (DateTime?)null, (DateTime?)attemptAt.AddMinutes(15)),
+            (settings.BotModeEnabled, settings.BotActivationRequestedAtUtc, settings.BotActivationError,
+                settings.BotInvitationAttemptAtUtc, settings.BotInvitationRetryAtUtc));
+        Assert.Single(_acceptCalls);
+
+        Editors(BotA, (channel.TwitchId, "ACCEPTED", true));
+        _sevenTv.ClearReceivedCalls();
+        _clock.Advance(TimeSpan.FromSeconds(10));
+        await RunPassAsync();
+
+        await _sevenTv.Received(1).GetEditorForAsync(BotA, Arg.Any<CancellationToken>());
+        settings = await SettingsAsync(channel);
+        Assert.Equal((true, (DateTime?)null, (string?)null), (settings.BotModeEnabled, settings.BotActivationRequestedAtUtc, settings.BotActivationError));
+        Assert.Single(_acceptCalls);
+        Assert.Single(await AuditsAsync(AuditActions.WishBotActivate));
+    }
+
     // ------------------------------------------------------------------------------------ S6-3: the visibility window
 
     // The invitation becomes visible a few seconds before the end of the window; a negative read begins a second before
