@@ -23,7 +23,9 @@ namespace EmotePurge.Infrastructure.BotAccount;
 /// <para>
 /// <b>Token upkeep</b> (plan 2.8). Only <c>unverified</c> and <c>valid</c> are upkept. <c>exp</c> reached →
 /// <c>expired</c>; a seal that does not open → <c>invalid</c> (<c>seal_unreadable</c>); a due verification calls
-/// <see cref="ISevenTvWriteClient.VerifyAsync"/> unless the kill switch or a 429 pause holds it. Every result is booked
+/// <see cref="ISevenTvWriteClient.VerifyAsync"/> unless the kill switch or a 429 pause holds it. A verification is
+/// outstanding after every acquisition of the lock and after a reported <c>Unauthorized</c> (Revision 6c K6c-5); until one
+/// is booked the session's <see cref="IBotAccountSession.TokenUsable"/> stays false, across passes. Every result is booked
 /// conditionally on the <c>CredentialVersion</c> of the token that was checked, so a late answer for token A never
 /// touches a token B set meanwhile; a 429 pause is booked on the <c>IdentityVersion</c> instead. Audit
 /// <c>botAccount.tokenState</c> only when the update hit, in the same commit.
@@ -180,6 +182,10 @@ public sealed class BotAccountRunner(
             }
 
             lockConnection = connection;
+
+            // A new lock holder uses the token only after a verification of its own (Revision 6c K6c-5): an Unauthorized a
+            // predecessor saw lives only in that predecessor's memory, so every acquisition asks for one.
+            reverifyRequested = true;
             logger.LogInformation("Bot account loop holds the lock (runner epoch {Epoch}).", runnerEpoch);
             return true;
         }
@@ -547,6 +553,10 @@ public sealed class BotAccountRunner(
 
         public BotAccountSnapshot Account { get; } = account;
         public string? Token { get; } = token;
+
+        // Live, not a copy: ReportUnauthorized turns it false within the pass.
+        public bool TokenUsable => Token is not null && !runner.reverifyRequested;
+
         public long RunnerEpoch { get; } = runner.runnerEpoch;
         public int RemainingActions => remainingActions;
 

@@ -22,6 +22,17 @@ public interface IBotAccountSession
     /// </summary>
     string? Token { get; }
 
+    /// <summary>
+    /// Whether <see cref="Token"/> may be used for a 7TV call now (#487 plan 2.5, 2.8; Revision 6c K6c-5): it is set and
+    /// no verification is outstanding. One is outstanding after every acquisition of the lock (a new runner uses the token
+    /// only after its own successful verification) and after <see cref="ReportUnauthorized"/>; only a verification that
+    /// was booked clears it. A verification that ends in <c>Timeout</c> or <c>Unavailable</c>, or that the kill switch or
+    /// a pause holds, leaves it outstanding, across passes. Read live: it turns false within the pass the moment
+    /// <see cref="ReportUnauthorized"/> is called. False is no fallback reason and suspends nothing; the unauthenticated
+    /// editor read and resolving reads stay allowed.
+    /// </summary>
+    bool TokenUsable { get; }
+
     /// <summary>This runner's epoch, raised right after it took the advisory lock.</summary>
     long RunnerEpoch { get; }
 
@@ -41,8 +52,9 @@ public interface IBotAccountSession
     Task WaitForWriteSlotAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// 7TV answered <c>Unauthorized</c> to a call with <see cref="Token"/>: the next pass verifies the token again before
-    /// anything else, and that verification decides whether it is <c>invalid</c> (plan 2.8). Nothing is booked here.
+    /// 7TV answered <c>Unauthorized</c> to a call with <see cref="Token"/>: <see cref="TokenUsable"/> turns false at once,
+    /// the next pass verifies the token again before anything else, and that verification decides whether it is
+    /// <c>invalid</c> (plan 2.8). Nothing is booked here.
     /// </summary>
     void ReportUnauthorized();
 
