@@ -175,6 +175,18 @@ public sealed partial class WishBotPass
     private Task<ChannelWishSettings?> SettingsOfAsync(string channelId, CancellationToken cancellationToken) =>
         db.ChannelWishSettings.AsNoTracking().FirstOrDefaultAsync(s => s.ChannelId == channelId, cancellationToken);
 
+    // The account stages of a preflight before an authenticated read without a channel (a repair check) or under a lock
+    // that does not hold the credential row (transaction 1 of a removal): the credential row as it is now, one statement
+    // without a lock (AK81).
+    private async Task<BotAccountSnapshot> FreshAccountAsync(IBotAccountSession session, CancellationToken cancellationToken) =>
+        FreshAccount(
+            await db.BotAccountCredentials.AsNoTracking()
+                .Where(c => c.Id == BotAccountCredential.SingletonId)
+                .Select(c => new BotAccountSnapshot(
+                    c.Status, c.ExpiresAtUtc, c.BotSevenTvUserId, c.KillSwitch, c.PausedUntilUtc, c.CredentialVersion, c.IdentityVersion))
+                .FirstOrDefaultAsync(cancellationToken),
+            session.Account);
+
     // ------------------------------------------------------------------------------------ the shared lock path
 
     // Channel FOR SHARE (first lock, the deadline starts) and the channel's rows behind it, the wish FOR UPDATE within that
@@ -297,6 +309,20 @@ public sealed partial class WishBotPass
         }
 
         return booking;
+    }
+
+    // A fresh row with the session's own pause joined: a pause the session booked in a transaction that rolled back
+    // still holds for the pass (K6c-3). No row: none.
+    private static BotAccountSnapshot FreshAccount(BotAccountSnapshot? row, BotAccountSnapshot session)
+    {
+        if (row is null)
+        {
+            return BotAccountSnapshot.Missing;
+        }
+
+        return session.PausedUntilUtc is { } held && (row.PausedUntilUtc is not { } stored || stored < held)
+            ? row with { PausedUntilUtc = held }
+            : row;
     }
 
     private static BotAccountSnapshot SnapshotOf(BotAccountCredential row) =>

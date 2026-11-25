@@ -11,9 +11,9 @@ namespace EmotePurge.Infrastructure.Services;
 
 // The adds and confirmations of the queue (#487 plan 2.6 with 2.5a; T9).
 //
-// An add, in this order: the session-level preflight without the editor stage (nothing is taken from the budget for an
-// add that could not be sent anyway); TryTakeAction; WaitForWriteSlotAsync (before the intent, never under a row lock,
-// K6c-4); the editor proof, refreshed by a new read where it is older than EditorProofRefreshAge (a long queue outlives
+// An add, in this order: the preflight without the editor stage, on the credential row as it is now (nothing is taken
+// from the budget for an add that could not be sent anyway); TryTakeAction; WaitForWriteSlotAsync (before the intent,
+// never under a row lock, K6c-4); the editor proof, refreshed by a new read where it is older than EditorProofRefreshAge (a long queue outlives
 // step 3's read); the full preflight; the lock probe; (1) the intent in a committed transaction of its own (2.5a (a):
 // approved, no BotWriteAtUtc, the decision version just read, one add per set and emote at a time); the probe; (2) the
 // pre-read of the attempt's set without a row lock (the emote already there → presented already_in_set; no read → the
@@ -125,25 +125,46 @@ public sealed partial class WishBotPass
         return await SendAddAsync(session, item, intent, cancellationToken);
     }
 
-    // The preflight with the session's account, no lock: null to go on, otherwise what the queue does instead (the
-    // credential changed: the pass ends; any other "no": the item waits; plan 2.5).
+    // The preflight before an intent or an authenticated read, no lock: the channel's settings and the credential row in
+    // one statement, so the kill switch is the database's of this moment (AK81, plan 2.5), not the session's of the pass
+    // start. Null to go on, otherwise what the queue does instead (the credential changed: the pass ends; any other "no":
+    // the item waits; plan 2.5).
     private async Task<QueueStep?> PreflightAsync(
         IBotAccountSession session, string channelId, bool requireEditorProof, CancellationToken cancellationToken)
     {
-        var facts = await db.ChannelWishSettings.AsNoTracking()
-            .Where(s => s.ChannelId == channelId)
-            .Select(s => new { Settings = s, s.Channel!.TwitchChannelId })
+        var facts = await (
+                from s in db.ChannelWishSettings.AsNoTracking().Where(s => s.ChannelId == channelId)
+                from c in db.BotAccountCredentials.AsNoTracking().Where(c => c.Id == BotAccountCredential.SingletonId).DefaultIfEmpty()
+                select new
+                {
+                    Settings = s,
+                    s.Channel!.TwitchChannelId,
+                    HasAccountRow = c != null,
+                    Status = c != null ? c.Status : null,
+                    ExpiresAtUtc = c != null ? c.ExpiresAtUtc : null,
+                    BotSevenTvUserId = c != null ? c.BotSevenTvUserId : null,
+                    KillSwitch = c != null && c.KillSwitch,
+                    PausedUntilUtc = c != null ? c.PausedUntilUtc : null,
+                    CredentialVersion = c != null ? c.CredentialVersion : 0,
+                    IdentityVersion = c != null ? c.IdentityVersion : 0,
+                })
             .FirstOrDefaultAsync(cancellationToken);
         if (facts is not { Settings.BotModeEnabled: true } || session.Token is null)
         {
             return QueueStep.Continue;
         }
 
+        var account = FreshAccount(
+            facts.HasAccountRow
+                ? new BotAccountSnapshot(
+                    facts.Status!, facts.ExpiresAtUtc, facts.BotSevenTvUserId, facts.KillSwitch, facts.PausedUntilUtc, facts.CredentialVersion, facts.IdentityVersion)
+                : null,
+            session.Account);
         var outcome = WishBotPreflight.Check(
             SwitchesOn,
             CoveredForBot(facts.Settings, facts.TwitchChannelId),
             facts.Settings,
-            session.Account,
+            account,
             session.Account.CredentialVersion,
             session.TokenUsable,
             Now(),

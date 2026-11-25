@@ -83,6 +83,45 @@ public partial class WishBotPassTests
         AssertAttemptCleared(wish);
     }
 
+    // AK81, plan 2.5: the kill switch goes on during the first of several authenticated reads of one pass (two repair
+    // checks and two confirmations queued). The session still carries the account of the pass start; every later read
+    // asks the credential row itself, so not one more call with the token goes out.
+    [Fact]
+    public async Task TheKillSwitchDuringAPass_LetsNoFurtherAuthenticatedReadGoOut()
+    {
+        var channel = await SeedBotChannelAsync();
+        await SeedPhaseAsync(channel, WishStatus.Removed, SetA);
+        await SeedPhaseAsync(channel, WishStatus.Removed, SetA);
+        var first = await SeedUnconfirmedAsync(channel, writtenSecondsAgo: 40, attempt: 1);
+        var second = await SeedUnconfirmedAsync(channel, writtenSecondsAgo: 30, attempt: 1);
+        _whileReading = number => number == 1 ? KillSwitchAsync(true) : Task.CompletedTask;
+
+        await RunPassAsync();
+
+        Assert.Single(_writes.ReceivedCalls());
+        Assert.Single(_readCalls);
+        Assert.Equal(WishStatus.Unconfirmed, (await LoadAsync(first)).Status);
+        Assert.Equal(WishStatus.Unconfirmed, (await LoadAsync(second)).Status);
+    }
+
+    // AK81: transaction 1 of a removal waits for its wish lock while a PUT /kill-switch commits; it reads the credential
+    // row before its read and sends nothing, the queue stays for the fallback run.
+    [Fact]
+    public async Task TheKillSwitchWhileARemovalTakesItsWishLock_SendsNoRead()
+    {
+        var channel = await SeedBotChannelAsync();
+        var id = await SeedOwnedAsync(channel, WishStatus.Active);
+        var hook = new CommandHook(IsWishLock, occurrence => occurrence == 1 ? KillSwitchAsync(true) : Task.CompletedTask);
+        await using var db = fixture.CreateTaggedDbContext("wish-bot-killswitch-removal", [hook], databaseName: DatabaseName);
+
+        await RunPassAsync(db: db);
+
+        Assert.Empty(_writes.ReceivedCalls());
+        var wish = await LoadAsync(id);
+        Assert.Equal(((DateTime?)null, WishStatus.Active), (wish.BotRemoveAtUtc, wish.Status));
+        Assert.NotNull(wish.RemovalQueuedAtUtc);
+    }
+
     // Sol-P3: a PATCH before the intent (between selection and intent) moves the decision version: no intent in this pass,
     // the next pass writes the new alias.
     [Fact]

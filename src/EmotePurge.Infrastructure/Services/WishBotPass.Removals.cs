@@ -253,6 +253,19 @@ public sealed partial class WishBotPass
             }
             else
             {
+                // The kill switch as it is now, not as the preflight before the wish lock saw it (AK81): this lock does
+                // not hold the credential row, so a PUT /kill-switch may have committed while it waited.
+                await deadline.ApplyAsync(db, cancellationToken);
+                switch (BotAccountPreflight.Check(await FreshAccountAsync(session, cancellationToken), session.Account.CredentialVersion, session.TokenUsable, now))
+                {
+                    case BotAccountPreflightOutcome.Pass:
+                        break;
+                    case BotAccountPreflightOutcome.CredentialChanged:
+                        return (RemovalStep.CredentialChanged, null);
+                    default:
+                        return (RemovalStep.Refused, null);
+                }
+
                 await deadline.ApplyAsync(db, cancellationToken);
                 var result = await writeClient.ReadSetEntriesAsync(
                     session.Token!, wish.BotSetId, HttpTimeLeft(deadline, TimeSpan.Zero), cancellationToken);
@@ -988,13 +1001,14 @@ public sealed partial class WishBotPass
             return QueueStep.Continue;
         }
 
-        // A read needs a usable token and no kill switch or pause; the channel's state does not matter.
+        // A read needs a usable token and no kill switch or pause, both as the credential row shows them now (AK81); the
+        // channel's state does not matter.
         if (session.Token is null || !SwitchesOn)
         {
             return QueueStep.Continue;
         }
 
-        switch (BotAccountPreflight.Check(session.Account, session.Account.CredentialVersion, session.TokenUsable, Now()))
+        switch (BotAccountPreflight.Check(await FreshAccountAsync(session, cancellationToken), session.Account.CredentialVersion, session.TokenUsable, Now()))
         {
             case BotAccountPreflightOutcome.Pass:
                 break;
