@@ -361,12 +361,18 @@ public class TwitchChatManagerJoinFailureTransportTests
         await h.Transport.ReceiveAsync(h.JoinEcho(ChannelA));
         await h.Transport.ReceiveAsync(h.NamesEnd(ChannelA));
         Assert.True(h.Entry(ChannelA).JoinConfirmed);
+
+        // Codex review round 3, P1: the confirmation dropped the expired PART, so Twitch parting us
+        // later withdraws it instead of being taken for that PART's echo.
+        await h.Transport.ReceiveAsync(h.PartEcho(ChannelA));
+        Assert.False(h.Entry(ChannelA).JoinConfirmed);
     }
 
     // No further echo is coming once the grace has passed (TwitchLib lists the channel as joined and
-    // drops a plain JOIN), so the convergence net must send a real PART first.
+    // drops a plain JOIN), so the convergence net asks the watchdog for a rebuild — once — and the fresh
+    // client's JOIN confirms.
     [Fact]
-    public async Task AnExpiredMissingPartEcho_MakesTheConvergenceNetPartAndJoinForReal()
+    public async Task AnExpiredMissingPartEcho_RequestsOneRebuild_AndTheRebuiltClientsJoinConfirms()
     {
         await using var h = await Harness.StartAsync();
         await h.Manager.JoinChannelAsync(ChannelA);
@@ -378,12 +384,33 @@ public class TwitchChatManagerJoinFailureTransportTests
 
         h.Clock.Advance(TimeSpan.FromSeconds(60));
         await h.Manager.EnsureJoinedAsync(ChannelA, h.Manager.CaptureLeaveStamp());
+        await h.Manager.EnsureJoinedAsync(ChannelA, h.Manager.CaptureLeaveStamp());
 
-        Assert.Equal(2, h.Transport.PartsSentFor(ChannelA));
-        await h.WaitUntilAsync(() => h.Transport.JoinsSentFor(ChannelA) == 3, TimeSpan.FromSeconds(10));
-        await h.Transport.ReceiveAsync(h.PartEcho(ChannelA));
+        Assert.Equal(1, h.Transport.PartsSentFor(ChannelA)); // no hand-built PART any more
+        var warning = Assert.Single(h.Logs, l => l.EventId == TwitchChatManager.PartEchoMissingEvent);
+        Assert.Equal(LogLevel.Warning, warning.Level);
+        Assert.DoesNotContain(ChannelA, warning.Message);
+        using (var wait = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+        {
+            var request = await h.Manager.WaitForReconnectRequestAsync(wait.Token);
+            Assert.Equal(TwitchSessionEndReason.PartEchoMissing, request.Reason);
+        }
+
+        Assert.Single(h.Logs, l => l.Message.StartsWith("Verlust-Signal abgelegt", StringComparison.Ordinal));
+        Assert.DoesNotContain(h.Logs, l => l.Message.StartsWith("Weiteres Verlust-Signal", StringComparison.Ordinal));
+
+        // The watchdog's rebuild: a fresh client on a fresh transport. Its disconnect cleared the
+        // pending PART, so the new JOIN echo confirms and a later PART from Twitch is Twitch's own.
+        var outcome = await h.Manager.ReconnectOnceAsync(CancellationToken.None);
+        Assert.True(outcome.HandshakeCompleted);
+        await h.Manager.EnsureJoinedAsync(ChannelA, h.Manager.CaptureLeaveStamp());
+        Assert.Equal(1, h.Transport.JoinsSentFor(ChannelA));
         await h.Transport.ReceiveAsync(h.JoinEcho(ChannelA));
         Assert.True(h.Entry(ChannelA).JoinConfirmed);
+
+        await h.Transport.ReceiveAsync(h.PartEcho(ChannelA));
+        Assert.False(h.Entry(ChannelA).JoinConfirmed);
+        Assert.Single(h.Logs, l => l.EventId == TwitchChatManager.PartEchoMissingEvent);
     }
 
     [Fact]
@@ -468,7 +495,9 @@ public class TwitchChatManagerJoinFailureTransportTests
         private Harness(string? silentJoinChannels)
         {
             Clock = new FakeTimeProvider(new DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero));
-            Transport = new FakeIrcTransport();
+            // A fresh transport per client, as in production: a rebuild (ReconnectOnceAsync) gets its
+            // own, and Transport always names the current client's.
+            Transport = null!;
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?> { ["Worker:Debug:SilentJoinChannels"] = silentJoinChannels })
                 .Build();
@@ -483,13 +512,13 @@ public class TwitchChatManagerJoinFailureTransportTests
                 new WishOptions(),
                 Substitute.For<IRewardObservationSink>(),
                 Clock,
-                () => Transport,
+                () => Transport = new FakeIrcTransport(),
                 configuration);
         }
 
         public FakeTimeProvider Clock { get; }
 
-        public FakeIrcTransport Transport { get; }
+        public FakeIrcTransport Transport { get; private set; }
 
         public TwitchChatManager Manager { get; }
 

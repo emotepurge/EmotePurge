@@ -416,8 +416,40 @@ public class ChannelJoinTrackerTests
 
         Assert.False(tracker.TakeExpiredPart("a", At(9)));
         Assert.True(tracker.TakeExpiredPart("a", At(10)));
-        Assert.False(tracker.TakeExpiredPart("a", At(11))); // already dropped
+        Assert.False(tracker.TakeExpiredPart("a", At(11))); // already dropped: reported once
         Assert.False(tracker.TakeExpiredPart("unknown", At(11)));
+    }
+
+    [Fact]
+    public void TakeExpiredPart_ReportsNothingAfterADisconnect()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordPartSent("a", At(0));
+
+        tracker.SetDisconnected(At(1)); // the rebuild
+        tracker.SetConnected(At(2));
+
+        Assert.False(tracker.TakeExpiredPart("a", At(60)));
+    }
+
+    // Codex review round 3, P1: a confirmation accepted after the grace must not leave the expired
+    // marker behind, or Twitch's own later PART is taken for the old PART's echo and the channel stays
+    // confirmed without receiving chat.
+    [Fact]
+    public void AConfirmationAfterTheGrace_DropsTheExpiredPart_SoTwitchsLaterPartWithdrawsIt()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.RecordPartSent("a", At(0));
+        tracker.BeginAttempt("a");
+        Assert.True(tracker.MarkConfirmed("a", At(11)));
+        Assert.False(tracker.TakeExpiredPart("a", At(12)));
+
+        tracker.MarkParted("a", At(20)); // Twitch parts us
+
+        Assert.False(tracker.IsConfirmed("a"));
+        Assert.Equal(5, Waiting(tracker, "a", 25));
     }
 
     [Fact]

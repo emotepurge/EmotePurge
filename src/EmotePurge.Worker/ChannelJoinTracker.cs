@@ -178,7 +178,9 @@ public sealed class ChannelJoinTracker
     /// Our own JOIN echo. Confirms only a wanted channel with an open attempt and no pending PART of
     /// ours (never inserts); returns whether it did. An echo while a PART is pending answers a JOIN
     /// sent before that PART and leaves the newer attempt open. A PART pending for longer than
-    /// <see cref="PartEchoGrace"/> no longer counts, so a PART Twitch never echoes cannot block forever.
+    /// <see cref="PartEchoGrace"/> no longer counts, so a PART Twitch never echoes cannot block forever;
+    /// a confirmation drops such an expired marker, so a later PART from Twitch is read as Twitch's own
+    /// and withdraws the confirmation instead of being taken for the old PART's echo.
     /// </summary>
     public bool MarkConfirmed(string name, DateTimeOffset now)
     {
@@ -190,6 +192,8 @@ public sealed class ChannelJoinTracker
                 return false;
             }
 
+            // Only an expired marker can still be here (a live one returned above).
+            _pendingParts.Remove(name);
             entry.Confirmed = true;
             entry.AccruedSeconds = 0;
             entry.RunningSince = null;
@@ -228,8 +232,10 @@ public sealed class ChannelJoinTracker
 
     /// <summary>
     /// Drops a pending PART of an unconfirmed channel once it is older than <see cref="PartEchoGrace"/>
-    /// and reports whether it did. The convergence net uses it to learn that a JOIN echo it may have
-    /// ignored cannot be answered by TwitchLib's duplicate-suppressed JOIN, so a real PART and JOIN is due.
+    /// and reports whether it did, so it reports each such PART once. The convergence net uses it to
+    /// learn that a JOIN echo it may have ignored will not come again (TwitchLib lists the channel as
+    /// joined and drops a plain JOIN), and requests a client rebuild; the rebuild's disconnect clears
+    /// every other pending PART as well.
     /// </summary>
     public bool TakeExpiredPart(string name, DateTimeOffset now)
     {

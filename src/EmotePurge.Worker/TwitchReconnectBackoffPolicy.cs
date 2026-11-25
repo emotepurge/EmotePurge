@@ -46,6 +46,15 @@ public enum TwitchSessionEndReason
     /// </summary>
     JoinSendTimeout,
 
+    /// <summary>
+    /// A PART of ours stayed unechoed past <see cref="ChannelJoinTracker.PartEchoGrace"/> for a channel
+    /// that is wanted again and still unconfirmed (#516). TwitchLib then lists the channel as joined
+    /// and drops every plain JOIN for it, so no further echo can confirm it on this client; a fresh
+    /// client starts with an empty channel list and rejoins it. Raised on a live session and paced as
+    /// that session's end.
+    /// </summary>
+    PartEchoMissing,
+
     /// <summary>Tripwire: TwitchLib reconnected in place although <c>NoReconnectionPolicy</c> makes that impossible.</summary>
     UnexpectedInPlaceReconnect,
 

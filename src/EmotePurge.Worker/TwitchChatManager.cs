@@ -41,6 +41,10 @@ public class TwitchChatManager(
     internal static readonly EventId JoinRejectedEvent = new(51601, "TwitchJoinRejected");
     internal static readonly EventId JoinUnconfirmedEvent = new(51602, "TwitchJoinUnconfirmed");
 
+    // A PART of ours Twitch never echoed blocks a re-wanted channel on this client; the convergence net
+    // asks the watchdog for a rebuild (51603 is ChannelCapacityReached in ChannelService).
+    internal static readonly EventId PartEchoMissingEvent = new(51604, "TwitchPartEchoMissing");
+
     // Twitch permits 20 joins per 10 seconds on a non-verified connection, and TwitchLib paces them
     // not at all: JOINs bypass its ThrottlingService (that one only covers chat messages) and its
     // queue advances as fast as confirmations arrive — 126–231ms per channel, measured against
@@ -308,20 +312,23 @@ public class TwitchChatManager(
             expiredPart = _tracker.TakeExpiredPart(channelName, _time.GetUtcNow());
         }
 
-        // A PART of ours that Twitch never echoed has just expired, so JOIN echoes since then were
-        // taken for old membership and no further echo is coming: TwitchLib still lists the channel
-        // as joined and would drop a plain JOIN silently. A real PART first makes the JOIN a new
-        // attempt on the wire (TwitchLib sends the PART only if it lists the channel as joined).
+        // A PART of ours that Twitch never echoed has just expired, so a JOIN echo that came inside
+        // the grace was taken for old membership and no further echo is coming: TwitchLib still lists
+        // the channel as joined and drops a plain JOIN silently. Repairing that by hand on this client
+        // would race TwitchLib's own channel list, so the watchdog rebuilds the client instead; the
+        // successor starts with an empty list, the rebuild's disconnect clears every pending PART, and
+        // the rejoin round sends a real JOIN. TakeExpiredPart reports each such PART once, and the
+        // signal slot coalesces with any loss already waiting. Outside _intentGate: RequestReconnect
+        // takes _clientStateGate, and the two are never nested.
         if (expiredPart)
         {
-            try
-            {
-                await _client.LeaveChannelAsync(channelName);
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Part before a convergence JOIN failed for a channel.");
-            }
+            logger.LogWarning(
+                PartEchoMissingEvent,
+                "A PART of ours was never echoed and keeps a re-wanted channel from being confirmed — requesting a client rebuild.");
+            logger.LogDebug("Rebuild requested for {Channel} (PART echo missing).", channelName);
+            RequestReconnect(
+                TwitchSessionEndReason.PartEchoMissing,
+                $"PART unechoed for more than {ChannelJoinTracker.PartEchoGrace.TotalSeconds}s.");
         }
 
         await TryJoinAsync(channelName, TwitchJoinSource.ConvergenceNet, CancellationToken.None);
