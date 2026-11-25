@@ -1,399 +1,328 @@
 # Plan #516: Join-Fehler erkennen und melden, danach die Kanaldecke anheben
 
 Erstellt am 2026-11-25 im Worktree `EmotePurge-wt-516` (Branch `feat/516-join-failure-detection`, Basis `origin/main` @
-`e1d6210f`, PR #515 gemergt). Alle Codestellen dieses Plans sind an diesem Stand gelesen.
-**Status: Revision 2, nach der adversarialen Prüfung (Sol, „needs-attention", acht Befunde, alle angenommen und am Code
-nachgeprüft — Abschnitt 0). Nichts umgesetzt.**
+`e1d6210f`, PR #515 gemergt). Alle Codestellen sind an diesem Stand gelesen.
+**Status: Revision 3, nach der zweiten adversarialen Prüfung (Sol, „needs-attention", 4 high, 5 medium). Statt weiter zu
+flicken, ist der Entwurf vereinfacht: eine Anrechnungsuhr je Kanal, Bewertung nur über das Roster. Nichts umgesetzt.**
 
 Quellen: Issue #516 (Teil A, Teil B, Akzeptanzkriterien), DECISIONS 2026-11-25 („Twitch channel capacity …"), 2026-09-23
-(Kanaldecke 80), 2026-09-16 (Forwarded-Headers-Vertrauensliste, `PublicHealth` je IP), 2026-08-05 (Z1-Rest/S3-35:
-payloadfreier `/api/health`, Kuma als Dead-Man's-Switch), 2026-08-02 (Schwellen-Leiter, „das Roster-Badge bekommt keine
-nearing-capacity-Stufe"), 2026-08-01 (Roster-Key `worker:roster`), #245 (D2, Frist für unauflösbare Logins), `CLAUDE.md`
-(Regeln 3, 4, 5, 7, 11, 12, 16, 19, Tests, Sprache), `web/.claude/CLAUDE.md`, die Messung der JOIN-Sonde vom 2026-09-08
-(`~/projects/emotepurge-joinprobe/messungen-2026-09-08/lauf-B-named120.log.summary.txt`) und TwitchLib.Client 4.0.1 sowie
-TwitchLib.Communication 2.0.1, dekompiliert aus `~/.nuget/packages/`.
+(Kanaldecke 80), 2026-09-16 (Forwarded-Headers, `PublicHealth` je IP), 2026-08-05 (payloadfreier `/api/health`, Kuma),
+2026-08-02 (Schwellen-Leiter, keine Kapazitätsstufe im Roster-Badge), 2026-08-01 (Roster-Key), `CLAUDE.md` (Regeln 3, 4, 5,
+7, 11, 12, 16, 19, Sprache), `web/.claude/CLAUDE.md`, JOIN-Sonde vom 2026-09-08
+(`~/projects/emotepurge-joinprobe/messungen-2026-09-08/`), TwitchLib.Client 4.0.1 und TwitchLib.Communication 2.0.1,
+dekompiliert (`ilspycmd`).
 
-**Was dieser Plan trägt:** Befund, Entscheidungen mit verworfenen Alternativen, die Verträge (Typen, Felder, Route,
-Statuscodes, Redis-Payload, Konfiguration), den Schnitt in Tasks mit Grenzfällen, Tests, Live-Prüfung und Fertig-Prüfung,
-die Gates, Konfliktrisiken und die offenen Betreiberfragen. **Kein Code**; Namen und Signaturen nur als Form.
-Jeder Implementer liest seinen Task, Abschnitt 2 und 3 **und** die genannten Bestandsdateien, bevor er schreibt.
+**Was dieser Plan trägt:** Befund, Entscheidungen, Verträge, Tasks mit Grenzfällen, Tests, Live-Prüfung, Gates. **Kein
+Code**; Namen und Signaturen nur als Form. Jeder Implementer liest seinen Task, Abschnitt 2 und 3 und die genannten
+Bestandsdateien, bevor er schreibt.
 
-**Lesehinweis:** **[E]** Planer-Entscheidung (widersprechbar) · **[B]** Betreiberentscheidung (vorläufig, überstimmbar) ·
-**[P]** Präzisierung ohne Entscheidungsgehalt · **[F*n*]** offene Betreiberfrage (Abschnitt 8).
+**Lesehinweis:** **[E]** Planer-Entscheidung · **[B]** Betreiberentscheidung · **[P]** Präzisierung.
 
 ---
 
-## 0. Revision 2: Befunde der Sol-Prüfung und ihre Auflösung
+## 0. Prüfbefunde und ihre Auflösung in Revision 3
 
-Jeder Befund ist am Code nachgeprüft; keiner war sachlich falsch. Zwei sind einfacher lösbar als empfohlen (Spalte
-„Vereinfachung").
+R1 = erste Prüfung (Rev. 1), R2 = zweite Prüfung (Rev. 2). Jeder Befund ist am Code nachgeprüft.
 
-| # | Befund (Kurzform) | Am Code bestätigt | Auflösung | Vereinfachung |
-|---|---|---|---|---|
-| 1 | [high] Kurze Reconnects setzen die Frist immer neu, beide Monitore grün | E4 Rev. 1 rechnete ab `max(Stempel, Sitzungsbeginn)`; `WorkerHealthSnapshot` kennt keine Kanäle | E1/E4: Obergrenze `MaxUnconfirmedSeconds` (1800 s) ab dem eigenen Stempel, unabhängig von Sitzungen; Stempel wird nur für durch Trennung verlorene Bestätigungen beim nächsten Handshake neu gesetzt | — |
-| 2 | Roster und Sitzung nicht atomar, Instanzwechsel unbemerkt | `GetRoster()` liest `_desiredChannels` ohne Riegel (`TwitchChatManager.cs:294`), Sitzung getrennt; `WorkerInstanceId` steht in beiden Payloads (`IWorkerHealthReader.cs:54`, `IWorkerRosterReader.cs:50`), wird nirgends verglichen | E3: Erfassung unter `_clientStateGate`; E4: Instanzvergleich mit 180 s Toleranz, danach `Inconsistent` → 503 | Kein Sitzungsabgleich *zwischen* den Payloads nötig: bewertet wird zur Erfassungszeit des Rosters, das in sich konsistent ist; sein Alter begrenzt die TTL |
-| 3 | Gelöschter Kanal hält den Alarm dauerhaft | `ChannelIdentityService.cs:253-260` (gespeicherte ID unauflösbar → nichts geschrieben, bleibt aktiv), `:340-363` + `:1402-1406` (Login ohne ID unbekannt → erst nach 7 Tagen Alter **und** 7 Tagen ohne erfolgreichen 7TV-Sync deaktiviert). Rev. 1 behauptete „nach rund einer Stunde"; auch T8 Rev. 1 nahm an, der erste Abgleich deaktiviere die Sonde | E11 [B]: `channelSuspended`/`banned` zählen nicht für 503, nur Karte + Warning; Abhilfe ist der auditierte Leave in `/admin/channels` | — |
-| 4 | Kanalcheck teilt das Budget von `/api/health` | T5 Rev. 1 verlangte ausdrücklich den geteilten Topf; Partition je IP (`RateLimitRejection.ResolveUserKey`, Vertrauensliste `Program.cs:344-351`) begrenzt die Gesamtlast nicht | E5: eigene Policy `PublicChannelHealth`, Ergebnis 5 s geteilt mit Single-Flight über das vorhandene `TtlCache<T>` | Kein neuer Cache-Baustein: `TtlCache<T>` + Muster `LogStatusReader` existieren |
-| 5 | Präfixfilter `@msg-id=` verwirft gültige NOTICEs; Test umgeht den Empfangspfad | `OnReadLineTestAsync` geht an `OnSendReceiveData` vorbei (Rev. 1, Befund 4) | E2: Befehl erkennen, Tag-Block reihenfolgeunabhängig lesen; T3: Fake-Transport (`TwitchLib.Communication.IClient`) treibt den echten Empfangspfad bis zu Grund und EventId; fehlende Bestätigung ohne NOTICE eigener Fall | — |
-| 6 | Admin-Karte bleibt grün, wenn der Publisher hängt; `starting` verdeckt `failing` | `admin-roster-card.ts:237` (Alter nur aus `ageSeconds` beim Abruf), `:342` (Nachladen nur per SSE), `:324-326` (`bootRecoveryCompleted` vor allem) | E6: sichtbares Alter läuft weiter, einmaliges Nachladen bei überfälligem Ereignis, Status aus `joinHealth.status` | — |
-| 7 | Grace unterschätzt TwitchLibs JOIN-Warteschlange | Dekompiliert: nächster JOIN erst nach `366` oder, bei stiller Ablehnung, nach 5-s-Timeout plus Timer-Ticks (`QueueingJoinCheckAsync`, `JoinChannelTimeout`); `msg_channel_suspended` schiebt sofort weiter; die 600-ms-Drossel des Managers begrenzt nur das Einreihen | E4: Formel mit Term `7 s × K`; T8: Messung mit Produktions-Grace und realistischer Kanalzahl, bevor das Runbook eine Dauer nennt | — |
-| 8 | Variable allein stellt die Erfassung beim Rückweg nicht wieder her | `ChannelService.cs:826-827` (Decke nur bei `activatesChannel`) | E9 + T10: Rückweg zweiteilig (Aufnahme stoppen / Erfassung wiederherstellen per Leave), danach Soll gegen bestätigte Joins prüfen | — |
+| # | Befund (Kurzform) | Auflösung in Rev. 3 |
+|---|---|---|
+| R1-1 | Kurze Reconnects setzen die Frist immer neu | Anrechnungsuhr (E1): nur eine Bestätigung setzt auf null, Trennungen frieren ein |
+| R1-2 | Roster und Sitzung nicht atomar, Instanzwechsel unbemerkt | Uhr, Wunsch und Verbindungszustand leben in **einem** Riegel (Tracker); kein Abgleich zweier Keys mehr (E4) |
+| R1-3 | Gelöschter Kanal hält den Alarm dauerhaft | `channelSuspended`/`banned` alarmieren nicht (E11); Abhilfe Leave; Kuma-Erinnerung stündlich (E11) |
+| R1-4 | Kanalcheck teilt das Budget von `/api/health` | eigene Policy `PublicChannelHealth`, 5-s-Ergebnis mit eigener Füllfrist (E5) |
+| R1-5 | Präfixfilter verwirft NOTICEs; Test umgeht den Empfangspfad | Tag-Block reihenfolgeunabhängig; Fake-Transport treibt den echten Empfangspfad (T3) |
+| R1-6 | Admin-Karte bleibt grün bei hängendem Publisher; `starting` verdeckt `failing` | sichtbarkeitsgebundener Minutentakt; `failing` vor `starting` (E6) |
+| R1-7 | Grace unterschätzt TwitchLibs JOIN-Warteschlange | Herleitung mit `7 s × K` und Übertrag über einen Reconnect; Messung bei 120 Kanälen (E4, T8) |
+| R1-8 | Variable allein stellt die Erfassung beim Rückweg nicht wieder her | zweiteiliger Rückweg (E9) |
+| R2-1 | Beide Monitore grün über die Obergrenze hinaus (Health-Stichprobe, „200 wenn nicht connected") | Ausnahme „nicht connected → 200" gestrichen; ein überfälliger Kanal bleibt während Trennungen überfällig (Uhr eingefroren) → 503 durchgehend. Doppelalarm bei Totalausfall akzeptiert (E5) |
+| R2-2 | Stempel macht aus langem Ausfall einen Sofortalarm; Race `_intentGate` vs. `_clientStateGate` | getrennte Zeit zählt nie; Wunsch-Einfügen und Verbindungswechsel serialisieren am Tracker-Riegel (E1) |
+| R2-3 | 15-s-Fenster macht aus einer Sperre einen stillen Fehler (und umgekehrt) | Fenster gestrichen; Unterscheidung über `Details` des Callbacks; ein Grund weicht nur dem Ausgang eines **neueren Versuchs** (E2) |
+| R2-4 | Stiller gelöschter Kanal verbraucht den einzigen Alarm | Kuma „Resend Notification" stündlich während DOWN [B]; Karte listet jeden überfälligen Kanal; Testfall „still + Limit" (E11, T3, T5, T9) |
+| R2-5 | Instanz-Toleranz deckt nur eine Publish-Reihenfolge | Instanzvergleich, `WorkerStatus`, Verschiebung von `WorkerHealthStatus` gestrichen; nur Roster und Frische; Kaltstartfenster (E4) |
+| R2-6 | 7TV-Zeile bekommt die falsche Uhr | neues Feld `ircIntent`; bewertet werden nur Zeilen mit IRC-Wunsch (E3, E4) |
+| R2-7 | Single-Flight begrenzt bei Fehlern nichts | Füllung mit eigener Frist, „nicht auswertbar" 5 s gecacht, eine Logzeile je Füllung (E5) |
+| R2-8 | Live-Gate überschreitet sein Limit, stiller Fall kann fehlen | Abfrage alle 10 s (6/min); stiller JOIN kontrolliert über die Transport-Naht im Live-Worker; Zeitmessung bei Ziel 120 (T8) |
+| R2-9 | Runbook: Decke erreicht den Api-Container nicht | Mapping `Channels__MaxActiveChannels` in die Compose-Dateien (T7), Container neu erstellen, `ceilings.maxActiveChannels` prüfen (E9) |
+| R2-NS | „Next steps": T3(d) falsch; Einmal-Nachladen; Detailseite, `reasonAtUtc` | T3 prüft JOIN-Echo und `366` getrennt; Minutentakt; Detailseite und `reasonAtUtc` zurückgestellt (E6) |
 
-Dazu aus „Next steps": Live-Prüfung (Regel 16) **je Backend-Task vor dessen Commit** und ein Live-Gate mit Messung **vor**
-dem Frontend-Task (E12); jeder DECISIONS-Absatz im Commit seiner Vertragsänderung (Abschnitt 4, Kopf); die Statusentscheidung
-vollständig im getesteten Infrastructure-Dienst, die Api bildet nur ab (E5).
+Gestrichen gegenüber Rev. 2: Stempel-Regel, Sitzungsbeginn im Vertrag, `MaxUnconfirmedSeconds`, `BootRecoveryMaxSeconds`,
+Vorrangfenster, Instanzvergleich, Soll-Liste aus der Datenbank (`ListActiveChannelActivationsAsync`), `CaptureRoster()`,
+Verschiebung von `WorkerHealthStatus`, Status `inconsistent`/`noSession`, Grundzeit im Vertrag, Detailseite.
 
 ---
 
 ## 1. Befund am Code
 
-1. **Wunsch statt Erfolg.** `TwitchChatManager._desiredChannels` (`ConcurrentDictionary<string, bool>`, Wert = „Twitch hat
-   bestätigt") ist die einzige Join-Buchführung (`TwitchChatManager.cs:83`). Gesetzt wird `true` nur in
-   `OnJoinedChannel` unter `_clientStateGate` mit Identitätsprüfung (`:991-1021`); `MarkAllChannelsUnconfirmed` setzt bei
-   jedem Clientwechsel und `OnDisconnected` alles auf `false` (`:1168-1173`), beide Male unter `_clientStateGate`. Es gibt
-   **keinen Zeitstempel**, seit wann ein Kanal unbestätigt ist, und **keinen Grund**.
-2. **`OnFailureToReceiveJoinConfirmation` loggt nur** (`:920-931`) und prüft keine Identität. TwitchLib feuert es:
-   - nach dem eigenen Timeout (`JoinChannelTimeout`, 1-s-`System.Timers`-Tick, Schwelle > 5 s), `Details = null`;
-   - sofort bei `NOTICE` mit `msg-id=msg_channel_suspended` (`HandleChannelSuspended`), `Details` = Twitchs Text. Dieser
-     Zweig **entfernt den Kanal aus `_awaitingJoins` und schiebt die Warteschlange sofort weiter** — es folgt kein Timeout.
-3. **`msg_concurrent_channel_limit_reached` hat in TwitchLib keinen eigenen Zweig** (`HandleNotice`, Fallback
-   `OnUnaccountedFor` bzw. `LogUnaccountedFor`, redigiert über `RedactingTwitchClientLoggerFactory`, #246). Die Sonde vom
-   2026-09-08 hat die Zeile aufgezeichnet: `@msg-id=msg_concurrent_channel_limit_reached :tmi.twitch.tv NOTICE #<kanal> :You
-   are connected to too many chat channels. …`. Für denselben Kanal folgt TwitchLibs Timeout. `msg_banned` geht an
-   `OnBanned`, ebenfalls ohne Entfernen aus `_awaitingJoins` (Timeout folgt); für die anonyme, nur lesende Verbindung ist er
-   praktisch nicht zu erwarten, wird aber mitgeführt.
-4. **`OnSendReceiveData` sieht jede empfangene Zeile vor dem Parsen** (`TwitchClient._client_OnMessage`: erst
-   `OnSendReceiveData`, dann `IrcParser.ParseMessage`, dann die Behandlung). Unser Handler (`:1031-1048`) ist über `Bind`
-   verdrahtet, prüft keine Identität, ist heiß und allokationsfrei. `OnReadLineTestAsync` umgeht `OnSendReceiveData`.
-   `TwitchClient` nimmt seinen Transport als `TwitchLib.Communication.Interfaces.IClient` (Konstruktor, `CreateClient`
-   `:1182-1201` baut einen `WebSocketClient`); `IClient` ist mit vertretbarem Aufwand fälschbar (Ereignisse `OnMessage`,
-   `OnConnected` …, `OpenAsync`, `SendAsync`).
-5. **Sitzungsbeginn:** `_sessionStartedUtcTicks`, gesetzt in `OnConnected` (`:865`), auf 0 beim Start eines Wiederaufbaus
-   (`:350`), beides unter `_clientStateGate`. Nach `OnDisconnected` bleibt der Wert bis zum Wiederaufbau stehen — „Sitzung
-   läuft" ist `IsConnected && ticks != 0`.
-6. **TwitchLibs JOIN-Warteschlange (4.0.1):** `JoinChannelAsync` reiht ein und kehrt sofort zurück, solange ein JOIN läuft
-   (`_currentlyJoiningChannels`). Der nächste JOIN geht erst raus bei `366` des vorigen (gemessen 0,13–0,23 s, Kommentar
-   `:34-39`), bei `msg_channel_suspended` sofort, und **ohne Antwort erst, wenn der Timer-Tick den > 5 s alten Eintrag
-   verworfen hat und ein weiterer Tick die leere Warteliste sieht — ≈ 6–7 s je stille Ablehnung**. Die 600-ms-Drossel des
-   Managers (`MinIntervalBetweenJoins`, `:44`) begrenzt nur das Einreihen; staut TwitchLib, wartet jeder gesunde Kanal
-   dahinter mit. `JoinedChannels` enthält einen Kanal erst ab dem Senden — ein eingereihter, noch nicht gesendeter Kanal
-   kann vom Konvergenznetz ein zweites Mal eingereiht werden (Messpunkt T8).
-7. **Roster:** `WorkerRosterPublisher` (60 s, `do … while`, sofort beim Start) baut `WorkerRosterSnapshot` mit
-   `GeneratedAtUtc`, `WorkerInstanceId`, `ProcessStartedUtc`, `BootRecoveryCompleted`, `Truncated` (Kappung 500), `Channels`.
-   Key `worker:roster`, TTL 180 s, beim Stopp nicht gelöscht. `GetRoster()` wird außerdem von
-   `SevenTvPeriodicResyncWorker:130`, `TwitchConnectionWatchdog:206` und `WishCaptureWorker:253` gelesen.
-8. **Health:** `WorkerHealthSnapshot` trägt `WorkerInstanceId` und `ProcessStartedUtc` (beide nullable, gleiche Quelle
-   `WorkerIdentity.InstanceId` wie das Roster), Takt 20 s. `WorkerHealthStatus` (`src/EmotePurge.Api/Health/`, `internal
-   static`, rein) ist die einzige Ableitung von „connected"; Nutzer: `WorkerHealthEndpoints.cs`, `AdminEndpoints.cs`.
-9. **Konvergenznetz:** `SevenTvPeriodicResyncWorker` ruft je aktivem Kanal `EnsureJoinedAsync`, Takt
-   `SevenTv:ResyncIntervalSeconds` (Default 60), Runde ≈ 0,85 s/Kanal (#272). Ein dauerhaft abgelehnter Kanal bekommt jede
-   Runde einen JOIN und heute jede Runde eine Warning.
-10. **Api-Seite:** `/api/admin/roster` (`AdminEndpoints.cs:245-315`) vergleicht inline gegen
-    `IAdminChannelQueryService.ListActiveChannelNamesAsync` (alle `IsBotActive`, **ohne** Sperr- und Widerspruchsfilter) und
-    liefert `missingFromIrc`, `generatedAtUtc`, `ageSeconds`. Der Worker joint nach
-    `IChannelService.ListActiveChannelNamesAsync` (`ChannelService.cs:393`, **mit** Broadcaster-Sperre und
-    `ExcludedChannelFilter`). `Channel.TrackingResumedAt` (sonst `CreatedAt`) ist die letzte (Re-)Aktivierung.
-11. **`/api/health`** (`WorkerHealthEndpoints.cs:57-67`): payloadfrei, 200 nur bei „connected", Policy `PublicHealth`
-    (30/min). Partitioniert wird anonym nach `Connection.RemoteIpAddress`, das hinter nginx dank der Vertrauensliste
-    `172.16.0.0/12` (DECISIONS 2026-09-16) aus `X-Forwarded-For` kommt. Ziel des Container-HEALTHCHECK und des Kuma-Monitors.
-12. **Identitätsabgleich** (`ChannelIdentityService`): gespeicherte Twitch-ID, die Helix nicht mehr liefert (gelöscht oder
-    gesperrt) → **„nothing is written"**, die Zeile bleibt aktiv, unbefristet (`:253-260`). Login ohne gespeicherte ID, den
-    Helix nicht kennt → Warning, Deaktivierung erst wenn `CreatedAt` **und** `LastSyncedAtUtc` älter als 7 Tage
-    (`UnresolvableLoginGracePeriod`, `:43`, `:1402-1406`). Ein gesperrter oder gelöschter Kanal kann also dauerhaft aktiv
-    bleiben.
-13. **Abhilfewege des Betreibers:** `/admin/channels` hat je Zeile „Verlassen" (`DELETE /api/channels/{name}` →
-    `ChannelService.LeaveAsync` mit Akteur, Audit `channel.leave`, Reason `Leave`, weiche Deaktivierung, Historie bleibt) und
-    „Purge" (`DELETE /api/channels/{name}/purge`, globaler Admin, löscht samt Historie). Ein Leave entfernt den Wunsch im
-    Worker per Redis-`LEAVE`.
-14. **Die 20:** `WorkerCapacity.TwitchJoinBudgetChannels` (`WorkerCapacity.cs:41`) → `ceilings.twitchJoinBudgetChannels`
-    (`AdminEndpoints.cs:542`) → Nenner in `admin-roster-card.ts` (`rawBudgetPercent`, `budgetTone`, `budgetWarningKey`,
-    `budgetWarningParams`, `budgetPercent`), Modell `admin.model.ts:137`, Keys `admin.roster.joinBudget*`, Specs
-    (`admin-roster-card.spec.ts`, `admin.service.spec.ts`, `admin-monitoring-page.template.spec.ts:151`), Mocks
-    (`web/e2e/support/mocks.ts:209`, `web/e2e/audit/ui-audit.audit.ts:1257`), Api-Test
-    `AdminDashboardActivityEndpointTests.cs:177`. Der Doc-Kommentar von `TwitchConcurrentChannelLimit` behauptet noch, ein
-    verifizierter Bot hebe die Decke (seit DECISIONS 2026-11-25 falsch).
-15. **Kanaldecke:** `ChannelService.CompleteJoinAsync` (`:819-847`) prüft `MaxActiveChannels` **nur, wenn der Join einen
-    Kanal aktiviert** (neue Zeile oder inaktive Zeile), loggt die Ablehnung als Warning ohne `EventId`. Ein Absenken der
-    Variable deaktiviert also nichts. Der Log-Viewer filtert mit `event:<Name>` (`LogFilterParser.cs:160`) und nimmt
-    `q`/`range` als Query-Parameter (`admin-log-errors-row.ts:86-87`). Eigene EventIds benutzt der Code bisher nirgends.
-16. **Admin-Karte:** `admin-roster-card.ts` lädt nur bei `LIVE_EVENT_TYPES.workerRoster` nach (`:342`), `isStale` liest
-    `ageSeconds` des letzten Abrufs (`:237`, Schwelle 180 s), `statusKey` stellt `bootRecoveryCompleted === false` vor alles
-    (`:324-326`). `pollWhileVisible` (`core/live/poll-while-visible.ts`) ist der vorhandene sichtbarkeitsgebundene Takt.
-17. **Cache-Baustein:** `TtlCache<T>` (`Infrastructure/Services/TtlCache.cs`, Single-Flight, Fehler nie gecacht) mit dem
-    Singleton-Muster `LogStatusReader` (eigener Scope über `IServiceScopeFactory`).
-18. **Schwellen-Leiter** `utilizationTone` (`shared/ui/utilization-tone.ts`, 80/95) teilt sich der Admin-Balken mit dem
-    Slot-Budget der Emote-Domäne.
-19. **Reconnect-Backoff:** `TwitchReconnectBackoffPolicy.MaxDelay` 30 s (Jitter bis +20 %).
+1. **Wunsch statt Erfolg.** `TwitchChatManager._desiredChannels` (`ConcurrentDictionary<string, bool>`, `:83`) ist die
+   einzige Join-Buchführung. Einfügen und Entfernen unter `_intentGate` (`JoinChannelAsync :206-212`, `EnsureJoinedAsync
+   :230-250`, `LeaveChannelAsync :262-266`); Bestätigung in `OnJoinedChannel` unter `_clientStateGate` (`:1000-1016`);
+   `MarkAllChannelsUnconfirmed` (`:1168`) beim Wiederaufbau (`:348-351`) und in `OnDisconnected` (`:911-912`), ebenfalls
+   unter `_clientStateGate`. Verbindungswechsel laufen über `SetConnected` (`:349`, `:864`, `:911`, `:978`), jedes Mal unter
+   `_clientStateGate`. Kein Zeitbegriff, kein Grund.
+2. **Ein Sendeort.** Jeder JOIN geht durch `TryJoinAsync` → nach der 600-ms-Drossel `_client.JoinChannelAsync` (`:558`).
+3. **TwitchLib 4.0.1, Join-Warteschlange (dekompiliert):** `JoinChannelAsync` reiht ein; ein JOIN geht erst raus, wenn der
+   vorige abgeschlossen ist. `366` (`Handle366`) schiebt weiter. Ohne Antwort verwirft der 1-s-Timer (`JoinChannelTimeout`)
+   den Eintrag ab > 5 s, und erst der **nächste** Tick sieht die leere Liste und sendet weiter — **≈ 6–7 s je stille
+   Ablehnung**. Die Warteschlange sendet per `_client.SendAsync` direkt; `OnSendReceiveData` sieht ausgehende JOINs nicht
+   (nur `SendRawAsync` meldet `Send`).
+4. **`OnFailureToReceiveJoinConfirmation`** hat zwei Quellen: Timer-Ablauf mit `FailureToReceiveJoinConfirmationException(
+   channel)` → `Details = null`; `msg_channel_suspended` (`HandleChannelSuspended`) entfernt aus `_awaitingJoins`, wartet
+   auf den nächsten Warteschlangen-Send und feuert dann mit `Details` = Twitchs Text. Unser Handler (`:920-931`) loggt nur,
+   ohne Identitätsprüfung.
+5. **Bestätigung:** `HandleJoin` feuert `OnJoinedChannel` auf das **eigene JOIN-Echo** (`ircMessage.User` = eigener
+   Benutzername); `366` bestätigt nichts, sondern schiebt nur die Warteschlange.
+6. **`msg_concurrent_channel_limit_reached`** hat keinen Zweig in TwitchLib (Fallback `OnUnaccountedFor` bzw.
+   `LogUnaccountedFor`, redigiert über #246); danach folgt der Timeout desselben Kanals. Die Sonde vom 2026-09-08 hat die
+   Zeile aufgezeichnet. `msg_banned` → `OnBanned`, danach Timeout.
+7. **`OnSendReceiveData`** sieht jede empfangene Zeile vor dem Parsen; unser Handler (`:1031-1048`) ist heiß,
+   allokationsfrei und darf nie werfen. `OnReadLineTestAsync` umgeht ihn. Der Transport ist `TwitchLib.Communication
+   .IClient` (`CreateClient :1182-1201` baut `WebSocketClient`) und fälschbar.
+8. **Roster:** `WorkerRosterPublisher` (60 s, sofort beim Start) baut die **Vereinigung** aus IRC-Wunschliste und
+   7TV-Registry (`:78-105`); 7TV-only-Zeilen tragen `IrcJoinConfirmed = false`, ein IRC-Wunsch ist im Vertrag nicht
+   erkennbar. Key `worker:roster`, TTL 180 s (`WorkerHealthKeys.RosterTtl`), beim Stopp nicht gelöscht.
+   `IWorkerRosterReader` ist Singleton. `GetRoster()` lesen außerdem `SevenTvPeriodicResyncWorker`,
+   `TwitchConnectionWatchdog`, `WishCaptureWorker`.
+9. **Boot-Recovery** (`Worker.cs:51-53`, `:145-190`): erst `ConnectAsync`, dann **alle** Joins in einer Runde, danach der
+   serielle 7TV-Sync. Die Joins sind also eine einzige Warteschlangen-Runde.
+10. **Konvergenznetz:** `SevenTvPeriodicResyncWorker` ruft je aktivem Kanal aus `IChannelService
+    .ListActiveChannelNamesAsync` `EnsureJoinedAsync` (Takt 60 s, ≈ 0,85 s/Kanal, #272). Jeder aktive Kanal bekommt so
+    binnen einer Runde einen IRC-Wunsch; ein fehlender Wunsch heilt sich selbst.
+11. **`/api/admin/roster`** (`AdminEndpoints.cs:245-315`) liest das Roster einmal und vergleicht inline gegen die
+    Admin-Kanalliste (`missingFromIrc`, `missingFromSevenTv`, `unknownToDatabase`).
+12. **`/api/health`**: payloadfrei, 200 nur bei „connected", Policy `PublicHealth` (30/min, Partition je IP).
+13. **Identitätsabgleich:** eine gespeicherte Twitch-ID, die Helix nicht mehr liefert, bleibt unbefristet aktiv
+    (`ChannelIdentityService.cs:253-260`); ein Login ohne ID erst nach 7 Tagen (`:1402-1406`).
+14. **Abhilfe:** `/admin/channels` → „Verlassen" (`ChannelService.LeaveAsync`, Audit `channel.leave`, Historie bleibt).
+15. **Die 20:** `WorkerCapacity.TwitchJoinBudgetChannels` → `ceilings.twitchJoinBudgetChannels` → Nenner in
+    `admin-roster-card.ts`, Modell, Keys `admin.roster.joinBudget*`, Specs, Mocks (`web/e2e/support/mocks.ts:209`,
+    `web/e2e/audit/ui-audit.audit.ts:1257`), `AdminDashboardActivityEndpointTests.cs:177`. Der Kommentar an
+    `TwitchConcurrentChannelLimit` behauptet noch, ein verifizierter Bot hebe die Decke.
+16. **Kanaldecke:** `ChannelService.CompleteJoinAsync` (`:819-847`) prüft `MaxActiveChannels` nur bei einer Aktivierung,
+    Warning ohne `EventId`. **`docker-compose.prod.yml` mappt `Channels__MaxActiveChannels` nicht** (nur
+    `Channels__ExcludedChannelIds`, `:114`); eine Stack-Variable allein erreicht den Container nicht.
+17. **Admin-Karte:** lädt nur bei `worker.roster`-SSE nach (`admin-roster-card.ts:342`), `isStale` liest `ageSeconds`
+    (`:236`), `statusKey` stellt `bootRecoveryCompleted === false` vor alles (`:325`). `pollWhileVisible` existiert.
+18. **`TtlCache<T>`**: Single-Flight; die Füllung bekommt kein Token (ein abbrechender Wartender bricht sie nicht ab), hat
+    aber **keine Frist**, und ein Fehler wird nie gecacht.
 
 ---
 
 ## 2. Entscheidungen
 
-### E1 [E] Zustand je Kanal lebt im Worker, in einer reinen Klasse `ChannelJoinTracker`
+### E1 [E] Eine Anrechnungsuhr je Kanal in der reinen Klasse `ChannelJoinTracker`
 
-`_desiredChannels` wird durch eine neue, reine, thread-sichere Klasse **`ChannelJoinTracker`** (`src/EmotePurge.Worker/`)
-ersetzt. Je gewünschtem Kanal ein unveränderlicher Zustand: **bestätigt ja/nein, `UnconfirmedSinceUtc` (nullable),
-`FailureReason`, `FailureAtUtc`**. Die Uhrzeit kommt als Parameter, der Tracker kennt keine Uhr. Eigenes internes `Lock`, nie
-ein `await` darin, ruft nie nach außen — damit ist er immer der innerste Riegel unter `_intentGate` und `_clientStateGate`.
+`_desiredChannels` wird durch **`ChannelJoinTracker`** (`src/EmotePurge.Worker/`, rein, thread-sicher, eigenes `Lock`, nie
+ein `await` darin, ruft nie nach außen — innerster Riegel) ersetzt. Der Tracker kennt keine Uhr; die Zeit kommt als
+Parameter.
 
-**Stempel-Regel (bindend, Grundlage der Obergrenze aus E4):** `UnconfirmedSinceUtc` heißt „seit wann der Worker bei
-laufender Sitzung eine Bestätigung schuldet".
+**Zustand:** ein Flag „verbunden" für den ganzen Tracker; je gewünschtem Kanal: bestätigt ja/nein, **angerechnete Sekunden
+bis zum letzten Halt** plus **„rechnet seit"** (nur gesetzt, solange verbunden und unbestätigt), der **Grund** und das Flag
+„der laufende Versuch hat schon einen konkreten Grund".
+
+**Regel (bindend):** Angerechnet wird nur Zeit, in der der Client verbunden ist (Handshake „004" erfolgt) **und** der Kanal
+unbestätigt ist. Getrennte Zeit zählt nie. Nur eine Bestätigung setzt die Uhr auf null; Trennungen frieren sie ein.
 
 | Übergang | Wirkung |
 |---|---|
-| neuer Wunsch bei laufender Sitzung | unbestätigt, Stempel = jetzt |
-| neuer Wunsch ohne Sitzung (Boot, Ausfall) | unbestätigt, Stempel `null` („wartet auf Sitzung") |
-| bestätigt → unbestätigt durch Trennung oder Wiederaufbau (`MarkAllUnconfirmed`) | Stempel `null`, Grund bleibt leer |
-| schon unbestätigt, dann Trennung | **unverändert** (Stempel und Grund bleiben) |
-| Handshake einer neuen Sitzung (`BeginSession(now)`) | nur Kanäle mit Stempel `null` bekommen Stempel = jetzt |
-| Bestätigung | Stempel, Grund und Grundzeit gelöscht |
+| Wunsch für neuen Kanal | unbestätigt, Uhr 0, läuft sofort, falls verbunden |
+| Wunsch für vorhandenen Kanal | nichts |
+| verbunden (`004`) | jede unbestätigte Uhr läuft ab jetzt |
+| getrennt / Wiederaufbau beginnt | laufende Uhren halten an (Zeit aufaddiert); **alle** Kanäle unbestätigt; ein vorher bestätigter beginnt bei 0 |
+| Bestätigung | bestätigt, Uhr 0, Grund weg |
+| Leave | Eintrag weg; ein späterer Wunsch beginnt frisch |
 
-Folgen: Ein langer Twitch-Ausfall altert keinen Stempel (die durch die Trennung verlorenen Bestätigungen beginnen beim
-nächsten Handshake neu). Ein Kanal, der eine **ganze Sitzung lang** unbestätigt blieb, behält seinen Stempel über jede
-weitere Sitzung — genau das macht wiederholte kurze Reconnects sichtbar (Befund 1 der Prüfung).
+Momentaufnahme zur Zeit `t`: je Kanal `angerechnet = bisher + (läuft ? t − seit : 0)`, negativ wird zu 0 (Uhrsprung).
 
-**Vorrang der Gründe [E]:** Ein konkreter NOTICE-Grund wird durch `noConfirmation` nur ersetzt, wenn er **älter als 15 s**
-ist (Konstante im Tracker: TwitchLibs Timeout > 5 s plus zwei Ticks plus Reserve). So bleibt `concurrentChannelLimit` stehen,
-wenn 5–7 s später der Timeout desselben Versuchs folgt; ein veralteter `channelSuspended` (der Kanal ist wieder frei, scheitert
-aber still) wird beim nächsten Versuch zu `noConfirmation` und zählt dann für den Alarm (E11). Ein konkreter Grund ersetzt
-immer `noConfirmation` und einen anderen konkreten Grund. Gebucht wird nur für einen **gewünschten, unbestätigten** Kanal.
+**Ein Riegel für Uhr und Wunsch (R2-2):** Das Verbunden-Flag des Trackers wird an **jeder** Stelle mitgesetzt, an der der
+Manager `SetConnected(…)` aufruft, im selben `lock (_clientStateGate)` (mit dem Wiederaufbau zusammen mit dem bisherigen
+`MarkAllChannelsUnconfirmed`). Der Wunsch wird unter `_intentGate` eingefügt. Beide Wege enden im Tracker-Riegel, und
+**dort** liest das Einfügen das Verbunden-Flag. Ein Wunsch, der vor dem Handshake einfügt, wird vom Handshake gestartet; einer
+danach startet selbst. Einen „Wunsch ohne Uhr in einer laufenden Sitzung" gibt es nicht mehr. Reihenfolge der Riegel
+unverändert: `_intentGate` bzw. `_clientStateGate` außen, Tracker innen.
 
-Verworfen: ein zweites Dictionary neben `_desiredChannels`; die Zeit im Api ableiten (sieht nur Minutenschnappschüsse); ein
-Zähler „Sitzungen seit Stempel" statt der Stempel-Regel (zweites Feld im Vertrag, und die Obergrenze wäre keine Zeit mehr);
-Stempel bei Trennung behalten (ein langer Ausfall löste beim Reconnect sofort die Obergrenze aus).
+**Folgen:** Ein langer Ausfall direkt nach einer Aktivierung kostet keine Frist (R2-2). Wiederholte kurze Reconnects setzen
+nichts zurück (R1-1). Ein schon überfälliger Kanal bleibt während eines Ausfalls überfällig (R2-1). Boot-Recovery braucht
+keinen Sonderfall: Wünsche vor dem Connect warten, und die Joins sind eine Runde (Befund 9) — `BootRecoveryMaxSeconds`
+entfällt.
 
-### E2 [E] Gründe: NOTICE aus `OnSendReceiveData`, nie `OnUnaccountedFor`; feste Codes; einmal laut loggen
+Verworfen: Stempel plus Sitzungsbeginn plus Obergrenze (Rev. 2: drei Regeln, jede mit eigenem Randfall); Uhr im Api ableiten
+(sieht nur Minutenschnappschüsse).
 
-- **Erkennung, Heißpfad:** Im bestehenden `OnSendReceiveData`-Handler (Richtung `Received`) wird zuerst wie bisher der
-  Frame-Stempel gesetzt. Dann ein allokationsfreier Befehlstest: beginnt die Zeile mit `@`, den Tag-Block bis zum ersten
-  Leerzeichen überspringen, dann das Präfix (`:…`) bis zum nächsten; das folgende Token ordinal mit `NOTICE` vergleichen.
-  Nur bei Treffer läuft der reine Parser **`TwitchJoinNoticeParser`** (Worker). Er zerlegt den Tag-Block an `;`, sucht den
-  Schlüssel `msg-id` **unabhängig von der Position**, liest den Kanal aus `NOTICE #<kanal> :…`, wirft nie und gibt nie Rohtext
-  weiter. NOTICEs ohne Tag-Block tragen kein `msg-id` und werden ignoriert.
-- **Warum nicht `OnUnaccountedFor` (bleibt):** Ein angehängter Handler schaltet TwitchLibs `LogUnaccountedFor` für **alle**
-  unbekannten Zeilen ab (`OnUnaccountedFor?.Invoke(...) ?? UnaccountedFor(text)`) — die redigierte Warnkette aus #246 und
-  ihre Tests würden still wirkungslos. Verworfen ebenso: `OnFailureToReceiveJoinConfirmation.Details` (Freitext, kein
-  `msg-id`, der Limit-NOTICE kommt dort gar nicht an).
-- **Codes** (Konstantenklasse **`TwitchJoinFailureReasons`** in `src/EmotePurge.Core/Services/`, Muster
-  `SevenTvSyncFailureReasons`): `noConfirmation` (Timeout ohne NOTICE), `channelSuspended` (`msg_channel_suspended`, deckt
-  „existiert nicht"), `concurrentChannelLimit` (`msg_concurrent_channel_limit_reached`), `banned` (`msg_banned`). Andere
-  `msg-id` ignoriert.
-- **Identität:** Beide Grundquellen schreiben Manager-Zustand und folgen der Regel aus `WireUpClient`: Bindung an Client und
-  Generation zur Verdrahtungszeit, Prüfung und Schreiben in **einem** `lock (_clientStateGate)`. Für `OnSendReceiveData` gilt
-  die Sperre **nur im NOTICE-Zweig**.
-- **Logzeilen [E]:** eine strukturierte Zeile je **erstem Auftreten oder Wechsel** des Grundes (der Tracker meldet
-  „neu/geändert" vs. „Wiederholung" vs. „ignoriert"), Wiederholungen auf Debug. EventId-Namen: `TwitchJoinRejected`
-  (NOTICE-Gründe; `concurrentChannelLimit` auf **Error**, damit es in der Fehlerzeile von `/admin/monitoring` erscheint;
-  `channelSuspended` und `banned` auf Warning) und `TwitchJoinUnconfirmed` (`noConfirmation`, Warning). Die bisherige Warning
-  „Twitch hat den Join … nicht bestätigt" geht darin auf. Geloggt werden Kanal und Code, nie Twitchs Text. Die
-  Deduplizierung gilt je Prozess; nach einem Neustart erscheint je Kanal wieder eine Zeile (gewollt).
+### E2 [E] Gründe: klassifiziert nach Quelle, ersetzt nur durch einen neueren Versuch
 
-### E3 [E] Roster-Vertrag: additive Felder, atomare Erfassung, keine Migration
+- **Codes** (`TwitchJoinFailureReasons`, `src/EmotePurge.Core/Services/`, Muster `SevenTvSyncFailureReasons`):
+  `noConfirmation`, `channelSuspended`, `concurrentChannelLimit`, `banned`.
+- **Quellen:**
+  - `OnFailureToReceiveJoinConfirmation` mit `Details` **nicht null** → `channelSuspended` (das ist nur der Suspended-Zweig,
+    Befund 4); mit `Details == null` → `noConfirmation` (Timer). Der Text von `Details` wird nie gelesen oder geloggt.
+  - NOTICE-Zweig in `OnSendReceiveData` (Richtung `Received`, nach dem unveränderten Frame-Stempel): allokationsfreier
+    Befehlstest (Tag-Block und Präfix überspringen, Token ordinal gegen `NOTICE`), nur bei Treffer der reine Parser
+    **`TwitchJoinNoticeParser`**: `msg-id` positionsunabhängig im Tag-Block, Kanal aus `NOTICE #<kanal> :…`, wirft nie.
+    Er liefert nur `concurrentChannelLimit` und `banned` (TwitchLib leitet beide nicht in den Callback); `msg_channel_suspended`
+    kommt über `Details`, damit nichts doppelt bucht.
+  - Nicht `OnUnaccountedFor` (ein Handler schaltete TwitchLibs redigierte Warnkette aus #246 ab).
+- **Versuch:** Der Manager meldet dem Tracker einen neuen Versuch an der einen Sendestelle (Befund 2), unmittelbar vor der
+  Übergabe an TwitchLib. Regeln: ein konkreter Grund ersetzt jeden Grund; `noConfirmation` ersetzt einen konkreten Grund
+  **nur**, wenn der laufende Versuch noch keinen konkreten Grund hat. So bleibt `concurrentChannelLimit` stehen, wenn der
+  Timeout desselben Versuchs folgt; ein früher gesperrter Kanal, der beim nächsten Versuch still scheitert, wird
+  `noConfirmation` und alarmiert. **Keine Zeitfenster.** Bis zum Ausgang des neuen Versuchs bleibt der alte Grund sichtbar.
+  Gebucht wird nur für gewünschte, unbestätigte Kanäle.
+- [P] Grenze: TwitchLib verwirft einen zweiten JOIN für einen schon gesendeten Kanal still; dann zählt der Tracker einen
+  Versuch mehr, als gesendet wurde. Das verschmilzt höchstens zwei Versuche desselben Kanals mit derselben Ursache.
+- **Identität:** beide Quellen binden Client und Generation zur Verdrahtungszeit und prüfen und buchen in einem
+  `lock (_clientStateGate)`; in `OnSendReceiveData` nur im NOTICE-Zweig.
+- **Logzeilen:** eine je erstem Auftreten oder Wechsel des Grundes (der Tracker meldet „neu/geändert" / „Wiederholung" /
+  „ignoriert"), Wiederholungen auf Debug, je Prozess. EventIds: `TwitchJoinRejected` (`concurrentChannelLimit` auf
+  **Error**, `channelSuspended`/`banned` auf Warning), `TwitchJoinUnconfirmed` (`noConfirmation`, Warning). Kanal und Code,
+  nie Twitchs Text. Die bisherige Warning in `OnFailureToReceiveJoinConfirmation` geht darin auf.
+
+### E3 [E] Roster-Vertrag: drei additive Felder, keine Migration
 
 | Ort | Feld (JSON camelCase) | Bedeutung |
 |---|---|---|
-| `TwitchRosterEntry` (Worker) | `UnconfirmedSinceUtc`, `JoinFailureReason`, `JoinFailureAtUtc` | optionale Parameter **am Ende mit Default `null`**, damit die drei anderen Leser und ihre Tests unverändert kompilieren |
-| `WorkerRosterChannel` (Core) | `ircUnconfirmedSinceUtc`, `ircJoinFailureReason`, `ircJoinFailureAtUtc` | `null`, solange bestätigt bzw. kein Grund bzw. „wartet auf Sitzung" (E1) |
-| `WorkerRosterSnapshot` (Core) | `ircSessionStartedUtc` | Handshake der Sitzung zur Erfassungszeit, `null` ohne laufende Sitzung |
+| `TwitchRosterEntry` (Worker) | `UnconfirmedSeconds`, `JoinFailureReason` | optional am Ende, Default `null` — die drei anderen Leser kompilieren unverändert |
+| `WorkerRosterChannel` (Core) | `ircIntent` (bool, Default `false`), `ircUnconfirmedSeconds` (int, `null` wenn bestätigt oder kein Wunsch), `ircJoinFailureReason` | am Ende mit Default |
 
-- **Atomare Erfassung:** neue Methode **`ITwitchChatManager.CaptureRoster()`** → `TwitchRosterCapture(SessionStartedUtc?,
-  Entries)`. Sie liest Tracker-Momentaufnahme, Sitzungsbeginn und Verbindungsflag **in einem `lock (_clientStateGate)`** —
-  demselben Riegel, unter dem `MarkAllUnconfirmed`, `BeginSession`, das Setzen und Löschen von `_sessionStartedUtcTicks` und
-  jede Bestätigung laufen. Eine Erfassung kann damit nie Bestätigungen der alten mit dem Handshake der neuen Sitzung mischen.
-  Die Arbeit unter dem Riegel ist eine Kopie von ≤ 500 Einträgen, einmal je Minute. `WorkerRosterPublisher` nutzt nur noch
-  `CaptureRoster()`. `GetRoster()` bleibt für die drei anderen Leser mit unveränderter Bedeutung (darf intern delegieren).
-- Verworfen: eine Eigenschaft `CurrentSessionStartedUtc` neben `GetRoster()` (Rev. 1; zwei Lesungen, Befund 2 der Prüfung);
-  eine Sitzungs- oder Generationsnummer im Vertrag (der Sitzungsbeginn identifiziert die Sitzung bereits).
-- **Mischbetrieb:** neue Api + alter Worker liest `ircSessionStartedUtc = null` und keine Stempel → `NoSession`, nichts
-  überfällig (fail-open bis zum Worker-Deploy); alter Api + neuer Worker ignoriert die Zusatzfelder. Api und Worker kommen
-  ohnehin im selben Deploy.
+- `GetRoster()` füllt die Felder aus **einer** Tracker-Momentaufnahme zur Zeit des Aufrufs (in sich konsistent, ein
+  Riegel). Kein `CaptureRoster()`, kein Sitzungsfeld. Der Publisher setzt `ircIntent = true` für jede Zeile aus `GetRoster()`;
+  7TV-only-Zeilen bleiben `false`.
+- **Mischbetrieb:** neue Api + alter Worker liest `ircIntent = false` → nichts bewertet → 200 (fail-open bis zum
+  Worker-Deploy); alter Api + neuer Worker ignoriert die Felder. Api und Worker kommen im selben Deploy.
 
-### E4 [E] Bewertung in der Infrastructure: reine Policy, Stichzeit ist die Erfassung
+### E4 [E] Bewertung nur über das Roster, reine Policy in der Infrastructure
 
-- **Soll-Liste:** neue Methode **`IChannelService.ListActiveChannelActivationsAsync`** → `(ChannelName, ActivatedAtUtc =
-  TrackingResumedAt ?? CreatedAt)`, **dieselben Filter** wie `ListActiveChannelNamesAsync`; Letztere wird darauf
-  zurückgeführt. Verworfen: `IAdminChannelQueryService` (ohne Sperr- und Widerspruchsfilter).
-- **Policy** **`ChannelJoinHealthPolicy`** (Infrastructure, rein, statisch). Eingaben: Health-Schnappschuss (oder `null`),
-  Roster (oder `null`), Soll-Liste, Optionen, `nowUtc`. Bewertet wird das Roster zu seiner Erfassungszeit
-  `t = roster.GeneratedAtUtc` — es ist in sich konsistent (E3), sein Alter begrenzt die TTL (180 s). Stufen in dieser
-  Reihenfolge:
-  1. Roster fehlt → `RosterUnavailable`.
-  2. **Instanzwechsel:** Health trägt eine `WorkerInstanceId` und sie weicht von der des Rosters ab → solange
-     `nowUtc − health.ProcessStartedUtc ≤ 180 s` (Konstante = Roster-TTL; bei fehlendem `ProcessStartedUtc` gilt die Stufe
-     als bestanden) → `Starting`; sonst → **`Inconsistent`**. Fehlt die Instanz im Health (alter Worker) → Stufe übersprungen.
-     Deckt Deploy (altes Roster noch gültig), zwei gleichzeitig laufende Worker und einen hängenden Roster-Publisher eines
-     neuen Prozesses.
-  3. `BootRecoveryCompleted == false` und `t − ProcessStartedUtc ≤ BootRecoveryMax` → `Starting`, nichts überfällig.
-     Darüber hinaus wird normal bewertet.
-  4. Je Soll-Kanal (Namensvergleich `OrdinalIgnoreCase`):
-     - im Roster und bestätigt → in Ordnung;
-     - im Roster, unbestätigt, mit Sitzung → **geschuldet seit** `max(ircUnconfirmedSinceUtc ?? ircSessionStartedUtc,
-       ircSessionStartedUtc)`; **überfällig**, wenn `t − geschuldetSeit > Grace` **oder** (Stempel vorhanden und
-       `t − ircUnconfirmedSinceUtc > MaxUnconfirmed`);
-     - im Roster, unbestätigt, **ohne** Sitzung → nur die Obergrenze gilt (Stempel vorhanden und älter als `MaxUnconfirmed`);
-     - nicht im Roster → geschuldet seit `max(ActivatedAtUtc, ProcessStartedUtc)`, überfällig nach `Grace`; bei `Truncated`
-       nie überfällig.
-  5. Je überfälligem Eintrag: **zählt für den Alarm**, außer der Grund ist `channelSuspended` oder `banned` (E11).
-  6. Status: mindestens ein alarmierender Eintrag → `Failing`; sonst `NoSession`, falls das Roster keine Sitzung hat; sonst
-     `Healthy`.
-- **Öffentliche Entscheidung** (`IsAlarming`, ebenfalls in der Policy): Worker-Health fehlt oder ist nicht „connected" →
-  nicht alarmieren (das meldet `/api/health`); sonst alarmieren bei `Failing`, `RosterUnavailable`, `Inconsistent`.
-- **Warum Grace ab Sitzungsbeginn *und* Obergrenze ab Stempel:** Die Grace darf erst laufen, wenn der Worker wieder
-  verbunden ist, sonst alarmiert jeder Reconnect. Die Obergrenze verhindert, dass eine Folge kurzer Reconnects die Frist
-  endlos neu startet: ein Kanal, der eine Sitzung lang nicht bestätigt wurde, behält seinen Stempel (E1), und nach
-  `MaxUnconfirmed` ist er überfällig, egal wie viele Handshakes dazwischen lagen.
-- **Grace-Default 360 s [E], neu gerechnet mit TwitchLibs Warteschlange (Befund 6):** Rejoin-Runde nach einem Reconnect
-  = `max(0,6 s × N, Σ Antwortzeiten) + ≈ 7 s × K` (K = still abgelehnte Kanäle, je Timeout plus Ticks; `channelSuspended`
-  kostet nur eine Antwortzeit) + 5 s Timeout des letzten. Dazu ein verpasster Takt des Konvergenznetzes (60 s) und dessen
-  Lauf (0,85 s × N). Bei N = 120, K = 5: 72 + 35 + 5 + 60 + 102 = 274 s → 360 s lässt ≈ 86 s Reserve. Faustformel für
-  Operations.md: `Grace ≥ 1,45 s × N + 7 s × K + 5 s + SevenTv:ResyncIntervalSeconds + Reserve`. **Der Default ist eine
-  Rechnung, keine Messung:** T8 misst Sende- und Bestätigungszeiten mit Produktions-Grace und realistischer Kanalzahl; erst
-  danach nennt das Runbook eine Erholungsdauer (T10). Liegt die Messung über 360 s minus 60 s Reserve, hebt der Orchestrator
-  den Default vor T9 in einem eigenen Commit samt DECISIONS-Nachtrag an.
-- **Grenze der Warteschlange:** Re-JOINt das Konvergenznetz je Runde K still abgelehnte Kanäle, kostet jede Runde ≈ 7 s × K
-  Warteschlangenzeit; erreicht das die Rundenlänge (K ≈ 20 bei N = 120, also genau der Fall der benannten Decke), läuft die
-  Warteschlange nicht mehr leer. Dieser Fall alarmiert ohnehin (`concurrentChannelLimit`, Error-Zeile, 503). Kein Umbau des
-  Konvergenznetzes in diesem Plan; T8 misst, ob Doppel-Einreihungen (Befund 6) auftreten, und meldet sie als Befund.
-- **Obergrenze-Default 1800 s [E]:** Ein einzelner Reconnect im ungünstigsten Moment (Kanal knapp vor Ablauf der Grace,
-  dann Trennung, Backoff bis 36 s, neue Grace) ergibt höchstens `2 × Grace + 36 s ≈ 756 s` — 1800 s toleriert ihn mit mehr als
-  doppelter Reserve und begrenzt einen unentdeckten Erfassungsausfall unter Flattern auf 30 min. Validierung: `MaxUnconfirmed
-  ≥ 2 × Grace + 60 s`.
-- **Bekannte, akzeptierte Grenze:** Fällt eine Erfassung genau in eine Lücke ohne Sitzung, gilt dort nur die Obergrenze; bei
-  Kuma mit „Retries 2" zählt erst die dritte Ablehnung in Folge. Unter kurzen Reconnects (Sekunden) gegen einen 60-s-Takt
-  liegen fast alle Erfassungen in einer Sitzung.
+**`ChannelJoinHealthPolicy`** (Infrastructure, rein, statisch). Eingaben: Roster oder `null`, `nowUtc`, Startzeit des
+Api-Prozesses, Grace. Stufen:
 
-Verworfen: Policy im Api-Projekt (braucht die Datenbank-Soll-Liste, gehört nach Regel 11 getestet in die Infrastructure);
-Überfälligkeit im Worker entscheiden (Grace in zwei Prozessen); Sitzungsbeginn zusätzlich in den Health-Schnappschuss und
-Abgleich beider Payloads (nach E3 unnötig: ein älteres Roster ist ältere, aber stimmige Information, und eine zur damaligen
-Zeit überfällige Zeile bleibt eine wahre Aussage).
+1. Roster fehlt oder `nowUtc − GeneratedAtUtc > RosterTtl` → **`Starting`**, solange der Api-Prozess höchstens `RosterTtl`
+   (180 s) läuft (Kaltstart ohne früheres Roster: der Worker veröffentlicht sofort beim Start); sonst **`Unavailable`**.
+2. Bewertet wird **jede Zeile mit `ircIntent` und ohne Bestätigung** (R2-6); 7TV-only-Zeilen nie. Überfällig, wenn
+   `ircUnconfirmedSeconds > Grace`. **Zählt für den Alarm**, außer der Grund ist `channelSuspended` oder `banned` (E11).
+3. Mindestens ein alarmierender Eintrag → **`Failing`**, sonst **`Healthy`**.
 
-### E5 [E] Neuer Endpunkt `GET /api/health/channels`, Entscheidung in der Infrastructure, eigenes Budget, geteiltes Ergebnis
+Öffentlich: **503 bei `Unavailable` und `Failing`**, 200 bei `Healthy` und `Starting`. Bewertet wird das Roster zu seiner
+Erfassungszeit; seine Verzögerung (≤ 60 s) verlängert nur die Erkennungszeit. `BootRecoveryCompleted`, `Truncated` (erst ab
+500 Zeilen, die Decke liegt bei 120), Instanz und `worker:health` spielen keine Rolle.
 
-- Anonym, kein Körper, nur Statuscode, außerhalb der Admin-Gruppe, in `WorkerHealthEndpoints.cs` neben `/api/health`.
-- **Die Api entscheidet nichts.** Neuer Singleton **`IChannelJoinHealthCheck`** (Core-Interface, Infrastructure-Implementierung
-  nach dem Muster `LogStatusReader`): `IsAlarmingAsync(ct)` liest über einen eigenen Scope Health, Roster und Soll-Liste,
-  ruft die Policy (E4) und liefert nur die öffentliche Entscheidung. Das Ergebnis liegt **5 s** in einem `TtlCache<T>` mit
-  Single-Flight (Konstante, keine Konfiguration): gleich wie viele Aufrufer, höchstens eine Auswertung (zwei Redis-Lesungen,
-  eine kleine indizierte Abfrage über ≤ 120 Zeilen) je 5 s. Eine Ausnahme in der Auswertung wird nicht gecacht (Eigenschaft von
-  `TtlCache`), geloggt (Warning, ohne Kanalnamen) und als **503** beantwortet — „nicht auswertbar" zählt als Alarm.
-- **`WorkerHealthStatus` zieht in die Infrastructure** (`src/EmotePurge.Infrastructure/Health/`, rein, öffentlich), weil die
-  Entscheidung „Worker connected?" Teil der öffentlichen Entscheidung ist. Reine Verschiebung, Verhalten und Schwellen
-  unverändert; die beiden Api-Nutzer bekommen nur den neuen Namensraum.
-- **Rate-Limit:** eigene Policy **`PublicChannelHealth`** (FixedWindow, 10/min, anonym nach IP wie `PublicHealth`), eigener
-  Zähler. Kuma ruft 1/min plus Retries. Die Partition je IP schützt `/api/health` vor Verdrängung (eigener Zähler); die
-  Gesamtlast begrenzt der 5-s-Cache, nicht das Limit. Damit gilt hinter Cloudflare und nginx auch dann, wenn viele Aufrufer
-  eine Partition teilen: `/api/health` bleibt unberührt.
-- **Prinzip, das Doppelalarme verhindert:** Der Kanal-Monitor meldet nur, was `/api/health` nicht meldet. Ist der Worker tot
-  oder getrennt, ist Monitor 1 rot und Monitor 2 grün — **ein** Telegram-Alarm für **eine** Ursache. Fehlt nur das Roster oder
-  passt es nicht zur Instanz, während die Health „connected" sagt, ist die Kanalüberwachung blind → 503.
-- `/api/health` bleibt **unverändert**, ebenso der Container-HEALTHCHECK. **Der neue Endpunkt darf nie in einen
-  HEALTHCHECK.**
-- Verworfen: den `PublicHealth`-Topf teilen (Rev. 1, Befund 4 der Prüfung); globaler Gleichzeitigkeitsdeckel statt Cache
-  (begrenzt Last, liefert aber unter Last 503 statt der Antwort); Kanalzustand in `/api/health` einrechnen; Payload mit
-  Kanalnamen (öffentlich).
+**Warum keine Datenbank-Soll-Liste:** Das Konvergenznetz macht aus jedem aktiven Kanal binnen einer Runde einen Wunsch
+(Befund 10), und ab dann trägt die Uhr. Ein aktiver Kanal ganz ohne Wunsch zeigt die Admin-Karte weiter über
+`missingFromIrc`.
 
-### E6 [E] Admin-Monitoring: in der bestehenden Roster-Karte
+**Grace-Default 300 s [E], neu hergeleitet (D1):** Eine Rejoin-Runde bei N Kanälen und K still abgelehnten dauert
+`P ≈ 0,6 s × N + 7 s × K + 5 s` (Drossel dominiert die `366`-Zeiten von 0,13–0,23 s; `channelSuspended` kostet nur eine
+Antwortzeit). Bei N = 120, K = 5: **P ≈ 112 s**. Weil getrennte Zeit nicht zählt, muss die Grace nur Runden decken, nicht
+Ausfälle — aber zwei Fälle verlängern eine Runde, ohne dass ein Kanal kaputt ist:
+- **Übertrag:** Reißt die Verbindung kurz vor Ende einer Runde, nimmt der letzte Kanal fast `P` mit und wartet in der nächsten
+  Runde wieder bis zu `P` → `≤ 2P ≈ 224 s`.
+- **Einmal verlorener JOIN**, den das Konvergenznetz nachholt: `P + 60 s + 0,85 s × N ≈ 274 s`.
 
-- `/api/admin/roster` nutzt den scoped **`IChannelJoinHealthService.EvaluateAsync`** (ungecacht — authentifiziert, wenige
-  Aufrufe, frische Werte gewollt; derselbe Dienst, den der Check aus E5 im eigenen Scope ruft) und liefert zusätzlich
-  `joinHealth` und `ircUnjoined` (Vertrag 3.3); **`missingFromIrc`/`missingFromIrcTotal` entfallen**.
-- Je Kanal: Link auf `/admin/channels/{name}`, Grund (übersetzt, unbekannter Code → generischer Text mit Code), „unbestätigt
-  seit" / „wartet auf Twitch-Sitzung" (Stempel `null`) / „nicht im Worker, erwartet seit", und **als Text** „überfällig",
-  „wartet auf Bestätigung" oder — bei `channelSuspended`/`banned` — „von Twitch abgelehnt, zählt nicht für den Alarm" mit
-  dem Hinweis auf „Verlassen" (Farbe nie allein, WCAG 1.4.1). Sortierung: alarmierend zuerst, dann ausgenommen-überfällig,
-  dann nach „geschuldet seit" aufsteigend.
-- **Status der Karte kommt aus `joinHealth.status`**, nicht aus `bootRecoveryCompleted`: Vorrang `unknown` > `unavailable`
-  > `stale` > `inconsistent` > `failing` > `starting` > `noSession` > `incomplete` > `complete`. `starting` erscheint nur,
-  wenn die Api `starting` meldet — nach `BootRecoveryMax` meldet sie `failing`, und die Karte zeigt das.
-- **Sichtbares Altern:** Das Alter des Stands läuft auf der Seite weiter: `ageSeconds` beim Empfang plus seitdem vergangene
-  Zeit (so bleibt die Uhr des Browsers aus dem Spiel; gleichwertig zu „seit `generatedAtUtc`" in Serverzeit). Ein
-  sichtbarkeitsgebundener Takt (`pollWhileVisible`, 10 s) treibt nur diese Rechnung. Überschreitet das Alter 90 s (Takt 60 s
-  plus Reserve) ohne neues `worker.roster`-Ereignis, lädt die Karte **einmal** nach; bleibt der Stand alt, zeigt sie ab 180 s
-  `stale`. Ein späteres Ereignis oder ein jüngerer Stand setzt die Einmal-Sperre zurück.
-- Neuer Status `failing` (Ton `danger`), `inconsistent` (Ton `danger`), `noSession` (Ton `warning`).
-- Die Kanal-Detailseite zeigt Grund und „seit" unter dem IRC-Marker.
-- [P] `trackedChannelCount` bleibt die Admin-Zählung (alle `IsBotActive`); die Unjoined-Liste nutzt die Worker-Sicht (E4).
+300 s deckt beide mit Reserve; Kumas Retries (2) geben vor der Meldung zusätzlich ≈ 2 min. Faustformel für Operations.md:
+`Grace ≥ max(2P, P + SevenTv:ResyncIntervalSeconds + 0,85 s × N) + Reserve`. **Rechnung, keine Messung:** T8 misst `P` bei
+Ziel 120; liegt die Messung über `Grace − 60 s`, hebt der Orchestrator den Default vor T9 in einem eigenen Commit samt
+DECISIONS-Nachtrag an. Unter Flattern mit Reconnects kürzer als eine Runde alarmieren Kanäle am Ende der Warteschlange — das
+ist ein echter Erfassungsausfall, kein Fehlalarm.
+
+**Grenze der Warteschlange:** Re-JOINt das Konvergenznetz je Runde K still abgelehnte Kanäle, kostet das ≈ 7 s × K; bei
+K ≈ 20 (N = 120) läuft die Warteschlange nicht mehr leer. Dieser Fall alarmiert ohnehin. Kein Umbau des Konvergenznetzes.
+
+### E5 [E] `GET /api/health/channels`: eigenes Budget, geteiltes Ergebnis mit eigener Frist
+
+- Anonym, kein Körper, nur Statuscode, in `WorkerHealthEndpoints.cs` neben `/api/health`; der Handler bildet nur ab.
+- **`IChannelJoinHealthService`** (Core-Interface, Infrastructure-**Singleton**; der Roster-Leser ist Singleton):
+  - `Evaluate(snapshot)` → Bericht, ungecacht (für `/api/admin/roster`, das das Roster ohnehin schon liest — eine Lesung);
+  - `IsAlarmingAsync(ct)` → öffentliche Entscheidung über `TtlCache<T>` mit **5 s** (Konstante). Die **Füllung hat eine
+    eigene Frist von 2 s** (Konstante), unabhängig vom Aufrufer und unabhängig davon, ob der Leser ein Token beachtet; eine
+    Ausnahme oder Fristüberschreitung wird **in der Füllung** zum Ergebnis „nicht auswertbar" (→ 503) und wie jedes Ergebnis
+    5 s gecacht; je Füllung höchstens eine Warning, ohne Kanalnamen. Ein abbrechender Wartender bricht die Füllung nicht ab
+    (Eigenschaft von `TtlCache`). `TtlCache` selbst bleibt unverändert.
+  - Startzeit des Api-Prozesses: beim Start erfasst, nicht lazy beim ersten Aufruf.
+- **Rate-Limit:** eigene Policy **`PublicChannelHealth`** (FixedWindow, 10/min, Partition je IP wie `PublicHealth`), eigener
+  Zähler; die Gesamtlast begrenzt der Cache.
+- **Doppelalarm akzeptiert [E]:** Ist der Worker tot, fehlt nach 180 s das Roster → beide Monitore rot (zwei Meldungen, eine
+  Ursache). Ist er nur von Twitch getrennt, frieren die Uhren ein → nur `/api/health` rot, außer ein Kanal war schon vorher
+  überfällig. Beides steht in Operations.md. Verworfen: „200, wenn `/api/health` nicht connected" (R2-1: Stichproben beider
+  Monitore können sich so dauerhaft ausweichen).
+- `/api/health` und der Container-HEALTHCHECK bleiben unverändert; **der neue Endpunkt darf nie in einen HEALTHCHECK.**
+
+### E6 [E] Admin-Monitoring in der bestehenden Roster-Karte
+
+- `/api/admin/roster` liefert zusätzlich `joinHealth` und `ircUnjoined` (Vertrag 3.3). `missingFromIrc*` bleibt unverändert
+  (Datenbanksicht). Die Karte zeigt zwei getrennte Abschnitte: **Join-Status** (`ircUnjoined`: Kanal mit Link auf
+  `/admin/channels/{name}`, Grund übersetzt, angerechnete Zeit, als Text „überfällig" / „wartet auf Bestätigung" / „von
+  Twitch abgelehnt, zählt nicht für den Alarm" mit Hinweis auf „Verlassen") und **Nicht im Worker** (`missingFromIrc` ohne
+  die Namen aus `ircUnjoined`). Farbe nie allein (WCAG 1.4.1). Sortierung: alarmierend, dann ausgenommen-überfällig, dann
+  wartend; innerhalb nach angerechneter Zeit absteigend. **Jeder überfällige Kanal** steht in der Liste (R2-4).
+- **Status:** Vorrang `unavailable` > `stale` > `failing` > `starting` > `incomplete` > `complete`; `failing` kommt aus
+  `joinHealth.status` und schlägt `bootRecoveryCompleted === false`.
+- **Frische:** Neben dem SSE-Nachladen lädt die Karte **jede Minute nach, solange sichtbar** (`pollWhileVisible`); `stale`
+  bleibt aus dem `ageSeconds` des Servers (Schwelle 180 s). Kein lokal tickendes Alter, kein Einmal-Nachladen.
+- Zurückgestellt (nicht für Erklärung oder Alarm nötig): Anzeige auf der Kanal-Detailseite, Feld `reasonAtUtc`.
 
 ### E7 [E] Teil B, Anzeige: Nenner ist unsere Decke, Twitchs 100 nur Referenz, Frühwarnung bei 90 %
 
-- Der Balken zeigt `trackedChannelCount / ceilings.maxActiveChannels`. `TwitchJoinBudgetChannels` entfällt vollständig
-  (Konstante, API-Feld, Modell, Keys, Specs, Mocks, Api-Test, Kommentare).
-- **Schwellen dieses Balkens: `warning` ab 90 %, `danger` ab 100 %**, als optionales Schwellenargument von
-  `utilizationTone`; der Default (80/95) bleibt, das Slot-Budget ist unberührt.
-- Textzeilen ab `warning`: nahe der Grenze / Grenze erreicht (neue Kanäle werden abgelehnt, globale Admins ausgenommen) /
-  über der Grenze (nur durch Admin-Joins möglich).
-- Twitchs 100 erscheint als Hinweistext mit Herkunft („gilt für benannte Konten; für die anonyme Verbindung am 2026-09-08
-  bis 120 ohne Ablehnung gemessen, undokumentiert"), nicht als Balken.
-- **Kein Alarm für 90 % [E]:** Die Decke verliert keine Daten, sie lehnt nur neue Kanäle mit Begründung ab. Das
-  Roster-Badge bekommt weiterhin keine Kapazitätsstufe (DECISIONS 2026-08-02).
+- Balken `trackedChannelCount / ceilings.maxActiveChannels`; `TwitchJoinBudgetChannels` entfällt vollständig (Konstante,
+  Feld, Modell, Keys, Specs, Mocks, Api-Test, Kommentare).
+- Schwellen dieses Balkens `warning` ab 90 %, `danger` ab 100 % als optionales Argument von `utilizationTone`; der Default
+  (80/95) und das Slot-Budget bleiben.
+- Texte ab `warning`: nahe der Grenze / erreicht (neue Kanäle abgelehnt, globale Admins ausgenommen) / über der Grenze.
+- Twitchs 100 als Hinweistext mit Herkunft („gilt für benannte Konten; anonym am 2026-09-08 bis 120 ohne Ablehnung gemessen,
+  undokumentiert"). Kein Alarm für 90 % (die Decke verliert keine Daten).
 
-### E8 [E] Abgelehnte Joins zählen: EventId plus Log-Viewer, keine neue Tabelle
+### E8 [E] Abgelehnte Joins zählen: EventId plus Log-Viewer
 
-Die Warning in `ChannelService.CompleteJoinAsync` bekommt die EventId **`ChannelCapacityReached`**. Gezählt wird im
-Log-Viewer (`event:ChannelCapacityReached`, Histogramm, 7 Tage); die Kapazitätszeile der Roster-Karte verlinkt
-`/admin/logs?q=event:ChannelCapacityReached&range=7d`. Verworfen: eigener Zähler in Redis/Postgres; Audit-Eintrag je
-Ablehnung. Grenze: ohne `LogCapture:Enabled` nur stdout — in Operations.md benannt.
+Die Warning in `CompleteJoinAsync` bekommt die EventId **`ChannelCapacityReached`**. Gezählt wird im Log-Viewer; die
+Kapazitätszeile verlinkt `/admin/logs?q=event:ChannelCapacityReached&range=7d`. Ohne `LogCapture:Enabled` nur stdout (in
+Operations.md benannt). Keine Tabelle, kein Audit je Ablehnung.
 
-### E9 [E] Anhebung auf 120 ist ein Betreiberschritt, der Default bleibt 80; der Rückweg hat zwei Teile
+### E9 [B] Anhebung auf 120 ist ein Betreiberschritt; der Rückweg hat zwei Teile
 
-Kein Code-Default ändert sich. Operations.md beschreibt (T10):
+Kein Code-Default ändert sich (80). Neu: `Channels__MaxActiveChannels=${CHANNELS_MAX_ACTIVE_CHANNELS:-80}` im
+Api-Service beider Compose-Dateien (T7). Operations.md (T10):
 
-- **Anheben:** nach Teil A live und Beobachtungszeit ([F2]) `Channels__MaxActiveChannels=120` im Stack, Api neu starten.
-  Nach dem ersten Worker-Neustart Rejoin-Dauer, Boot-Recovery und Grace gegen die **in T8 gemessenen** Werte und die Formel
-  aus E4 prüfen.
-- **Rückweg, Teil 1 — Aufnahme stoppen:** Variable zurück auf 80, Api neu starten. Das blockt nur weitere Aktivierungen
-  (Befund 15); kein aktiver Kanal wird dadurch verlassen.
-- **Rückweg, Teil 2 — Erfassung wiederherstellen:** Zeigt die Roster-Karte `concurrentChannelLimit` oder dauerhaft
-  unbestätigte Kanäle, wählt der Betreiber Kanäle aus (Vorschlag: zuletzt aktivierte zuerst, `TrackingResumedAt`) und
-  verlässt sie über „Verlassen" in `/admin/channels` (auditiert, `channel.leave`, Historie bleibt, Manager können später
-  wieder beitreten, sobald Platz ist), bis die Zahl aktiver Kanäle unter der funktionierenden Grenze liegt. Danach prüfen:
-  Roster-Karte zeigt keine Unjoined-Einträge, `ircConfirmedCount` = `trackedChannelCount`, `/api/health/channels` 200 über
-  mindestens Grace plus zwei Roster-Takte. Wen das betrifft (Manager der verlassenen Kanäle), entscheidet und informiert der
-  Betreiber.
+- **Voraussetzung [B]:** Teil A läuft **mindestens 7 Tage** auf Prod, und in dieser Zeit sind **mindestens ein Deploy und ein
+  echter Twitch-Reconnect ohne Fehlalarm** durchgelaufen. Wird es vorher eng, ist **ein Zwischenschritt auf ≈ 90** erlaubt,
+  sobald Teil A live ist.
+- **Anheben:** Stack-Variable `CHANNELS_MAX_ACTIVE_CHANNELS` setzen, **Api-Container neu erstellen** (Stack-Update, kein
+  Restart), dann `ceilings.maxActiveChannels` in `/api/admin/roster` prüfen. Nach dem nächsten Worker-Neustart Rejoin-Dauer
+  und Grace gegen die T8-Werte.
+- **Rückweg 1 — Aufnahme stoppen:** Variable zurück, Container neu erstellen, `ceilings.maxActiveChannels` prüfen. Das
+  blockt nur weitere Aktivierungen (Befund 16).
+- **Rückweg 2 — Erfassung wiederherstellen:** Zeigt die Karte `concurrentChannelLimit` oder überfällige Kanäle, Kanäle über
+  „Verlassen" abbauen (Vorschlag: zuletzt aktivierte zuerst), bis die Zahl unter der funktionierenden Grenze liegt. Danach
+  **je Kanalname** prüfen: jeder Kanal der Admin-Liste steht im Roster mit `ircJoinConfirmed`; `ircUnjoined` leer;
+  `/api/health/channels` 200 über mindestens Grace plus zwei Roster-Takte. Wen das betrifft, informiert der Betreiber.
 
 ### E10 [E] Konfiguration
 
-Neue Klasse **`ChannelJoinHealthOptions`**, Abschnitt `Channels:JoinHealth`, Muster `ChannelCapacityOptions` (POCO, eager
-gebunden und validiert in `AddEmotePurgeInfrastructure`, Singleton):
-
-| Schlüssel | Default | Validierung | Env-Variable |
+| Schlüssel | Default | Validierung | gelesen von |
 |---|---|---|---|
-| `Channels:JoinHealth:GraceSeconds` | 360 | 60 … 3600 | `Channels__JoinHealth__GraceSeconds` |
-| `Channels:JoinHealth:MaxUnconfirmedSeconds` | 1800 | 600 … 86400 und ≥ 2 × `GraceSeconds` + 60 | `Channels__JoinHealth__MaxUnconfirmedSeconds` |
-| `Channels:JoinHealth:BootRecoveryMaxSeconds` | 900 | 60 … 7200 | `Channels__JoinHealth__BootRecoveryMaxSeconds` |
-| `RateLimiting:PublicChannelHealth:PermitLimit` | 10 | bestehende `FixedWindowPolicy.Validate` | `RateLimiting__PublicChannelHealth__PermitLimit` |
+| `Channels:JoinHealth:GraceSeconds` | 300 | 60 … 3600 | Api (`ChannelJoinHealthOptions`, Muster `ChannelCapacityOptions`, eager validiert) |
+| `RateLimiting:PublicChannelHealth:PermitLimit` | 10 | `FixedWindowPolicy.Validate` | Api, Eintrag in `appsettings.json` neben `PublicHealth` |
+| `Worker:Debug:SilentJoinChannels` | leer | kommagetrennte Logins | Worker, nur Live-Prüfung (T3, T8); nicht leer → eine Warning beim Start |
+| `Channels:MaxActiveChannels` (bestehend) | 80 | bestehend | Api; **neu gemappt** in `docker-compose*.yml` (E9) |
 
-Konstanten, keine Konfiguration: Ergebnis-Cache 5 s (E5), Instanzwechsel-Toleranz 180 s (= Roster-TTL, E4), Vorrangfenster
-15 s (E1). „Roster veraltet" bleibt der TTL-Ablauf. Kein Eintrag in `docker-compose*.yml` nötig; `appsettings.json` der Api
-bekommt den Rate-Limit-Eintrag neben `PublicHealth`.
+Konstanten: Ergebnis-Cache 5 s, Füllfrist 2 s, Kaltstartfenster = `RosterTtl` (180 s). `GraceSeconds` wird nicht in die
+Compose-Dateien gemappt; wer es ändern will, braucht ein Mapping. **Wer `SevenTv:ResyncIntervalSeconds` ändert, prüft die
+Grace nach der Formel aus E4 neu** [B: auf Prod ist keine Streckung geplant].
 
-### E11 [B] Gesperrte und gelöschte Kanäle: sichtbar, geloggt, kein 503
+### E11 [B] Gesperrte und gelöschte Kanäle: sichtbar, geloggt, kein 503; Erinnerung über Kuma
 
-Betreiberentscheidung (vorläufig, überstimmbar; ersetzt [F1] aus Revision 1):
-
-- Überfällige Kanäle mit Grund `channelSuspended` oder `banned` machen `/api/health/channels` **nicht** rot. Sie stehen mit
-  Grund in der Roster-Karte (E6) und erzeugen je Prozess eine Warning `TwitchJoinRejected` (E2). Für 503 zählen nur
-  `noConfirmation`, `concurrentChannelLimit`, fehlende Kanäle sowie `RosterUnavailable` und `Inconsistent`.
-- **Warum:** Der Identitätsabgleich räumt solche Kanäle nicht verlässlich ab (Befund 12: gespeicherte ID → nie; Login ohne
-  ID → frühestens nach 7 Tagen). Ein binärer Monitor, der dauerhaft rot steht, meldet jeden weiteren Ausfall nicht mehr.
-- **Späterer unabhängiger Ausfall:** Weil ausgenommene Kanäle den Monitor nie halten, schaltet ein danach scheiternder
-  anderer Kanal ihn auf DOWN (Test in T5/T6). Wird ein ausgenommener Kanal wieder frei und scheitert dann still, ersetzt
-  `noConfirmation` den veralteten Grund nach 15 s (E1) und er zählt.
-- **Abhilfe des Betreibers:** „Verlassen" in `/admin/channels` (Befund 13). Bleibt ein Kanal mit `noConfirmation` dauerhaft
-  rot (etwa ein gelöschter Kanal, für den Twitch keinen NOTICE schickt — T8 misst, welcher Fall eintritt), ist derselbe Leave
-  das Quittieren. Kein eigener Quittier-Mechanismus.
-- Überstimmt der Betreiber das, entfällt nur Stufe 5 der Policy (E4); Verträge bleiben.
+- Überfällige Kanäle mit `channelSuspended` oder `banned` machen den Endpunkt nicht rot; sie stehen in der Karte und erzeugen
+  je Prozess eine Warning `TwitchJoinRejected`. Grund: der Identitätsabgleich räumt sie nicht verlässlich ab (Befund 13),
+  und ein dauerhaft roter Monitor meldet weitere Ausfälle nicht.
+- Ein Grund weicht nur dem Ausgang eines neueren Versuchs (E2) — wird ein gesperrter Kanal frei und scheitert still, zählt er.
+- **Stiller gelöschter Kanal (R2-4):** bleibt `noConfirmation` und hält den Monitor DOWN. Ein späterer, unabhängiger Ausfall
+  erzeugt dann keine neue DOWN-Meldung. Deshalb [B]: **Kuma „Resend Notification if Down X times consecutively" = 60**
+  (stündlich während DOWN), und die Karte listet jeden überfälligen Kanal. Abhilfe und Quittung ist der Leave.
 
 ### E12 [E] Live-Verifikation je Backend-Task, Live-Gate vor dem Frontend
 
-Regel 16 verlangt Live-Prüfung vor dem Commit. Deshalb hat **jeder Backend-Task mit externem System einen eigenen kurzen
-Live-Schritt vor seinem Commit** (T2, T3, T4, T6, T7); T5 ist reine Logik gegen Testcontainers und wird mit T6 live geprüft,
-bevor irgendetwas gepusht wird — ein in T6 gefundener T5-Fehler wird in einem eigenen Fix-Commit behoben. **T8 ist das
-Live-Gate mit Messung** (Produktions-Grace, realistische Kanalzahl); T9 (Frontend) beginnt erst, wenn T8 bestanden oder jeder
-Befund mit Folge entschieden ist. Für jeden Live-Schritt gilt: Orchestrator stellt vorher sicher, dass kein anderer
-Dev-Worker läuft (Worktree 487, Compose-`worker` des Haupt-Checkouts); `docker compose up -d postgres redis` nur im
-Haupt-Checkout, nie aus dem Worktree; Api und Worker per `dotnet run` aus dem Worktree; Redis-Befehle per `docker exec
-<redis-container> redis-cli` (Name mit `docker ps` prüfen).
+Jeder Backend-Task mit externem System hat einen kurzen Live-Schritt vor seinem Commit (T2, T3, T4, T6, T7); T5 ist reine
+Logik und wird mit T6 live geprüft. **T8 ist das Live-Gate mit Messung**; T9 beginnt erst nach bestandenem T8 oder
+entschiedenen Befunden. Vor jedem Live-Schritt stellt der Orchestrator sicher, dass kein anderer Dev-Worker läuft (Worktree
+487, Compose-`worker` des Haupt-Checkouts); `docker compose up -d postgres redis` nur im Haupt-Checkout; Api und Worker per
+`dotnet run` aus dem Worktree; Redis per `docker exec <redis-container> redis-cli`. Abfragen von `/api/health/channels`
+höchstens alle 10 s (unter dem Budget).
 
 ---
 
@@ -401,398 +330,282 @@ Haupt-Checkout, nie aus dem Worktree; Api und Worker per `dotnet run` aus dem Wo
 
 ### 3.1 Worker-intern
 
-- `ChannelJoinTracker` (öffentlich im Worker, keine DI-Registrierung, vom Manager besessen): `RecordIntent(name, nowUtc,
-  sessionRunning)`, `MarkConfirmed(name)` (nur vorhanden + unbestätigt, fügt nie ein), `MarkAllUnconfirmed()`,
-  `BeginSession(nowUtc)`, `RecordFailure(name, reason, nowUtc)` → „neu oder geändert" / „Wiederholung" / „ignoriert",
-  `Remove(name)`, `Contains`, `IsConfirmed`, `Names`, `Snapshot()` (nach Name ordinal sortiert). Namen `OrdinalIgnoreCase`.
-  Stempel- und Vorrangregeln nach E1.
-- `TwitchJoinNoticeParser`: `IsNotice(line)` (allokationsfrei, E2) und `TryParse(line, out reasonCode, out channelName)`
-  (`true` nur für die vier Codes mit Kanal; Kanal ohne `#`, kleingeschrieben; wirft nie).
-- `ITwitchChatManager.CaptureRoster()` → `TwitchRosterCapture(SessionStartedUtc?, Entries)` (E3). `TwitchRosterEntry`
-  erweitert (E3). `GetRoster()` unverändert.
-- Interne Test-Naht für den Transport (T3): Produktion baut weiterhin `WebSocketClient`; DI-Registrierung unverändert.
+- `ChannelJoinTracker` (vom Manager besessen, keine DI): `RecordIntent(name, now)`, `SetConnected(now)`,
+  `SetDisconnected(now)` (hält an und macht alles unbestätigt), `MarkConfirmed(name)` (fügt nie ein), `BeginAttempt(name)`,
+  `RecordFailure(name, reason)` → neu-oder-geändert / Wiederholung / ignoriert, `Remove(name)`, `Contains`, `IsConfirmed`,
+  `Names`, `Snapshot(now)` (Name, bestätigt, angerechnete Sekunden, Grund; nach Name ordinal). Namen `OrdinalIgnoreCase`.
+- `TwitchJoinNoticeParser`: `IsNotice(line)` (allokationsfrei), `TryParse(line, out reason, out channel)` (`true` nur für
+  `concurrentChannelLimit`/`banned` mit Kanal; Kanal ohne `#`, klein; wirft nie).
+- `TwitchRosterEntry` erweitert (E3); `GetRoster()` in der Bedeutung unverändert.
+- Transport-Naht (T3): intern; Produktion baut weiter `WebSocketClient` mit `NoReconnectionPolicy`. Ein Dekorierer darauf
+  verwirft ausgehende `JOIN #<login>` für die Logins aus `Worker:Debug:SilentJoinChannels`, sonst reicht er alles durch.
 
-### 3.2 Redis `worker:roster` (additiv, E3)
+### 3.2 Redis `worker:roster` (additiv)
 
-`channels[].ircUnconfirmedSinceUtc`, `channels[].ircJoinFailureReason`, `channels[].ircJoinFailureAtUtc`,
-`ircSessionStartedUtc` auf Schnappschuss-Ebene. `null`-Felder werden weggelassen (`WhenWritingNull`). `worker:health`
-unverändert.
+`channels[].ircIntent`, `channels[].ircUnconfirmedSeconds`, `channels[].ircJoinFailureReason`; `null` weggelassen.
+`worker:health` unverändert.
 
 ### 3.3 Api und Infrastructure
 
-- `GET /api/health/channels`: anonym, Policy `PublicChannelHealth`, Körper leer, 200/503 nach `IsAlarmingAsync` (E5);
-  `Cache-Control: no-store` aus der bestehenden Middleware.
-
-  | Worker-Health | Join-Status | Antwort |
-  |---|---|---|
-  | fehlt / nicht „connected" | beliebig | 200 |
-  | „connected" | `Healthy`, `Starting`, `NoSession` | 200 |
-  | „connected" | `Failing`, `RosterUnavailable`, `Inconsistent` | 503 |
-  | Auswertung wirft | — | 503 |
-
-- `IChannelJoinHealthService.EvaluateAsync(ct)` (Core-Interface, Infrastructure, scoped) → `ChannelJoinHealthReport { Status,
-  WorkerStatus, EvaluatedAtUtc?, GraceSeconds, MaxUnconfirmedSeconds, Roster (gelesen oder null), Entries, AlarmingCount,
-  ExcludedCount }`; `ChannelJoinHealthStatus` = `Healthy | Starting | NoSession | RosterUnavailable | Inconsistent |
-  Failing`; `ChannelJoinHealthEntry { ChannelName, InRoster, UnconfirmedSinceUtc?, OwedSinceUtc?, Reason?, ReasonAtUtc?,
-  Overdue, CountsForAlarm }` (alle unbestätigten bzw. fehlenden Soll-Kanäle, auch innerhalb der Frist).
-- `IChannelJoinHealthCheck.IsAlarmingAsync(ct)` (Core-Interface, Infrastructure-Singleton, 5-s-Cache).
-- `IChannelService.ListActiveChannelActivationsAsync(ct)` → `IReadOnlyList<ActiveChannelActivation(ChannelName,
-  ActivatedAtUtc)>` (Core-Record).
-- `WorkerHealthStatus` im Namensraum der Infrastructure (E5).
-- `/api/admin/roster`, **beide Zweige**: `joinHealth: { status: 'healthy'|'starting'|'noSession'|'rosterUnavailable'|
-  'inconsistent'|'failing', graceSeconds, maxUnconfirmedSeconds }`. Zweig mit Schnappschuss zusätzlich: `ircUnjoined: [{
-  channelName, inRoster, unconfirmedSinceUtc|null, owedSinceUtc|null, reason|null, reasonAtUtc|null, overdue,
-  countsForAlarm }]` (gekappt auf `DeficitListLimit` = 50, Sortierung E6), `ircUnjoinedTotal`, `ircAlarmingTotal`,
-  `ircExcludedTotal`. Bleibt: `generatedAtUtc`, `ageSeconds`, `ceilings.twitchConcurrentChannelLimit` (Referenz),
-  `ceilings.maxActiveChannels`. Entfällt: `missingFromIrc`, `missingFromIrcTotal`, `ceilings.twitchJoinBudgetChannels`. Der
-  Status wird explizit auf den camelCase-String abgebildet.
-- Rate-Limit-Übersicht der Admin-Seite (`AdminEndpoints.cs:555-570`) führt `PublicChannelHealth` mit Partition `remote-ip`.
-- Keine neuen `ApiErrorCodes` (Regel 7 nicht berührt).
+- `GET /api/health/channels`: anonym, Policy `PublicChannelHealth`, Körper leer, `Cache-Control: no-store` aus der
+  bestehenden Middleware. 200 bei `Healthy`/`Starting`, 503 bei `Failing`/`Unavailable`/„nicht auswertbar".
+- `IChannelJoinHealthService` (Singleton): `Evaluate(WorkerRosterSnapshot?)` → `ChannelJoinHealthReport { Status,
+  GraceSeconds, Entries, AlarmingCount, ExcludedCount }`; `ChannelJoinHealthStatus` = `Healthy | Starting | Unavailable |
+  Failing`; `ChannelJoinHealthEntry { ChannelName, UnconfirmedSeconds, Reason?, Overdue, CountsForAlarm }` (alle
+  unbestätigten Wunsch-Zeilen, auch innerhalb der Frist). `IsAlarmingAsync(ct)` (5-s-Cache, E5).
+- `/api/admin/roster`, beide Zweige: `joinHealth: { status: 'healthy'|'starting'|'unavailable'|'failing', graceSeconds,
+  alarmingTotal, excludedTotal }`. Mit Schnappschuss zusätzlich `ircUnjoined: [{ channelName, unconfirmedSeconds, reason|null,
+  overdue, countsForAlarm }]` (gekappt auf `DeficitListLimit` = 50, Sortierung E6) und `ircUnjoinedTotal`. Entfällt:
+  `ceilings.twitchJoinBudgetChannels`. Status explizit auf camelCase-String abgebildet.
+- Rate-Limit-Übersicht (`AdminEndpoints.cs:555-570`) führt `PublicChannelHealth` mit Partition `remote-ip`.
+- Keine neuen `ApiErrorCodes`.
 
 ### 3.4 Frontend
 
-`RosterCeilings` ohne `twitchJoinBudgetChannels`; `AdminRoster` mit `joinHealth`, `ircUnjoined`, `ircUnjoinedTotal`,
-`ircAlarmingTotal`, `ircExcludedTotal`, ohne `missingFromIrc*`; `RosterChannel` mit den drei neuen optionalen Feldern;
-`utilizationTone(percent, thresholds?)`. Locale-Keys: entfallen `admin.roster.joinBudget`, `joinBudgetWarning`,
-`joinBudgetCritical`, `joinBudgetExceeded`, `joinBudgetHint`, `missingIrc`; neu `admin.roster.capacity.*` (Label, drei
-Warnstufen, Hinweis, Link), `admin.roster.unjoined.*` (Überschrift mit Zahl, überfällig, wartet, wartet auf Sitzung, seit,
-nicht im Worker, ausgenommen mit Leave-Hinweis),
+`RosterCeilings` ohne `twitchJoinBudgetChannels`; `AdminRoster` mit `joinHealth`, `ircUnjoined`, `ircUnjoinedTotal`;
+`utilizationTone(percent, thresholds?)`. Locale-Keys: entfallen `admin.roster.joinBudget*`; neu `admin.roster.capacity.*`,
+`admin.roster.unjoined.*`, `admin.roster.notInWorker.*` (ersetzt die Verwendung von `missingIrc`),
 `admin.roster.joinFailure.reason.{noConfirmation,channelSuspended,concurrentChannelLimit,banned,unknown}`,
-`admin.roster.status.{failing,inconsistent,noSession}`; `twitchLimitHint` neu formuliert. de und en in Parität.
+`admin.roster.status.failing`; `twitchLimitHint` neu formuliert. de und en in Parität.
 
 ---
 
 ## 4. Tasks
 
-Je Task ein Subagent mit frischem Kontext, **strikt nacheinander** (geteiltes `obj/`, geteilte Locale-Dateien). Jeder
-Backend-Task endet mit grünem `dotnet build EmotePurge.slnx`, `dotnet format EmotePurge.slnx --verify-no-changes`, den Tests
-seines Testprojekts **und seinem Live-Schritt (E12)**; jeder Frontend-Task mit `npm --prefix web test -- --watch=false`,
-`lint` und `format:check`. Jeder Task ein eigener Conventional Commit (englisch). Member-Reihenfolge nach Regel 19. Neue
-Kommentare und Logtexte englisch. **Ein** DECISIONS-Eintrag (englisch, ganz oben) „Join-failure detection and capacity
-display (#516)": **T3 legt ihn an** (erste Vertragsänderung: EventIds als neue Konvention); T4, T5, T6, T7 und T9 ergänzen je
-ihren Absatz und die `**Betrifft:**`-Zeile **im selben Commit wie ihre Vertragsänderung** (Regel 3). Live-Ergebnisse der
-Tasks T2–T7 gehen als kurze Abschnitte in das Protokoll `docs/nachtlaeufe/live-516-<datum>.md` (deutsch, Muster
-`live-486-2026-11-20.md`), das T2 anlegt und T8 abschließt; **keine Namen echter Kanäle im Protokoll** (öffentliches Repo),
-nur Zahlen und erfundene Sondennamen.
+Je Task ein Subagent mit frischem Kontext, **strikt nacheinander**. Backend-Tasks enden mit grünem `dotnet build
+EmotePurge.slnx`, `dotnet format EmotePurge.slnx --verify-no-changes`, den Tests ihres Projekts und ihrem Live-Schritt;
+Frontend mit `npm --prefix web test -- --watch=false`, `lint`, `format:check`. Je Task ein Conventional Commit (englisch),
+Regel 19, neue Kommentare und Logtexte englisch. **Ein** DECISIONS-Eintrag „Join-failure detection and capacity display
+(#516)": T3 legt ihn an, T4–T7 und T9 ergänzen je ihren Absatz und die `**Betrifft:**`-Zeile im Commit ihrer
+Vertragsänderung (Regel 3). Live-Ergebnisse gehen in `docs/nachtlaeufe/live-516-<datum>.md` (deutsch, Muster
+`live-486-2026-11-20.md`; T2 legt an, T8 schließt ab), **ohne Namen echter Kanäle**.
 
-### T1 — Reine Worker-Bausteine: `ChannelJoinTracker`, `TwitchJoinNoticeParser`, `TwitchJoinFailureReasons`
+### T1 — Reine Bausteine: `ChannelJoinTracker`, `TwitchJoinNoticeParser`, `TwitchJoinFailureReasons`
 
-- **Lesen:** E1, E2, 3.1; `TwitchChatManager.cs` (alle `_desiredChannels`-Stellen, `TallyRejoin`, `AllConfirmed`,
-  `MarkAllChannelsUnconfirmed`), `ChannelLeaveLedger.cs` und Tests als Stilvorbild, `SevenTvSyncFailureReasons`,
-  `TwitchTagKeyAllowlistTests.cs:320` (NOTICE-Zeilenform).
-- **Liefert:** die drei Typen; `TwitchJoinFailureReasons` in `src/EmotePurge.Core/Services/`, die anderen beiden in
-  `src/EmotePurge.Worker/`. Noch keine Verdrahtung.
-- **Grenzfälle Tracker:** jede Zeile der Stempel-Tabelle aus E1 einzeln; Wunsch auf bestätigtem Kanal ändert nichts;
-  Bestätigung nach `Remove` fügt nicht ein; `BeginSession` stempelt nur `null`-Stempel und lässt vorhandene unberührt;
-  **mehrere Folgen `MarkAllUnconfirmed` → `BeginSession` ohne Bestätigung: der Stempel eines nie bestätigten Kanals bleibt
-  der erste**, der eines vorher bestätigten Kanals ist der letzte Sitzungsbeginn; Vorrang: `noConfirmation` 5 s nach
-  konkretem Grund → Grund bleibt, „Wiederholung"; `noConfirmation` 16 s nach konkretem Grund → ersetzt, „geändert"; Grenze
-  genau 15 s; konkreter Grund ersetzt `noConfirmation` und einen anderen konkreten; gleicher Grund zweimal → „Wiederholung",
-  Grundzeit aktualisiert; Grund auf bestätigtem oder unbekanntem Kanal → „ignoriert"; `Remove` und erneuter Wunsch →
-  frischer Zustand; Groß-/Kleinschreibung; Momentaufnahme sortiert; parallele Aufrufe aus mehreren Threads ohne Ausnahme
-  und ohne verlorene Übergänge.
-- **Grenzfälle Parser:** die vier Codes mit Kanal; aufgezeichnete Limit-Zeile (Kanal erfunden); **dieselbe Zeile mit
-  `msg-id` an zweiter und letzter Stelle hinter erfundenen Tags** → erkannt; Tag-Wert mit maskierten Zeichen; `NOTICE *
-  :…` ohne Kanal; NOTICE ohne Tag-Block; anderer `msg-id` (`emote_only_on`, `msg_ratelimit`); PRIVMSG mit `msg-id`-ähnlichem
-  Tag und Text „NOTICE" im Nachrichtentext → kein NOTICE; USERNOTICE → kein NOTICE; abgeschnittene Zeile; leerer String;
-  Großbuchstaben im Kanal → klein.
-- **Tests:** `tests/EmotePurge.Worker.Tests/ChannelJoinTrackerTests.cs`, `TwitchJoinNoticeParserTests.cs` (container-frei,
-  Regel 11). Nur erfundene Kanäle.
-- **Live:** entfällt (reine Klassen ohne externes System).
-- **Fertig:** Build, Format, `dotnet test tests/EmotePurge.Worker.Tests` grün. Commit `feat(worker): add a per-channel join
-  tracker and a join-notice parser`.
+- **Lesen:** E1, E2, 3.1; alle `_desiredChannels`-Stellen in `TwitchChatManager.cs`, `ChannelLeaveLedger.cs` + Tests
+  (Stilvorbild), `SevenTvSyncFailureReasons`, `TwitchTagKeyAllowlistTests.cs:320` (NOTICE-Form).
+- **Liefert:** die drei Typen (Reasons in Core, die anderen im Worker), keine Verdrahtung.
+- **Grenzfälle Tracker:** jede Zeile der Tabelle aus E1; Anrechnung über mehrere Trenn-/Verbunden-Folgen (nur verbundene
+  Abschnitte summiert); langer getrennter Abschnitt direkt nach dem Wunsch zählt 0; vorher bestätigter Kanal beginnt nach
+  Trennung bei 0, nie bestätigter behält seine Summe; Wunsch während getrennt, dann verbunden → läuft ab Verbunden;
+  `SetConnected` zweimal → keine Doppelzählung; Momentaufnahme mitten im laufenden Abschnitt; Uhr rückwärts → 0, nie
+  negativ; Bestätigung nach `Remove` fügt nicht ein; Versuchsregel: Limit, dann `noConfirmation` im selben Versuch → Limit
+  bleibt („Wiederholung"); `channelSuspended`, neuer Versuch, `noConfirmation` → ersetzt („geändert"); `noConfirmation`
+  zweimal → „Wiederholung"; Grund auf bestätigtem oder unbekanntem Kanal → „ignoriert"; Groß-/Kleinschreibung; parallele
+  Aufrufe aus mehreren Threads (Wunsch gegen Verbunden-Wechsel) ohne verlorene Übergänge und ohne Kanal ohne laufende Uhr bei
+  bestehender Verbindung.
+- **Grenzfälle Parser:** Limit- und `msg_banned`-Zeile mit Kanal; aufgezeichnete Limit-Zeile (Kanal erfunden); `msg-id` an
+  zweiter und letzter Stelle; maskierte Tag-Werte; `NOTICE *` ohne Kanal; NOTICE ohne Tag-Block; `msg_channel_suspended`
+  und andere `msg-id` → `false`; PRIVMSG mit „NOTICE" im Text; USERNOTICE; abgeschnittene Zeile; leer; Großbuchstaben.
+- **Tests:** `tests/EmotePurge.Worker.Tests/ChannelJoinTrackerTests.cs`, `TwitchJoinNoticeParserTests.cs`. Live entfällt.
+- **Commit:** `feat(worker): add a per-channel join tracker and a join-notice parser`.
 
-### T2 — `TwitchChatManager` auf den Tracker umstellen, Sitzungsbeginn, atomare Erfassung
+### T2 — `TwitchChatManager` auf den Tracker umstellen
 
-- **Lesen:** E1, E3, Befund 1, 5, 7; `TwitchChatManager.cs` vollständig (Klassen-Doku zu `WireUpClient`, Gate-Regeln,
-  `ReconnectOnceAsync`, `OnConnected`, `OnDisconnected`), `ITwitchChatManager.cs`, `WorkerRosterPublisher.cs`,
+- **Lesen:** E1, E3; `TwitchChatManager.cs` vollständig (Gate-Regeln, `WireUpClient`, `ReconnectOnceAsync`, `OnConnected`,
+  `OnDisconnected`, `OnReconnected`, `TryJoinAsync`), `ITwitchChatManager.cs`, `WorkerRosterPublisher.cs`,
   `TwitchChatManagerLeaveRaceTests.cs`.
-- **Liefert:** `_desiredChannels` vollständig durch `ChannelJoinTracker` ersetzt, Verhalten aller bisherigen Pfade gleich
-  (Intent vor JOIN, Re-Check nach dem Gate, Leave-Ledger, `TallyRejoin`, `AllConfirmed`, `EnsureJoinedAsync`-Abkürzung);
-  `OnJoinedChannel` → `MarkConfirmed`; Clientwechsel und `OnDisconnected` → `MarkAllUnconfirmed()`; `OnConnected` →
-  `BeginSession(now)` im selben Riegel wie das Setzen von `_sessionStartedUtcTicks`; `RecordIntent` mit „Sitzung läuft"
-  (Befund 5); `CaptureRoster()` unter `_clientStateGate` (E3); `GetRoster()` unverändert in der Bedeutung. Der Publisher
-  bleibt in diesem Task unverändert (er ruft weiter `GetRoster()`). Noch keine Gründe.
-- **Grenzfälle:** Join bei getrenntem Manager → Stempel `null`; Bestätigung einer ersetzten Sitzung bucht nichts (bestehende
-  Identitätsprüfung); `CaptureRoster` während eines Wiederaufbaus liefert entweder den alten oder den neuen Stand, nie eine
-  Mischung (Begründung im Code-Kommentar, da per Test schwer erzwingbar); `CaptureRoster` ohne Sitzung → `SessionStartedUtc
-  = null`.
-- **Tests (Worker.Tests):** `TwitchChatManagerJoinStateTests.cs` am nie verbundenen Manager (wie
-  `TwitchChatManagerLeaveRaceTests`): Join → Stempel `null`, Leave entfernt, Ensure nach Leave mit altem Stempel legt nichts
-  an, `CaptureRoster` ohne Sitzung. Bestehende Worker-Tests (`TwitchChatManagerLeaveRaceTests`, `CaptureGapTrackerTests`,
-  `RosterPrunePolicyTests`, `WishCaptureWorkerTests`, `WorkerBootSequenceTests`, `SevenTvPeriodicResyncWorkerTests`)
-  unverändert grün. Die Sitzungsübergänge mit echtem Handshake prüft T3 über den Fake-Transport.
-- **Live (vor dem Commit, E12):** Worker gegen echtes Twitch mit den Kanälen der Dev-Datenbank: Boot → alle Kanäle bestätigt
-  (`redis-cli GET worker:roster`, `ircJoinConfirmed`); `PUBLISH channel:bot:commands DEBUG:TWITCH-RECONNECT` (Worker mit
-  `Worker__Debug__AllowTwitchReconnectTrigger=true`) → nach der Rejoin-Runde wieder alle bestätigt; Worker-Log ohne neue
-  Fehler. Ergebnis als Abschnitt „T2" ins Protokoll (Datei anlegen).
-- **Fertig:** Build, Format, Worker.Tests grün, Live bestanden. Commit `refactor(worker): track join state per channel with
-  session-aware timestamps`.
+- **Liefert:** `_desiredChannels` vollständig ersetzt, alle bisherigen Pfade gleich (Intent vor JOIN, Re-Check nach dem Gate,
+  Leave-Ledger, `TallyRejoin`, `AllConfirmed`, Abkürzung in `EnsureJoinedAsync`); jeder `SetConnected`-Aufruf setzt im selben
+  Riegel den Tracker (E1); `OnJoinedChannel` → `MarkConfirmed`; `BeginAttempt` an der Sendestelle; `GetRoster()` mit den neuen
+  Feldern aus einer Momentaufnahme. Noch keine Gründe.
+- **Grenzfälle:** Join bei nie verbundenem Manager → Uhr steht; Bestätigung eines ersetzten Clients bucht nichts; die
+  Riegel-Reihenfolge ist im Code-Kommentar begründet.
+- **Tests:** `TwitchChatManagerJoinStateTests.cs` am nie verbundenen Manager (Join → Uhr 0 und steht, Leave entfernt, Ensure
+  nach Leave legt nichts an). Bestehende Worker-Tests unverändert grün. Handshake-Übergänge prüft T3.
+- **Live:** Worker gegen Twitch mit den Dev-Kanälen: Boot → alle bestätigt (`GET worker:roster`);
+  `DEBUG:TWITCH-RECONNECT` (mit `Worker__Debug__AllowTwitchReconnectTrigger=true`) → wieder alle bestätigt; keine neuen
+  Fehler. Protokoll anlegen, Abschnitt „T2".
+- **Commit:** `refactor(worker): track join state per channel with an accrual clock`.
 
-### T3 — Gründe erfassen: NOTICE und Timeout, Fake-Transport-Tests, DECISIONS-Eintrag
+### T3 — Gründe erfassen, Transport-Naht, Fake-Transport-Tests, DECISIONS-Eintrag
 
-- **Lesen:** E1, E2, Befund 2–4, 6; `TwitchChatManager.cs` (`WireUpClient`, `OnSendReceiveData`,
-  `OnFailureToReceiveJoinConfirmation`, `CreateClient`, `OpenAndAwaitHandshakeAsync`), `RedactingTwitchClientLoggerFactory.cs`
-  und Tests, `RewardRedemptionTwitchLibTests.cs` (Muster „TwitchLib-gebundener Test"), `IrcLineSpliceRuleTwitchLibTests.cs`;
-  TwitchLib.Client 4.0.1 `TwitchClient` (`_client_OnMessage`, `HandleNotice`, `HandleChannelSuspended`, `JoinChannelTimeout`)
-  und TwitchLib.Communication 2.0.1 `IClient` dekompiliert (`ilspycmd`).
-- **Liefert:** `OnFailureToReceiveJoinConfirmation` mit Identitätsprüfung und `RecordFailure(noConfirmation)` in einem
-  `lock (_clientStateGate)`; NOTICE-Zweig in `OnSendReceiveData` nach E2 (Frame-Stempel unverändert davor, Befehlstest
-  allokationsfrei, Sperre nur bei NOTICE); Logzeilen mit EventIds und Dedupe nach E2; `TwitchRosterEntry`-Felder befüllt
-  (`GetRoster`/`CaptureRoster`); **interne Transport-Naht**: ein Test kann den `IClient` des `TwitchClient` ersetzen, für den
-  Boot-Client und jeden Wiederaufbau. Form wählt der Implementer; Bedingungen: nicht öffentlich, Produktion baut weiterhin
-  `WebSocketClient` mit `NoReconnectionPolicy`, `WorkerServiceRegistrationTests` unverändert grün. **DECISIONS-Eintrag
-  anlegen** mit Absatz „worker join state": Stempel-Regel E1, Gründe und Vorrangfenster, EventIds als neue Konvention
-  (Namen, Stufen, Dedupe je Prozess), warum nicht `OnUnaccountedFor`.
-- **Grenzfälle:** NOTICE eines bereits ersetzten Clients bucht nichts; Timeout-Ereignis vom Timer-Thread während eines
-  Clientwechsels; Limit-NOTICE gefolgt vom Timeout → **ein** Grund `concurrentChannelLimit`, **eine** laute Zeile;
-  gesperrter Kanal mit minütlichem Retry → eine Warning, danach Debug; Leave zwischen NOTICE und Buchung → nichts gebucht;
-  `OnSendReceiveData` wirft nie (eine Ausnahme trennt TwitchLibs Multicast-Kette) und sperrt nur im NOTICE-Zweig.
+- **Lesen:** E1, E2, Befund 3–7; `TwitchChatManager.cs` (`WireUpClient`, `OnSendReceiveData`,
+  `OnFailureToReceiveJoinConfirmation`, `CreateClient`), `RedactingTwitchClientLoggerFactory.cs` + Tests,
+  `RewardRedemptionTwitchLibTests.cs`, `IrcLineSpliceRuleTwitchLibTests.cs`,
+  `tests/EmotePurge.Infrastructure.Tests/Unit/SevenTvWriteClientLoggingTests.cs` (Logger-Fake); TwitchLib dekompiliert
+  (`HandleJoin`, `Handle366`, `HandleChannelSuspended`, `JoinChannelTimeout`, `QueueingJoinCheckAsync`).
+- **Liefert:** Callback mit Identitätsprüfung und Klassifikation über `Details` (E2); NOTICE-Zweig in `OnSendReceiveData`;
+  Logzeilen mit EventIds und Dedupe; **interne Transport-Naht** (Test ersetzt den `IClient` für Boot-Client und jeden
+  Wiederaufbau) plus der Dekorierer für `Worker:Debug:SilentJoinChannels` (3.1, E10); `WorkerServiceRegistrationTests`
+  unverändert grün. **DECISIONS-Eintrag anlegen**, Absatz „worker join state": Anrechnungsuhr, ein Riegel, Gründe nach
+  Quelle, Versuchsregel, EventIds als neue Konvention, warum nicht `OnUnaccountedFor`, Debug-Naht.
+- **Grenzfälle:** NOTICE oder Timeout eines ersetzten Clients bucht nichts; Leave zwischen NOTICE und Buchung → nichts;
+  `OnSendReceiveData` wirft nie und sperrt nur im NOTICE-Zweig; Debug-Liste leer → Dekorierer reicht alles durch.
 - **Tests (Worker.Tests):**
-  - `TwitchJoinNoticeTwitchLibTests.cs` (bewusst TwitchLib-gebunden, über `OnReadLineTestAsync`): `msg_channel_suspended`
-    löst `OnFailureToReceiveJoinConfirmation` sofort aus; `msg_concurrent_channel_limit_reached` löst ihn **nicht** aus.
-    Pinnt die TwitchLib-Fakten, auf denen der Vorrang beruht — **prüft nicht** unseren Empfangspfad.
-  - `TwitchChatManagerJoinFailureTransportTests.cs` (Fake-`IClient` über die Naht; der Test fährt den Handshake bis „004",
-    damit der Manager eine echte Sitzung hat, und beantwortet JOINs nach Vorgabe):
-    (a) **aufgezeichnete Limit-Zeile** (Kanal erfunden) über `OnMessage` des Transports → `CaptureRoster` trägt
-    `concurrentChannelLimit` mit Zeit, ein Log-Eintrag `TwitchJoinRejected` auf Error; nach TwitchLibs Timeout bleibt der
-    Grund, keine zweite laute Zeile; dieselbe Zeile mit `msg-id` hinter anderen Tags wirkt gleich;
-    (b) **JOIN ohne jede Antwort** → nach TwitchLibs Timeout `noConfirmation`, ein Log-Eintrag `TwitchJoinUnconfirmed` auf
-    Warning, kein NOTICE beteiligt;
-    (c) `msg_channel_suspended` → `channelSuspended`, Warning;
-    (d) JOIN mit `366` → bestätigt, Stempel und Grund weg;
-    (e) Trennung und neuer Handshake über den Transport: vorher bestätigter Kanal bekommt den neuen Sitzungsbeginn als
-    Stempel, ein nie bestätigter behält seinen.
-    Die Fälle mit Timeout warten auf TwitchLibs echten 5-s-Timer (≈ 7 s je Fall, im Kopf des Tests begründet; kein
-    Uhren-Shim in TwitchLib möglich). Log-Prüfung über einen Logger-Fake wie in
-    `tests/EmotePurge.Infrastructure.Tests/Unit/SevenTvWriteClientLoggingTests.cs` (EventId-Name und Stufe, nie Twitchs Text).
-  - Bestehende Worker-Tests unverändert grün, insbesondere `RedactingTwitchClientLoggerFactoryTests` und
-    `TwitchLibRawLineRedactionTests` (beweisen, dass `LogUnaccountedFor` weiter greift).
-- **Live (vor dem Commit):** eine Sonden-Zeile in `Channels` (erfundener, gültig geformter Login, der auf Twitch nicht
-  existiert, z. B. `ep516probe` plus Ziffern; `IsBotActive = true`, ohne `TwitchChannelId`, Pflichtspalten nach Schema),
-  `PUBLISH channel:bot:commands JOIN:<login>` → Worker-Log zeigt genau eine Zeile `TwitchJoinRejected`/`channelSuspended`
-  **oder** `TwitchJoinUnconfirmed`/`noConfirmation` — **welcher Fall eintritt, ist ein Messergebnis und kommt ins
-  Protokoll**; danach nur Debug-Wiederholungen. Der Identitätsabgleich deaktiviert die Sonde nicht (Befund 12, 7-Tage-Frist),
-  ein Override seines Intervalls ist nicht nötig; seine Warning „Twitch kennt den Login … nicht" ist erwartet. Sonde bleibt
-  für T4 stehen oder wird per SQL deaktiviert und `LEAVE:<login>` publiziert.
-- **Fertig:** Build, Format, Worker.Tests grün, Live bestanden. Commit `feat(worker): record why a join is unconfirmed and
-  log it once`.
+  - `TwitchJoinNoticeTwitchLibTests.cs` (TwitchLib-gebunden, pinnt Bibliotheksfakten): Suspended-NOTICE → Callback mit
+    `Details` ≠ null; Limit-NOTICE → kein Callback; Timer-Ablauf → `Details == null`.
+  - `TwitchChatManagerJoinFailureTransportTests.cs` (Fake-`IClient`, Handshake bis „004"): (a) aufgezeichnete Limit-Zeile
+    → `concurrentChannelLimit`, eine Error-Zeile `TwitchJoinRejected`, nach dem Timeout bleibt der Grund, keine zweite laute
+    Zeile; (b) JOIN ohne Antwort → `noConfirmation`, eine Warning `TwitchJoinUnconfirmed`; (c) Suspended-NOTICE →
+    `channelSuspended`; (d) **eigenes JOIN-Echo** (`:<eigener Benutzer>!…JOIN #kanal`) → bestätigt, Uhr 0, Grund weg;
+    (e) **`366` getrennt davon:** schiebt die Warteschlange (der Fake sieht den nächsten `JOIN` gesendet), bestätigt aber
+    nichts; ohne `366` und ohne Antwort geht der nächste JOIN erst nach dem Timeout raus; (f) Trennung und neuer Handshake:
+    Uhr steht während der Trennung, läuft danach weiter, vorher bestätigter Kanal beginnt bei 0; (g) **Kanal A still, Kanal
+    B mit Limit-Zeile** → beide mit eigenem Grund im Roster; (h) Debug-Dekorierer verschluckt den JOIN eines gelisteten
+    Kanals → Verlauf wie (b). Fälle mit Timeout warten auf TwitchLibs echten Timer (≈ 7 s, im Testkopf begründet).
+  - `RedactingTwitchClientLoggerFactoryTests`, `TwitchLibRawLineRedactionTests` unverändert grün.
+- **Live:** Sonden-Zeile in `Channels` (erfundener, gültig geformter Login, der auf Twitch nicht existiert, z. B.
+  `ep516probe` plus Ziffern; `IsBotActive = true`, ohne `TwitchChannelId`), `JOIN:<login>` publizieren → genau eine laute
+  Zeile; **welcher Grund kommt, ist Messergebnis** (Protokoll). Zusätzlich ein, zwei weitere Kandidaten für eine stille
+  Antwort (etwa ein Login mit 25 Zeichen); antwortet Twitch überall mit NOTICE, trägt T8 den stillen Fall über den
+  Debug-Dekorierer. Danach ein echter Dev-Kanal in `Worker__Debug__SilentJoinChannels` → `noConfirmation`, eine Warning.
+  Sonde bleibt für T4 oder wird verlassen.
+- **Commit:** `feat(worker): record why a join is unconfirmed and log it once`.
 
-### T4 — Roster-Vertrag erweitern, Publisher auf die atomare Erfassung
+### T4 — Roster-Vertrag erweitern
 
-- **Lesen:** E3, 3.2; `IWorkerRosterReader.cs`, `WorkerRosterPublisher.cs`, `WorkerHealthReader.cs` (Roster-Teil),
-  `WorkerRosterReaderTests.cs`, DECISIONS 2026-08-01 (Roster-Key), der Eintrag aus T3.
-- **Liefert:** neue Felder an `WorkerRosterChannel` (am Ende, Default `null`) und `WorkerRosterSnapshot`
-  (`IrcSessionStartedUtc`, Default `null`; Position nach Prüfung der Aufrufer, im Zweifel ans Ende); Publisher über
-  `CaptureRoster()` (IRC-Seite gewinnt wie bisher, 7TV-only-Zeilen tragen `null`); **DECISIONS-Absatz** „roster contract"
-  (Felder, atomare Erfassung, Mischbetrieb).
-- **Grenzfälle:** Payload eines alten Workers liest sich mit `null`; Kanal nur auf der 7TV-Seite; `WhenWritingNull` lässt die
-  Felder für bestätigte Kanäle weg; Kappung bei 500 unverändert.
-- **Tests:** `WorkerRosterReaderTests` (Infrastructure, echte Redis): Rundreise mit allen neuen Feldern, alter Payload ohne
-  sie. Publisher-Abbildung, falls es einen Publisher-Test gibt, dort; sonst über den Rundreise-Test.
-- **Live (vor dem Commit):** Worker läuft mit Sonde aus T3: `redis-cli GET worker:roster` zeigt `ircSessionStartedUtc`, für
-  die Sonde `ircUnconfirmedSinceUtc` und `ircJoinFailureReason`, für bestätigte Kanäle keine Zusatzfelder; nach einem
-  `DEBUG:TWITCH-RECONNECT` hat die Sonde denselben Stempel wie vorher, `ircSessionStartedUtc` ist neu.
-- **Fertig:** Build, Format, Worker.Tests und `dotnet test tests/EmotePurge.Infrastructure.Tests --filter WorkerRoster` grün,
-  Live bestanden. Commit `feat: publish unconfirmed-since and the join failure reason in the worker roster`.
+- **Lesen:** E3, 3.2; `IWorkerRosterReader.cs`, `WorkerRosterPublisher.cs`, `WorkerHealthReader.cs` (Roster-Leser),
+  `WorkerRosterReaderTests.cs`, DECISIONS 2026-08-01, der Eintrag aus T3.
+- **Liefert:** drei Felder an `WorkerRosterChannel` (am Ende, Default); Publisher setzt `ircIntent` und übernimmt Sekunden
+  und Grund; **DECISIONS-Absatz** „roster contract" (Felder, `ircIntent` statt Vereinigung als Bewertungsbasis,
+  Mischbetrieb).
+- **Grenzfälle:** alter Payload liest sich mit `false`/`null`; 7TV-only-Zeile `ircIntent = false`; bestätigte Kanäle ohne
+  Zusatzfelder außer `ircIntent`; Kappung 500 unverändert.
+- **Tests:** `WorkerRosterReaderTests` (Infrastructure, echtes Redis): Rundreise mit allen Feldern, alter Payload ohne sie.
+- **Live:** `GET worker:roster` zeigt für die Sonde `ircIntent`, wachsende `ircUnconfirmedSeconds`, den Grund; nach
+  `DEBUG:TWITCH-RECONNECT` wächst ihre Zahl nicht während der Trennung und fällt nicht zurück.
+- **Commit:** `feat: publish accrued unconfirmed time and the join failure reason in the worker roster`.
 
-### T5 — Bewertung: Optionen, Policy, Dienst, Check mit Cache, Soll-Liste, `WorkerHealthStatus` verschieben
+### T5 — Bewertung: Optionen, Policy, Dienst mit Cache
 
-- **Lesen:** E4, E5 (Check, Cache, Verschiebung), E10, E11, 3.3; `ChannelService.cs:380-420` (Filter),
-  `ChannelCapacityOptions.cs`, `ServiceCollectionExtensions.cs:70-120` (Registrierungen, `LogStatusReader`),
-  `TtlCache.cs` und seine Tests, `LogStatusReader.cs`, `WorkerHealthStatus.cs` und seine beiden Nutzer, `IChannelService.cs`,
-  `ChannelServiceCapacityTests.cs`, `ChannelServiceBroadcasterLockTests.cs`.
-- **Liefert:** `ChannelJoinHealthOptions` (Bindung, `Validate`, Registrierung); Core-Typen aus 3.3;
-  `ListActiveChannelActivationsAsync` mit `ListActiveChannelNamesAsync` als Projektion; `WorkerHealthStatus` nach
-  `src/EmotePurge.Infrastructure/Health/` verschoben (Api-Nutzer angepasst, sonst nichts); `ChannelJoinHealthPolicy` (rein,
-  inkl. `IsAlarming`); `ChannelJoinHealthService` (scoped: liest Health, Roster, Soll-Liste, ruft die Policy);
-  `ChannelJoinHealthCheck` (Singleton, eigener Scope, `TtlCache` 5 s, Ausnahme → alarmierend + Warning). **DECISIONS-Absatz**
-  „join health evaluation": Stufen, Grace und Obergrenze mit Herleitung, Ausnahme für `channelSuspended`/`banned` als
-  vorläufige Betreiberentscheidung, Instanzwechsel, Cache, Verschiebung von `WorkerHealthStatus`.
-- **Grenzfälle Policy:** jede Stufe aus E4 einzeln; Grace-Grenze genau und eine Sekunde darüber; **mehrere kurze Sitzungen:
-  Stempel 31 min alt, Sitzung 30 s alt → überfällig über die Obergrenze, obwohl die Grace nicht abgelaufen ist; derselbe
-  Kanal mit Stempel 20 min → nicht überfällig**; ein einzelner Reconnect im ungünstigsten Moment (Stempel `Grace − 1 s` vor
-  dem Sitzungsbeginn, Bewertung `Grace` nach Sitzungsbeginn) → nicht überfällig; ohne Sitzung: Stempel älter als Obergrenze
-  → `Failing`, jünger → `NoSession`; Stempel `null` ohne Sitzung → nie überfällig; Kanal vor Sitzungsbeginn unbestätigt →
-  Grace ab Sitzungsbeginn; fehlender Kanal nach frischer Aktivierung → nicht überfällig; fehlender Kanal bei `Truncated`;
-  Boot-Recovery innerhalb und jenseits von `BootRecoveryMax`; **Instanzwechsel** innerhalb 180 s → `Starting`, danach →
-  `Inconsistent`, Health ohne Instanz → übersprungen; Roster-Kanal nicht im Soll zählt nicht; Groß-/Kleinschreibung;
-  leere Soll-Liste → `Healthy`; alter Worker ohne Stempel bei Sitzung → Grace ab Sitzungsbeginn, keine Obergrenze;
-  **Ausnahme:** überfälliger `channelSuspended` allein → `Healthy` mit `ExcludedCount = 1`, dazu ein zweiter Kanal
-  `noConfirmation` überfällig → `Failing`; veralteter Grund ist Sache des Trackers (T1), hier nicht erneut.
-  `IsAlarming`: Tabelle aus 3.3 vollständig.
-- **Grenzfälle Check:** zwei gleichzeitige Aufrufe → eine Auswertung; innerhalb 5 s gecacht, danach neu (über
-  `TimeProvider`-Fake); Auswertung wirft → alarmierend, nicht gecacht, nächster Aufruf wertet neu aus.
-- **Grenzfälle Soll-Liste:** gesperrter und widersprochener Kanal fehlen in beiden Listen gleich; `TrackingResumedAt` gesetzt
-  vs. `null`; beide Methoden liefern dieselben Namen in derselben Reihenfolge.
-- **Tests:** `tests/EmotePurge.Infrastructure.Tests/Unit/ChannelJoinHealthPolicyTests.cs`,
-  `Unit/ChannelJoinHealthOptionsTests.cs`, `Unit/WorkerHealthStatusTests.cs` (die drei Status-Ableitungen, jetzt
-  Infrastructure-Logik nach Regel 11), `Unit/ChannelJoinHealthCheckTests.cs` (substituierter Dienst über Scope),
-  `Integration/ChannelServiceActiveActivationsTests.cs` (Postgres), `Integration/ChannelJoinHealthServiceTests.cs` (Postgres,
-  substituierte Reader).
-- **Live:** in T6 (E12) — vor jedem Push.
-- **Fertig:** Build, Format, Infrastructure.Tests der neuen Klassen, die bestehenden `ChannelService*`-Tests und
-  `dotnet test tests/EmotePurge.Api.Tests` (Verschiebung) grün. Commit `feat: evaluate desired against confirmed joins with
-  a grace period and an upper bound`.
+- **Lesen:** E4, E5, E10, E11, 3.3; `ChannelCapacityOptions.cs`, `ServiceCollectionExtensions.cs:70-120` und `:396`,
+  `TtlCache.cs` + Tests, `LogStatusReader.cs`, `WorkerHealthReader.cs:92` (`RosterTtl`).
+- **Liefert:** `ChannelJoinHealthOptions` (Bindung, Validierung, Registrierung); Core-Typen aus 3.3;
+  `ChannelJoinHealthPolicy`; `ChannelJoinHealthService` (Singleton, Cache, Füllfrist, Startzeit). **DECISIONS-Absatz** „join
+  health evaluation": nur Roster, Stufen, Grace-Herleitung, Ausnahme `channelSuspended`/`banned`, Doppelalarm akzeptiert,
+  Cache und Füllfrist.
+- **Grenzfälle Policy:** Roster fehlt bei Api-Alter 179 s → `Starting`, 181 s → `Unavailable`; Roster älter als 180 s →
+  wie fehlend; Grace genau und eine Sekunde darüber; 7TV-only-Zeile mit hoher Zahl wird ignoriert; Zeile ohne `ircIntent`
+  (alter Worker) → `Healthy`; überfälliger `channelSuspended` allein → `Healthy` mit `ExcludedCount = 1`, plus ein
+  überfälliger `noConfirmation` → `Failing`; **still überfällig plus ein zweiter Kanal mit `concurrentChannelLimit` →
+  `Failing`, beide Einträge alarmierend**; `BootRecoveryCompleted = false` ändert nichts; leeres Roster → `Healthy`.
+- **Grenzfälle Dienst:** zwei gleichzeitige Aufrufe → eine Füllung; innerhalb 5 s gecacht (`TimeProvider`-Fake); Leser wirft
+  → „nicht auswertbar", 5 s gecacht, **wiederholte Fehler: eine Füllung und eine Warning je 5 s**, nicht je Aufruf; Leser
+  hängt → nach 2 s „nicht auswertbar"; abbrechender Wartender → seine Ausnahme, die Füllung läuft weiter und bedient den
+  nächsten Aufrufer.
+- **Tests:** `Unit/ChannelJoinHealthPolicyTests.cs`, `Unit/ChannelJoinHealthOptionsTests.cs`,
+  `Unit/ChannelJoinHealthServiceTests.cs` (substituierter Roster-Leser). Live in T6.
+- **Commit:** `feat: evaluate the worker roster's unconfirmed time against a grace period`.
 
-### T6 — Api: `/api/health/channels`, eigene Policy, Admin-Roster, `TwitchJoinBudgetChannels` entfernen
+### T6 — Api: `/api/health/channels`, Policy, Admin-Roster, `TwitchJoinBudgetChannels` entfernen
 
-- **Lesen:** E5, E6 (Api-Teil), E7 (Api-Teil), E11, 3.3; `WorkerHealthEndpoints.cs`, `AdminEndpoints.cs:245-315` und
-  `:537-570`, `WorkerCapacity.cs`, `Program.cs:183-230` (Policies), `RateLimitingOptions.cs`, `RateLimitPolicyNames.cs`,
-  `RateLimitRejection.cs:270-290`, `appsettings.json` (RateLimiting), `ApiFactory.cs`, `ApiHealthEndpointTests.cs`,
-  `AdminDashboardActivityEndpointTests.cs`, `AdminRateLimitsEndpointTests.cs`, `RateLimitRejectionTests.cs:400-445`,
-  `docs/Architectur.md:179`.
-- **Liefert:** Route nach E5 (Handler bildet `IsAlarmingAsync` auf 200/503 ab, sonst nichts); Policy `PublicChannelHealth`
-  (Name, Option mit Default 10, Registrierung neben `PublicHealth` mit Kommentar, `appsettings.json`, Eintrag in der
-  Rate-Limit-Übersicht); `/api/admin/roster` nach 3.3 über `IChannelJoinHealthService` (eine Roster-Lesung, der Bericht
-  trägt den Schnappschuss); `TwitchJoinBudgetChannels` gelöscht, Doc-Kommentar von `TwitchConcurrentChannelLimit` berichtigt;
-  `Architectur.md:179` ergänzt (englisch); **DECISIONS-Absatz** „endpoint contract" (Route, 200/503-Tabelle, Prinzip, eigene
-  Policy und warum nicht geteilt, nicht im HEALTHCHECK).
-- **Grenzfälle:** anonym ohne Cookie; Körper leer; jede Zeile der Tabelle 3.3; `/api/health` bleibt bei überfälligem Kanal
-  200; **Budget getrennt: `PublicChannelHealth` (per Override klein) erschöpft → `/api/health/channels` 429, `/api/health`
-  aus derselben IP weiter mit seinem regulären Status (200 bzw. 503 nach Health)**, und umgekehrt; `/api/admin/roster` ohne
-  Schnappschuss → `joinHealth.status = rosterUnavailable`; Status als String.
-- **Tests (Api.Tests):** `ApiChannelHealthEndpointTests.cs` — der öffentliche Vertrag: Statuscodes und leerer Körper gegen
-  einen substituierten `IChannelJoinHealthCheck` (die Statuslogik selbst ist in T5 getestet, Regel 11), plus ein Fall mit
-  dem echten Check über substituierte Reader, der die Verdrahtung beweist; `ApiHealthEndpointTests` um den Regressionsfall;
-  Roster-Formtest in `AdminDashboardActivityEndpointTests`; `RateLimitRejectionTests` um den Fall „getrennte Budgets" nach
-  dem Muster `PublicLegalBudget_ExhaustsIndependently_…`; `AdminRateLimitsEndpointTests` um die neue Policy. Kein neuer
-  Filter, keine Filter-Reihenfolge berührt.
-- **Live (vor dem Commit, deckt T5 mit):** Api und Worker aus dem Worktree, Sonde aus T3 vorhanden.
-  1. `curl -s -o /dev/null -w '%{http_code}' localhost:5151/api/health/channels` und `/api/health` → je nach Sondengrund
-     (Protokoll T3): `channelSuspended` → beide 200, `/api/admin/roster` zeigt die Sonde mit `countsForAlarm = false`;
-     `noConfirmation` → nach Grace plus Roster-Takt 503, `/api/health` 200.
-  2. `redis-cli DEL worker:roster` → sofort 503 (Cache ≤ 5 s), nach dem nächsten Publish wieder wie vorher.
-  3. Instanzwechsel: Roster lesen, `workerInstanceId` mit `jq` ändern, mit `SET … EX 180` zurückschreiben → 503 (Prozess
-     älter als 180 s), nach dem nächsten Publish wie vorher.
-  4. Budget: elf Abrufe von `/api/health/channels` binnen einer Minute → der elfte 429; `/api/health` direkt danach 200.
-  5. Sonde aufräumen: in `/admin/channels` „Verlassen" (der in E11 dokumentierte Abhilfeweg) → Audit-Eintrag
-     `channel.leave`, Sonde verschwindet nach dem nächsten Roster-Takt aus `ircUnjoined`, Endpunkt 200; Zeile löschen.
-- **Fertig:** Build, Format, `dotnet test tests/EmotePurge.Api.Tests` grün, Live bestanden. Commit `feat(api): add GET
-  /api/health/channels and report unjoined channels in the admin roster`.
+- **Lesen:** E5, E6, E7 (Api-Teil), 3.3; `WorkerHealthEndpoints.cs`, `AdminEndpoints.cs:245-315` und `:537-570`,
+  `WorkerCapacity.cs`, `Program.cs:183-230`, `RateLimitingOptions.cs`, `RateLimitPolicyNames.cs`, `appsettings.json`,
+  `ApiFactory.cs`, `ApiHealthEndpointTests.cs`, `AdminDashboardActivityEndpointTests.cs`,
+  `AdminRateLimitsEndpointTests.cs`, `RateLimitRejectionTests.cs:400-445`, `docs/Architectur.md:179`.
+- **Liefert:** Route; Policy `PublicChannelHealth` (Name, Option, Registrierung neben `PublicHealth`, `appsettings.json`,
+  Rate-Limit-Übersicht); `/api/admin/roster` nach 3.3 über `Evaluate(snapshot)`; `TwitchJoinBudgetChannels` gelöscht,
+  Kommentar an `TwitchConcurrentChannelLimit` berichtigt; `Architectur.md:179` ergänzt; **DECISIONS-Absatz** „endpoint
+  contract" (Route, Statuscodes, eigene Policy, nie im HEALTHCHECK).
+- **Grenzfälle:** anonym; Körper leer; jede Statuszeile aus 3.3; `/api/health` bleibt bei überfälligem Kanal 200; getrennte
+  Budgets (erschöpftes `PublicChannelHealth` → 429, `/api/health` derselben IP unberührt, und umgekehrt); Admin ohne
+  Schnappschuss → `joinHealth.status` `unavailable` bzw. `starting`.
+- **Tests (Api.Tests):** `ApiChannelHealthEndpointTests.cs` (Statuscodes und leerer Körper gegen substituierten Dienst, plus
+  ein Fall mit echtem Dienst über substituierten Leser); Regressionsfall in `ApiHealthEndpointTests`; Roster-Form in
+  `AdminDashboardActivityEndpointTests`; getrennte Budgets in `RateLimitRejectionTests` (Muster `PublicLegalBudget_…`);
+  `AdminRateLimitsEndpointTests`.
+- **Live (deckt T5):** Api und Worker aus dem Worktree, Sonde aus T3 und ein Kanal in der Debug-Liste: nach Grace plus
+  Roster-Takt 503, `/api/health` 200, `/api/admin/roster` listet beide mit Grund und `countsForAlarm`; Debug-Liste leeren
+  und Worker neu starten → 200 nach Bestätigung (sofern die Sonde `channelSuspended` ist, sonst nach ihrem Leave);
+  `redis-cli DEL worker:roster` → 503 nach ≤ 5 s, nach dem nächsten Publish wie vorher; elf Abrufe binnen einer Minute → der
+  elfte 429, `/api/health` direkt danach 200; Sonde über „Verlassen" aufräumen (Audit `channel.leave`).
+- **Commit:** `feat(api): add GET /api/health/channels and report unjoined channels in the admin roster`.
 
-### T7 — Teil B Backend: `ChannelCapacityReached` als EventId
+### T7 — Teil B Backend: EventId `ChannelCapacityReached`, Compose-Mapping der Decke
 
-- **Lesen:** E8; `ChannelService.cs:819-850`, `ChannelServiceCapacityTests.cs`, `SevenTvWriteClientLoggingTests.cs` (Muster
-  Logger-Fake), `LogFilterParser.cs:150-175`.
-- **Liefert:** EventId mit Namen `ChannelCapacityReached` an der bestehenden Warning (Text und Platzhalter unverändert; Nummer
-  als Konstante in der Klasse); Kommentar von `ChannelCapacityOptions.MaxActiveChannels` angepasst; **DECISIONS-Absatz**
-  „capacity demand signal" (E8, E9 inkl. zweiteiligem Rückweg).
-- **Grenzfälle:** Ablehnung loggt genau einmal mit dem EventId-Namen; Admin-Join über der Decke und idempotenter Join auf
-  aktivem Kanal loggen nichts.
-- **Tests:** `ChannelServiceCapacityTests` um die Logzeile (EventId-Name und Platzhalterwerte).
-- **Live (vor dem Commit):** Api mit `Channels__MaxActiveChannels=<aktuelle aktive Zahl>`; Join eines neuen Kanals mit einem
-  **Nicht-Admin**-Login (Testkonto `olaf_olaf_son` auf seinem eigenen Kanal) → 409 `channel_capacity_reached`, eine Warning
-  mit EventId `ChannelCapacityReached`; mit `LOG_CAPTURE_ENABLED` findet `/admin/logs?q=event:ChannelCapacityReached&range=7d`
-  sie. Ist kein Nicht-Admin-Login verfügbar, im Protokoll vermerken; der Test deckt die Zeile.
-- **Fertig:** Build, Format, Capacity-Tests grün, Live bestanden. Commit `feat: tag active-channel cap rejections with a
-  stable event id`.
+- **Lesen:** E8, E9; `ChannelService.cs:819-850`, `ChannelServiceCapacityTests.cs`, `SevenTvWriteClientLoggingTests.cs`,
+  `LogFilterParser.cs:150-175`, `docker-compose.prod.yml` und `docker-compose.yml` (Api-Service, Muster
+  `Channels__ExcludedChannelIds`), `.env.example`.
+- **Liefert:** EventId an der bestehenden Warning (Text unverändert); Kommentar an `ChannelCapacityOptions.MaxActiveChannels`;
+  **Mapping** `Channels__MaxActiveChannels=${CHANNELS_MAX_ACTIVE_CHANNELS:-80}` im Api-Service beider Compose-Dateien mit
+  kurzem Kommentar, Platzhalter in `.env.example`; **DECISIONS-Absatz** „capacity demand signal" (E8, Mapping, E9 mit
+  zweiteiligem Rückweg).
+- **Tests:** `ChannelServiceCapacityTests` um die Logzeile. Compose: `docker compose -f docker-compose.prod.yml config`
+  zeigt die Variable mit Default 80 und mit gesetztem Wert.
+- **Live:** Api mit `Channels__MaxActiveChannels=<aktive Zahl>`; Join mit Nicht-Admin (`olaf_olaf_son` auf dem eigenen
+  Kanal) → 409 `channel_capacity_reached`, eine Warning mit der EventId, mit `LOG_CAPTURE_ENABLED` im Log-Viewer auffindbar.
+  Dazu der Compose-Weg lokal: `docker compose up -d --build --force-recreate api` mit gesetzter Variable →
+  `ceilings.maxActiveChannels` zeigt den Wert.
+- **Commit:** `feat: tag active-channel cap rejections and map the cap into the api container`.
 
-### T8 — Live-Gate mit Messung (Regel 16), Protokoll abschließen
+### T8 — Live-Gate mit Messung bei Ziel 120 Kanälen
 
-Läuft lokal gegen echtes Twitch (anonym), echtes Postgres und Redis, mit **Produktions-Defaults** (Grace 360 s, Obergrenze
-1800 s, Resync 60 s; keine Overrides außer dem Reconnect-Trigger und erhöhten Log-Stufen für `EmotePurge.Worker.
-TwitchChatManager` und `TwitchLib.Client`, damit Sende- und Bestätigungszeitpunkte im Log stehen — welche Stufe nötig ist,
-prüft der Implementer an einem Probelauf). Dauer ≈ 1,5 h. Ergebnisse in Abschnitt „T8" des Protokolls.
+Lokal gegen echtes Twitch (anonym), Postgres, Redis, mit Produktions-Defaults (Grace 300 s, Resync 60 s); Overrides nur
+Reconnect-Trigger, Debug-Liste und Log-Stufen für `EmotePurge.Worker.TwitchChatManager` und `TwitchLib.Client` (Sende- und
+Bestätigungszeitpunkte). Abfragen von `/api/health/channels` alle 10 s (6/min). Dauer ≈ 1,5 h. Abschnitt „T8" im Protokoll.
 
-1. **Aufbau und Kanalzahl:** Dev-Datenbank auf **mindestens 65 aktive, echte Kanäle** bringen (Ziel 120): fehlende per
-   Admin-Join mit Admin-Session (globale Admins sind von der Decke ausgenommen; `Bookkeeping` 120/min beachten, also
-   gestaffelt), Logins aus der Helix-Liste aktueller Streams (`GET helix/streams`, App-Token der Dev-Zugangsdaten). Die
-   hinzugefügten Kanäle als Liste lokal (scratchpad, **nicht** ins Repo) festhalten, um sie in Schritt 9 wieder zu verlassen.
-   **Abbruchkriterium:** wiederholte 7TV-429 im Worker-Log → Kanalzahl senken, im Protokoll vermerken.
-2. **Boot ohne Fehlalarm:** Worker neu starten; ab Start alle 5 s `/api/health/channels` bis 2 min nach Ende der
-   Boot-Recovery → durchgehend 200; Boot-Recovery-Dauer festhalten.
-3. **Ein Reconnect ohne Fehlalarm, Messung gesund:** `DEBUG:TWITCH-RECONNECT`; 10 min alle 5 s pollen → durchgehend 200.
-   Aus den Logs: Zeit vom Sitzungsbeginn bis zur letzten Bestätigung (Rejoin-Dauer), Verteilung der Abstände zwischen
-   TwitchLib-Senden und Bestätigung.
-4. **Sonden:** drei Sonden-Zeilen wie in T3 anlegen und joinen. Festhalten: Grund (NOTICE oder still); Abstand zwischen dem
-   Senden eines Sonden-JOIN und dem nächsten gesendeten JOIN (misst die Warteschlangen-Sperre aus Befund 6); Endpunkt
-   gemäß Grund (E11).
-5. **Reconnect mit Sonden, Messung mit Ablehnungen:** `DEBUG:TWITCH-RECONNECT`; Rejoin-Dauer bis zur letzten Bestätigung
-   eines gesunden Kanals, Vergleich mit der Formel aus E4 (`max(0,6 s × N, …) + 7 s × K`). Sind die Sonden still abgelehnt,
-   ist das die Messung des 7-s-Terms; antwortet Twitch mit NOTICE, bleibt der Term gerechnet und das Protokoll sagt das.
-   Doppel-Einreihungen (zwei Sende-Zeilen für denselben Kanal ohne Timeout dazwischen) zählen und als Befund melden.
-6. **Mehrere kurze Reconnects:** vier `DEBUG:TWITCH-RECONNECT` im Abstand von je 3 min (kürzer als die Grace). Erwartet: für
-   gesunde Kanäle durchgehend 200; die Stempel der Sonden ändern sich über alle Sitzungen nicht (`GET worker:roster` vor
-   und nach jedem Reconnect). Sind die Sonden still abgelehnt, die Reconnects alle 3 min fortsetzen, bis der älteste Stempel
-   30 min alt ist → `/api/health/channels` 503, `/api/health` 200 — das ist die Live-Prüfung der Obergrenze. Sonst (NOTICE)
-   bleibt der 503 durch T5/T6 belegt.
-7. **Boot mit Sonden:** Worker neu starten → während der Boot-Recovery 200, danach gemäß Grund.
-8. **Admin-Karte (nur Sichtprüfung des Vertrags):** `GET /api/admin/roster` zeigt `joinHealth`, `ircUnjoined` mit Gründen,
-   `countsForAlarm`, Totale. (Die Karte selbst prüft T9.)
-9. **Aufräumen:** Sonden über „Verlassen" in `/admin/channels`, Zeilen löschen; die in Schritt 1 hinzugefügten Kanäle wieder
-   verlassen; Endpunkt 200.
-10. **Nicht live prüfbar** und so benannt: der echte Limit-NOTICE an der anonymen Verbindung — belegt durch die
-    aufgezeichnete Zeile im Fake-Transport-Test (T3).
+1. **Kanalzahl:** Dev-Datenbank auf **120 aktive, echte Kanäle** bringen (Admin-Join, gestaffelt unter `Bookkeeping`
+   120/min, Logins aus `helix/streams`); Liste nur lokal (scratchpad) für das Aufräumen. Abbruch bei wiederholten 7TV-429 →
+   Zahl senken. **Wird 120 nicht erreicht:** gemessene N, gemessene Kosten je Kanal und je stiller Ablehnung, daraus `P(120)`
+   als **ausgewiesene Hochrechnung**; die Anhebung auf 120 (E9) braucht dann die ausdrückliche Zustimmung des Betreibers
+   zur Hochrechnung, der Zwischenschritt ≈ 90 nur, wenn N ≥ 90 gemessen ist.
+2. **Boot ohne Fehlalarm:** Worker neu starten → bis 2 min nach Ende der Join-Runde durchgehend 200; Rundendauer messen.
+3. **Reconnect:** `DEBUG:TWITCH-RECONNECT`, 10 min → 200; `P` gesund messen (Handshake bis letzte Bestätigung).
+4. **Übertrag:** zweiten Reconnect etwa `P/2` nach dem Handshake des ersten auslösen → durchgehend 200; die größte
+   `ircUnconfirmedSeconds` eines gesunden Kanals im Roster festhalten (erwartet ≤ 2P).
+5. **Kontrollierter stiller JOIN:** Worker mit fünf der echten Kanäle in `Worker__Debug__SilentJoinChannels` neu starten →
+   `P` mit K = 5 messen und je stiller Ablehnung den Abstand bis zum nächsten gesendeten JOIN (erwartet 6–7 s); nach Grace
+   plus ≤ 65 s 503, `/api/health` 200, Admin-Roster listet die fünf mit `noConfirmation` und `countsForAlarm`; je Kanal eine
+   Warning `TwitchJoinUnconfirmed`.
+6. **Defizit über Trennungen:** zwei Reconnects → 503 bleibt; die Zahlen der fünf wachsen nicht während der Trennung und
+   fallen nie zurück.
+7. **Sonde (nicht existierender Login):** Grund festhalten; bei `channelSuspended` zählt sie nicht. Debug-Liste leeren,
+   Worker neu starten → 200, sobald die übrigen bestätigt sind.
+8. **Kaltstart:** Api und Worker stoppen, `redis-cli DEL worker:roster`, nur die Api starten → 200 bis 180 s, danach 503;
+   Worker starten → 200 nach dem ersten Roster.
+9. **Admin-Vertrag:** `GET /api/admin/roster` zeigt `joinHealth`, `ircUnjoined`, Totale (die Karte prüft T9).
+10. **Aufräumen:** Sonde über „Verlassen", Zeile löschen; hinzugefügte Kanäle wieder verlassen; Endpunkt 200.
+11. **Nicht live prüfbar:** der echte Limit-NOTICE an der anonymen Verbindung — belegt durch die aufgezeichnete Zeile (T3
+    a, g).
 
-- **Fertig:** Protokoll mit allen Messwerten (Boot-Recovery, Rejoin-Dauer gesund und mit K Sonden, Sendeabstände,
-  Doppel-Einreihungen ja/nein, Sondengrund) committet (`docs: add live verification protocol for #516`); jeder Schritt
-  bestanden oder als Befund mit Folge benannt. Übersteigt die gemessene Erholung `Grace − 60 s`, entscheidet der Orchestrator
-  vor T9 über die Anhebung des Defaults (E4).
+- **Fertig:** Protokoll mit N, `P` gesund und mit K = 5, Übertrag, Kosten je stiller Ablehnung, Sondengrund,
+  Doppel-Einreihungen ja/nein; committet (`docs: add live verification protocol for #516`). Übersteigt `max(2P, P + Runde)`
+  bei 120 den Wert `Grace − 60 s`, entscheidet der Orchestrator vor T9 über die Anhebung (E4).
 
-### T9 — Frontend: Kapazitätszeile, Unjoined-Liste, Status aus `joinHealth`, Altern, Detailseite, Mocks
+### T9 — Frontend: Kapazität, Join-Status, Status aus `joinHealth`, Minutentakt, Mocks
 
 - **Lesen:** E6, E7, E8, 3.4; `admin-roster-card.ts` + Spec, `utilization-tone.ts` + Spec, `poll-while-visible.ts`,
-  `admin.model.ts:110-180`, `admin.service.spec.ts:130-170`, `admin-monitoring-page.template.spec.ts:140-160`,
-  `admin-channel-detail-page.ts:200-320`, `admin-log-errors-row.ts:80-90`, `core/channels/backfill-window.ts`
-  (`formatInstant`), beide Locale-Dateien, `web/e2e/support/mocks.ts:185-230`, `web/e2e/admin-monitoring.e2e.spec.ts`,
-  `web/e2e/audit/ui-audit.audit.ts:1245-1265`; vor jeder UI-Arbeit `docs/UI-Designsprache.md` §11 und `DESIGN.md`.
-- **Liefert:** Modelländerungen; `utilizationTone` mit optionalen Schwellen; Roster-Karte: Kapazitätsblock (Balken gegen
-  `maxActiveChannels`, 90/100, drei Textstufen, Twitch-Referenzhinweis, Log-Link), Unjoined-Liste nach E6 (inkl.
-  Ausgenommen-Zeilen mit Leave-Hinweis), Status aus `joinHealth.status` mit Vorrang nach E6, sichtbares Altern mit
-  einmaligem Nachladen; Detailseite mit Grund und „seit"; Locale-Keys nach 3.4; Mocks und Audit auf den neuen Vertrag;
-  **DECISIONS-Absatz** „capacity display and roster card" (E7-Schwellen, Statusvorrang, Altern).
-- **Grenzfälle:** `maxActiveChannels` 0 oder fehlend → kein Ton, kein Warntext; genau 90 % → `warning`; genau 100 % →
-  `danger` mit „Grenze erreicht"; über 100 % → „über der Grenze"; Balkenbreite gekappt; unbekannter Grundcode → generischer
-  Text; Zeile ohne Grund; Stempel `null` → „wartet auf Twitch-Sitzung"; fehlender Kanal mit „erwartet seit"; Liste gekappt mit
-  Total > Länge; `bootRecoveryCompleted = false` bei `joinHealth.status = failing` → `failing`; Stand erreicht 90 s ohne
-  Ereignis → genau ein Nachladen, auch wenn er danach weiter altert; neues Ereignis setzt zurück; Alter > 180 s → `stale`,
-  auch ohne neuen Abruf; verborgene Seite tickt nicht.
-- **Tests (Vitest, Regel 12 — Verhalten und Zugänglichkeit, keine Vorlage):** `utilization-tone.spec.ts` (Default
-  unverändert, eigene Schwellen, Grenzwerte); `admin-roster-card.spec.ts` mit **kontrollierter Uhr** (Vitest-Fake-Timer und
-  gesteuerter Sichtbarkeit): Altern bis `stale` ohne Ereignis, genau ein `getRoster`-Aufruf zusätzlich nach 90 s,
-  Zurücksetzen nach Ereignis; Statusvorrang inkl. `failing` vor `starting`; Kapazitäts-Computeds; Unjoined-Sortierung und
-  -Texte als Meldungsreihenfolge (Vertrag E6); zugänglicher Name und `aria-valuemax` des Balkens; Statusmeldung als Text
-  (nicht nur Ton). `admin.service.spec.ts` und `admin-monitoring-page.template.spec.ts` auf den neuen Vertrag. **E2E:**
-  `mockAdminRoster` mit `ircUnjoined`, `joinHealth` und `maxActiveChannels`-Override; in `admin-monitoring.e2e.spec.ts` drei
-  Fälle — überfälliger Kanal zeigt Namen, Grund und Status „fehlt"; ausgenommener Kanal zeigt „zählt nicht für den Alarm";
-  90-%-Auslastung zeigt die Warnzeile.
-- **Live (UI, nach Vitest und E2E):** E2E läuft **ohne Api auf `:5151`**; danach kurz Api und Worker starten, eine Sonde wie
-  in T3 anlegen, `/admin/monitoring` im Browser: Sonde mit Grund und Text, Status gemäß Grund; Worker stoppen → Karte altert
-  sichtbar und zeigt nach 180 s `stale`, ohne Neuladen der Seite. Aufräumen wie T6 Schritt 5, Api beenden. Ergebnis als
-  Abschnitt „T9" ins Protokoll.
-- **Fertig:** Vitest, Lint, `format:check`, `npm --prefix web run e2e` grün, Live bestanden. Commit `feat(web): grade active
-  channels against our own cap and list unjoined channels`.
+  `admin-monitoring-page.ts:880-890` (Verwendung), `admin.model.ts:110-180`, `admin.service.spec.ts:130-170`,
+  `admin-monitoring-page.template.spec.ts:140-160`, `admin-log-errors-row.ts:80-90`, beide Locale-Dateien,
+  `web/e2e/support/mocks.ts:185-230`, `web/e2e/admin-monitoring.e2e.spec.ts`, `web/e2e/audit/ui-audit.audit.ts:1245-1265`;
+  vorher `docs/UI-Designsprache.md` §11 und `DESIGN.md`.
+- **Liefert:** Modelle; `utilizationTone` mit Schwellen; Kapazitätsblock (Balken gegen `maxActiveChannels`, 90/100, drei
+  Texte, Twitch-Hinweis, Log-Link); Abschnitte Join-Status und Nicht im Worker (E6); Status mit Vorrang aus E6;
+  Minuten-Nachladen per `pollWhileVisible`; Locale-Keys; Mocks und Audit; **DECISIONS-Absatz** „capacity display and roster
+  card".
+- **Grenzfälle:** `maxActiveChannels` 0 oder fehlend → kein Ton; genau 90 % → `warning`; genau 100 % → `danger`; über 100 %;
+  Balken gekappt; unbekannter Grundcode → generischer Text; Zeile ohne Grund; Liste gekappt mit Total > Länge;
+  `bootRecoveryCompleted = false` bei `failing` → `failing`; Name in `missingFromIrc` und `ircUnjoined` erscheint nur im
+  Join-Status; verborgene Seite lädt nicht nach.
+- **Tests (Vitest, Regel 12):** `utilization-tone.spec.ts`; `admin-roster-card.spec.ts` mit Fake-Timern und gesteuerter
+  Sichtbarkeit (ein `getRoster` je Minute nur bei Sichtbarkeit), Statusvorrang, Kapazitäts-Computeds, Sortierung als
+  Meldungsreihenfolge (Vertrag E6), Abschnittstrennung, zugänglicher Name und `aria-valuemax`. `admin.service.spec.ts` und
+  `admin-monitoring-page.template.spec.ts` auf den neuen Vertrag. **E2E** in `admin-monitoring.e2e.spec.ts`: überfälliger
+  stiller Kanal **und** ein Kanal mit `concurrentChannelLimit` stehen beide mit Grund und Status „fehlt"; ausgenommener Kanal
+  zeigt „zählt nicht für den Alarm"; 90 % zeigt die Warnzeile.
+- **Live:** E2E **ohne Api auf `:5151`**; danach Api und Worker mit einem Kanal in der Debug-Liste, `/admin/monitoring`:
+  Kanal mit Grund und Status; Worker stoppen → Karte zeigt nach spätestens 180 s plus eine Minute `stale`, ohne Neuladen.
+  Abschnitt „T9" im Protokoll.
+- **Commit:** `feat(web): grade active channels against our own cap and list unjoined channels`.
 
 ### T10 — Doku-Abschluss
 
-- **Lesen:** E4, E5, E8, E9, E10, E11; das Protokoll aus T2–T9; `docs/Operations.md` (Aufbau, „Running behind a reverse
-  proxy", „Log viewer"), `CLAUDE.md` („Umsetzungsstand" Zeile Admin, „Bekannte offene Grenzen" erster Punkt), der
-  DECISIONS-Eintrag.
-- **Liefert (englisch in Operations.md, deutsch in CLAUDE.md):**
-  - Operations.md, neuer Abschnitt **„Channel join health"** nach „Admin dashboard": was `/api/health/channels` prüft,
-    Tabelle 3.3, Prinzip „never alarms for what `/api/health` already reports"; **zweiter Uptime-Monitor** (HTTP-Monitor auf
-    `https://<host>/api/health/channels`, 60 s, „Retries" 2, eigene Benachrichtigung, 200 = „up"); **nicht** in einen
-    HEALTHCHECK; Konfiguration (E10) mit Grace-Formel inkl. `7 s × K` und **den in T8 gemessenen Werten**, Hinweis auf
-    `SevenTv:ResyncIntervalSeconds`; Obergrenze und wofür sie da ist; **gesperrte/gelöschte Kanäle**: zählen nicht für den
-    Alarm (E11), wie der Identitätsabgleich sie tatsächlich behandelt (gespeicherte ID: nie deaktiviert; Login ohne ID: nach 7
-    Tagen), Abhilfe „Leave" in `/admin/channels`, und dass ein dauerhaft roter `noConfirmation`-Kanal denselben Weg braucht,
-    weil ein roter Monitor weitere Ausfälle verdeckt; Log-Filter `event:TwitchJoinRejected`, `event:TwitchJoinUnconfirmed`,
-    `event:ChannelCapacityReached`.
-  - Operations.md, Unterabschnitt **„Raising the active-channel cap"**: Voraussetzungen ([F2]), Setzen, Nachprüfung gegen
-    die T8-Messwerte; **Rückweg in zwei Teilen nach E9** (Aufnahme stoppen; Erfassung wiederherstellen per Leave, dann Soll
-    gegen bestätigte Joins prüfen).
-  - `CLAUDE.md`: „Bekannte offene Grenzen" — der Satz „der Worker erkennt und meldet eine solche Ablehnung bisher nicht"
-    wird durch den neuen Stand ersetzt; Admin-Zeile im Umsetzungsstand um einen Halbsatz (Join-Health in der Roster-Karte,
-    `/api/health/channels` als zweiter Kuma-Monitor).
-  - DECISIONS-Eintrag auf Vollständigkeit der `**Betrifft:**`-Zeile prüfen; historische Doku bleibt unverändert, der neue
-    Eintrag sagt, was er überholt.
-- Die eigene Kuma-Einrichtung ist Betreiberhandgriff und gehört nach `infra-docs`.
-- **Fertig:** relative Links und Abschnittsanker geprüft. Commit `docs: document channel join health and raising the
-  channel cap`.
+- **Lesen:** E4, E5, E8–E11; das Protokoll; `docs/Operations.md` („Admin dashboard", „Log viewer"), `CLAUDE.md`
+  („Umsetzungsstand" Admin, „Bekannte offene Grenzen" erster Punkt), der DECISIONS-Eintrag.
+- **Liefert (Operations.md englisch, CLAUDE.md deutsch):**
+  - Abschnitt **„Channel join health"**: was der Endpunkt prüft (nur Roster, Anrechnungsuhr), Statuscodes, Doppelalarm bei
+    Totalausfall; **zweiter Uptime-Monitor** (HTTP auf `https://<host>/api/health/channels`, 60 s, Retries 2, **Resend
+    Notification if Down 60× = stündlich**, 200 = up), nie im HEALTHCHECK; Grace mit Formel und **den T8-Messwerten**, Satz zu
+    `SevenTv:ResyncIntervalSeconds`; gesperrte/gelöschte Kanäle (E11) samt Leave; Log-Filter `event:TwitchJoinRejected`,
+    `event:TwitchJoinUnconfirmed`, `event:ChannelCapacityReached`.
+  - Unterabschnitt **„Raising the active-channel cap"**: Voraussetzung und Zwischenschritt (E9), Compose-Mapping,
+    Container neu erstellen, `ceilings.maxActiveChannels` prüfen, zweiteiliger Rückweg mit Prüfung je Kanalname.
+  - `CLAUDE.md`: Satz in „Bekannte offene Grenzen" auf den neuen Stand; Admin-Zeile um einen Halbsatz.
+  - `**Betrifft:**`-Zeile vollständig. Die Kuma-Einrichtung selbst gehört nach `infra-docs`.
+- **Commit:** `docs: document channel join health and raising the channel cap`.
 
-**Reihenfolge:** T1 → T2 → T3 → T4 → T5 → T6 → T7 → **T8 (Live-Gate)** → T9 → T10 → Gates (Abschnitt 6). T7 hängt an keinem
-anderen Task und dürfte früher laufen; der Einfachheit halber bleibt die Reihe strikt.
+**Reihenfolge:** T1 → T2 → T3 → T4 → T5 → T6 → T7 → **T8 (Live-Gate)** → T9 → T10 → Gates.
 
 ---
 
@@ -800,62 +613,57 @@ anderen Task und dürfte früher laufen; der Einfachheit halber bleibt die Reihe
 
 | AK (Issue) | Task |
 |---|---|
-| A1 „seit wann unbestätigt" + Grund im Roster | T1, T2, T3, T4 |
-| A2 NOTICE geloggt, Erkennung ohne NOTICE | T3 (Gründe, Dedupe, Fake-Transport a/b), T5 (Erkennung über fehlende Bestätigung), T3/T8 live |
-| A3 Gnadenfrist, kein Fehlalarm bei Boot und Reconnect | T1, T5, T8 Schritte 2, 3, 6, 7 |
+| A1 „seit wann unbestätigt" + Grund im Roster | T1–T4 (als angerechnete Zeit bei bestehender Verbindung statt Zeitstempel, E1) |
+| A2 NOTICE geloggt, Erkennung ohne NOTICE | T3 (a, b, g, h), T5, T3/T8 live |
+| A3 Gnadenfrist, kein Fehlalarm bei Boot und Reconnect | T1, T5, T8 Schritte 2–4, 8 |
 | A4 `/admin/monitoring` listet mit Grund und seit | T6, T9 |
 | A5 neuer payloadfreier Endpunkt, `/api/health` unverändert | T5, T6 |
-| A6 Tests + Live | T1–T9, Live je Task, T8 |
+| A6 Tests + Live | T1–T9, T8 |
 | A7 Operations.md + DECISIONS | T3–T7, T9, T10 |
 | B1 Nenner `MaxActiveChannels`, 100 nur Referenz | T6, T9 |
 | B2 `TwitchJoinBudgetChannels` und Kommentare entfernt | T6, T7, T9 |
-| B3 Frühwarnung 90 %, Alarmentscheidung festgehalten | T9, T7 (DECISIONS) |
-| B4 Ablehnungen geloggt und gezählt | T7, T9 (Link) |
-| B5 Anhebung auf 120 nach A live | T10 (Runbook mit zweiteiligem Rückweg); die Umsetzung ist Betreiberhandgriff nach dem Deploy |
+| B3 Frühwarnung 90 %, Alarmentscheidung festgehalten | T9, T7 |
+| B4 Ablehnungen geloggt und gezählt | T7, T9 |
+| B5 Anhebung auf 120 nach A live | T7 (Mapping), T10 (Runbook); Umsetzung ist Betreiberhandgriff |
 
 ---
 
 ## 6. Gates (vor dem PR)
 
-1. `dotnet test EmotePurge.slnx` grün (braucht laufendes Docker, Testcontainers).
+1. `dotnet test EmotePurge.slnx` grün (Docker, Testcontainers).
 2. `npm --prefix web test -- --watch=false` grün.
-3. `npm --prefix web run e2e` grün — **nur ohne Api auf `:5151`**.
-4. `node scripts/coverage-local.mjs` — neue Dateien (Tracker, Parser, Policy, Dienst, Check, Endpunkt) sollen deutlich über
-   80 % liegen; das Ergebnis ist eine Näherung, kein Urteil.
+3. `npm --prefix web run e2e` grün — nur ohne Api auf `:5151`.
+4. `node scripts/coverage-local.mjs` (neue Dateien deutlich über 80 %; Näherung).
 5. `dotnet format EmotePurge.slnx --verify-no-changes`, `npm --prefix web run format:check`, `npm --prefix web run lint`.
-6. Protokoll `docs/nachtlaeufe/live-516-<datum>.md` vollständig (Abschnitte T2–T9).
-7. Danach (Orchestrator, nicht Teil dieses Plans): Code-Review und `/codex:review --model gpt-6.2-sol` über den Branch.
+6. Protokoll vollständig (T2–T9).
+7. Danach (Orchestrator): Code-Review und `/codex:review --model gpt-6.2-sol` über den Branch.
 
-**Deploy:** keine Migration; Api und Worker gemeinsam; danach zweiter Kuma-Monitor einrichten; Anhebung der Decke erst nach
-[F2].
+**Deploy:** keine Migration; Api und Worker gemeinsam, **Api-Container neu erstellen** (neues Compose-Mapping); danach
+zweiter Kuma-Monitor; Anhebung erst nach der Voraussetzung aus E9.
 
 ---
 
-## 7. Konfliktrisiken mit dem parallelen Branch `feat/487-wish-bot-runner` (Worktree 487, PR 2 des Bot-Plans)
+## 7. Konfliktrisiken mit dem parallelen Bot-Branch (Worktree 487)
 
-Gegenüber Revision 1 neu: Dieser Plan **berührt jetzt `Program.cs` der Api, `RateLimitingOptions`, `RateLimitPolicyNames`
-und `appsettings.json`** (Befund 4 der Prüfung verlangt eine eigene Policy) und verschiebt `WorkerHealthStatus`.
-`WorkerServiceRegistration.cs`, `Program.cs` des Workers und `WorkerHealthPublisher` bleiben unberührt.
+`WorkerHealthStatus`, `WorkerHealthPublisher`, `WorkerServiceRegistration.cs` und `Program.cs` des Workers bleiben
+unberührt (Rev. 3 verschiebt nichts mehr).
 
 | Datei | Risiko | Umgang |
 |---|---|---|
-| `docs/DECISIONS.md` (Kopf) | sicher textuell | beim Rebase beide Einträge behalten, nach Datum ordnen |
-| `CLAUDE.md` Umsetzungsstand | wahrscheinlich: verschiedene Zeilen | von Hand zusammenführen |
-| `docs/Operations.md` | gering: getrennte Abschnitte | — |
-| `web/public/i18n/{de,en}.json` | gering bis mittel | wir ändern nur `admin.roster.*` |
-| `TwitchChatManager.cs`, `ITwitchChatManager.cs` | gering (Bot-Plan nennt die Klasse nur als Vorbild) | unser Umbau ersetzt alle `_desiredChannels`-Stellen — wer zuletzt merged, rebased |
-| `src/EmotePurge.Api/Program.cs`, `RateLimitingOptions.cs`, `RateLimitPolicyNames.cs`, `appsettings.json`, Rate-Limit-Übersicht in `AdminEndpoints.cs` | **mittel, erst mit PR 3** des Bot-Plans (Policy `PublicBotAccountHealth`) | gleiche Stellen, gleiches Muster; wer zweiter merged, fügt seine Policy neben die andere |
-| `WorkerHealthEndpoints.cs`, `AdminEndpoints.cs`, `WorkerHealthStatus` (verschoben) | **mittel, PR 3** (`/api/health/bot-account`, Admin-Routen) | PR 3 nutzt `WorkerHealthStatus` dann aus der Infrastructure; bei PR 3 bewusst prüfen, ob sein Alarm-Endpunkt ebenfalls „nur melden, was `/api/health` nicht meldet" will und ein eigenes Budget braucht |
+| `docs/DECISIONS.md` (Kopf), `CLAUDE.md` | sicher textuell | beide Einträge behalten, von Hand zusammenführen |
+| `docs/Operations.md`, `web/public/i18n/{de,en}.json` | gering | getrennte Abschnitte; wir ändern nur `admin.roster.*` |
+| `TwitchChatManager.cs`, `ITwitchChatManager.cs` | gering | wer zuletzt merged, rebased |
+| `docker-compose.prod.yml`, `docker-compose.yml`, `.env.example` | gering bis mittel, falls der Bot-Branch Variablen ergänzt | Zeilen nebeneinander |
+| Api `Program.cs`, `RateLimitingOptions.cs`, `RateLimitPolicyNames.cs`, `appsettings.json`, `WorkerHealthEndpoints.cs`, `AdminEndpoints.cs` | mittel, wenn der Bot-Plan eine eigene öffentliche Policy und Admin-Routen bringt | gleiches Muster, wer zweiter merged, fügt seine Policy daneben |
 | `tests/EmotePurge.Api.Tests/ApiFactory.cs`, `RateLimitRejectionTests.cs` | gering | — |
 
 ---
 
-## 8. Offene Fragen an den Betreiber
+## 8. Betreiberentscheidungen (alle erledigt)
 
-- **[F1] erledigt (vorläufig):** gesperrte und gelöschte Kanäle lösen keinen 503 aus (E11). Wer das überstimmt, ändert nur
-  Stufe 5 der Policy.
-- **[F2] Wie lange soll Teil A auf Prod ohne Fehlalarm laufen, bevor die Decke auf 120 geht?** Vorschlag: 7 Tage, mindestens
-  ein Deploy und ein echter Reconnect darin.
-- **[F3] Grace 360 s** passt zum heutigen Resync-Takt (60 s). Ist geplant, `SevenTv:ResyncIntervalSeconds` auf Prod zu
-  strecken? Dann müssen `Channels__JoinHealth__GraceSeconds` und, falls nötig, `Channels__JoinHealth__MaxUnconfirmedSeconds`
-  im selben Schritt mit (Formel und Validierung E4/E10).
+- **[F1]** Gesperrte und gelöschte Kanäle lösen keinen 503 aus (E11). Wer das überstimmt, ändert nur Stufe 2 der Policy.
+- **[F2]** Die Decke geht auf 120 erst, wenn Teil A **mindestens 7 Tage** auf Prod lief und darin **mindestens ein Deploy und
+  ein echter Twitch-Reconnect ohne Fehlalarm** lagen; wird es vorher eng, ist ein Zwischenschritt auf ≈ 90 erlaubt, sobald
+  Teil A live ist (E9).
+- **[F3]** `SevenTv:ResyncIntervalSeconds` wird auf Prod nicht gestreckt; wer es ändert, prüft die Grace neu (E10).
+- **[F4]** Kuma erinnert stündlich, solange der Kanal-Monitor DOWN ist (E11, T10).
