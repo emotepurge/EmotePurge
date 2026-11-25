@@ -775,7 +775,8 @@ public partial class WishBotPassTests
 
     // The same through the forced read (S6-3): a cached negative read began a second before the window's end, so the pass
     // reads again; that read is held, and meanwhile a manager cancels the request and asks anew. The fresh read (an
-    // editor now) was made for the old request: the new one is neither confirmed nor accepted in this pass.
+    // editor now) was made for the old request: the new one is neither confirmed nor accepted in this pass, nor in the
+    // next one within the read's cached minute, which reads 7TV again (no entry by then) instead of reusing it.
     [Theory]
     [InlineData("ACCEPTED")]
     [InlineData("PENDING")]
@@ -802,6 +803,19 @@ public partial class WishBotPassTests
         await pass;
 
         var settings = await SettingsAsync(channel);
+        Assert.Equal(
+            (false, (DateTime?)renewed, (DateTime?)null),
+            (settings.BotModeEnabled, settings.BotActivationRequestedAtUtc, settings.BotInvitationAttemptAtUtc));
+        Assert.Empty(_acceptCalls);
+        Assert.Empty(await AuditsAsync(AuditActions.WishBotActivate));
+
+        Editors(BotA);
+        _sevenTv.ClearReceivedCalls();
+        _clock.Advance(TimeSpan.FromSeconds(10));
+        await RunPassAsync();
+
+        await _sevenTv.Received(1).GetEditorForAsync(BotA, Arg.Any<CancellationToken>());
+        settings = await SettingsAsync(channel);
         Assert.Equal(
             (false, (DateTime?)renewed, (DateTime?)null),
             (settings.BotModeEnabled, settings.BotActivationRequestedAtUtc, settings.BotInvitationAttemptAtUtc));

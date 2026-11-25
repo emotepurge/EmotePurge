@@ -9,8 +9,9 @@ public enum WishBotInvitationAction
     None,
 
     /// <summary>
-    /// The read in hand began too early to decide a negative answer; read again, one that begins after
-    /// <see cref="WishBotInvitationDecision.ReadStartedAfterUtc"/> (plan 2.5b S6-3, K6c-4).
+    /// The read in hand began too early to decide: before the activation request, or before the window of a negative
+    /// answer; read again, one that begins after <see cref="WishBotInvitationDecision.ReadStartedAfterUtc"/> (plan 2.9,
+    /// 2.5b S6-3, K6c-4).
     /// </summary>
     ReadAgain,
 
@@ -57,7 +58,8 @@ public readonly record struct WishBotInvitationDecision(
 /// read leaves it open. The consent still applies while a request or an activation stands (bound to that id).</item>
 /// <item><b>A request</b> (not activated, request stamp set) waits while the account is unavailable, ends with
 /// <c>bot_account_changed</c> when bound to another account (no read needed), waits while the channel is not covered,
-/// is confirmed by <c>editor</c>, accepts on <c>invited</c> once the retry stamp is reached, and ends with
+/// is decided only by a read that began at or after its stamp (an older one asks for a fresh read), is confirmed by
+/// <c>editor</c>, accepts on <c>invited</c> once the retry stamp is reached, and ends with
 /// <c>not_editor</c> only from a read that began at or after request + <c>EditorVisibilitySeconds</c> (S6-3).</item>
 /// <item><b>An activated channel</b> accepts on <c>invited</c> when covered, available, bound to the current account and
 /// the retry stamp is reached; its suspension and resume stay with step 3.</item>
@@ -210,6 +212,16 @@ public static class WishBotInvitationPolicy
             return WishBotInvitationDecision.Nothing;
         }
 
+        // Only a read that began at or after the request decides it (plan 2.9 "Bestätigung im Worker", Sol-P2-6): an older
+        // one, from the one-minute cache or a pass before, was made for a request cancelled since or for none at all.
+        var requestedAt = settings.BotActivationRequestedAtUtc!.Value;
+        if (read!.StartedAtUtc < requestedAt)
+        {
+            return nowUtc >= requestedAt
+                ? new WishBotInvitationDecision(WishBotInvitationAction.ReadAgain, ReadStartedAfterUtc: requestedAt)
+                : WishBotInvitationDecision.Nothing;
+        }
+
         switch (entry.Status)
         {
             case BotAccountEditorStatus.Editor:
@@ -221,8 +233,8 @@ public static class WishBotInvitationPolicy
         }
 
         // not_editor (also ACCEPTED without "manage"): decides only a read that began after the visibility window (S6-3).
-        var visibleFrom = settings.BotActivationRequestedAtUtc!.Value + editorVisibility;
-        if (read!.StartedAtUtc >= visibleFrom)
+        var visibleFrom = requestedAt + editorVisibility;
+        if (read.StartedAtUtc >= visibleFrom)
         {
             return new WishBotInvitationDecision(WishBotInvitationAction.EndRequest, Error: WishBotChannelReasons.NotEditor);
         }

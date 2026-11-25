@@ -137,6 +137,23 @@ public class WishBotInvitationPolicyTests
         Assert.Equal(WishBotInvitationAction.Accept, Decide(Settings(requestedAt: Now, retryAt: Now), Read(BotA, Now, ("PENDING", true))).Action);
     }
 
+    // Plan 2.9 (Sol-P2-6): a read that began before the request (cached, or from a pass before) decides nothing about it,
+    // neither a confirmation nor an acceptance nor not_editor; it asks for a fresh read that begins after the stamp, or
+    // waits while the clock has not reached the stamp yet.
+    [Theory]
+    [InlineData("ACCEPTED", true)]
+    [InlineData("PENDING", true)]
+    [InlineData("REJECTED", true)]
+    public void ARequest_IsDecidedOnlyByAReadThatBeganAtOrAfterIt(string state, bool manage)
+    {
+        var settings = Settings(requestedAt: Now);
+        var early = Read(BotA, Now.AddTicks(-1), (state, manage));
+
+        Assert.Equal(new WishBotInvitationDecision(WishBotInvitationAction.ReadAgain, ReadStartedAfterUtc: Now), Decide(settings, early, window: TimeSpan.Zero));
+        Assert.Equal(WishBotInvitationDecision.Nothing, Decide(settings, early, now: Now.AddTicks(-1), window: TimeSpan.Zero));
+        Assert.NotEqual(WishBotInvitationAction.ReadAgain, Decide(settings, Read(BotA, Now, (state, manage)), window: TimeSpan.Zero).Action);
+    }
+
     // S6-3, two windows: a negative read that began a second before request + window decides nothing (also from a later
     // clock: then a fresh read), the first one from request + window on ends the request with not_editor. ACCEPTED without
     // "manage" and an invitation without it count as not_editor (no acceptance).
