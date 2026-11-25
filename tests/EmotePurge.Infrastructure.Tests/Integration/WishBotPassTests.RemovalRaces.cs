@@ -343,6 +343,74 @@ public partial class WishBotPassTests
         Assert.Single(_removeCalls);
     }
 
+    // Plan 2.5 (a proof at most 1 minute old at the write), Opus P3-1: transaction 1 ages the proof past
+    // EditorProofRefreshAge (29 s old at the intent, a read of 24 s). It is refreshed between the two transactions, so it
+    // is still within its minute when removeEmote goes out after the send transaction's fresh read of 10 s.
+    [Fact]
+    public async Task AProofAgedByTransaction1_IsRefreshedBeforeTheSend()
+    {
+        var channel = await SeedBotChannelAsync();
+        var id = await SeedOwnedAsync(channel, WishStatus.Active);
+        _readStub = (number, _, timeLeft) => number switch
+        {
+            1 => PlayPages(timeLeft, 3, TimeSpan.FromSeconds(8)),
+            2 => PlayPages(timeLeft, 1, TimeSpan.FromSeconds(10)),
+            _ => null,
+        };
+        TimeSpan? proofAgeAtSend = null;
+        _whileRemoving = async () => proofAgeAtSend = Now - (await SettingsAsync(channel)).BotEditorCheckedAtUtc!.Value;
+        var session = await SessionAsync();
+        session.OnWait = _ =>
+        {
+            _clock.Advance(TimeSpan.FromSeconds(29));
+            return Task.CompletedTask;
+        };
+
+        await RunPassAsync(session: session);
+
+        Assert.Single(_removeCalls);
+        Assert.InRange(proofAgeAtSend!.Value, TimeSpan.Zero, WishBotPreflight.EditorProofFreshness);
+        Assert.Equal(WishStatus.Removed, (await LoadAsync(id)).Status);
+    }
+
+    // The guard at the write: the refresh is not possible (the editor read unavailable), transaction 1 waited 10 s for its
+    // wish lock and the send transaction 10 s for its channel row; the re-check still passes (49 s), but the fresh read of
+    // 15 s takes the proof past its minute: nothing is sent, and the attempt goes back with the queue kept.
+    [Fact]
+    public async Task AProofTheFreshReadAgesPastItsMinute_SendsNothing()
+    {
+        var channel = await SeedBotChannelAsync();
+        var id = await SeedOwnedAsync(channel, WishStatus.Active);
+        _readStub = (number, _, timeLeft) => number == 2 ? PlayPages(timeLeft, 2, TimeSpan.FromSeconds(7.5)) : null;
+        var hook = new CommandHook(
+            command => IsWishLock(command) || (command.Contains("FROM \"Channels\"", StringComparison.Ordinal) && command.Contains("FOR SHARE", StringComparison.Ordinal)),
+            occurrence =>
+            {
+                if (occurrence <= 2)
+                {
+                    _clock.Advance(TimeSpan.FromSeconds(10));
+                }
+
+                return Task.CompletedTask;
+            });
+        await using var db = fixture.CreateTaggedDbContext("wish-bot-proof-guard", [hook], databaseName: DatabaseName);
+        var session = await SessionAsync();
+        session.OnWait = _ =>
+        {
+            _clock.Advance(TimeSpan.FromSeconds(29));
+            _editors.Remove(BotA);
+            return Task.CompletedTask;
+        };
+
+        await RunPassAsync(db: db, session: session);
+
+        Assert.Empty(_removeCalls);
+        Assert.Equal(2, _readCalls.Count);
+        var wish = await LoadAsync(id);
+        Assert.Equal(((DateTime?)null, WishStatus.Active), (wish.BotRemoveAtUtc, wish.Status));
+        Assert.NotNull(wish.RemovalQueuedAtUtc);
+    }
+
     // The stuck order (K6e-5): pages of 9 s in every pass, so every send transaction's pre-read is cut and nothing is ever
     // sent. Three aborts within 2 minutes: still queued. Once the first is 15 minutes old: presented (bot_unavailable),
     // the queue empty, one wish.changed, no audit. The same with a presented wish ordered by bot-remove: the order goes,
