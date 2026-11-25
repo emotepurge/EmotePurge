@@ -808,6 +808,7 @@ public class BotAccountRunnerTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal(0, session.RemainingActions);
 
         await session.WaitForWriteSlotAsync();
+        session.MarkWriteSent();
         var second = session.WaitForWriteSlotAsync();
         Assert.False(second.IsCompleted);
         _clock.Advance(TimeSpan.FromSeconds(2));
@@ -816,8 +817,179 @@ public class BotAccountRunnerTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.True(await session.HoldsLockAsync());
         Assert.True(await session.PauseAsync(TimeSpan.FromSeconds(60)));
         var pausedUntil = (await ReadRowAsync()).PausedUntilUtc;
+        Assert.Equal(pausedUntil, session.Account.PausedUntilUtc);
         Assert.True(await session.PauseAsync(TimeSpan.FromSeconds(10)));
         Assert.Equal(pausedUntil, (await ReadRowAsync()).PausedUntilUtc);
+        Assert.Equal(pausedUntil, session.Account.PausedUntilUtc);
+    }
+
+    // K6d-8: the spacing counts from the moment a write was sent (MarkWriteSent), not from the wait before it. A wait of
+    // 3 s for a lock between the slot and the send moves the next slot with it; a write that was never sent (no mark)
+    // moves nothing.
+    [Fact]
+    public async Task TheWriteSpacing_CountsFromTheSend_AndAnUnsentWriteMovesNothing()
+    {
+        await SeedAsync(BotAccountStatus.Valid, Jwt(Now.AddDays(30), "a"), Now.AddDays(30), lastVerifiedAtUtc: Now, lastVerifiedCredentialVersion: 1, botSevenTvUserId: "bot-a");
+        var (runner, pass) = CreateRunner(ClientAnswering(SevenTvWriteResult<string>.Ok("bot-a")), writeDelaySeconds: 2);
+        await runner.RunPassAsync();
+        var session = Assert.Single(pass.Sessions);
+
+        await session.WaitForWriteSlotAsync();
+        Assert.True(session.WaitForWriteSlotAsync().IsCompleted);
+
+        _clock.Advance(TimeSpan.FromSeconds(3));
+        session.MarkWriteSent();
+        var next = session.WaitForWriteSlotAsync();
+        _clock.Advance(TimeSpan.FromSeconds(1.9));
+        Assert.False(next.IsCompleted);
+        _clock.Advance(TimeSpan.FromSeconds(0.1));
+        await next.WaitAsync(HoldTimeout);
+    }
+
+    // K6e-6: a 429 within the pass turns the token unusable for the rest of that pass, booked or not and however short the
+    // pause; the next pass uses it again. The same for a 429 of the runner's own verification (Retry-After 1, the clock
+    // moved past it): that pass does not use the token.
+    [Fact]
+    public async Task A429_MakesTheTokenUnusableForTheRestOfThePass_HoweverShortThePause()
+    {
+        await SeedAsync(BotAccountStatus.Valid, Jwt(Now.AddDays(30), "a"), Now.AddDays(30), lastVerifiedAtUtc: Now, lastVerifiedCredentialVersion: 1, botSevenTvUserId: "bot-a");
+        var client = Substitute.For<ISevenTvWriteClient>();
+        client.VerifyAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(
+            SevenTvWriteResult<string>.Failed(SevenTvWriteResult.RateLimited(TimeSpan.FromSeconds(1))),
+            SevenTvWriteResult<string>.Ok("bot-a"));
+        var (runner, pass) = CreateRunner(client);
+        var usable = new List<bool>();
+        pass.OnRun = session =>
+        {
+            usable.Add(session.TokenUsable);
+            _clock.Advance(TimeSpan.FromSeconds(2));
+            usable.Add(session.TokenUsable);
+        };
+
+        await runner.RunPassAsync();
+        Assert.Equal([false, false], usable);
+        Assert.Equal(Now.AddSeconds(-1), (await ReadRowAsync()).PausedUntilUtc);
+
+        await runner.RunPassAsync();
+        Assert.Equal([false, false, true, true], usable);
+
+        usable.Clear();
+        pass.OnRun = session =>
+        {
+            usable.Add(session.TokenUsable);
+            session.PauseAsync(TimeSpan.FromSeconds(1)).GetAwaiter().GetResult();
+            _clock.Advance(TimeSpan.FromSeconds(2));
+            usable.Add(session.TokenUsable);
+        };
+        await runner.RunPassAsync();
+        pass.OnRun = session => usable.Add(session.TokenUsable);
+        await runner.RunPassAsync();
+        Assert.Equal([true, false, true], usable);
+    }
+
+    // K6c-3: inside a transaction open on the shared context the pause joins it: no transaction of its own, nothing saved
+    // or cleared; the caller's commit books it, the caller's rollback drops it.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task APause_JoinsAnOpenTransaction_AndLivesOrDiesWithIt(bool commit)
+    {
+        await SeedAsync(BotAccountStatus.Valid, Jwt(Now.AddDays(30), "a"), Now.AddDays(30), lastVerifiedAtUtc: Now, lastVerifiedCredentialVersion: 1, botSevenTvUserId: "bot-a");
+        var db = CreateDb();
+        _disposables.Add(db);
+        var (runner, pass) = CreateRunner(ClientAnswering(SevenTvWriteResult<string>.Ok("bot-a")), db: db);
+        await runner.RunPassAsync();
+        var session = Assert.Single(pass.Sessions);
+
+        await using (var transaction = await db.Database.BeginTransactionAsync())
+        {
+            Assert.NotNull(await db.LockBotAccountForShareAsync(session.RunnerEpoch, CancellationToken.None));
+            Assert.True(await session.PauseAsync(TimeSpan.FromSeconds(60)));
+            Assert.Same(transaction, db.Database.CurrentTransaction);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => session.HoldsLockAsync());
+            if (commit)
+            {
+                await transaction.CommitAsync();
+            }
+        }
+
+        Assert.Equal(commit ? Now.AddSeconds(60) : null, (await ReadRowAsync()).PausedUntilUtc);
+        Assert.False(session.TokenUsable);
+    }
+
+    // K6f-4: the longest pause of a pass is booked once more at its end, only where it lengthens the stored one: a pause
+    // whose joined transaction rolled back is secured with the instant computed at the report; one that was committed is
+    // not booked again (one warning line in all).
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TheEndOfAPass_BooksALostPauseAgain_AndLeavesABookedOneAlone(bool commit)
+    {
+        await SeedAsync(BotAccountStatus.Valid, Jwt(Now.AddDays(30), "a"), Now.AddDays(30), lastVerifiedAtUtc: Now, lastVerifiedCredentialVersion: 1, botSevenTvUserId: "bot-a");
+        var db = CreateDb();
+        _disposables.Add(db);
+        var logger = new RecordingLogger<BotAccountRunner>();
+        var (runner, pass) = CreateRunner(ClientAnswering(SevenTvWriteResult<string>.Ok("bot-a")), logger: logger, db: db);
+        var reportedAt = Now;
+        pass.OnRun = session =>
+        {
+            using var transaction = db.Database.BeginTransaction();
+            session.PauseAsync(TimeSpan.FromSeconds(60)).GetAwaiter().GetResult();
+            if (commit)
+            {
+                transaction.Commit();
+            }
+
+            _clock.Advance(TimeSpan.FromSeconds(5));
+        };
+
+        Assert.Equal(BotAccountPassResult.Completed, await runner.RunPassAsync());
+
+        Assert.Equal(reportedAt.AddSeconds(60), (await ReadRowAsync()).PausedUntilUtc);
+        Assert.Equal(commit ? 1 : 2, logger.Entries.Count(e => e.Level == LogLevel.Warning));
+    }
+
+    // K6f-4: the rebook is fenced: a second runner that raised the epoch before it means nothing is booked and the lock
+    // counts as lost; an exception of the wish part does not skip it.
+    [Fact]
+    public async Task TheRebook_IsFenced_AndRunsAfterAnExceptionOfTheWishPart()
+    {
+        await SeedAsync(BotAccountStatus.Valid, Jwt(Now.AddDays(30), "a"), Now.AddDays(30), lastVerifiedAtUtc: Now, lastVerifiedCredentialVersion: 1, botSevenTvUserId: "bot-a");
+        var db = CreateDb();
+        _disposables.Add(db);
+        var (runner, pass) = CreateRunner(ClientAnswering(SevenTvWriteResult<string>.Ok("bot-a")), db: db);
+        pass.OnRun = session =>
+        {
+            using (var transaction = db.Database.BeginTransaction())
+            {
+                session.PauseAsync(TimeSpan.FromSeconds(60)).GetAwaiter().GetResult();
+            }
+
+            throw new InvalidOperationException("wish part failed");
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => runner.RunPassAsync());
+        Assert.Equal(Now.AddSeconds(60), (await ReadRowAsync()).PausedUntilUtc);
+
+        await using (var reset = CreateDb())
+        {
+            await reset.BotAccountCredentials.ExecuteUpdateAsync(u => u.SetProperty(c => c.PausedUntilUtc, (DateTime?)null));
+        }
+
+        _clock.Advance(TimeSpan.FromMinutes(2));
+        pass.OnRun = session =>
+        {
+            using (var transaction = db.Database.BeginTransaction())
+            {
+                session.PauseAsync(TimeSpan.FromSeconds(60)).GetAwaiter().GetResult();
+            }
+
+            using var other = CreateDb();
+            other.BotAccountCredentials.ExecuteUpdate(u => u.SetProperty(c => c.RunnerEpoch, c => c.RunnerEpoch + 1));
+        };
+
+        Assert.Equal(BotAccountPassResult.LockLost, await runner.RunPassAsync());
+        Assert.Null((await ReadRowAsync()).PausedUntilUtc);
     }
 
     [Fact]

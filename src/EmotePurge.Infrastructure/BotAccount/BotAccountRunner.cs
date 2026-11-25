@@ -18,7 +18,17 @@ namespace EmotePurge.Infrastructure.BotAccount;
 /// never released explicitly; it dies with that connection. Right after every new acquisition the runner raises
 /// <c>RunnerEpoch</c> <i>on that same connection</i>, so the epoch only ever moves while the lock is held: a statement on
 /// a terminated backend cannot commit. Within a pass the lock is probed (never retaken) before and after each 7TV call,
-/// and every booking fences on the epoch (<see cref="BotAccountFence"/>).
+/// never while a row lock is held (Revision 6f K6f-1; the probe waits at most 2 s), and every booking fences on the epoch
+/// (<see cref="BotAccountFence"/>) under a <see cref="BotAccountLockDeadline"/> (Revision 6e K6e-3).
+/// </para>
+/// <para>
+/// <b>Pauses</b> (plan 2.5a (i); Revisions 6c K6c-3, 6d K6d-6, 6e K6e-6, 6f K6f-4). A 429 seen in a pass (the
+/// verification's, or any <see cref="IBotAccountSession.PauseAsync"/>) makes the token unusable for the rest of that pass.
+/// <c>PauseAsync</c> joins a transaction open on the shared context (a send transaction) instead of opening its own. The
+/// session remembers the longest pause reported in the pass as an absolute instant with its <c>IdentityVersion</c>, and at
+/// the end of every pass, also after an exception of the wish part, the runner books it once more in a short fenced
+/// transaction of its own, only where it lengthens the stored pause: after a rollback of the joined transaction the pause
+/// is then not lost.
 /// </para>
 /// <para>
 /// <b>Token upkeep</b> (plan 2.8). Only <c>unverified</c> and <c>valid</c> are upkept. <c>exp</c> reached →
@@ -49,11 +59,18 @@ public sealed class BotAccountRunner(
     // pg_try_advisory_lock(hashtext(...)) key of the bot account's single loop (plan 2.5).
     private const string LockKey = "emotepurge:bot-account";
 
+    // The lock probe's command timeout (Revision 6f K6f-1: at most 2 s; running out counts as a lost lock).
+    private const int ProbeTimeoutSeconds = 2;
+
     private NpgsqlConnection? lockConnection;
     private long runnerEpoch;
     private OpenedToken? opened;
     private bool reverifyRequested;
     private bool lockLostReported;
+
+    // Per pass: a 429 was seen (Revision 6e K6e-6), and the longest pause reported (Revision 6f K6f-4).
+    private bool rateLimitedThisPass;
+    private ReportedPause? reportedPause;
     private DateOnly? lastWarnedDayUtc;
     private DateTime? lastWriteAtUtc;
 
@@ -65,6 +82,8 @@ public sealed class BotAccountRunner(
         // A loop-long context: whatever a failed pass left staged must not ride along into this one.
         db.ChangeTracker.Clear();
         lockLostReported = false;
+        rateLimitedThisPass = false;
+        reportedPause = null;
 
         await RunDeadlineStepAsync(cancellationToken);
 
@@ -81,8 +100,17 @@ public sealed class BotAccountRunner(
         }
 
         var session = new Session(this, upkeep.Value.Account, upkeep.Value.Token);
-        await wishPass.RunAsync(session, cancellationToken);
-        db.ChangeTracker.Clear();
+        var completed = false;
+        try
+        {
+            await wishPass.RunAsync(session, cancellationToken);
+            completed = true;
+        }
+        finally
+        {
+            db.ChangeTracker.Clear();
+            await RebookReportedPauseAsync(rethrowing: !completed, cancellationToken);
+        }
 
         if (lockLostReported)
         {
@@ -216,14 +244,16 @@ public sealed class BotAccountRunner(
                 """,
                 lockConnection);
             probe.Parameters.AddWithValue("key", LockKey);
+            probe.CommandTimeout = ProbeTimeoutSeconds;
             if (await probe.ExecuteScalarAsync(cancellationToken) is true)
             {
                 return true;
             }
         }
-        catch (Exception ex) when (ex is NpgsqlException or InvalidOperationException)
+        catch (Exception ex) when (ex is NpgsqlException or InvalidOperationException
+                                       || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
         {
-            // Dead connection: the lock went with it.
+            // Dead connection or a probe over its time limit: the lock counts as lost (Revision 6f K6f-1).
         }
 
         // Never retaken here: a lost lock stays lost until the next pass takes it anew (with a new epoch).
@@ -315,7 +345,8 @@ public sealed class BotAccountRunner(
                 return await BookStateAsync(token.CredentialVersion, BotAccountStatus.Invalid, BotAccountErrorCodes.TokenUnauthorized, now, cancellationToken);
 
             case SevenTvWriteOutcome.RateLimited:
-                var pause = await BookPauseAsync(token.IdentityVersion, result.Status.RetryAfter!.Value, now, cancellationToken);
+                var until = ReportRateLimit(token.IdentityVersion, result.Status.RetryAfter!.Value, now);
+                var pause = await BookPauseAsync(token.IdentityVersion, until, extendOnly: false, cancellationToken);
                 return pause != Booking.Fenced;
 
             default:
@@ -404,21 +435,16 @@ public sealed class BotAccountRunner(
         return booking != Booking.Fenced;
     }
 
-    // Never shortens a pause that is already longer.
-    private async Task<Booking> BookPauseAsync(int identityVersion, TimeSpan retryAfter, DateTime now, CancellationToken cancellationToken)
+    // An absolute instant (Revision 6f K6f-4), never shortening a pause that is already longer; extendOnly hits only where
+    // it lengthens the stored one (the rebook at the end of a pass).
+    private async Task<Booking> BookPauseAsync(int identityVersion, DateTime until, bool extendOnly, CancellationToken cancellationToken)
     {
-        var until = ToDatabasePrecision(now + retryAfter);
         var booking = await BookAsync(
-            () => db.Database.ExecuteSqlInterpolatedAsync(
-                $"""
-                 UPDATE "BotAccountCredentials" SET "PausedUntilUtc" = GREATEST(COALESCE("PausedUntilUtc", {until}), {until})
-                 WHERE "Id" = {BotAccountCredential.SingletonId} AND "IdentityVersion" = {identityVersion}
-                 """,
-                cancellationToken),
+            () => UpdatePauseAsync(identityVersion, until, extendOnly, cancellationToken),
             onHit: null,
             cancellationToken);
 
-        if (booking == Booking.Hit)
+        if (booking == Booking.Hit && !extendOnly)
         {
             logger.LogWarning("Bot account: 7TV answered 429; pausing until {PausedUntil:O}.", until);
         }
@@ -426,13 +452,75 @@ public sealed class BotAccountRunner(
         return booking;
     }
 
-    // One booking transaction: the epoch fence first, then the conditional update, then the staged audit, one commit.
+    private Task<int> UpdatePauseAsync(int identityVersion, DateTime until, bool extendOnly, CancellationToken cancellationToken) =>
+        extendOnly
+            ? db.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                 UPDATE "BotAccountCredentials" SET "PausedUntilUtc" = {until}
+                 WHERE "Id" = {BotAccountCredential.SingletonId} AND "IdentityVersion" = {identityVersion}
+                   AND ("PausedUntilUtc" IS NULL OR "PausedUntilUtc" < {until})
+                 """,
+                cancellationToken)
+            : db.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                 UPDATE "BotAccountCredentials" SET "PausedUntilUtc" = GREATEST(COALESCE("PausedUntilUtc", {until}), {until})
+                 WHERE "Id" = {BotAccountCredential.SingletonId} AND "IdentityVersion" = {identityVersion}
+                 """,
+                cancellationToken);
+
+    // Remembers a 429 of this pass (Revision 6e K6e-6) and the longest pause as an absolute instant, computed once at the
+    // report (Revision 6f K6f-4).
+    private DateTime ReportRateLimit(int identityVersion, TimeSpan retryAfter, DateTime now)
+    {
+        rateLimitedThisPass = true;
+        var until = ToDatabasePrecision(now + retryAfter);
+        if (reportedPause is not { } known || known.IdentityVersion != identityVersion || known.Until < until)
+        {
+            reportedPause = new ReportedPause(until, identityVersion);
+        }
+
+        return until;
+    }
+
+    // The end of every pass (Revision 6f K6f-4): the longest pause reported is booked once more on the path without an open
+    // transaction, fenced, under the lock deadline, only where it lengthens the stored one. After a commit with the joined
+    // pause it hits nothing; after a rollback it secures the pause before the next pass. A failure while the wish part's
+    // exception is on its way is logged, not thrown over it.
+    private async Task RebookReportedPauseAsync(bool rethrowing, CancellationToken cancellationToken)
+    {
+        if (reportedPause is not { } pause)
+        {
+            return;
+        }
+
+        try
+        {
+            if (await BookPauseAsync(pause.IdentityVersion, pause.Until, extendOnly: true, cancellationToken) == Booking.Hit)
+            {
+                logger.LogWarning(
+                    "Bot account: 7TV answered 429 and the pause until {PausedUntil:O} was not booked in its transaction; booked at the end of the pass.",
+                    pause.Until);
+            }
+        }
+        catch (Exception ex) when (rethrowing && ex is not OperationCanceledException)
+        {
+            logger.LogWarning("Bot account: booking the pause again at the end of the pass failed ({ExceptionType}).", ex.GetType().Name);
+        }
+    }
+
+    // One booking transaction under a lock deadline (Revision 6e K6e-3): the epoch fence first (the first lock), then the
+    // conditional update, then the staged audit, one commit. Never a probe in between (Revision 6f K6f-1). An expired
+    // deadline, or any database error on the way, books nothing.
     private async Task<Booking> BookAsync(Func<Task<int>> update, Action? onHit, CancellationToken cancellationToken)
     {
         try
         {
             await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
-            if (await db.LockBotAccountForShareAsync(runnerEpoch, cancellationToken) is null)
+            var deadline = new BotAccountLockDeadline(timeProvider);
+            await deadline.ApplyAsync(db, cancellationToken);
+            var fenced = await db.LockBotAccountForShareAsync(runnerEpoch, cancellationToken);
+            deadline.Start();
+            if (fenced is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
                 lockLostReported = true;
@@ -440,6 +528,7 @@ public sealed class BotAccountRunner(
                 return Booking.Fenced;
             }
 
+            await deadline.ApplyAsync(db, cancellationToken);
             if (await update() == 0)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -447,9 +536,16 @@ public sealed class BotAccountRunner(
             }
 
             onHit?.Invoke();
+            await deadline.ApplyAsync(db, cancellationToken);
             await db.SaveChangesAsync(cancellationToken);
+            await deadline.ApplyAsync(db, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return Booking.Hit;
+        }
+        catch (Exception ex) when (BotAccountLockDeadline.IsExpiry(ex, cancellationToken))
+        {
+            logger.LogWarning("Bot account: a booking ran out of its lock deadline or failed ({ExceptionType}); nothing was booked.", ex.GetType().Name);
+            return Booking.Expired;
         }
         finally
         {
@@ -486,6 +582,7 @@ public sealed class BotAccountRunner(
 
     // ---------------------------------------------------------------- Session helpers
 
+    // Only waits (Revision 6d K6d-8): the moment of a write is stamped by MarkWriteSent right before its HTTP call.
     private async Task WaitForWriteSlotAsync(CancellationToken cancellationToken)
     {
         if (lastWriteAtUtc is { } last)
@@ -496,19 +593,36 @@ public sealed class BotAccountRunner(
                 await Task.Delay(wait, timeProvider, cancellationToken);
             }
         }
-
-        lastWriteAtUtc = timeProvider.GetUtcNow().UtcDateTime;
     }
 
-    private async Task<bool> PauseAsync(TimeSpan retryAfter, CancellationToken cancellationToken)
+    private void MarkWriteSent() => lastWriteAtUtc = timeProvider.GetUtcNow().UtcDateTime;
+
+    // Null: nothing booked. Joins a transaction open on the shared context (Revision 6c K6c-3): then one conditional update
+    // under the caller's fence and deadline, committed by the caller, nothing saved or cleared here.
+    private async Task<DateTime?> PauseAsync(TimeSpan retryAfter, CancellationToken cancellationToken)
     {
         if (opened is null || retryAfter <= TimeSpan.Zero)
         {
-            return false;
+            rateLimitedThisPass = true;
+            return null;
         }
 
-        return await BookPauseAsync(opened.IdentityVersion, retryAfter, UtcNow(), cancellationToken) == Booking.Hit;
+        var until = ReportRateLimit(opened.IdentityVersion, retryAfter, UtcNow());
+        if (db.Database.CurrentTransaction is not null)
+        {
+            if (await UpdatePauseAsync(opened.IdentityVersion, until, extendOnly: false, cancellationToken) == 0)
+            {
+                return null;
+            }
+
+            logger.LogWarning("Bot account: 7TV answered 429; pausing until {PausedUntil:O}.", until);
+            return until;
+        }
+
+        return await BookPauseAsync(opened.IdentityVersion, until, extendOnly: false, cancellationToken) == Booking.Hit ? until : null;
     }
+
+    private bool HasOpenTransaction => db.Database.CurrentTransaction is not null;
 
     private DateTime UtcNow() => ToDatabasePrecision(timeProvider.GetUtcNow().UtcDateTime);
 
@@ -535,7 +649,12 @@ public sealed class BotAccountRunner(
         Hit,
         Missed,
         Fenced,
+
+        // The lock deadline ran out, or the database failed on the way: nothing was booked (Revision 6e K6e-3).
+        Expired,
     }
+
+    private readonly record struct ReportedPause(DateTime Until, int IdentityVersion);
 
     // The plaintext of one seal and the versions it was opened under. No ToString that shows it.
     private sealed class OpenedToken(string value, int credentialVersion, int identityVersion)
@@ -551,17 +670,26 @@ public sealed class BotAccountRunner(
     {
         private int remainingActions = ActionBudgetPerPass;
 
-        public BotAccountSnapshot Account { get; } = account;
+        // A booked pause is carried in at once (Revision 6d K6d-6).
+        public BotAccountSnapshot Account { get; private set; } = account;
         public string? Token { get; } = token;
 
-        // Live, not a copy: ReportUnauthorized turns it false within the pass.
-        public bool TokenUsable => Token is not null && !runner.reverifyRequested;
+        // Live, not a copy: ReportUnauthorized and any 429 of the pass turn it false within the pass.
+        public bool TokenUsable => Token is not null && !runner.reverifyRequested && !runner.rateLimitedThisPass;
 
         public long RunnerEpoch { get; } = runner.runnerEpoch;
         public int RemainingActions => remainingActions;
 
-        public Task<bool> HoldsLockAsync(CancellationToken cancellationToken = default) =>
-            runner.lockLostReported ? Task.FromResult(false) : runner.ProbeLockAsync(cancellationToken);
+        // Never under a row lock (Revision 6f K6f-1): every transaction of the pass holds row locks.
+        public Task<bool> HoldsLockAsync(CancellationToken cancellationToken = default)
+        {
+            if (runner.HasOpenTransaction)
+            {
+                throw new InvalidOperationException("The lock probe never runs while a transaction with row locks is open.");
+            }
+
+            return runner.lockLostReported ? Task.FromResult(false) : runner.ProbeLockAsync(cancellationToken);
+        }
 
         public bool TryTakeAction()
         {
@@ -577,12 +705,26 @@ public sealed class BotAccountRunner(
         public Task WaitForWriteSlotAsync(CancellationToken cancellationToken = default) =>
             runner.WaitForWriteSlotAsync(cancellationToken);
 
+        public void MarkWriteSent() => runner.MarkWriteSent();
+
         public void ReportUnauthorized() => runner.reverifyRequested = true;
 
         public void ReportLockLost() => runner.lockLostReported = true;
 
-        public Task<bool> PauseAsync(TimeSpan retryAfter, CancellationToken cancellationToken = default) =>
-            runner.PauseAsync(retryAfter, cancellationToken);
+        public async Task<bool> PauseAsync(TimeSpan retryAfter, CancellationToken cancellationToken = default)
+        {
+            if (await runner.PauseAsync(retryAfter, cancellationToken) is not { } until)
+            {
+                return false;
+            }
+
+            if (Account.PausedUntilUtc is not { } paused || paused < until)
+            {
+                Account = Account with { PausedUntilUtc = until };
+            }
+
+            return true;
+        }
 
         public override string ToString() => $"bot account session (epoch {RunnerEpoch}, {Account.Status})";
     }

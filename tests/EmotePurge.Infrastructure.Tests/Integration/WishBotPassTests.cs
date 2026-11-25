@@ -693,6 +693,10 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
 
         public Task WaitForWriteSlotAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
+        public void MarkWriteSent()
+        {
+        }
+
         public void ReportUnauthorized() => TokenUsable = false;
 
         public void ReportLockLost() => LockLostReported = true;
