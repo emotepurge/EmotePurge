@@ -411,6 +411,39 @@ public partial class WishBotPassTests
         Assert.NotNull(wish.RemovalQueuedAtUtc);
     }
 
+    // The last check before the write comes after the last statement of the send transaction: the statement timeouts set
+    // right before removeEmote take a minute, past the proof's minute and the write budget. Nothing is sent, the attempt
+    // goes back with the queue kept.
+    [Fact]
+    public async Task TimeSpentInTheLastStatementBeforeTheWrite_SendsNothing()
+    {
+        var channel = await SeedBotChannelAsync();
+        var id = await SeedOwnedAsync(channel, WishStatus.Active);
+        var armed = false;
+        _readStub = (number, _, _) =>
+        {
+            armed = number == 2;
+            return null;
+        };
+        var hook = new CommandHook(
+            command => armed && command.Contains("set_config", StringComparison.Ordinal),
+            _ =>
+            {
+                armed = false;
+                _clock.Advance(TimeSpan.FromSeconds(61));
+                return Task.CompletedTask;
+            });
+        await using var db = fixture.CreateTaggedDbContext("wish-bot-last-statement", [hook], databaseName: DatabaseName);
+
+        await RunPassAsync(db: db);
+
+        Assert.Empty(_removeCalls);
+        Assert.Equal(2, _readCalls.Count);
+        var wish = await LoadAsync(id);
+        Assert.Equal(((DateTime?)null, WishStatus.Active), (wish.BotRemoveAtUtc, wish.Status));
+        Assert.NotNull(wish.RemovalQueuedAtUtc);
+    }
+
     // 2.5a (g): the probe before the send comes after the proof refresh between the two transactions. The lock is lost
     // while that refresh books the new proof: no fresh read, no removeEmote, and the attempt stays for the resumption.
     [Fact]

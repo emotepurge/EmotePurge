@@ -22,9 +22,9 @@ namespace EmotePurge.Infrastructure.Services;
 // refreshed; the probe. (2) transaction 2, the send transaction (2.5a (c)): channel FOR SHARE, wish FOR UPDATE, the
 // fence, the re-check, the fresh read of the evidence's set right before the send (within the budget end minus the
 // write's 10 s, K6d-5): compared with the evidence, a "no" sends nothing and takes the never-sent attempt back in the same
-// commit (a reported pause joined to it), and so does a proof the read took past its minute; otherwise MarkWriteSent and
-// exactly one removeEmote. Only the definite failures are booked there; Ok, Timeout and Unavailable leave the attempt
-// open. The probe.
+// commit (a reported pause joined to it), and so does a proof past its minute or a write past the budget, checked after
+// the transaction's last statement; otherwise MarkWriteSent and exactly one removeEmote. Only the definite failures are
+// booked there; Ok, Timeout and Unavailable leave the attempt open. The probe.
 // (3) transaction 3: the read after it without a lock and a short booking: the bot's entry gone → removed (wish.botRemove),
 // or, when another entry of the emote went with it, presented (repair_review) with the repair phase; the detection limit
 // (wish.botSuspectRemoval) looks at the local slots behind the locks. (4) transaction 4, the repair, only in the same pass
@@ -455,16 +455,19 @@ public sealed partial class WishBotPass
                                 ClearRemovalAttempt(wish);
                                 step = RemovalStep.Refused;
                             }
-                            else if (!deadline.Fits(BotAccountRegistration.WriteClientTimeout) || !ProofHoldsAt(locked, Now()))
-                            {
-                                // No room for the write, or the fresh read took the proof past its minute: both a time
-                                // limit of the path (K6e-5), counted towards a stuck order.
-                                ClearRemovalAttempt(wish);
-                                step = RemovalStep.Aborted;
-                            }
                             else
                             {
+                                // The last statement before the write comes first, so the last check is the time itself.
                                 await deadline.ApplyAsync(db, cancellationToken);
+                                if (!deadline.Fits(BotAccountRegistration.WriteClientTimeout) || !ProofHoldsAt(locked, Now()))
+                                {
+                                    // No room for the write, or the fresh read took the proof past its minute: both a time
+                                    // limit of the path (K6e-5), counted towards a stuck order.
+                                    ClearRemovalAttempt(wish);
+                                    step = RemovalStep.Aborted;
+                                    break;
+                                }
+
                                 session.MarkWriteSent();
                                 sent = true;
                                 var result = await writeClient.RemoveEmoteAsync(
@@ -796,6 +799,8 @@ public sealed partial class WishBotPass
                 return QueueStep.Continue;
             }
 
+            // The last statement before the write comes first, so the re-check is the last thing before it.
+            await deadline.ApplyAsync(db, cancellationToken);
             var refusal = RecheckRepair(session, locked!, phase, evidence, deadline, Now());
             if (refusal != RemovalRefusal.None)
             {
@@ -805,7 +810,6 @@ public sealed partial class WishBotPass
             }
             else
             {
-                await deadline.ApplyAsync(db, cancellationToken);
                 session.MarkWriteSent();
                 sent = true;
                 var result = await writeClient.AddEmoteAsync(session.Token!, evidence.SetId, evidence.EmoteId, repaired.Alias, cancellationToken);

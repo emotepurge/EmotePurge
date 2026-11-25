@@ -569,6 +569,8 @@ public sealed partial class WishBotPass
                 return AcceptResult.Stop;
             }
 
+            // The last statement before the write comes first, so the re-check is the last thing before it.
+            await deadline.ApplyAsync(db, cancellationToken);
             var now = Now();
             refusal = Recheck(session, settings, channelName, twitchChannelId, row, attempt, deadline, now);
             if (refusal != Refusal.None)
@@ -579,7 +581,6 @@ public sealed partial class WishBotPass
             }
             else
             {
-                await deadline.ApplyAsync(db, cancellationToken);
                 session.MarkWriteSent();
                 sent = true;
                 var result = await writeClient.AcceptEditorInvitationAsync(
