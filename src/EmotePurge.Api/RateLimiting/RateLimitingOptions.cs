@@ -47,6 +47,13 @@ internal sealed class RateLimitingOptions
     public FixedWindowPolicy PublicHealth { get; set; } = new() { PermitLimit = 30 };
 
     /// <summary>
+    /// The anonymous <c>GET /api/health/channels</c> (#516): one uptime-monitor poll a minute, and the
+    /// check answers from a 5-second cache, so 10/min per IP leaves room for retries without ever
+    /// sharing a counter with <see cref="PublicHealth"/>.
+    /// </summary>
+    public FixedWindowPolicy PublicChannelHealth { get; set; } = new() { PermitLimit = 10 };
+
+    /// <summary>
     /// The anonymous legal-pages endpoints (issue #247): one availability check per SPA load, one
     /// document fetch per page view of <c>/imprint</c>/<c>/privacy</c>, one more per language
     /// switch while on one of those pages. A single visitor's whole session rarely exceeds half a
@@ -110,6 +117,7 @@ internal sealed class RateLimitingOptions
         Bookkeeping.Validate(nameof(Bookkeeping));
         ChannelResync.Validate(nameof(ChannelResync));
         PublicHealth.Validate(nameof(PublicHealth));
+        PublicChannelHealth.Validate(nameof(PublicChannelHealth));
         PublicLegal.Validate(nameof(PublicLegal));
         ForeignEmoteLookup.Validate(nameof(ForeignEmoteLookup));
         TrackedEmoteSetPreview.Validate(nameof(TrackedEmoteSetPreview));

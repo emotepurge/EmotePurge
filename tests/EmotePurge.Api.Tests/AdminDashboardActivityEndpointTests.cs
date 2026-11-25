@@ -174,7 +174,65 @@ public class AdminDashboardActivityEndpointTests : IClassFixture<ApiFactory>
         var ceilings = body.RootElement.GetProperty("ceilings");
         Assert.Equal(42, ceilings.GetProperty("maxActiveChannels").GetInt32());
         Assert.True(ceilings.TryGetProperty("twitchConcurrentChannelLimit", out _));
-        Assert.True(ceilings.TryGetProperty("twitchJoinBudgetChannels", out _));
+        // Removed in #516: the operating budget it reported (20) was never the binding limit.
+        Assert.False(ceilings.TryGetProperty("twitchJoinBudgetChannels", out _));
+        // Without a snapshot the join verdict is still shipped, and never "healthy".
+        Assert.NotEqual("healthy", body.RootElement.GetProperty("joinHealth").GetProperty("status").GetString());
+        Assert.False(body.RootElement.TryGetProperty("ircUnjoined", out _));
+    }
+
+    [Fact]
+    public async Task Roster_WithASnapshot_ShipsTheJoinHealthVerdictAndTheSortedUnjoinedList()
+    {
+        var now = DateTime.UtcNow;
+        var roster = Substitute.For<IWorkerRosterReader>();
+        roster.ReadAsync(Arg.Any<CancellationToken>()).Returns(new WorkerRosterSnapshot(
+            now, "worker", now.AddHours(-1), true, false, [], WorkerRosterSnapshot.CurrentSchemaVersion));
+        var channelQuery = Substitute.For<IAdminChannelQueryService>();
+        channelQuery.ListActiveChannelNamesAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<string>>(["waiting", "banned", "stuck", "unwished"]));
+        var joinHealth = Substitute.For<IChannelJoinHealthService>();
+        joinHealth.EvaluateAsync(Arg.Any<WorkerRosterSnapshot?>(), Arg.Any<CancellationToken>()).Returns(
+            new ChannelJoinHealthReport(
+                ChannelJoinHealthStatus.Failing,
+                300,
+                [
+                    new ChannelJoinHealthEntry("waiting", 40, null, false, false),
+                    new ChannelJoinHealthEntry("banned", 900, "banned", true, false),
+                    new ChannelJoinHealthEntry("stuck", 400, "noConfirmation", true, true),
+                ],
+                [new ChannelJoinHealthMissingIntent("unwished", 700, true)],
+                AlarmingCount: 2,
+                ExcludedCount: 1));
+        using var factory = NewHost(builder => builder.ConfigureTestServices(services =>
+        {
+            services.AddSingleton(roster);
+            services.AddScoped(_ => channelQuery);
+            services.AddSingleton(joinHealth);
+        }));
+
+        var (status, body) = await SendAsync(factory, "/api/admin/roster");
+        using var disposal = body;
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        var root = body.RootElement;
+        var health = root.GetProperty("joinHealth");
+        Assert.Equal("failing", health.GetProperty("status").GetString());
+        Assert.Equal(300, health.GetProperty("graceSeconds").GetInt32());
+        Assert.Equal(2, health.GetProperty("alarmingTotal").GetInt32());
+        Assert.Equal(1, health.GetProperty("excludedTotal").GetInt32());
+        // Alarming first, then overdue-but-excluded, then still waiting.
+        var unjoined = root.GetProperty("ircUnjoined").EnumerateArray().ToList();
+        Assert.Equal(["stuck", "banned", "waiting"], unjoined.Select(e => e.GetProperty("channelName").GetString()));
+        Assert.Equal(3, root.GetProperty("ircUnjoinedTotal").GetInt32());
+        Assert.Equal("noConfirmation", unjoined[0].GetProperty("reason").GetString());
+        Assert.True(unjoined[0].GetProperty("countsForAlarm").GetBoolean());
+        Assert.False(unjoined[1].GetProperty("countsForAlarm").GetBoolean());
+        Assert.True(unjoined[1].GetProperty("overdue").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, unjoined[2].GetProperty("reason").ValueKind);
+        Assert.Equal(400, unjoined[0].GetProperty("unconfirmedSeconds").GetInt32());
+        Assert.Equal(["unwished"], root.GetProperty("missingIntentOverdue").EnumerateArray().Select(e => e.GetString()));
+        Assert.Equal(1, root.GetProperty("missingIntentOverdueTotal").GetInt32());
     }
 
     private static AdminDashboardActivity NewActivity(AdminDashboardActivityRange range, DateTime nowUtc)

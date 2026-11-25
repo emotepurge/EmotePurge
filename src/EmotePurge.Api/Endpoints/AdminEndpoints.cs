@@ -245,6 +245,7 @@ public static class AdminEndpoints
         group.MapGet("/roster", async (
             IWorkerRosterReader rosterReader,
             IAdminChannelQueryService channelQueryService,
+            IChannelJoinHealthService joinHealthService,
             ChannelCapacityOptions channelCapacity,
             CancellationToken ct) =>
         {
@@ -254,6 +255,16 @@ public static class AdminEndpoints
             // one payload would be exactly the ambiguity that contract exists to avoid.
             var snapshot = await rosterReader.ReadAsync(ct);
             var trackedChannels = await channelQueryService.ListActiveChannelNamesAsync(ct);
+            // Uncached on purpose: the roster is already read, so the card shows the verdict for exactly
+            // this snapshot instead of a possibly five-second-old public answer.
+            var joinReport = await joinHealthService.EvaluateAsync(snapshot, ct);
+            var joinHealth = new
+            {
+                status = JoinHealthStatusName(joinReport.Status),
+                graceSeconds = joinReport.GraceSeconds,
+                alarmingTotal = joinReport.AlarmingCount,
+                excludedTotal = joinReport.ExcludedCount,
+            };
 
             if (snapshot is null)
             {
@@ -261,6 +272,7 @@ public static class AdminEndpoints
                 {
                     snapshotAvailable = false,
                     trackedChannelCount = trackedChannels.Count,
+                    joinHealth,
                     ceilings = Ceilings(channelCapacity),
                 });
             }
@@ -282,6 +294,22 @@ public static class AdminEndpoints
             var unknownToDatabase = snapshot.Channels
                 .Select(c => c.ChannelName)
                 .Where(name => !trackedChannels.Contains(name, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+
+            // Every wished-but-unconfirmed channel, overdue or still within its grace: alarming first,
+            // then overdue-but-excluded (Twitch said so outright), then waiting; longest wait first.
+            var ircUnjoined = joinReport.Entries
+                .OrderBy(e => e.CountsForAlarm ? 0 : e.Overdue ? 1 : 2)
+                .ThenByDescending(e => e.UnconfirmedSeconds)
+                .ThenBy(e => e.ChannelName, StringComparer.Ordinal)
+                .ToList();
+            // Active in the database but never wished by the worker, and past the grace: it counts for
+            // the alarm, so the card must be able to name it.
+            var missingIntentOverdue = joinReport.MissingIntent
+                .Where(m => m.Overdue)
+                .OrderByDescending(m => m.WaitingSeconds)
+                .ThenBy(m => m.ChannelName, StringComparer.Ordinal)
+                .Select(m => m.ChannelName)
                 .ToList();
 
             return Results.Ok(new
@@ -309,6 +337,18 @@ public static class AdminEndpoints
                 missingFromSevenTvTotal = missingFromSevenTv.Count,
                 unknownToDatabase = unknownToDatabase.Take(DeficitListLimit).ToList(),
                 unknownToDatabaseTotal = unknownToDatabase.Count,
+                joinHealth,
+                ircUnjoined = ircUnjoined.Take(DeficitListLimit).Select(e => new
+                {
+                    channelName = e.ChannelName,
+                    unconfirmedSeconds = e.UnconfirmedSeconds,
+                    reason = e.Reason,
+                    overdue = e.Overdue,
+                    countsForAlarm = e.CountsForAlarm,
+                }).ToList(),
+                ircUnjoinedTotal = ircUnjoined.Count,
+                missingIntentOverdue = missingIntentOverdue.Take(DeficitListLimit).ToList(),
+                missingIntentOverdueTotal = missingIntentOverdue.Count,
                 ceilings = Ceilings(channelCapacity),
             });
         });
@@ -534,12 +574,22 @@ public static class AdminEndpoints
         });
     }
 
+    // Explicit rather than ToString().ToLowerInvariant(): the strings are a wire contract the page
+    // switches on, and a renamed enum member must not silently rename them.
+    private static string JoinHealthStatusName(ChannelJoinHealthStatus status) => status switch
+    {
+        ChannelJoinHealthStatus.Healthy => "healthy",
+        ChannelJoinHealthStatus.Starting => "starting",
+        ChannelJoinHealthStatus.Unavailable => "unavailable",
+        ChannelJoinHealthStatus.Failing => "failing",
+        _ => throw new ArgumentOutOfRangeException(nameof(status), status, null),
+    };
+
     // Shipped in both branches of /roster so the page renders one layout: the ceilings are constants
     // and do not depend on a snapshot being available.
     private static object Ceilings(ChannelCapacityOptions channelCapacity) => new
     {
         twitchConcurrentChannelLimit = WorkerCapacity.TwitchConcurrentChannelLimit,
-        twitchJoinBudgetChannels = WorkerCapacity.TwitchJoinBudgetChannels,
         // The admission cap Channels:MaxActiveChannels (configurable, unlike the two Twitch constants);
         // additive field for the dashboard: the configured admission limit for normal users, shown as a
         // context value next to the tracked-channel count, not as a capacity measure.
@@ -559,6 +609,8 @@ public static class AdminEndpoints
         // The two anonymous policies: PartitionPerUser falls back to the remote IP when there is no
         // authenticated Twitch user, which for these two routes is every caller (RateLimitRejection.cs).
         RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.PublicHealth, options.PublicHealth, "remote-ip"),
+        // #516: the channel-join check's own counter, anonymous like the one above.
+        RateLimitPolicyDescriptor.FixedWindow(RateLimitPolicyNames.PublicChannelHealth, options.PublicChannelHealth, "remote-ip"),
         // Issue #247, split from PublicHealth (Codex Sol review, P2): unrelated legitimate callers
         // (browser visitors vs. two machines on a fixed cadence) must not be able to exhaust each
         // other's budget.
