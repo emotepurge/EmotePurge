@@ -4,9 +4,10 @@ using EmotePurge.Core.Services;
 using EmotePurge.Core.Twitch;
 using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
+using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Xunit;
 
@@ -123,9 +124,47 @@ public class ChannelServiceCapacityTests(PostgresFixture fixture)
             BotCommands.Channel, "JOIN:capacitytestfull11", Arg.Any<CancellationToken>());
     }
 
-    private static ChannelService CreateService(
-        AppDbContext db, IRedisPublisher? redisPublisher = null, int maxActiveChannels = 80)
+    [Fact]
+    public async Task JoinAsync_AtCap_NonAdmin_LogsOneWarningWithTheCapacityEventId()
     {
+        await using var db = await CreateIsolatedDbContextAsync();
+        await SeedActiveChannelAsync(db, "capacitytestlog1");
+        await SeedActiveChannelAsync(db, "capacitytestlog2");
+        var logs = new CapturingLoggerProvider();
+        var service = CreateService(db, maxActiveChannels: 2, logs: logs);
+
+        await service.JoinAsync("capacitytestlog3", Actor);
+
+        var line = Assert.Single(logs.Lines, l => l.EventId.Name == "ChannelCapacityReached");
+        Assert.Equal(51603, line.EventId.Id);
+        Assert.Equal(LogLevel.Warning, line.Level);
+    }
+
+    [Fact]
+    public async Task JoinAsync_AtCap_GlobalAdminAndIdempotentRejoin_LogNoCapacityEvent()
+    {
+        await using var db = await CreateIsolatedDbContextAsync();
+        await SeedActiveChannelAsync(db, "capacitytestquiet1");
+        await SeedActiveChannelAsync(db, "capacitytestquiet2");
+        var logs = new CapturingLoggerProvider();
+        var service = CreateService(db, maxActiveChannels: 2, logs: logs);
+
+        await service.JoinAsync("capacitytestquiet3", Actor, isGlobalAdmin: true);
+        await service.JoinAsync("capacitytestquiet1", Actor);
+
+        Assert.DoesNotContain(logs.Lines, l => l.EventId.Name == "ChannelCapacityReached");
+    }
+
+    private static ChannelService CreateService(
+        AppDbContext db, IRedisPublisher? redisPublisher = null, int maxActiveChannels = 80,
+        CapturingLoggerProvider? logs = null)
+    {
+        var loggerFactory = new LoggerFactory();
+        if (logs is not null)
+        {
+            loggerFactory.AddProvider(logs);
+        }
+
         var identityService = Substitute.For<IChannelIdentityService>();
         identityService.LookupByLoginAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(TwitchUserLookup.Failed(TwitchUserLookupStatus.Unavailable));
@@ -138,7 +177,7 @@ public class ChannelServiceCapacityTests(PostgresFixture fixture)
             new BroadcasterChannelLockService(db),
             new ChannelCapacityOptions { MaxActiveChannels = maxActiveChannels },
             Substitute.For<IExcludedChannelFilter>(),
-            NullLogger<ChannelService>.Instance);
+            loggerFactory.CreateLogger<ChannelService>());
     }
 
     private static Task<Channel> SeedActiveChannelAsync(AppDbContext db, string channelName) =>

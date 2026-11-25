@@ -29,6 +29,13 @@ public class ChannelService(
     // Attempts in total, not retries: the first try plus two more on a deadlock (R5).
     private const int BroadcasterPurgeMaxAttempts = 3;
 
+    /// <summary>
+    /// The warning for a join the active-channel cap turned away. A named id (516xx, the numbering of
+    /// the #516 join-failure events in <c>TwitchChatManager</c>) makes the rejections countable in the
+    /// log viewer as <c>event:ChannelCapacityReached</c>.
+    /// </summary>
+    public static readonly EventId CapacityReachedEvent = new(51603, "ChannelCapacityReached");
+
     public async Task<ChannelJoinResult> JoinAsync(
         string channelName,
         AuditActor actor,
@@ -843,6 +850,7 @@ public class ChannelService(
             if (activeChannelCount >= channelCapacityOptions.MaxActiveChannels)
             {
                 logger.LogWarning(
+                    CapacityReachedEvent,
                     "Join for {ChannelName} rejected: the active-channel cap of {MaxActiveChannels} is reached ({ActiveChannelCount} channels active).",
                     channel.ChannelName, channelCapacityOptions.MaxActiveChannels, activeChannelCount);
                 return ChannelJoinResult.Failed(ChannelJoinStatus.CapacityReached);

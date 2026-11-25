@@ -18,7 +18,11 @@ public sealed class ChannelCapacityOptions
     /// comfortably below Twitch's own 100-simultaneously-joined-chatrooms-per-account limit (in force
     /// since 2024-05-15, CLAUDE.md "Bekannte offene Grenzen") so the rejection happens here, with a
     /// reason, instead of as a silent TwitchLib rejoin failure. Global admins are exempt from the
-    /// cap — see the join path — but still count toward it.
+    /// cap — see the join path — but still count toward it. Set in the stack through
+    /// <c>CHANNELS_MAX_ACTIVE_CHANNELS</c> (mapped to <c>Channels__MaxActiveChannels</c> in the Api
+    /// service only; the Worker does not read it) and applied when the Api container is recreated.
+    /// Each rejection logs a warning with the event name <c>ChannelCapacityReached</c>, which is how
+    /// unmet demand for capacity is counted.
     /// </summary>
     public int MaxActiveChannels { get; set; } = 80;
 
