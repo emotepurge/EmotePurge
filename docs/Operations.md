@@ -2290,9 +2290,10 @@ the kill switch off.
 
 - **Repair phases and `needs_review`.** When a removal took other entries of the same emote along, the wish is presented
   as `repair_review` and the bot sends **one** repair add. An unclear phase is resolved by reading only. A missing
-  entry that could not be restored is recorded as audit `wish.botRepair` with `outcome` `needs_review` (wish id and
-  emote id, no alias) and the evidence is cleared, so look at the evidence **while the phase is open** and restore by
-  hand in 7TV:
+  entry that could not be restored is recorded as audit `wish.botRepair` with `outcome` `needs_review` (wish id, emote
+  id, `setId` and the missing entry's `missingAddedAtUtc`, no alias) and the evidence is cleared. Look at the evidence
+  **while the phase is open**; afterwards the set and `addedAt` of the audit name the entry in the set's history. Restore
+  by hand in 7TV:
 
   ```sql
   SELECT w."Id", c."ChannelName", w."Status", w."StatusReason", w."BotRepairAtUtc", w."BotRemoveEvidence"

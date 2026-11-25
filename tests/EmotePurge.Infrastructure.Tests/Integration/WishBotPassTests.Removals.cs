@@ -375,6 +375,35 @@ public partial class WishBotPassTests
         }
     }
 
+    // 2.5a (h), Opus P3-3: a phase resolved read only with two recorded entries missing books one needs_review per entry,
+    // each naming its entry by the set and its addedAt (the evidence is cleared with the phase), never by the alias.
+    [Fact]
+    public async Task EveryNeedsReview_NamesItsEntryBySetAndAddedAt_WithoutTheAlias()
+    {
+        var channel = await SeedBotChannelAsync();
+        var first = Now.AddDays(-20);
+        var second = Now.AddDays(-10);
+        var id = await SeedWishAsync(channel, WishStatus.Removed, w =>
+        {
+            w.EndedAtUtc = Now.AddHours(-1);
+            w.BotRepairAtUtc = Now.AddHours(-1);
+            w.BotRemoveEvidence = EvidenceJson(
+                SetA, w.SevenTvEmoteId, "Alias", Now.AddDays(-3), [new WishBotRemovalOtherEntry("Alias2", first), new WishBotRemovalOtherEntry("Alias3", second)]);
+        });
+        Set(SetA);
+
+        await RunPassAsync();
+
+        Assert.Null((await LoadAsync(id)).BotRepairAtUtc);
+        var audits = await AuditsAsync(AuditActions.WishBotRepair);
+        Assert.Equal(2, audits.Count);
+        Assert.All(audits, a => Assert.Equal(("needs_review", SetA), (a.Details["outcome"], a.Details["setId"])));
+        Assert.Equal(
+            new[] { first, second },
+            audits.Select(a => DateTime.Parse(a.Details["missingAddedAtUtc"], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal)).Order());
+        Assert.All(audits, a => Assert.DoesNotContain(a.Details.Values, v => v.StartsWith("Alias", StringComparison.Ordinal)));
+    }
+
     // The detection limit (spec 8, AK77): a human replaces the bot's entry by one of the same alias between the fresh read
     // and removeEmote; the bot removes the replacement, the read after it sees nothing to repair (no wish.botRepair).
     // A replacement a sync had seen as a live slot gives exactly one wish.botSuspectRemoval (wish, slot); one never seen

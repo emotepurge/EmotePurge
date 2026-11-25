@@ -814,9 +814,9 @@ public sealed partial class WishBotPass
                 {
                     var now = Now();
                     AuditRepair(locked!, outcome, now);
-                    foreach (var _ in missing.Skip(1))
+                    foreach (var entry in missing.Skip(1))
                     {
-                        AuditRepair(locked!, RepairOutcomes.NeedsReview, now);
+                        AuditNeedsReview(locked!, evidence.SetId, entry, now);
                     }
 
                     ClearRepairPhase(locked!.Wish);
@@ -1075,9 +1075,9 @@ public sealed partial class WishBotPass
                 return false;
             }
 
-            foreach (var _ in missing)
+            foreach (var entry in missing)
             {
-                AuditRepair(locked, RepairOutcomes.NeedsReview, now);
+                AuditNeedsReview(locked, evidence.SetId, entry, now);
             }
 
             ClearRepairPhase(locked.Wish);
@@ -1181,6 +1181,25 @@ public sealed partial class WishBotPass
         wish.RemovalQueuedVersion = null;
         EndBotOwnership(wish);
     }
+
+    // One needs_review per missing entry of the evidence (2.5a (h)), without the alias: the set and the entry's addedAt
+    // name the entry in the set's history after the evidence is cleared (public set data, nothing of the redeemer).
+    private void AuditNeedsReview(LockedWish locked, string setId, WishBotRemovalOtherEntry entry, DateTime now) =>
+        db.AddAuditEntry(
+            AuditActor.System,
+            AuditActions.WishBotRepair,
+            channelName: locked.ChannelName,
+            targetType: "wish",
+            targetId: locked.Wish.Id.ToString(CultureInfo.InvariantCulture),
+            details: new
+            {
+                wishId = locked.Wish.Id,
+                sevenTvEmoteId = locked.Wish.SevenTvEmoteId,
+                outcome = RepairOutcomes.NeedsReview,
+                setId,
+                missingAddedAtUtc = entry.AddedAtUtc,
+            },
+            occurredAtUtc: now);
 
     private void AuditRepair(LockedWish locked, string outcome, DateTime now) =>
         db.AddAuditEntry(
