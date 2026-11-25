@@ -390,8 +390,12 @@ public class ChannelService(
         // Since #245 the same query also hides a row whose id the broadcaster locked.
         db.LoadActiveChannelByTwitchIdReadOnlyAsync(twitchChannelId, excludedChannelFilter, broadcasterChannelLocks, cancellationToken);
 
-    public async Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<string>> ListActiveChannelNamesAsync(CancellationToken cancellationToken = default) =>
+        (await ListActiveChannelActivationsAsync(cancellationToken)).Select(a => a.ChannelName).ToList();
+
+    public async Task<IReadOnlyList<ActiveChannelActivation>> ListActiveChannelActivationsAsync(CancellationToken cancellationToken = default)
     {
+        // The one place the "meant to be in" rule lives; ListActiveChannelNamesAsync is derived from it.
         // AsNoTracking because every caller only ever reads the names: this runs once per minute
         // forever in SevenTvPeriodicResyncWorker, and tracking entities nobody mutates is pure cost.
         // The broadcaster lock (#245) is the opposite of the env list below: a table that changes at
@@ -402,7 +406,7 @@ public class ChannelService(
             .AsNoTracking()
             .Where(c => c.IsBotActive)
             .Where(c => !broadcasterChannelLocks.Locks.Any(l => l.TwitchChannelId == c.TwitchChannelId))
-            .Select(c => new { c.ChannelName, c.TwitchChannelId })
+            .Select(c => new { c.ChannelName, c.TwitchChannelId, c.TrackingResumedAt, c.CreatedAt })
             .OrderBy(row => row.ChannelName)
             .ToListAsync(cancellationToken);
 
@@ -416,7 +420,7 @@ public class ChannelService(
         // reconcile's own deactivation stays the durable, database-side step.
         return activeRows
             .Where(row => !excludedChannelFilter.IsExcluded(row.TwitchChannelId))
-            .Select(row => row.ChannelName)
+            .Select(row => new ActiveChannelActivation(row.ChannelName, row.TrackingResumedAt ?? row.CreatedAt))
             .ToList();
     }
 

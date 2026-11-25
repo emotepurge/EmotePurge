@@ -76,6 +76,21 @@ public static class ServiceCollectionExtensions
         channelCapacityOptions.Validate();
         services.AddSingleton(channelCapacityOptions);
 
+        // Grace period of the join health check (#516), bound and validated eagerly like the cap.
+        // The service captures the process start here, at construction by the factory, not at the
+        // first request: the cold-start window of the check is measured from the real process start.
+        var joinHealthOptions = new ChannelJoinHealthOptions();
+        configuration.GetSection(ChannelJoinHealthOptions.SectionName).Bind(joinHealthOptions);
+        joinHealthOptions.Validate();
+        services.AddSingleton(joinHealthOptions);
+        services.AddSingleton<IChannelJoinHealthService>(sp => new ChannelJoinHealthService(
+            sp.GetRequiredService<IWorkerRosterReader>(),
+            sp.GetRequiredService<IServiceScopeFactory>(),
+            joinHealthOptions,
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<ILogger<ChannelJoinHealthService>>(),
+            ChannelJoinHealthService.CurrentProcessStartedUtc()));
+
         // Only a switch the Api hands to the browser with the channel permissions; no Validate(),
         // nothing a typo could turn into an outage (a bad boolean already fails the bind).
         var emoteTagOptions = new EmoteTagOptions();

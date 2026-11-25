@@ -1121,6 +1121,39 @@ public class ChannelServiceTests(PostgresFixture fixture)
         Assert.True((await verify.Channels.AsNoTracking().SingleAsync(c => c.ChannelName == "channelserviceroster2")).IsBotActive);
     }
 
+    [Fact]
+    public async Task ListActiveChannelActivationsAsync_UsesTheSameFilterAsTheNameList_AndResumedAtBeatsCreatedAt()
+    {
+        await using var db = fixture.CreateDbContext();
+        var created = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var resumed = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+        var fresh = await SeedChannelAsync(db, "channelserviceactivation1", "770301");
+        var rejoined = await SeedChannelAsync(db, "channelserviceactivation2", "770302");
+        await SeedChannelAsync(db, "channelserviceactivation3", "770303", isBotActive: false);
+        await SeedChannelAsync(db, "channelserviceactivation4", "770304");
+        await SeedChannelAsync(db, "channelserviceactivation5", "770305");
+        fresh.CreatedAt = created;
+        rejoined.CreatedAt = created;
+        rejoined.TrackingResumedAt = resumed;
+        db.BroadcasterChannelLocks.Add(new BroadcasterChannelLock { TwitchChannelId = "770304", LockedAtUtc = created });
+        await db.SaveChangesAsync();
+        var excludedChannelFilter = Substitute.For<IExcludedChannelFilter>();
+        excludedChannelFilter.IsExcluded("770305").Returns(true);
+        var service = CreateService(db, excludedChannelFilter: excludedChannelFilter);
+
+        var activations = (await service.ListActiveChannelActivationsAsync())
+            .Where(a => a.ChannelName.StartsWith("channelserviceactivation", StringComparison.Ordinal))
+            .ToList();
+        var names = (await service.ListActiveChannelNamesAsync())
+            .Where(n => n.StartsWith("channelserviceactivation", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.Equal(["channelserviceactivation1", "channelserviceactivation2"], activations.Select(a => a.ChannelName));
+        Assert.Equal(created, activations[0].ActivatedAtUtc);
+        Assert.Equal(resumed, activations[1].ActivatedAtUtc);
+        Assert.Equal(names, activations.Select(a => a.ChannelName));
+    }
+
     // Review finding on the emote-set target picker (GET /api/seventv/me/emote-set-targets): this
     // lookup skipped the objection gate that ListActiveChannelNamesAsync already applies, so an
     // active row whose stored id was excluded still looked like a valid transfer target.
