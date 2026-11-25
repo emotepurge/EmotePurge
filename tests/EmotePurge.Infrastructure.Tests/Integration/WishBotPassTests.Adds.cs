@@ -3,8 +3,10 @@ using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Persistence;
+using EmotePurge.Infrastructure.Tests.Fakes;
 using EmotePurge.Infrastructure.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
@@ -77,6 +79,33 @@ public partial class WishBotPassTests
         Assert.Equal((WishStatus.Active, false, (string?)null), (wish.Status, wish.BotOwned, wish.BotSetId));
         Assert.Equal(SeededVersion + 1, wish.DecisionVersion);
         Assert.Single(_readCalls);
+    }
+
+    // AK128: the line after the add names the send proof and whether the answer carried the entries.
+    [Theory]
+    [InlineData(true, true, "send proof: True, answer carried entries: True")]
+    [InlineData(true, false, "send proof: True, answer carried entries: False")]
+    [InlineData(false, false, "send proof: False, answer carried entries: False")]
+    public async Task TheAddLogLine_NamesTheSendProofAndTheEntries(bool proof, bool entries, string expected)
+    {
+        var capture = new CapturingLoggerProvider();
+        using var factory = LoggerFactory.Create(b => b.SetMinimumLevel(LogLevel.Trace).AddProvider(capture));
+        _passLogger = factory.CreateLogger<WishBotPass>();
+        var channel = await SeedBotChannelAsync();
+        var id = await SeedApprovedAsync(channel);
+        _addAnswer = call =>
+        {
+            TakeEffect(call);
+            return proof
+                ? SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Ok(entries ? Set(call.SetId).ToList() : null)
+                : SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Failed(SevenTvWriteResult.Unavailable());
+        };
+
+        await RunPassAsync();
+
+        var line = Assert.Single(capture.Lines, l => l.Message.Contains($"the add of wish {id} came to", StringComparison.Ordinal));
+        Assert.Contains(expected, line.Message, StringComparison.Ordinal);
+        Assert.Contains(proof ? "came to Ok" : "came to Unavailable", line.Message, StringComparison.Ordinal);
     }
 
     // Revision 6a (S6-4): Ok without entries (an error only in the nested selection): BotAddAckAtUtc is set, the read at

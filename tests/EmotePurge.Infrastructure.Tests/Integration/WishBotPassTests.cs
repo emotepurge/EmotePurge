@@ -8,6 +8,7 @@ using EmotePurge.Infrastructure.Persistence;
 using EmotePurge.Infrastructure.Services;
 using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using NSubstitute;
@@ -506,6 +507,8 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
         }
     }
 
+    private ILogger<WishBotPass> _passLogger = NullLogger<WishBotPass>.Instance;
+
     private WishBotPass Pass(AppDbContext db, string pilot = "*", bool botAccountEnabled = true)
     {
         var wishOptions = new WishOptions { Enabled = true, PilotChannelIds = pilot };
@@ -513,7 +516,7 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
         var publisher = new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance);
         var fallback = new WishBotFallback(db, wishOptions, botAccountOptions, _admins, publisher, _clock, NullLogger<WishBotFallback>.Instance);
         return new WishBotPass(
-            db, EditorCheck, _writes, fallback, wishOptions, botAccountOptions, _admins, publisher, _clock, NullLogger<WishBotPass>.Instance);
+            db, EditorCheck, _writes, fallback, wishOptions, botAccountOptions, _admins, publisher, _clock, _passLogger);
     }
 
     private async Task<FakeSession> SessionAsync(long epoch = Epoch)

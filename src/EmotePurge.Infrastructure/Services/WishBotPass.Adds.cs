@@ -330,7 +330,9 @@ public sealed partial class WishBotPass
                 session.MarkWriteSent();
                 sent = true;
                 var result = await writeClient.AddEmoteAsync(session.Token!, intent.SetId, wish.SevenTvEmoteId, wish.Alias, cancellationToken);
-                logger.LogInformation("Wish bot: the add of wish {WishId} came to {Outcome}.", item.WishId, result.Outcome);
+                logger.LogInformation(
+                    "Wish bot: the add of wish {WishId} came to {Outcome} (send proof: {SendProof}, answer carried entries: {AnswerHadEntries}).",
+                    item.WishId, result.Outcome, result.IsOk, result.Value is not null);
 
                 readNext = BookAdd(session, locked, intent, result, Now());
                 unreportedPause = result.Status.RetryAfter;
