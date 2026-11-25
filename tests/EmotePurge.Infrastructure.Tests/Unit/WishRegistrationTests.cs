@@ -64,6 +64,11 @@ public class WishRegistrationTests
         Assert.False(await availability.IsAvailableAsync());
         Assert.Equal(BotAccountAvailabilityState.Unavailable, await availability.GetStateAsync());
         Assert.IsType<WishBotChannelStateReader>(scope.ServiceProvider.GetRequiredService<IWishBotChannelStateReader>());
+
+        // K6b-7: the fallback run resolves without AddBotAccountWriter, scoped, because the expiry run calls it as its
+        // step 0 also with the bot account off.
+        Assert.IsType<WishBotFallback>(scope.ServiceProvider.GetRequiredService<IWishBotFallback>());
+        Assert.Same(scope.ServiceProvider.GetRequiredService<IWishBotFallback>(), scope.ServiceProvider.GetRequiredService<IWishBotFallback>());
     }
 
     // The trigger parameters of SevenTvSyncService and EmoteService are optional (null = no hook), so a

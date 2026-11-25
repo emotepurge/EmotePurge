@@ -29,6 +29,7 @@ public class BotAccountWriterRegistrationTests
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(ISevenTvWriteClient));
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(IBotAccountRunner));
         Assert.DoesNotContain(services, d => d.ServiceType == typeof(IWishBotPass));
+        Assert.DoesNotContain(services, d => d.ServiceType == typeof(IBotAccountEditorCheck));
     }
 
     [Fact]
@@ -50,6 +51,25 @@ public class BotAccountWriterRegistrationTests
         Assert.Equal(ServiceLifetime.Scoped, Assert.Single(services, d => d.ServiceType == typeof(IBotAccountRunner)).Lifetime);
         Assert.Equal(typeof(BotAccountRunner), services.Single(d => d.ServiceType == typeof(IBotAccountRunner)).ImplementationType);
         Assert.Equal(ServiceLifetime.Scoped, Assert.Single(services, d => d.ServiceType == typeof(IWishBotPass)).Lifetime);
+        Assert.Equal(ServiceLifetime.Scoped, Assert.Single(services, d => d.ServiceType == typeof(IBotAccountEditorCheck)).Lifetime);
+    }
+
+    // T8b: the real wish part now needs the editor read and the wish services. Checked by descriptor for the same reason
+    // as the write client: every constructor parameter of the pass, its fallback run and the editor read has a
+    // registration in the worker's graph (loggers come from the host's AddLogging).
+    [Theory]
+    [InlineData(typeof(EmotePurge.Infrastructure.Services.WishBotPass))]
+    [InlineData(typeof(EmotePurge.Infrastructure.Services.WishBotFallback))]
+    [InlineData(typeof(BotAccountEditorCheck))]
+    [InlineData(typeof(BotAccountRunner))]
+    public void Enabled_EveryDependencyOfTheWishPassIsRegistered(Type type)
+    {
+        var services = WorkerServices(Configuration(enabled: "true", privateKey: PrivateKey));
+
+        var parameters = Assert.Single(type.GetConstructors()).GetParameters()
+            .Select(p => p.ParameterType)
+            .Where(t => !t.IsGenericType || t.GetGenericTypeDefinition() != typeof(Microsoft.Extensions.Logging.ILogger<>));
+        Assert.All(parameters, t => Assert.Contains(services, d => d.ServiceType == t));
     }
 
     [Fact]

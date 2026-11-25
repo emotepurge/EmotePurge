@@ -438,22 +438,31 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
 
     private AppDbContext CreateDb() => fixture.CreateDbContext(DatabaseName);
 
-    // Both switches on and every channel listed unless a case says otherwise; no global admins unless one is passed.
+    // Both switches on and every channel listed unless a case says otherwise; no global admins unless one is passed. The
+    // bot fallback run (step 0, #487 T8b) is the real one on the same context, as the scope shares it in production.
     private WishExpiryService Sut(
         AppDbContext? db = null,
         IWishReconcileService? reconcile = null,
         bool botAccountEnabled = true,
         string pilotChannelIds = "*",
-        IGlobalAdminAllowlist? admins = null) =>
-        new(
-            db ?? CreateDb(),
+        IGlobalAdminAllowlist? admins = null)
+    {
+        var context = db ?? CreateDb();
+        var wishOptions = new WishOptions { Enabled = true, PilotChannelIds = pilotChannelIds };
+        var botAccountOptions = new BotAccountOptions { Enabled = botAccountEnabled };
+        var allowlist = admins ?? Substitute.For<IGlobalAdminAllowlist>();
+        var publisher = new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance);
+        return new(
+            context,
             reconcile ?? _reconcile,
-            new WishOptions { Enabled = true, PilotChannelIds = pilotChannelIds },
-            new BotAccountOptions { Enabled = botAccountEnabled },
-            admins ?? Substitute.For<IGlobalAdminAllowlist>(),
-            new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance),
+            wishOptions,
+            botAccountOptions,
+            allowlist,
+            new WishBotFallback(context, wishOptions, botAccountOptions, allowlist, publisher, _clock, NullLogger<WishBotFallback>.Instance),
+            publisher,
             _clock,
             NullLogger<WishExpiryService>.Instance);
+    }
 
     // The manager commands on their own publisher, so the expiry run's events stay countable.
     private WishService Commands() =>

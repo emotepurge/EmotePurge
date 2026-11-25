@@ -391,6 +391,9 @@ public static class ServiceCollectionExtensions
         // per request and only when an activated channel asks.
         services.AddScoped<IWishBotChannelStateReader, WishBotChannelStateReader>();
         services.AddScoped<IWishBotService, WishBotService>();
+        // The wish bot's fallback run (plan #487 2.8, K6b-7): here and not in AddBotAccountWriter, because the expiry run
+        // calls it as its step 0 also with the bot account switched off; the runner's pass calls it as its step 4.
+        services.AddScoped<IWishBotFallback, WishBotFallback>();
         // The nudge of the bot account loop after a committed channel write (plan 2.9); an accelerator, never a failure.
         services.AddSingleton<IBotAccountNudge, BotAccountNudge>();
 

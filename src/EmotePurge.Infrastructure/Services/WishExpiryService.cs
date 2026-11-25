@@ -12,7 +12,9 @@ namespace EmotePurge.Infrastructure.Services;
 /// <summary>
 /// One pass of the wish expiry run (spec K2, plan #484 2.1 to 2.4, T3). See <see cref="IWishExpiryService"/>.
 /// <para>
-/// <b>Flow.</b> (1) Reconcile every channel that has a wish the reconcile can move (plan finding 17), one after
+/// <b>Flow.</b> (0) The wish bot's fallback run (<see cref="IWishBotFallback"/>, #487 plan 2.8): hands the open bot actions
+/// of every activated channel in the fallback state to the managers, also with the bot account switched off, so that
+/// switching it off leaves nothing hanging; a failure is logged and does not stop the run. (1) Reconcile every channel that has a wish the reconcile can move (plan finding 17), one after
 /// the other, through <see cref="IWishReconcileService"/> in its own scope; a failure is counted and logged and
 /// does not stop the due step for that channel (presenting is a reminder, and K4 re-reads before every bot
 /// removal). (2) Read "now" once, then the candidates: <c>active</c>, expiry at or before now, no queued removal.
@@ -47,6 +49,7 @@ public sealed class WishExpiryService(
     WishOptions wishOptions,
     BotAccountOptions botAccountOptions,
     IGlobalAdminAllowlist admins,
+    IWishBotFallback botFallback,
     IWishChangedPublisher changedPublisher,
     TimeProvider timeProvider,
     ILogger<WishExpiryService> logger) : IWishExpiryService
@@ -61,6 +64,22 @@ public sealed class WishExpiryService(
     public async Task<WishExpiryRunResult> RunAsync(CancellationToken cancellationToken = default)
     {
         var tally = new Tally();
+
+        // Step 0. Its own transactions and announcements; leaves nothing tracked in this context.
+        try
+        {
+            await botFallback.ApplyAsync(cancellationToken);
+        }
+        catch (Exception ex) when (!IsStop(ex, cancellationToken))
+        {
+            logger.LogWarning(
+                "Wish expiry run: the bot fallback run failed ({ExceptionType}, SQLSTATE {SqlState}); the run goes on.",
+                ex.GetType().Name, SqlStateOf(ex));
+        }
+        finally
+        {
+            db.ChangeTracker.Clear();
+        }
 
         // Step 1. Ids only and untracked: the reconcile writes these channels' wishes in a context of its own.
         foreach (var channelId in await ReconcileChannelIdsAsync(cancellationToken))
@@ -221,8 +240,9 @@ public sealed class WishExpiryService(
     // same moment).
     private async Task<WishExpiryDecision?> DecideAsync(Wish wish, DateTime now, CancellationToken cancellationToken)
     {
-        var read = await ReadChannelFactsAsync(wish.ChannelId, cancellationToken);
-        var channelState = ChannelStateOf(read, now);
+        var read = await WishBotChannelFacts.ReadAsync(db, wish.ChannelId, cancellationToken);
+        var channelState = WishBotChannelFacts.StateOf(
+            read, wishOptions.Enabled && botAccountOptions.Enabled, wishOptions.PilotList, admins, now);
 
         var facts = new WishExpiryFacts(channelState, wish.BotOwned, wish.StartsAtAuthoritative, read?.Settings.ProtectionThresholdPerDay);
         if (!WishExpiryPolicy.NeedsUsage(facts))
@@ -241,59 +261,6 @@ public sealed class WishExpiryService(
         return usage is null
             ? null
             : WishExpiryPolicy.Decide(facts with { MeanPerDay = usage.MeanPerDay, HasCoverageGap = usage.HasCoverageGap });
-    }
-
-    // One statement, one snapshot (K6d-7): the settings row, left-joined with the bot account's singleton row, and the
-    // channel's Twitch id for the pilot list. No settings row: null, a manual channel.
-    private Task<ChannelFacts?> ReadChannelFactsAsync(string channelId, CancellationToken cancellationToken) =>
-        (from s in db.ChannelWishSettings.AsNoTracking().Where(s => s.ChannelId == channelId)
-         from c in db.BotAccountCredentials.AsNoTracking().Where(c => c.Id == BotAccountCredential.SingletonId).DefaultIfEmpty()
-         select new ChannelFacts(
-             new ChannelWishSettings
-             {
-                 ChannelId = s.ChannelId,
-                 ProtectionThresholdPerDay = s.ProtectionThresholdPerDay,
-                 BotModeEnabled = s.BotModeEnabled,
-                 BotModeActivatedByTwitchUserId = s.BotModeActivatedByTwitchUserId,
-                 BotSuspendedReason = s.BotSuspendedReason,
-                 BotEditorCheckedAtUtc = s.BotEditorCheckedAtUtc,
-                 BotEditorCheckedIdentityVersion = s.BotEditorCheckedIdentityVersion,
-                 BotConsentSevenTvUserId = s.BotConsentSevenTvUserId,
-             },
-             s.Channel!.TwitchChannelId,
-             c != null,
-             c != null ? c.Status : null,
-             c != null ? c.ExpiresAtUtc : null,
-             c != null && c.KillSwitch,
-             c != null ? c.BotSevenTvUserId : null,
-             c != null ? c.IdentityVersion : 0))
-        .FirstOrDefaultAsync(cancellationToken);
-
-    // The same rule as the Api's reader, from the one snapshot: the account-wide answer by the shared rule with the
-    // switches of this process, the pilot list and the activator's admin check by id.
-    private WishBotChannelMode ChannelStateOf(ChannelFacts? read, DateTime now)
-    {
-        if (read is null || !read.Settings.BotModeEnabled)
-        {
-            return WishBotChannelMode.Manual;
-        }
-
-        var account = read.HasAccountRow
-            ? BotAccountAvailabilityState.Of(
-                wishOptions.Enabled && botAccountOptions.Enabled,
-                read.Status,
-                read.ExpiresAtUtc,
-                read.KillSwitch,
-                read.BotSevenTvUserId,
-                read.IdentityVersion,
-                now)
-            : BotAccountAvailabilityState.Unavailable;
-        return WishBotChannelState.Of(
-            read.Settings,
-            account,
-            wishOptions.PilotList.Covers(read.TwitchChannelId),
-            WishBotChannelStateReader.ActivatorIsAdminById(admins, read.Settings),
-            now);
     }
 
     // Behind the row lock: is there a wish.due of this wish for this expiry already? An entry for it cannot be older
@@ -350,18 +317,6 @@ public sealed class WishExpiryService(
     }
 
     private sealed record Candidate(long WishId, string ChannelId);
-
-    // What the one statement of ReadChannelFactsAsync carries: the settings columns the state needs, the channel's Twitch
-    // id and the bot account's columns (the HasAccountRow flag tells a missing row from a row with defaults).
-    private sealed record ChannelFacts(
-        ChannelWishSettings Settings,
-        string? TwitchChannelId,
-        bool HasAccountRow,
-        string? Status,
-        DateTime? ExpiresAtUtc,
-        bool KillSwitch,
-        string? BotSevenTvUserId,
-        int IdentityVersion);
 
     // The counters of one pass.
     private sealed class Tally
