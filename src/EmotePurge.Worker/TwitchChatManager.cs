@@ -284,6 +284,7 @@ public class TwitchChatManager(
         // Safety net driven by the periodic resync, which enumerates all active channels anyway:
         // covers lost Redis commands, joins that failed during boot recovery, and joins Twitch
         // never confirmed.
+        bool expiredPart;
         lock (_intentGate)
         {
             if (_tracker.IsConfirmed(channelName))
@@ -304,6 +305,23 @@ public class TwitchChatManager(
             }
 
             _tracker.RecordIntent(channelName, _time.GetUtcNow());
+            expiredPart = _tracker.TakeExpiredPart(channelName, _time.GetUtcNow());
+        }
+
+        // A PART of ours that Twitch never echoed has just expired, so JOIN echoes since then were
+        // taken for old membership and no further echo is coming: TwitchLib still lists the channel
+        // as joined and would drop a plain JOIN silently. A real PART first makes the JOIN a new
+        // attempt on the wire (TwitchLib sends the PART only if it lists the channel as joined).
+        if (expiredPart)
+        {
+            try
+            {
+                await _client.LeaveChannelAsync(channelName);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Part before a convergence JOIN failed for a channel.");
+            }
         }
 
         await TryJoinAsync(channelName, TwitchJoinSource.ConvergenceNet, CancellationToken.None);
@@ -1164,7 +1182,7 @@ public class TwitchChatManager(
             // window (a JOIN of ours seen on the wire): a late echo after a leave and re-activation
             // must not confirm the new wish (plan #516, R3-H3). Nor does an echo that arrives while our
             // own PART is still pending: it answers a JOIN sent before that PART (Codex review, round 2).
-            if (_tracker.MarkConfirmed(e.Channel))
+            if (_tracker.MarkConfirmed(e.Channel, _time.GetUtcNow()))
             {
                 logger.LogInformation("Channel {Channel} gejoint.", e.Channel);
             }
@@ -1227,7 +1245,7 @@ public class TwitchChatManager(
         if (command == OutgoingChannelCommand.Part)
         {
             _lastWireJoinTicks.Remove(channel);
-            _tracker.RecordPartSent(channel);
+            _tracker.RecordPartSent(channel, _time.GetUtcNow());
             return;
         }
 

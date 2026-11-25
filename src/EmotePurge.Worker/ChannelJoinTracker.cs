@@ -49,12 +49,21 @@ public readonly record struct ChannelJoinState(string Name, bool Confirmed, doub
 /// </summary>
 public sealed class ChannelJoinTracker
 {
+    /// <summary>
+    /// How long a PART of ours counts as pending. Twitch echoes it within milliseconds (measured
+    /// 2026-11-25), so a PART still unechoed after this is presumed never to be echoed (we were no
+    /// member when it was sent) and stops holding back JOIN echoes.
+    /// </summary>
+    public static readonly TimeSpan PartEchoGrace = TimeSpan.FromSeconds(10);
+
     private readonly Lock _gate = new();
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.OrdinalIgnoreCase);
 
     // Channels with one of our PARTs on the wire whose echo has not arrived yet. Independent of
     // _entries: the leave drops the wish before the PART is sent, and a re-activation adds a new one.
-    private readonly HashSet<string> _pendingParts = new(StringComparer.OrdinalIgnoreCase);
+    // The value is the time the PART went on the wire; a pending PART older than PartEchoGrace is
+    // treated as never echoed.
+    private readonly Dictionary<string, DateTimeOffset> _pendingParts = new(StringComparer.OrdinalIgnoreCase);
 
     private bool _connected;
 
@@ -136,7 +145,7 @@ public sealed class ChannelJoinTracker
     /// Our own PART for the channel is on the wire: the attempt window closes, and the PART stays
     /// pending until its echo (<see cref="MarkParted"/>) or a disconnect.
     /// </summary>
-    public void RecordPartSent(string name)
+    public void RecordPartSent(string name, DateTimeOffset now)
     {
         lock (_gate)
         {
@@ -145,7 +154,7 @@ public sealed class ChannelJoinTracker
                 entry.AttemptOpen = false;
             }
 
-            _pendingParts.Add(name);
+            _pendingParts[name] = now;
         }
     }
 
@@ -168,13 +177,14 @@ public sealed class ChannelJoinTracker
     /// <summary>
     /// Our own JOIN echo. Confirms only a wanted channel with an open attempt and no pending PART of
     /// ours (never inserts); returns whether it did. An echo while a PART is pending answers a JOIN
-    /// sent before that PART and leaves the newer attempt open.
+    /// sent before that PART and leaves the newer attempt open. A PART pending for longer than
+    /// <see cref="PartEchoGrace"/> no longer counts, so a PART Twitch never echoes cannot block forever.
     /// </summary>
-    public bool MarkConfirmed(string name)
+    public bool MarkConfirmed(string name, DateTimeOffset now)
     {
         lock (_gate)
         {
-            if (_pendingParts.Contains(name)
+            if (IsPartPending(name, now)
                 || !_entries.TryGetValue(name, out var entry) || entry.Confirmed || !entry.AttemptOpen)
             {
                 return false;
@@ -213,6 +223,26 @@ public sealed class ChannelJoinTracker
                 entry.RunningSince = _connected ? now : null;
                 entry.AttemptOpen = false;
             }
+        }
+    }
+
+    /// <summary>
+    /// Drops a pending PART of an unconfirmed channel once it is older than <see cref="PartEchoGrace"/>
+    /// and reports whether it did. The convergence net uses it to learn that a JOIN echo it may have
+    /// ignored cannot be answered by TwitchLib's duplicate-suppressed JOIN, so a real PART and JOIN is due.
+    /// </summary>
+    public bool TakeExpiredPart(string name, DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            if (!_pendingParts.TryGetValue(name, out var sentAt) || now - sentAt < PartEchoGrace
+                || (_entries.TryGetValue(name, out var entry) && entry.Confirmed))
+            {
+                return false;
+            }
+
+            _pendingParts.Remove(name);
+            return true;
         }
     }
 
@@ -308,6 +338,10 @@ public sealed class ChannelJoinTracker
             ];
         }
     }
+
+    // Precondition: the caller holds _gate. A clock that jumped backwards keeps the PART pending.
+    private bool IsPartPending(string name, DateTimeOffset now) =>
+        _pendingParts.TryGetValue(name, out var sentAt) && now - sentAt < PartEchoGrace;
 
     private sealed class Entry
     {

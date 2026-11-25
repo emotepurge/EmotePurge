@@ -343,6 +343,50 @@ public class TwitchChatManagerJoinFailureTransportTests
     }
 
     [Fact]
+    public async Task AMissingPartEcho_BlocksJoinEchoesOnlyForTheGrace_ThenTheNextJoinEchoConfirms()
+    {
+        await using var h = await Harness.StartAsync();
+        await h.Manager.JoinChannelAsync(ChannelA);
+        await h.Manager.LeaveChannelAsync(ChannelA);
+        Assert.Equal(1, h.Transport.PartsSentFor(ChannelA)); // Twitch never echoes this PART
+        await h.Manager.JoinChannelAsync(ChannelA);
+        await h.WaitUntilAsync(() => h.Transport.JoinsSentFor(ChannelA) == 2);
+
+        h.Clock.Advance(TimeSpan.FromSeconds(5));
+        await h.Transport.ReceiveAsync(h.JoinEcho(ChannelA));
+        await h.Transport.ReceiveAsync(h.NamesEnd(ChannelA));
+        Assert.False(h.Entry(ChannelA).JoinConfirmed); // inside the grace: still old membership
+
+        h.Clock.Advance(TimeSpan.FromSeconds(6));
+        await h.Transport.ReceiveAsync(h.JoinEcho(ChannelA));
+        await h.Transport.ReceiveAsync(h.NamesEnd(ChannelA));
+        Assert.True(h.Entry(ChannelA).JoinConfirmed);
+    }
+
+    // No further echo is coming once the grace has passed (TwitchLib lists the channel as joined and
+    // drops a plain JOIN), so the convergence net must send a real PART first.
+    [Fact]
+    public async Task AnExpiredMissingPartEcho_MakesTheConvergenceNetPartAndJoinForReal()
+    {
+        await using var h = await Harness.StartAsync();
+        await h.Manager.JoinChannelAsync(ChannelA);
+        await h.Manager.LeaveChannelAsync(ChannelA);
+        await h.Manager.JoinChannelAsync(ChannelA);
+        await h.WaitUntilAsync(() => h.Transport.JoinsSentFor(ChannelA) == 2);
+        await h.Transport.ReceiveAsync(h.JoinEcho(ChannelA)); // ignored: our PART looks pending
+        Assert.False(h.Entry(ChannelA).JoinConfirmed);
+
+        h.Clock.Advance(TimeSpan.FromSeconds(60));
+        await h.Manager.EnsureJoinedAsync(ChannelA, h.Manager.CaptureLeaveStamp());
+
+        Assert.Equal(2, h.Transport.PartsSentFor(ChannelA));
+        await h.WaitUntilAsync(() => h.Transport.JoinsSentFor(ChannelA) == 3, TimeSpan.FromSeconds(10));
+        await h.Transport.ReceiveAsync(h.PartEcho(ChannelA));
+        await h.Transport.ReceiveAsync(h.JoinEcho(ChannelA));
+        Assert.True(h.Entry(ChannelA).JoinConfirmed);
+    }
+
+    [Fact]
     public async Task ATwitchInitiatedPart_OfAConfirmedChannel_WithdrawsTheConfirmation_AndTheNextEnsureSendsAgain()
     {
         await using var h = await Harness.StartAsync();
