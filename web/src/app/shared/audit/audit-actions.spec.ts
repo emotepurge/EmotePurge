@@ -16,6 +16,15 @@ import de from '../../../../public/i18n/de.json';
 import en from '../../../../public/i18n/en.json';
 
 /** Walks a dotted translation key, returning undefined as soon as a segment is missing. */
+/** Kinds without a count: their locale entry is a plain string, not a { one, other } pair. */
+const STRING_DETAIL_KINDS: ReadonlySet<string> = new Set([
+  'title',
+  'killSwitchOn',
+  'killSwitchOff',
+  'tokenInvalid',
+  'tokenExpired',
+]);
+
 function lookup(bundle: unknown, key: string): unknown {
   return key
     .split('.')
@@ -29,15 +38,15 @@ function lookup(bundle: unknown, key: string): unknown {
 }
 
 describe('audit action tables', () => {
-  it('names all forty-one AuditActions constants', () => {
+  it('names all fifty-four AuditActions constants', () => {
     // A gap here is the whole point of the lookup: a newly added backend action must show up as a
     // missing entry rather than as a silently generated key.
-    expect(Object.keys(ACTION_KEYS)).toHaveLength(42);
+    expect(Object.keys(ACTION_KEYS)).toHaveLength(55);
   });
 
-  it('names the eighteen wish actions, all channel-scoped', () => {
+  it('names the twenty-seven wish actions, all channel-scoped', () => {
     const wishActions = Object.keys(ACTION_KEYS).filter((a) => a.startsWith('wish.'));
-    expect(wishActions).toHaveLength(19);
+    expect(wishActions).toHaveLength(28);
     for (const action of wishActions) {
       expect(CHANNEL_SCOPED_ACTIONS).toContain(action);
       expect(CHANNELLESS_ACTIONS.has(action)).toBe(false);
@@ -46,11 +55,11 @@ describe('audit action tables', () => {
 
   it('excludes the user-scoped actions from the channel-scoped set', () => {
     // A single channel's log can never contain them, so its filter must not offer them.
-    expect(CHANNEL_SCOPED_ACTIONS).toHaveLength(39);
+    expect(CHANNEL_SCOPED_ACTIONS).toHaveLength(48);
     expect(CHANNEL_SCOPED_ACTIONS).not.toContain('user.revokeSessions');
     expect(CHANNEL_SCOPED_ACTIONS).not.toContain('user.invalidateRoleCache');
     expect(CHANNEL_SCOPED_ACTIONS).not.toContain('user.delete');
-    expect(CHANNELLESS_ACTIONS.size).toBe(3);
+    expect(CHANNELLESS_ACTIONS.size).toBe(7);
   });
 
   it.each(Object.entries(ACTION_KEYS))('translates %s in both locales', (_action, key) => {
@@ -62,7 +71,7 @@ describe('audit action tables', () => {
   // (`audit-row.ts`'s `renderDetail`), so its locale entry is a `{ one, other }` pair rather than
   // a single string — `title` is the one kind that never gets a count and stays a plain string.
   it.each(Object.entries(DETAIL_KEYS))('translates the %s detail in both locales', (kind, key) => {
-    if (kind === 'title') {
+    if (STRING_DETAIL_KINDS.has(kind)) {
       expect(lookup(de, key)).toBeTypeOf('string');
       expect(lookup(en, key)).toBeTypeOf('string');
       return;
@@ -85,8 +94,12 @@ describe('audit action tables', () => {
       'importedFromFile',
       'importedFromLeaderboard',
       'importedFromTag',
+      'killSwitchOff',
+      'killSwitchOn',
       'removedEntries',
       'title',
+      'tokenExpired',
+      'tokenInvalid',
     ]);
   });
 

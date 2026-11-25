@@ -835,6 +835,61 @@ public class AuditLogQueryServiceTests(PostgresFixture fixture)
         Assert.Equal(["emote-z"], targetSet.UnresolvedSevenTvEmoteIds);
     }
 
+    [Theory]
+    [InlineData(AuditActions.BotAccountKillSwitch, """{"enabled": true}""", "killSwitchOn")]
+    [InlineData(AuditActions.BotAccountKillSwitch, """{"enabled": false}""", "killSwitchOff")]
+    [InlineData(AuditActions.BotAccountTokenState, """{"status": "invalid", "errorCode": "x"}""", "tokenInvalid")]
+    [InlineData(AuditActions.BotAccountTokenState, """{"status": "expired"}""", "tokenExpired")]
+    public async Task ListAsync_ProjectsTheBotAccountFlagKinds(string action, string json, string expectedKind)
+    {
+        await using var db = fixture.CreateDbContext();
+        var target = $"bot-{Guid.NewGuid():N}";
+        db.AuditLogEntries.Add(new AuditLogEntry
+        {
+            OccurredAtUtc = new DateTime(2099, 8, 1, 10, 0, 0, DateTimeKind.Utc),
+            ActorTwitchUserId = "4711",
+            ActorLogin = "sensitron",
+            Action = action,
+            TargetType = "botAccount",
+            TargetId = target,
+            DetailsJson = json
+        });
+        await db.SaveChangesAsync();
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(action, null, null));
+
+        var dto = page.Items.First(i => i.TargetId == target);
+        Assert.Equal(expectedKind, dto.Detail!.Kind);
+        Assert.Null(dto.Detail.Count);
+        Assert.Null(dto.Detail.Text);
+    }
+
+    [Theory]
+    [InlineData("""{"enabled": true}""")]
+    [InlineData("""{"status": "invalid"}""")]
+    public async Task ListAsync_DoesNotProjectBotFlagShapes_OfAnotherAction(string json)
+    {
+        await using var db = fixture.CreateDbContext();
+        var target = $"other-{Guid.NewGuid():N}";
+        db.AuditLogEntries.Add(new AuditLogEntry
+        {
+            OccurredAtUtc = new DateTime(2099, 8, 1, 10, 0, 0, DateTimeKind.Utc),
+            ActorTwitchUserId = "4711",
+            ActorLogin = "sensitron",
+            Action = AuditActions.BotAccountTokenSet,
+            TargetType = "botAccount",
+            TargetId = target,
+            DetailsJson = json
+        });
+        await db.SaveChangesAsync();
+
+        var page = await new AuditLogQueryService(db)
+            .ListAsync(1, 50, new AuditLogFilter(AuditActions.BotAccountTokenSet, null, null));
+
+        Assert.Null(page.Items.First(i => i.TargetId == target).Detail);
+    }
+
     private static AuditLogEntry NewEntry(string channelName, string action, DateTime occurredAtUtc, string actorLogin)
         => new()
         {

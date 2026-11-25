@@ -104,6 +104,12 @@ public record AuditLogDetail(
         // backfill.removeImported (#384): Count only (the coverage days removed). Days, not rows: the
         // unit the manager saw in the confirmation and the one the coverage counts.
         public const string BackfillRemovedDays = "backfillRemovedDays";
+        // botAccount.killSwitch / botAccount.tokenState (#487): no count, no text; the kind itself carries the one
+        // boolean/enum value the row needs (enabled true/false, status invalid/expired). Never the error code.
+        public const string KillSwitchOn = "killSwitchOn";
+        public const string KillSwitchOff = "killSwitchOff";
+        public const string TokenInvalid = "tokenInvalid";
+        public const string TokenExpired = "tokenExpired";
     }
 }
 

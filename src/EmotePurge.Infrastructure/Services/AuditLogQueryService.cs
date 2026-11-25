@@ -103,7 +103,7 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
                 r.ChannelName,
                 r.TargetType,
                 r.TargetId,
-                ProjectDetail(r.DetailsJson)))
+                ProjectDetail(r.Action, r.DetailsJson)))
             .ToList();
 
         return new PagedResult<AuditLogEntryDto>(items, page, pageSize, totalCount);
@@ -161,7 +161,7 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
     /// where the emotes came from (R1 in the #71 import plan).
     /// </para>
     /// </summary>
-    private static AuditLogDetail? ProjectDetail(string? detailsJson)
+    private static AuditLogDetail? ProjectDetail(string action, string? detailsJson)
     {
         if (!TryParseDetailsObject(detailsJson, out var root))
         {
@@ -205,7 +205,51 @@ public class AuditLogQueryService(AppDbContext db) : IAuditLogQueryService
             return new AuditLogDetail(AuditLogDetail.Kinds.BackfillRemovedDays, backfillRemovedDays, null);
         }
 
+        // Action-gated: `enabled` and `status` are generic keys, and only these two actions write them as bot flags.
+        if (action is AuditActions.BotAccountKillSwitch or AuditActions.BotAccountTokenState
+            && TryProjectBotAccountDetail(root, out var botDetail))
+        {
+            return botDetail;
+        }
+
         return TryProjectTitleDetail(root, out var titleDetail) ? titleDetail : null;
+    }
+
+    /// <summary>
+    /// The bot account's two flag-shaped payloads (#487): <c>{ enabled }</c> of the kill switch and
+    /// <c>{ status }</c> of a token the worker marked unusable. Only those exact values project; anything
+    /// else (including the error code next to <c>status</c>) stays out.
+    /// </summary>
+    private static bool TryProjectBotAccountDetail(JsonElement root, out AuditLogDetail? detail)
+    {
+        detail = null;
+        string? kind = null;
+        if (root.TryGetProperty("enabled", out var enabled))
+        {
+            kind = enabled.ValueKind switch
+            {
+                JsonValueKind.True => AuditLogDetail.Kinds.KillSwitchOn,
+                JsonValueKind.False => AuditLogDetail.Kinds.KillSwitchOff,
+                _ => null,
+            };
+        }
+        else if (root.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.String)
+        {
+            kind = status.GetString() switch
+            {
+                "invalid" => AuditLogDetail.Kinds.TokenInvalid,
+                "expired" => AuditLogDetail.Kinds.TokenExpired,
+                _ => null,
+            };
+        }
+
+        if (kind is null)
+        {
+            return false;
+        }
+
+        detail = new AuditLogDetail(kind, null, null);
+        return true;
     }
 
     /// <summary>Parses a details payload into an object root, degrading to false on any malformed shape.</summary>

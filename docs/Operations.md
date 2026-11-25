@@ -1916,7 +1916,7 @@ manager approves, rejects or unlinks. Nothing here writes to 7TV.
   The image from before child 6 keeps running against the new schema. **On production `AddWishes` is
   probably still pending, so `list` shows two pending migrations (`AddWishes`, `AddWishCapture`); both are
   additive and one `update` applies them in order.**
-- **The housekeeping tick runs even with everything off.** The sixteenth hosted service, `WishCaptureWorker`,
+- **The housekeeping tick runs even with everything off.** The last hosted service, `WishCaptureWorker`,
   runs a tick every minute whatever the switches say: it deletes expired learning rows and capture receipts
   older than seven days and, on its first tick and every fifteenth minute, expires open wishes that waited
   longer than the channel's `PendingExpiryDays` (default 14, 1 to 90). It needs the migration; without it the
@@ -2045,6 +2045,64 @@ Checked on 2026-11-18 against a scratch database with eleven hand-seeded cases (
 24 h and plus a minute; immature; duplicate entries; two expiries of one wish; a decision before the expiry;
 an expiry outside the window; late and early decisions known only through `previousExpiresAtUtc`; the same
 pair from both sources): 11 of 11 gave the expected counts (denominator 11, numerator 6, late 2).
+
+## Bot account
+
+The bot account (#487, wish emotes child 4) is the project's own 7TV account. In bot mode it adds and removes wish
+emotes in channels that turned the bot mode on and made the account a 7TV editor. Its 7TV token is the **only** 7TV
+token the server stores; users' write tokens never leave their browser. This write path is **unofficial and not
+confirmed by 7TV**: it may stop working or be refused without notice, and every wish then falls back to the manual
+flow. This section is part 1 of the runbook (keys and startup); setting, renewing and deleting the token, the kill
+switch and the rollback follow with the admin page.
+
+- **Switch:** `BotAccount:Enabled` (environment variable `BOT_ACCOUNT_ENABLED`, default `false`). Set the **same value
+  on api and worker**.
+- **Trust boundary.** The token is sealed before it is stored: a fresh AES-256-GCM key encrypts it, and an RSA-3072 key
+  pair (OAEP with SHA-256) wraps that AES key. The api holds only the **public** key and can seal, never open; only the
+  worker holds the **private** key. Neither key is related to `Auth:Twitch:TokenEncryptionKey`.
+
+### Generating the key pair
+
+Generate the pair once, on a trusted machine (not in the repository, not on a shared drive), and put each half into
+the stack variables as **one line of base64 DER** (multi-line PEM breaks in compose variables):
+
+```bash
+umask 077
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out bot-account-token.pem
+# Private half, PKCS#8 DER -> BOT_ACCOUNT_TOKEN_PRIVATE_KEY (worker only)
+openssl pkcs8 -topk8 -nocrypt -in bot-account-token.pem -outform DER | base64 -w0; echo
+# Public half, SubjectPublicKeyInfo DER -> BOT_ACCOUNT_TOKEN_PUBLIC_KEY (api only)
+openssl pkey -in bot-account-token.pem -pubout -outform DER | base64 -w0; echo
+# Fingerprint of the public half, to compare with what the api reports
+openssl pkey -in bot-account-token.pem -pubout -outform DER | openssl dgst -sha256
+```
+
+(`base64 -w0` is GNU coreutils; on macOS use `base64 | tr -d '\n'`.) Keep the PEM file offline as the backup of the
+private key, or delete it: without the private key a stored seal can no longer be opened, and the token has to be set
+again after a new pair is generated.
+
+| Variable | Service | Content |
+|---|---|---|
+| `BOT_ACCOUNT_TOKEN_PUBLIC_KEY` (`BotAccount__TokenPublicKey`) | **api only** | SubjectPublicKeyInfo, base64 DER, one line |
+| `BOT_ACCOUNT_TOKEN_PRIVATE_KEY` (`BotAccount__TokenPrivateKey`) | **worker only** | PKCS#8 private key, base64 DER, one line |
+
+Never give the private key to the api: it is the internet-facing process, and the whole point of the split is that it
+cannot read the token back. The compose files map each variable to its one service only.
+
+### Fail-fast at startup
+
+With `BotAccount:Enabled=true`, each process checks its own key while the service graph is built and stops the start
+if it is missing, not base64, not an RSA key of the expected form (a public key where the private one belongs, or the
+other way round) or not exactly 3072 bits. The message names the configuration key (`BotAccount:TokenPublicKey` or
+`BotAccount:TokenPrivateKey`) and the reason, never the value; the container then restarts in a loop until the
+variable is fixed. With the switch off no key is read: the api registers a sealer that refuses everything (the token
+route answers 404 anyway) and the worker registers no opener.
+
+### Never log out normally with the bot account
+
+Until it is verified that a normal logout leaves other sessions alone, **never log out normally with the bot account**
+anywhere (7TV or Twitch, any browser). Close the browser window or the private window instead. A normal logout may end
+the session the stored token belongs to, and the bot would then fall back to the manual flow on its next write.
 
 ## Database backup and restore
 

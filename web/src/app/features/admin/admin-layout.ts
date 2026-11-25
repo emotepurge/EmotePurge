@@ -31,6 +31,7 @@ import { TabLink } from '../../shared/ui/tab-link';
         <app-tab-link link="logs" [label]="'admin.tabs.logs' | transloco" />
         <app-tab-link link="channels" [label]="'admin.tabs.channels' | transloco" />
         <app-tab-link link="users" [label]="'admin.tabs.users' | transloco" />
+        <app-tab-link link="bot-account" [label]="'admin.tabs.botAccount' | transloco" />
         <app-tab-link link="audit-log" [label]="'admin.tabs.auditLog' | transloco" />
       </nav>
 

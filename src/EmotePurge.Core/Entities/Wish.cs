@@ -70,6 +70,17 @@ public class Wish
     public int BotAttemptCount { get; set; }
     public DateTime? BotNextAttemptAtUtc { get; set; }
 
+    // The bot's write attempt (plan #487 2.5a, all nullable): the set of the open attempt, the decision version it
+    // was committed at, the removal attempt, its evidence (jsonb, never in a DTO or the audit), the acknowledged
+    // add, the confirmation deadline and the repair phase.
+    public string? BotSetId { get; set; }
+    public int? BotAttemptVersion { get; set; }
+    public DateTime? BotRemoveAtUtc { get; set; }
+    public string? BotRemoveEvidence { get; set; }
+    public DateTime? BotAddAckAtUtc { get; set; }
+    public DateTime? BotConfirmDeadlineAtUtc { get; set; }
+    public DateTime? BotRepairAtUtc { get; set; }
+
     public DateTime? RemovalQueuedAtUtc { get; set; }
     public int? RemovalQueuedVersion { get; set; }
 

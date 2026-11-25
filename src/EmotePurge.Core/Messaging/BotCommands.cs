@@ -20,4 +20,10 @@ public static class BotCommands
     /// only; the worker never trusts it for identity (the queued run row is the truth).
     /// </summary>
     public const string BackfillPrefix = "BACKFILL:";
+
+    /// <summary>
+    /// Nudge for the bot account worker (#487): the token or the kill switch changed. Sent exactly as the prefix, with no
+    /// payload; the credential row is the truth and the worker's own poll finds every change anyway.
+    /// </summary>
+    public const string BotAccountPrefix = "BOTACCOUNT:";
 }

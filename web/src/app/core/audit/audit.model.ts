@@ -52,6 +52,19 @@ export type AuditAction =
   | 'wish.rewardAdd'
   | 'wish.rewardChange'
   | 'wish.rewardRemove'
+  | 'wish.botActivate'
+  | 'wish.botDeactivate'
+  | 'wish.botAdd'
+  | 'wish.botRemove'
+  | 'wish.botRepair'
+  | 'wish.botSuspectRemoval'
+  | 'wish.botSuspend'
+  | 'wish.botRemoveRequest'
+  | 'wish.recheck'
+  | 'botAccount.tokenSet'
+  | 'botAccount.tokenDelete'
+  | 'botAccount.killSwitch'
+  | 'botAccount.tokenState'
   | 'user.revokeSessions'
   | 'user.invalidateRoleCache'
   | 'user.delete';
@@ -69,7 +82,12 @@ export type AuditDetailKind =
   /** A chat-log backfill request (#346): the number of months asked for; the set rides on the target fields. */
   | 'backfillMonths'
   /** A removal of a channel's imported backfill data (#384): the number of coverage days removed. */
-  | 'backfillRemovedDays';
+  | 'backfillRemovedDays'
+  /** The bot account's kill switch and token state (#487): the kind alone carries the value. */
+  | 'killSwitchOn'
+  | 'killSwitchOff'
+  | 'tokenInvalid'
+  | 'tokenExpired';
 
 /**
  * An action's target set (spec 2026-09-20), present on an `AuditLogDetail` whenever the row's

@@ -22,6 +22,23 @@ function entry(overrides: Partial<AuditLogEntry> = {}): AuditLogEntry {
  *  dedicated `describe` block below), so a fixed dictionary is easier to read there than a stub. */
 const IDENTITY_TRANSLATE = (key: string) => key;
 
+describe('toAuditRows bot account details', () => {
+  it.each([
+    ['botAccount.killSwitch', 'killSwitchOn', 'audit.details.killSwitchOn'],
+    ['botAccount.killSwitch', 'killSwitchOff', 'audit.details.killSwitchOff'],
+    ['botAccount.tokenState', 'tokenInvalid', 'audit.details.tokenInvalid'],
+    ['botAccount.tokenState', 'tokenExpired', 'audit.details.tokenExpired'],
+  ])('renders %s / %s as a distinct detail', (action, kind, key) => {
+    const [row] = toAuditRows(
+      [entry({ action, channelName: null, detail: { kind, count: null, text: null } })],
+      'de-DE',
+      IDENTITY_TRANSLATE,
+    );
+
+    expect(row.detail).toEqual({ key, params: {} });
+  });
+});
+
 describe('toAuditRows', () => {
   it('resolves a known action to its translation key', () => {
     const [row] = toAuditRows(

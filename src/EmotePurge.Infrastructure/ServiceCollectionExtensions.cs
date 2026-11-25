@@ -3,6 +3,7 @@ using EmotePurge.Core.Messaging;
 using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Core.Twitch;
+using EmotePurge.Infrastructure.BotAccount;
 using EmotePurge.Infrastructure.ChatLogArchive;
 using EmotePurge.Infrastructure.Contact;
 using EmotePurge.Infrastructure.Logging.Query;
@@ -348,6 +349,13 @@ public static class ServiceCollectionExtensions
         configuration.GetSection(WishOptions.SectionName).Bind(wishOptions);
         wishOptions.Validate();
         services.AddSingleton(wishOptions);
+
+        // The bot account's account-wide switches (#487), bound and validated the same way for Api and Worker.
+        var botAccountOptions = new BotAccountOptions();
+        configuration.GetSection(BotAccountOptions.SectionName).Bind(botAccountOptions);
+        botAccountOptions.Validate();
+        services.AddSingleton(botAccountOptions);
+
         services.AddSingleton<IWishChangedPublisher, WishChangedPublisher>();
         services.AddScoped<IWishService, WishService>();
         services.AddScoped<IWishOverviewService, WishOverviewService>();
@@ -359,9 +367,12 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IWishReconcileService, WishReconcileService>();
         services.AddSingleton<IWishReconcileTrigger, WishReconcileTrigger>();
         // The expiry run (#484) is scoped like every service on AppDbContext; the Worker resolves it per pass. The
-        // bot availability is a stand-in that is never available until K4 replaces this one line.
+        // bot availability (#487 2.3) is two layers, both scoped on AppDbContext: the account-wide answer and the wishes'
+        // view of it (Wishes:Enabled and the account), which is what the expiry run asks.
         services.AddScoped<IWishExpiryService, WishExpiryService>();
-        services.AddSingleton<IWishBotAvailability, WishBotNeverAvailable>();
+        services.AddScoped<IBotAccountAvailability, BotAccountAvailability>();
+        services.AddScoped<IWishBotAvailability, WishBotAvailability>();
+        services.AddScoped<IWishBotService, WishBotService>();
 
         // The backfill's database side for both processes (spec section 3). Scoped like every service
         // on AppDbContext; the worker resolves it from a scope that lives as long as its loop, because

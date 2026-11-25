@@ -262,8 +262,30 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// </summary>
     public IWishRewardService WishRewards { get; } = Substitute.For<IWishRewardService>();
 
+    /// <summary>
+    /// Substituted for the bot account's admin routes (#487): the real service sits on <c>AppDbContext</c>. The switch
+    /// <c>BotAccount:Enabled</c> is <b>off</b> here, the production default; <see cref="WithBotAccountEnabled"/> is the on
+    /// variant (with a generated public key, because the Api's entry point refuses to start without one).
+    /// </summary>
+    public IBotAccountService BotAccount { get; } = Substitute.For<IBotAccountService>();
+
+    /// <summary>Substituted like <see cref="BotAccount"/>, for the <c>wishes</c> numbers of the same read.</summary>
+    public IWishBotService WishBot { get; } = Substitute.For<IWishBotService>();
+
+    // One 3072-bit key per test run, generated lazily: only the enabled variant needs it.
+    private static readonly Lazy<string> BotAccountPublicKey = new(() =>
+    {
+        using var rsa = System.Security.Cryptography.RSA.Create(3072);
+        return Convert.ToBase64String(rsa.ExportSubjectPublicKeyInfo());
+    });
+
     public ApiFactory()
     {
+        WishBot.GetAdminSummaryAsync(Arg.Any<CancellationToken>())
+            .Returns(new WishBotAdminSummary(new WishBotQueueCounts(0, 0, 0), 0, 0, 0));
+        BotAccount.GetAsync(Arg.Any<CancellationToken>())
+            .Returns(new BotAccountStateDto(false, BotAccountStatus.None, null, null, null, null, null, false, null));
+
         LegalContent.GetAvailabilityAsync(Arg.Any<CancellationToken>())
             .Returns(new LegalDocumentAvailability(ImprintAvailable: false, PrivacyAvailable: false));
 
@@ -347,6 +369,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             services.AddScoped(_ => Wishes);
             services.AddScoped(_ => WishOverview);
             services.AddScoped(_ => WishRewards);
+            services.AddScoped(_ => BotAccount);
+            services.AddScoped(_ => WishBot);
 
             // Load-bearing, and not obvious: RequestDelegateFactory resolves a handler's injected
             // services *before* it runs the endpoint filter pipeline. A request the filter is about
@@ -379,6 +403,17 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     /// </summary>
     public WebApplicationFactory<Program> WithWishCaptureDisabled() =>
         WithWebHostBuilder(builder => builder.UseSetting("Wishes:Capture:Enabled", "false"));
+
+    /// <summary>
+    /// The same factory with <c>BotAccount:Enabled</c> on and a valid public token key, so the Api starts with the real
+    /// sealer (the substituted <see cref="BotAccount"/> service never uses it).
+    /// </summary>
+    public WebApplicationFactory<Program> WithBotAccountEnabled() =>
+        WithWebHostBuilder(builder =>
+        {
+            builder.UseSetting("BotAccount:Enabled", "true");
+            builder.UseSetting("BotAccount:TokenPublicKey", BotAccountPublicKey.Value);
+        });
 
     private static IChannelEmoteSetObservationService CreateDefaultObservationService()
     {

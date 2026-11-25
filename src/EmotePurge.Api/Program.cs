@@ -8,6 +8,7 @@ using EmotePurge.Api.Validation;
 using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure;
+using EmotePurge.Infrastructure.BotAccount;
 using EmotePurge.Infrastructure.Logging;
 using EmotePurge.Infrastructure.Services;
 using Microsoft.AspNetCore.Authentication;
@@ -38,6 +39,8 @@ builder.Services.AddOpenApi();
 builder.Services.AddLogCapture(builder.Configuration, LogSource.Api);
 builder.Services.AddEmotePurgeInfrastructure(builder.Configuration);
 builder.Services.AddSystemLoadSampler(SystemLoadSource.Api);
+// Seals the bot account token with the public key only; the Api never registers the opener (spec E7, plan #487 2.2).
+builder.Services.AddBotAccountTokenSealing(builder.Configuration);
 
 // Without a shared key ring every container restart invalidates every auth cookie, and two API
 // replicas would reject each other's logins outright. Only enabled when a path is configured

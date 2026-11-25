@@ -3,6 +3,7 @@ using EmotePurge.Core.Entities;
 using EmotePurge.Core.Services;
 using EmotePurge.Infrastructure.Logging;
 using EmotePurge.Infrastructure.Services;
+using EmotePurge.Worker.BotAccount;
 using EmotePurge.Worker.ChatLogBackfill;
 using EmotePurge.Worker.WishCapture;
 using Microsoft.Extensions.Configuration;
@@ -23,15 +24,16 @@ public class WorkerServiceRegistrationTests
     [Theory]
     [InlineData("true")]
     [InlineData("false")]
-    public void AddWorkerHostedServices_RegistersExactlyTheSixteenOfTheWorker(string captureEnabled)
+    public void AddWorkerHostedServices_RegistersExactlyTheSeventeenOfTheWorker(string captureEnabled)
     {
         var configuration = Configuration(captureEnabled);
         var services = new ServiceCollection();
         services.AddWorkerCore(configuration);
         services.AddWorkerHostedServices(configuration);
 
-        Assert.Equal(16, services.Count(d => d.ServiceType == typeof(IHostedService)));
+        Assert.Equal(17, services.Count(d => d.ServiceType == typeof(IHostedService)));
         Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(WishCaptureWorker));
+        Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(BotAccountWorker));
         Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(ChatLogBackfillWorker));
         Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(SystemLoadRollupWorker));
         Assert.Contains(services, d => d.ServiceType == typeof(IHostedService) && d.ImplementationType == typeof(WishExpiryWorker));
@@ -96,9 +98,25 @@ public class WorkerServiceRegistrationTests
         var hosted = provider.GetServices<IHostedService>().ToList();
 
         Assert.IsType<WishCaptureWorker>(hosted[^1]);
+        Assert.IsType<BotAccountWorker>(hosted[^2]);
+        Assert.IsType<WishExpiryWorker>(hosted[^3]);
         Assert.IsType<LogCaptureWriter>(hosted[0]);
         Assert.True(hosted.FindIndex(s => s is UsageFlushWorker) < hosted.Count - 1);
         Assert.Single(hosted, s => s is WishCaptureWorker);
+    }
+
+    // Plan #487 2.5: Worker sets the BOTACCOUNT: nudge, the bot account loop waits on it — one instance, registered whatever
+    // BotAccount:Enabled says, because the command loop always runs. With the switch off the loop's runner is not there.
+    [Fact]
+    public void AddWorkerCore_RegistersOneBotAccountSignal_AndNoRunnerWhileTheBotAccountIsOff()
+    {
+        using var provider = BuildWorkerProvider("false");
+
+        Assert.Same(provider.GetRequiredService<BotAccountSignal>(), provider.GetRequiredService<BotAccountSignal>());
+        Assert.Contains(provider.GetServices<IHostedService>(), s => s is BotAccountWorker);
+        using var scope = provider.CreateScope();
+        Assert.Null(scope.ServiceProvider.GetService<IBotAccountRunner>());
+        Assert.Null(scope.ServiceProvider.GetService<IWishBotPass>());
     }
 
     // The watchdog reports through the recorder, the capture worker drives the tracker: one instance under both names.

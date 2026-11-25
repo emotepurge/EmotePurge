@@ -37,6 +37,7 @@ public static class AdminEndpoints
             .AddEndpointFilter<GlobalAdminAuthorizationFilter>();
 
         group.MapAdminLogEndpoints();
+        group.MapAdminBotAccountEndpoints();
 
         group.MapGet("/health", async (IWorkerHealthReader healthReader, WishOptions wishOptions, CancellationToken ct) =>
         {
