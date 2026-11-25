@@ -87,6 +87,8 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
             .Returns(call => AnswerAcceptAsync(call.ArgAt<string>(1), call.ArgAt<string>(2)));
         _writes.AddEmoteAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(call => AnswerAddAsync(call.ArgAt<string>(1), call.ArgAt<string>(2), call.ArgAt<string>(3)));
+        _writes.RemoveEmoteAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call => AnswerRemoveAsync(call.ArgAt<string>(1), call.ArgAt<string>(2), call.ArgAt<string>(3)));
         _writes.ReadSetEntriesAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<Func<TimeSpan>?>(), Arg.Any<CancellationToken>())
             .Returns(call => AnswerSetReadAsync(call.ArgAt<string>(1), call.ArgAt<Func<TimeSpan>?>(2)));
     }

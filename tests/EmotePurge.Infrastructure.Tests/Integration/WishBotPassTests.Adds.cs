@@ -714,15 +714,20 @@ public partial class WishBotPassTests
         return _addAnswer is { } answer ? answer(call) : TakeEffect(call);
     }
 
-    // A read of a set: a queued answer first, otherwise the set as it is (Unavailable for a set "7TV" does not know). The
-    // adds read without a deadline.
+    // A read of a set: a queued answer first, then the stub of a removal test (it sees the read's deadline), otherwise the
+    // set as it is (Unavailable for a set "7TV" does not know).
     private async Task<SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>> AnswerSetReadAsync(string setId, Func<TimeSpan>? timeLeft = null)
     {
-        Assert.Null(timeLeft);
         _readCalls.Add(setId);
+        _readDeadlines.Add(timeLeft is not null);
         if (_whileReading is { } hook)
         {
             await hook(_readCalls.Count);
+        }
+
+        if (_readResults.Count == 0 && _readStub is { } stub && stub(_readCalls.Count, setId, timeLeft) is { } stubbed)
+        {
+            return stubbed;
         }
 
         if (_readResults.Count > 0)

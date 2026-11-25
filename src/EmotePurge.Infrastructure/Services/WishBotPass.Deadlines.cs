@@ -11,7 +11,9 @@ namespace EmotePurge.Infrastructure.Services;
 // before the lock is tried, local only (no token, no 7TV, no pause, no budget, no fence). An open add past its
 // confirmation deadline (WishBotConfirmSchedule.DeadlineOf: unconfirmed with BotConfirmDeadlineAtUtc reached, or a crash
 // remnant whose write is older than the window) is resolved without 7TV by WishBotAttemptResolution: presented
-// (unconfirmed), BotSetId, BotWriteAtUtc and BotAddAckAtUtc kept for recheck. Like the fallback run only the wish row is
+// (unconfirmed), BotSetId, BotWriteAtUtc and BotAddAckAtUtc kept for recheck. An open removal attempt older than 15
+// minutes (BotRemoveAtUtc) is resolved the same way: presented (bot_unavailable), attempt and queue cleared, the evidence
+// kept as a repair phase that only a read resolves (2.5a (e), (h)). Like the fallback run only the wish row is
 // locked (never the channel row, so no cycle with the send transactions, which take channel then wish), each wish in a
 // short transaction of its own under a BotAccountLockDeadline (K6e-3), re-read and re-decided behind the lock; a row gone
 // by then is nothing to do (K6b-17). The decision version stays (2.5a (e)). One wish.changed per channel after its last
@@ -52,19 +54,22 @@ public sealed partial class WishBotPass
         }
     }
 
-    // The wishes whose deadline may have passed; the row decides again behind its lock (IsDeadlineDue). T10 adds the open
-    // removal attempts (BotRemoveAtUtc + 15 min) here and in IsDeadlineDue.
+    // The wishes whose deadline may have passed; the row decides again behind its lock (IsDeadlineDue): the open adds, and
+    // the open removal attempts (BotRemoveAtUtc + 15 min).
     private static IQueryable<Wish> DeadlineCandidates(IQueryable<Wish> wishes, DateTime nowUtc)
     {
         var writtenBefore = nowUtc - WishLimits.BotConfirmWindow;
+        var removedBefore = nowUtc - RemovalResumeWindow;
         return wishes.Where(w =>
             (w.Status == WishStatus.Unconfirmed
                 && (w.BotConfirmDeadlineAtUtc <= nowUtc || (w.BotConfirmDeadlineAtUtc == null && w.BotWriteAtUtc <= writtenBefore)))
-            || (w.Status == WishStatus.Approved && w.BotWriteAtUtc != null && w.BotWriteAtUtc <= writtenBefore));
+            || (w.Status == WishStatus.Approved && w.BotWriteAtUtc != null && w.BotWriteAtUtc <= writtenBefore)
+            || (w.BotRemoveAtUtc != null && w.BotRemoveAtUtc <= removedBefore));
     }
 
     private static bool IsDeadlineDue(Wish wish, DateTime nowUtc) =>
-        WishBotConfirmSchedule.DeadlineOf(wish) is { } deadline && deadline <= nowUtc;
+        (WishBotConfirmSchedule.DeadlineOf(wish) is { } deadline && deadline <= nowUtc)
+        || (wish.BotRemoveAtUtc is { } removal && removal + RemovalResumeWindow <= nowUtc);
 
     // True when the wish changed and committed.
     private async Task<bool> ResolveDeadlineAsync(long wishId, CancellationToken cancellationToken)
@@ -92,7 +97,7 @@ public sealed partial class WishBotPass
             await db.SaveChangesAsync(cancellationToken);
             await deadline.ApplyAsync(db, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
-            logger.LogInformation("Wish bot: wish {WishId} passed its confirmation deadline and goes to the managers.", wishId);
+            logger.LogInformation("Wish bot: the open attempt of wish {WishId} passed its deadline and goes to the managers.", wishId);
             return true;
         }
         catch (Exception ex) when (BotAccountLockDeadline.IsExpiry(ex, cancellationToken))

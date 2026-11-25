@@ -10,14 +10,16 @@ namespace EmotePurge.Infrastructure.Services;
 /// worker's <c>AddBotAccountWriter</c> next to the runner, so it shares the runner's loop-long scope and with it the
 /// runner's <see cref="AppDbContext"/>: every step leaves nothing tracked behind (plan K6b-14).
 /// <list type="bullet">
-/// <item>Step 0, the deadline step: the add part (<c>WishBotPass.Deadlines.cs</c>, T9), the removal part (T10).</item>
+/// <item>Step 0, the deadline step: the add part (<c>WishBotPass.Deadlines.cs</c>, T9) and the removal part (T10).</item>
 /// <item>Step 2, activation requests and invitations: open acceptance attempts resolved by a read, requests confirmed or
 /// ended, invitations accepted after [F7] (<c>WishBotPass.Invitations.cs</c>, T8c).</item>
 /// <item>Step 3, the channel states: coverage, consent and the editor read per activated channel, with suspension and
 /// resume (<c>WishBotPass.ChannelStates.cs</c>, T8b).</item>
 /// <item>Step 4, the fallback run (<see cref="IWishBotFallback"/>, T8b), the channels' states from the session's account.</item>
 /// <item>Step 5, the derived queue: selection, order and budget loop (<c>WishBotPass.Queue.cs</c>, T9), adds and
-/// confirmations (<c>WishBotPass.Adds.cs</c>, T9); repair checks, removal attempts and queued removals dock on (T10).</item>
+/// confirmations (<c>WishBotPass.Adds.cs</c>, T9); repair checks, removal attempts and queued removals with the repair and
+/// the detection limit (<c>WishBotPass.Removals.cs</c>, T10), stuck removal orders counted in memory per runner epoch
+/// (<see cref="WishBotStuckRemovals"/>).</item>
 /// </list>
 /// <see cref="RunAsync"/> runs whatever the token state (<see cref="IBotAccountSession.Token"/> is only set while
 /// <c>valid</c>); a lost lock or epoch ends it without booking anything after that, and so does a credential that changed

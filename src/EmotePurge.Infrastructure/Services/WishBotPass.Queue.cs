@@ -36,6 +36,7 @@ public sealed partial class WishBotPass
         IBotAccountSession session, BotAccountAvailabilityState account, CancellationToken cancellationToken)
     {
         var items = await SelectQueueAsync(account, cancellationToken);
+        _stuckRemovals.Retain(session.RunnerEpoch, items.Where(i => i.Kind == WishBotQueueKind.Removal).Select(i => i.WishId));
         if (items.Count == 0)
         {
             return true;
@@ -63,13 +64,16 @@ public sealed partial class WishBotPass
     private Task<QueueStep> RunQueueItemAsync(
         IBotAccountSession session, QueueState state, WishBotQueueItem item, CancellationToken cancellationToken) => item.Kind switch
         {
+            WishBotQueueKind.RepairCheck => RunRepairCheckAsync(session, item, cancellationToken),
+            WishBotQueueKind.RemovalAttempt => RunRemovalAttemptAsync(session, item, cancellationToken),
             WishBotQueueKind.Add => RunAddAsync(session, state, item, cancellationToken),
             WishBotQueueKind.Confirm => RunConfirmAsync(session, item.ChannelId, item.WishId, cancellationToken),
+            WishBotQueueKind.Removal => RunRemovalAsync(session, state, item, cancellationToken),
             _ => throw new InvalidOperationException($"No handler for queue items of kind {item.Kind}."),
         };
 
-    // Every selector reads without a lock; T10 adds its own (repair checks in any channel state, removal attempts and
-    // queued removals in bot channels).
+    // Every selector reads without a lock: the adds' (T9) in bot channels; the removals' (T10) take the repair checks in
+    // any channel state and the removal attempts and queued removals in bot channels.
     private async Task<List<WishBotQueueItem>> SelectQueueAsync(BotAccountAvailabilityState account, CancellationToken cancellationToken)
     {
         var botChannels = await BotChannelIdsAsync(account, cancellationToken);
@@ -79,6 +83,7 @@ public sealed partial class WishBotPass
             items.AddRange(await SelectAddWorkAsync(botChannels, cancellationToken));
         }
 
+        items.AddRange(await SelectRemovalWorkAsync(botChannels, cancellationToken));
         return items;
     }
 
@@ -215,12 +220,23 @@ public sealed partial class WishBotPass
     // (and settings), true when it booked something. A reported pause joins the transaction (K6c-3) and is committed with
     // it even when apply books nothing; where the transaction does not get that far, the pause is reported on its own
     // afterwards, so it is never lost and the token rests for the rest of the pass. One wish.changed after a hit.
-    private async Task<Booking> BookWishAsync(
+    private Task<Booking> BookWishAsync(
         IBotAccountSession session,
         string channelId,
         long wishId,
         TimeSpan? pause,
         Func<LockedWish, DateTime, bool> apply,
+        CancellationToken cancellationToken) =>
+        BookWishAsync(session, channelId, wishId, pause, (locked, now, _) => Task.FromResult(apply(locked, now)), cancellationToken);
+
+    // The same with a decision that reads behind the locks itself (T10: the local slots before the removal's booking); it
+    // applies the deadline before each of its statements.
+    private async Task<Booking> BookWishAsync(
+        IBotAccountSession session,
+        string channelId,
+        long wishId,
+        TimeSpan? pause,
+        Func<LockedWish, DateTime, BotAccountLockDeadline, Task<bool>> apply,
         CancellationToken cancellationToken)
     {
         var booking = Booking.Missed;
@@ -238,7 +254,7 @@ public sealed partial class WishBotPass
             }
             else if (locking == Booking.Hit)
             {
-                var hit = apply(locked!, Now());
+                var hit = await apply(locked!, Now(), deadline);
                 booking = hit ? Booking.Hit : Booking.Missed;
                 if (hit || unreportedPause is not null)
                 {
