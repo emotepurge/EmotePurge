@@ -714,9 +714,11 @@ public partial class WishBotPassTests
         return _addAnswer is { } answer ? answer(call) : TakeEffect(call);
     }
 
-    // A read of a set: a queued answer first, otherwise the set as it is (Unavailable for a set "7TV" does not know).
-    private async Task<SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>> AnswerSetReadAsync(string setId)
+    // A read of a set: a queued answer first, otherwise the set as it is (Unavailable for a set "7TV" does not know). The
+    // adds read without a deadline.
+    private async Task<SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>> AnswerSetReadAsync(string setId, Func<TimeSpan>? timeLeft = null)
     {
+        Assert.Null(timeLeft);
         _readCalls.Add(setId);
         if (_whileReading is { } hook)
         {

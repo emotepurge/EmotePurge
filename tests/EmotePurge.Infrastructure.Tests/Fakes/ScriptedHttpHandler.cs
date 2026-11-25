@@ -49,6 +49,17 @@ public sealed class ScriptedHttpHandler : HttpMessageHandler
         return this;
     }
 
+    /// <summary>HTTP 200 with <paramref name="body"/> after <paramref name="delay"/>, unless the request is cancelled first.</summary>
+    public ScriptedHttpHandler ThenOkAfter(TimeSpan delay, string body)
+    {
+        _steps.Enqueue(async cancellationToken =>
+        {
+            await Task.Delay(delay, cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+        });
+        return this;
+    }
+
     /// <summary>Never answers; the request ends only when it is cancelled (by the client's time limit or the caller).</summary>
     public ScriptedHttpHandler ThenHang()
     {

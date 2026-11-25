@@ -35,9 +35,19 @@ public interface ISevenTvWriteClient
     /// <see cref="SevenTvWriteOutcome.Unavailable"/>. <see cref="SevenTvWriteResult{T}.Value"/> is never <c>null</c> on
     /// <see cref="SevenTvWriteOutcome.Ok"/>. An entry whose emote did not resolve is left out.
     /// </summary>
+    /// <param name="token">The bot account's token.</param>
+    /// <param name="setId">The set to read.</param>
+    /// <param name="timeLeft">
+    /// The latest end of the read, as the time left until it (plan #487 K6d-5, K6e-5): asked before every page, which then
+    /// gets the smaller of the client's own time limit (10 s) and that time left; with less than a second left no page is
+    /// requested any more. A page cut at it, or one that would start too late, is <see cref="SevenTvWriteOutcome.Unavailable"/>,
+    /// never an exception. Null: no deadline (a read without a row lock).
+    /// </param>
+    /// <param name="cancellationToken">The caller's cancellation.</param>
     Task<SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>> ReadSetEntriesAsync(
         string token,
         string setId,
+        Func<TimeSpan>? timeLeft = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>

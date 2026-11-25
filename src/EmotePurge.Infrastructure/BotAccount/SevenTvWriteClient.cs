@@ -74,6 +74,9 @@ public sealed partial class SevenTvWriteClient(
     private const int SetEntriesPerPage = 500;
     private const int MaxSetEntryPages = 10;
 
+    // The shortest time limit a page under a deadline is still requested with (K6e-5).
+    private static readonly TimeSpan MinimumPageTimeLimit = TimeSpan.FromSeconds(1);
+
     private static readonly string[] VerifyPath = ["users", "me"];
     private static readonly string[] SetPath = ["emoteSets", "emoteSet"];
     private static readonly string[] AddEmotePath = ["emoteSets", "emoteSet", "addEmote"];
@@ -106,6 +109,7 @@ public sealed partial class SevenTvWriteClient(
     public async Task<SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>> ReadSetEntriesAsync(
         string token,
         string setId,
+        Func<TimeSpan>? timeLeft = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(setId);
@@ -116,8 +120,23 @@ public sealed partial class SevenTvWriteClient(
         var rawItems = 0;
         for (var page = 1; page <= MaxSetEntryPages; page++)
         {
+            // K6e-5: under a deadline every page gets the smaller of the client's time limit and the time left, and none
+            // starts with less than a second left.
+            TimeSpan? pageLimit = null;
+            if (timeLeft is not null)
+            {
+                var left = timeLeft();
+                if (left < MinimumPageTimeLimit)
+                {
+                    logger.LogWarning("7TV bot read stopped before page {Page}: its deadline leaves no time for it, outcome Unavailable.", page);
+                    return SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Failed(SevenTvWriteResult.Unavailable());
+                }
+
+                pageLimit = left < BotAccountRegistration.WriteClientTimeout ? left : null;
+            }
+
             var exchange = await PostAsync(
-                "read", token, SetEntriesQuery, new { id = setId, page, perPage = SetEntriesPerPage }, cancellationToken);
+                "read", token, SetEntriesQuery, new { id = setId, page, perPage = SetEntriesPerPage }, cancellationToken, pageLimit);
             if (exchange.Reply is not { } reply)
             {
                 return SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Failed(exchange.Failure!);
@@ -285,9 +304,17 @@ public sealed partial class SevenTvWriteClient(
         string token,
         string query,
         object variables,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? timeLimit = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
+
+        // A time limit below the client's own (a page under a lock deadline, K6e-5) cancels the request on its own token;
+        // the caller's token stays untouched, so the cut is told apart from both the caller's cancellation and the
+        // HttpClient timeout.
+        using var limit = timeLimit is { } shorter ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken) : null;
+        limit?.CancelAfter(timeLimit!.Value);
+        var requestToken = limit?.Token ?? cancellationToken;
 
         using var request = new HttpRequestMessage(HttpMethod.Post, GqlPath)
         {
@@ -304,7 +331,7 @@ public sealed partial class SevenTvWriteClient(
         var reported = false;
         try
         {
-            using var response = await httpClient.SendAsync(request, cancellationToken);
+            using var response = await httpClient.SendAsync(request, requestToken);
             status = response.StatusCode;
             facts = ResponseFacts.Read(response);
 
@@ -326,7 +353,7 @@ public sealed partial class SevenTvWriteClient(
                 return Exchange.Failed(transportFailure, status);
             }
 
-            body = await response.Content.ReadAsStringAsync(cancellationToken);
+            body = await response.Content.ReadAsStringAsync(requestToken);
 
             if ((int)status == 403)
             {
@@ -351,8 +378,10 @@ public sealed partial class SevenTvWriteClient(
                 Report(facts, null);
             }
 
-            LogOutcome(operation, SevenTvWriteResult.Timeout(), null, null);
-            return Exchange.Failed(SevenTvWriteResult.Timeout(), null);
+            // Cut at the caller's deadline (K6e-5): Unavailable, never a Timeout of the request itself.
+            var cut = limit is { IsCancellationRequested: true } ? SevenTvWriteResult.Unavailable() : SevenTvWriteResult.Timeout();
+            LogOutcome(operation, cut, null, null);
+            return Exchange.Failed(cut, null);
         }
         catch (HttpRequestException ex)
         {

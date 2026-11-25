@@ -248,7 +248,7 @@ public sealed partial class WishBotPass
             return await WithdrawThenAsync(session, item, intent, pause: null, preflight.Value, cancellationToken);
         }
 
-        var result = await writeClient.ReadSetEntriesAsync(session.Token!, intent.SetId, cancellationToken);
+        var result = await writeClient.ReadSetEntriesAsync(session.Token!, intent.SetId, cancellationToken: cancellationToken);
         var pause = Report(session, result.Status);
         if (!await session.HoldsLockAsync(cancellationToken))
         {
@@ -579,7 +579,7 @@ public sealed partial class WishBotPass
         }
 
         var readAt = Now();
-        var result = await writeClient.ReadSetEntriesAsync(session.Token!, setId, cancellationToken);
+        var result = await writeClient.ReadSetEntriesAsync(session.Token!, setId, cancellationToken: cancellationToken);
         var pause = Report(session, result.Status);
         if (!await session.HoldsLockAsync(cancellationToken))
         {
