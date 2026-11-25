@@ -341,17 +341,6 @@ public sealed partial class WishBotPass
         return (step, attempt);
     }
 
-    // Spec 8 "Vor dem Schreiben erneut prüfen" (E25): queued at the decision version, active past its expiry or presented
-    // with an order, owned, the start authoritative.
-    private static bool RemovalEligible(Wish wish, DateTime now) =>
-        wish.RemovalQueuedAtUtc is not null
-        && wish.RemovalQueuedVersion == wish.DecisionVersion
-        && ((string.Equals(wish.Status, WishStatus.Active, StringComparison.Ordinal) && wish.ExpiresAtUtc is { } expiresAt && expiresAt <= now)
-            || string.Equals(wish.Status, WishStatus.Presented, StringComparison.Ordinal))
-        && wish.BotOwned
-        && wish.BotOwnedAddedAtUtc is not null
-        && wish.StartsAtAuthoritative;
-
     // ------------------------------------------------------------------------------------ (2) the send transaction
 
     // Sent: removeEmote went out and answered Ok, Timeout or Unavailable within a transaction that ended normally, so the
@@ -1131,30 +1120,6 @@ public sealed partial class WishBotPass
             occurredAtUtc: now);
     }
 
-    // Another entry of the emote went with the bot's (2.7 "Reparatur"): presented (repair_review), queue empty, the phase
-    // with the evidence kept; the bot's ownership ended with its entry.
-    private static void ToRepairReview(Wish wish, DateTime phase, DateTime now)
-    {
-        if (string.Equals(wish.Status, WishStatus.Active, StringComparison.Ordinal))
-        {
-            wish.Status = WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.Present)!;
-        }
-
-        if (!string.Equals(wish.StatusReason, WishStatusReason.RepairReview, StringComparison.Ordinal))
-        {
-            wish.StatusChangedAtUtc = now;
-        }
-
-        wish.StatusReason = WishStatusReason.RepairReview;
-        wish.DecisionVersion++;
-        wish.RemovalQueuedAtUtc = null;
-        wish.RemovalQueuedVersion = null;
-        EndBotOwnership(wish);
-        wish.BotRemoveAtUtc = null;
-        wish.BotAttemptVersion = null;
-        wish.BotRepairAtUtc = phase;
-    }
-
     // The bot's entry was changed or renamed in 7TV, or the active set moved (spec 8): presented (ownership_lost), no send.
     private void OwnershipLost(Wish wish, DateTime now)
     {
@@ -1187,6 +1152,51 @@ public sealed partial class WishBotPass
         wish.RemovalQueuedAtUtc = null;
         wish.RemovalQueuedVersion = null;
         EndBotOwnership(wish);
+    }
+
+    private void AuditRepair(LockedWish locked, string outcome, DateTime now) =>
+        db.AddAuditEntry(
+            AuditActor.System,
+            AuditActions.WishBotRepair,
+            channelName: locked.ChannelName,
+            targetType: "wish",
+            targetId: locked.Wish.Id.ToString(CultureInfo.InvariantCulture),
+            details: new { wishId = locked.Wish.Id, sevenTvEmoteId = locked.Wish.SevenTvEmoteId, outcome },
+            occurredAtUtc: now);
+
+    // Spec 8 "Vor dem Schreiben erneut prüfen" (E25): queued at the decision version, active past its expiry or presented
+    // with an order, owned, the start authoritative.
+    private static bool RemovalEligible(Wish wish, DateTime now) =>
+        wish.RemovalQueuedAtUtc is not null
+        && wish.RemovalQueuedVersion == wish.DecisionVersion
+        && ((string.Equals(wish.Status, WishStatus.Active, StringComparison.Ordinal) && wish.ExpiresAtUtc is { } expiresAt && expiresAt <= now)
+            || string.Equals(wish.Status, WishStatus.Presented, StringComparison.Ordinal))
+        && wish.BotOwned
+        && wish.BotOwnedAddedAtUtc is not null
+        && wish.StartsAtAuthoritative;
+
+    // Another entry of the emote went with the bot's (2.7 "Reparatur"): presented (repair_review), queue empty, the phase
+    // with the evidence kept; the bot's ownership ended with its entry.
+    private static void ToRepairReview(Wish wish, DateTime phase, DateTime now)
+    {
+        if (string.Equals(wish.Status, WishStatus.Active, StringComparison.Ordinal))
+        {
+            wish.Status = WishTransitions.Target(wish.Status, wish.StatusReason, WishAction.Present)!;
+        }
+
+        if (!string.Equals(wish.StatusReason, WishStatusReason.RepairReview, StringComparison.Ordinal))
+        {
+            wish.StatusChangedAtUtc = now;
+        }
+
+        wish.StatusReason = WishStatusReason.RepairReview;
+        wish.DecisionVersion++;
+        wish.RemovalQueuedAtUtc = null;
+        wish.RemovalQueuedVersion = null;
+        EndBotOwnership(wish);
+        wish.BotRemoveAtUtc = null;
+        wish.BotAttemptVersion = null;
+        wish.BotRepairAtUtc = phase;
     }
 
     private static void EndBotOwnership(Wish wish)
@@ -1242,16 +1252,6 @@ public sealed partial class WishBotPass
 
         return details;
     }
-
-    private void AuditRepair(LockedWish locked, string outcome, DateTime now) =>
-        db.AddAuditEntry(
-            AuditActor.System,
-            AuditActions.WishBotRepair,
-            channelName: locked.ChannelName,
-            targetType: "wish",
-            targetId: locked.Wish.Id.ToString(CultureInfo.InvariantCulture),
-            details: new { wishId = locked.Wish.Id, sevenTvEmoteId = locked.Wish.SevenTvEmoteId, outcome },
-            occurredAtUtc: now);
 
     // The definite answers of the repair's addEmote (2.5a (h)); null for an unclear one (the phase stays).
     private static string? RepairOutcomeOf(SevenTvWriteOutcome outcome) => outcome switch
@@ -1319,7 +1319,6 @@ public sealed partial class WishBotPass
         public const string RateLimited = "rate_limited";
         public const string NeedsReview = "needs_review";
     }
-
 
     // The attempt as committed in transaction 1: its stamp, the decision version it is bound to, the status it was
     // committed in and its evidence.
