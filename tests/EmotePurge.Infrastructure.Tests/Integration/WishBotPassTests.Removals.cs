@@ -402,6 +402,42 @@ public partial class WishBotPassTests
             new[] { first, second },
             audits.Select(a => DateTime.Parse(a.Details["missingAddedAtUtc"], CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal)).Order());
         Assert.All(audits, a => Assert.DoesNotContain(a.Details.Values, v => v.StartsWith("Alias", StringComparison.Ordinal)));
+        Assert.All(audits, a => Assert.Equal("False", a.Details["missingEntryAmbiguous"]));
+    }
+
+    // 7TV v4 entries carry no slot key of their own, only the alias and addedAt. Where addedAt is missing, or shared with
+    // another entry of the evidence (the bot's own included), set and addedAt do not name one entry: the audit says so.
+    [Fact]
+    public async Task ANeedsReviewWhoseAddedAtIsMissingOrShared_IsFlaggedAmbiguous()
+    {
+        var channel = await SeedBotChannelAsync();
+        var own = Now.AddDays(-3);
+        var shared = Now.AddDays(-20);
+        var unique = Now.AddDays(-10);
+        var id = await SeedWishAsync(channel, WishStatus.Removed, w =>
+        {
+            w.EndedAtUtc = Now.AddHours(-1);
+            w.BotRepairAtUtc = Now.AddHours(-1);
+            w.BotRemoveEvidence = EvidenceJson(
+                SetA,
+                w.SevenTvEmoteId,
+                "Alias",
+                own,
+                [
+                    new WishBotRemovalOtherEntry("Alias2", shared),
+                    new WishBotRemovalOtherEntry("Alias3", shared),
+                    new WishBotRemovalOtherEntry("Alias4", null),
+                    new WishBotRemovalOtherEntry("Alias5", own),
+                    new WishBotRemovalOtherEntry("Alias6", unique),
+                ]);
+        });
+        Set(SetA);
+
+        await RunPassAsync();
+
+        Assert.Null((await LoadAsync(id)).BotRepairAtUtc);
+        var audits = await AuditsAsync(AuditActions.WishBotRepair);
+        Assert.Equal(new[] { "True", "True", "True", "True", "False" }, audits.Select(a => a.Details["missingEntryAmbiguous"]));
     }
 
     // The detection limit (spec 8, AK77): a human replaces the bot's entry by one of the same alias between the fresh read

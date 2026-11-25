@@ -2292,8 +2292,10 @@ the kill switch off.
   as `repair_review` and the bot sends **one** repair add. An unclear phase is resolved by reading only. A missing
   entry that could not be restored is recorded as audit `wish.botRepair` with `outcome` `needs_review` (wish id, emote
   id, `setId` and the missing entry's `missingAddedAtUtc`, no alias) and the evidence is cleared. Look at the evidence
-  **while the phase is open**; afterwards the set and `addedAt` of the audit name the entry in the set's history. Restore
-  by hand in 7TV:
+  **while the phase is open**; afterwards the set and `addedAt` of the audit name the entry in the set's history. They
+  name it alone only where 7TV reported an `addedAt` that no other entry of the emote shares (a 7TV entry has no key of
+  its own besides the alias); otherwise the audit carries `missingEntryAmbiguous: true` and only the evidence, read
+  while the phase is open, tells which entry went. Restore by hand in 7TV:
 
   ```sql
   SELECT w."Id", c."ChannelName", w."Status", w."StatusReason", w."BotRepairAtUtc", w."BotRemoveEvidence"

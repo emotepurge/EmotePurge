@@ -123,6 +123,19 @@ public sealed record WishBotRemovalEvidence(
             .ToList();
     }
 
+    /// <summary>
+    /// Whether the set and <c>addedAt</c> name the recorded other entry <paramref name="entry"/> alone (a 7TV v4 entry has
+    /// no slot key of its own, only emote id, alias and <c>addedAt</c>): false without an <c>addedAt</c>, or when another
+    /// entry of this evidence, the bot's own included, was added at the same instant.
+    /// </summary>
+    public bool NamesUniquely(WishBotRemovalOtherEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        return entry.AddedAtUtc is { } at
+            && !SameInstant(at, AddedAtUtc)
+            && Others.Count(o => SameInstant(o.AddedAtUtc, at)) == 1;
+    }
+
     /// <summary>The jsonb form stored in <c>BotRemoveEvidence</c>.</summary>
     public string ToJson() => JsonSerializer.Serialize(
         new Stored(SetId, new StoredTarget(EmoteId, Alias, AddedAtUtc, AddedById), [.. Others.Select(o => new StoredOther(o.Alias, o.AddedAtUtc))]),

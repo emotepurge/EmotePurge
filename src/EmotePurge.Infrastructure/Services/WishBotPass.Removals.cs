@@ -821,7 +821,7 @@ public sealed partial class WishBotPass
                     AuditRepair(locked!, outcome, now);
                     foreach (var entry in missing.Skip(1))
                     {
-                        AuditNeedsReview(locked!, evidence.SetId, entry, now);
+                        AuditNeedsReview(locked!, evidence, entry, now);
                     }
 
                     ClearRepairPhase(locked!.Wish);
@@ -1082,7 +1082,7 @@ public sealed partial class WishBotPass
 
             foreach (var entry in missing)
             {
-                AuditNeedsReview(locked, evidence.SetId, entry, now);
+                AuditNeedsReview(locked, evidence, entry, now);
             }
 
             ClearRepairPhase(locked.Wish);
@@ -1189,7 +1189,8 @@ public sealed partial class WishBotPass
 
     // One needs_review per missing entry of the evidence (2.5a (h)), without the alias: the set and the entry's addedAt
     // name the entry in the set's history after the evidence is cleared (public set data, nothing of the redeemer).
-    private void AuditNeedsReview(LockedWish locked, string setId, WishBotRemovalOtherEntry entry, DateTime now) =>
+    // Where they cannot name it alone (no addedAt, or one shared within the evidence), missingEntryAmbiguous says so.
+    private void AuditNeedsReview(LockedWish locked, WishBotRemovalEvidence evidence, WishBotRemovalOtherEntry entry, DateTime now) =>
         db.AddAuditEntry(
             AuditActor.System,
             AuditActions.WishBotRepair,
@@ -1201,8 +1202,9 @@ public sealed partial class WishBotPass
                 wishId = locked.Wish.Id,
                 sevenTvEmoteId = locked.Wish.SevenTvEmoteId,
                 outcome = RepairOutcomes.NeedsReview,
-                setId,
+                setId = evidence.SetId,
                 missingAddedAtUtc = entry.AddedAtUtc,
+                missingEntryAmbiguous = !evidence.NamesUniquely(entry),
             },
             occurredAtUtc: now);
 
