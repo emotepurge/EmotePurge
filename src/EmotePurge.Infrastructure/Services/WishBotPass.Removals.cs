@@ -18,8 +18,8 @@ namespace EmotePurge.Infrastructure.Services;
 // decides again, without a second wish.due); the active set must still be BotSetId (else ownership_lost); then the fresh
 // read of BotSetId within the HTTP budget: the alias gone → removed_externally, one of the four features changed →
 // ownership_lost, else the attempt with its evidence (the set included, K6c-2) is committed behind the fence; an open
-// repair phase leaves the queue as it is. The probe; the editor proof refreshed again where transaction 1 aged it past
-// EditorProofRefreshAge. (2) transaction 2, the send transaction (2.5a (c)): channel FOR SHARE, wish FOR UPDATE, the
+// repair phase leaves the queue as it is. Where transaction 1 aged the editor proof past EditorProofRefreshAge, it is
+// refreshed; the probe. (2) transaction 2, the send transaction (2.5a (c)): channel FOR SHARE, wish FOR UPDATE, the
 // fence, the re-check, the fresh read of the evidence's set right before the send (within the budget end minus the
 // write's 10 s, K6d-5): compared with the evidence, a "no" sends nothing and takes the never-sent attempt back in the same
 // commit (a reported pause joined to it), and so does a proof the read took past its minute; otherwise MarkWriteSent and
@@ -141,17 +141,18 @@ public sealed partial class WishBotPass
         }
 
         // From here the attempt is durable: a crash or a lost lock leaves it to the resumption, it is never sent blind.
-        if (!await session.HoldsLockAsync(cancellationToken))
-        {
-            return QueueStep.Stop;
-        }
-
         // Transaction 1 may take up to 38 s (its wish lock and its read), so the proof of the intent can be stale by the
         // send (plan 2.5: at most 1 minute old at the write). Refreshed here, outside any lock, where it is older than
         // EditorProofRefreshAge; that age covers what the send transaction adds before its removeEmote: the probe, the
         // first lock (10 s) and the fresh read (it ends 13 s before F, so at most 15 s). A proof that cannot be refreshed
         // lets the send transaction refuse as before.
         if (await EnsureEditorProofAsync(session, state, item.ChannelId, cancellationToken) == ProofStep.Stop)
+        {
+            return QueueStep.Stop;
+        }
+
+        // The probe before the send (2.5a (g)) follows the refresh, whose booking and reads may outlast the lock.
+        if (!await session.HoldsLockAsync(cancellationToken))
         {
             return QueueStep.Stop;
         }

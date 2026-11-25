@@ -411,6 +411,47 @@ public partial class WishBotPassTests
         Assert.NotNull(wish.RemovalQueuedAtUtc);
     }
 
+    // 2.5a (g): the probe before the send comes after the proof refresh between the two transactions. The lock is lost
+    // while that refresh books the new proof: no fresh read, no removeEmote, and the attempt stays for the resumption.
+    [Fact]
+    public async Task ALockLostWhileTheProofIsRefreshed_SendsNothing()
+    {
+        var channel = await SeedBotChannelAsync();
+        var id = await SeedOwnedAsync(channel, WishStatus.Active);
+        var session = await SessionAsync();
+        var armed = false;
+        _readStub = (number, _, timeLeft) =>
+        {
+            if (number != 1)
+            {
+                return null;
+            }
+
+            armed = true;
+            return PlayPages(timeLeft, 3, TimeSpan.FromSeconds(8));
+        };
+        session.OnWait = _ =>
+        {
+            _clock.Advance(TimeSpan.FromSeconds(29));
+            return Task.CompletedTask;
+        };
+        var hook = new CommandHook(
+            command => armed && command.Contains("UPDATE \"ChannelWishSettings\"", StringComparison.Ordinal),
+            _ =>
+            {
+                session.HoldsLock = false;
+                return Task.CompletedTask;
+            });
+        await using var db = fixture.CreateTaggedDbContext("wish-bot-refresh-lock", [hook], databaseName: DatabaseName);
+
+        await RunPassAsync(db: db, session: session);
+
+        Assert.False(session.HoldsLock);
+        Assert.Empty(_removeCalls);
+        Assert.Single(_readCalls);
+        Assert.NotNull((await LoadAsync(id)).BotRemoveAtUtc);
+    }
+
     // The stuck order (K6e-5): pages of 9 s in every pass, so every send transaction's pre-read is cut and nothing is ever
     // sent. Three aborts within 2 minutes: still queued. Once the first is 15 minutes old: presented (bot_unavailable),
     // the queue empty, one wish.changed, no audit. The same with a presented wish ordered by bot-remove: the order goes,
