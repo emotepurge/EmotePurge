@@ -12,7 +12,7 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ### 2026-11-25 — Join-failure detection and capacity display (#516)
 
-**Betrifft:** `src/EmotePurge.Worker/ChannelJoinTracker.cs` · `src/EmotePurge.Worker/TwitchJoinNoticeParser.cs` · `src/EmotePurge.Worker/WireObservingClient.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs` · `src/EmotePurge.Core/Services/TwitchJoinFailureReasons.cs` · `tests/EmotePurge.Worker.Tests/TwitchChatManagerJoinFailureTransportTests.cs` · `tests/EmotePurge.Worker.Tests/TwitchJoinNoticeTwitchLibTests.cs` · `docs/plans/Plan-516-Join-Fehler-Erkennung.md`
+**Betrifft:** `src/EmotePurge.Worker/WorkerRosterPublisher.cs` · `src/EmotePurge.Core/Services/IWorkerRosterReader.cs` · `tests/EmotePurge.Worker.Tests/WorkerRosterPublisherTests.cs` · `src/EmotePurge.Worker/ChannelJoinTracker.cs` · `src/EmotePurge.Worker/TwitchJoinNoticeParser.cs` · `src/EmotePurge.Worker/WireObservingClient.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs` · `src/EmotePurge.Core/Services/TwitchJoinFailureReasons.cs` · `tests/EmotePurge.Worker.Tests/TwitchChatManagerJoinFailureTransportTests.cs` · `tests/EmotePurge.Worker.Tests/TwitchJoinNoticeTwitchLibTests.cs` · `docs/plans/Plan-516-Join-Fehler-Erkennung.md`
 
 The full plan is `docs/plans/Plan-516-Join-Fehler-Erkennung.md`; this entry grows with the tasks that change a contract. It follows the entry above ("detect join rejections before raising our own cap").
 
@@ -24,6 +24,11 @@ The full plan is `docs/plans/Plan-516-Join-Fehler-Erkennung.md`; this entry grow
 - *Not `OnUnaccountedFor`.* Subscribing to it disables TwitchLib's `LogUnaccountedFor`, on which the redaction chain of #246 relies.
 - *Log events are a new convention:* join failures carry a named `EventId` (`TwitchJoinRejected` for `concurrentChannelLimit` at Error and `channelSuspended`/`banned` at Warning, `TwitchJoinUnconfirmed` for `noConfirmation` at Warning), one line per first occurrence or change of the reason per process, repeats at Debug. The names are what the log viewer filters on (`event:TwitchJoinRejected`).
 - *Transport seam.* `TwitchChatManager` takes an optional transport factory (tests substitute a scripted `IClient` and drive TwitchLib's real receive path). The debug key `Worker:Debug:SilentJoinChannels` (comma-separated logins, never set in compose files) makes the decorator swallow outgoing JOINs for those channels after reporting them, to probe the "Twitch never answers" case; the worker logs a Warning at start when it is set.
+
+**Roster contract (T4).**
+- *Three additive fields per channel, one marker per snapshot.* `worker:roster` rows gain `ircIntent`, `ircUnconfirmedSeconds` and `ircJoinFailureReason` (nulls omitted), and the snapshot gains `schemaVersion` (`WorkerRosterSnapshot.CurrentSchemaVersion` = 1). All of it is filled from the one tracker snapshot behind `GetRoster()`. No migration, no change to `worker:health`.
+- *`ircIntent` replaces the union as the basis for judging join health.* The publisher builds a union of IRC and 7TV rows so that a channel known to only one transport stays visible, but only rows with `ircIntent = true` carry an IRC wish; a 7TV-only row has `false` and no seconds or reason, so a reader cannot mistake it for a join that never confirmed.
+- *The marker sits on the snapshot, not the row,* so an empty roster carries it too. A legacy payload reads as `schemaVersion = 0`, `ircIntent = false`, no seconds, no reason. A new Api with an old worker therefore sees "not assessable" and must answer 503 (fail-closed, no grace window); an old Api with a new worker ignores the new fields.
 
 ---
 

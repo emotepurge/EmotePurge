@@ -19,6 +19,18 @@ namespace EmotePurge.Core.Services;
 /// <paramref name="SevenTvUserAcknowledged"/> being false is a statement about nothing, not a
 /// pending acknowledgement.
 /// </param>
+/// <param name="IrcIntent">
+/// True when the worker's IRC side wants this channel joined. False for a row that exists only
+/// because of a 7TV subscription, and for a payload from a worker that predates the field. The
+/// basis for judging join health, rather than the union of both transports.
+/// </param>
+/// <param name="IrcUnconfirmedSeconds">
+/// Connected seconds the wished join has waited without confirmation (the accrual clock, so a
+/// disconnect neither grows nor resets it). Null when confirmed or when there is no IRC wish.
+/// </param>
+/// <param name="IrcJoinFailureReason">
+/// Why the last join attempt failed (<c>TwitchJoinFailureReasons</c>), or null.
+/// </param>
 public record WorkerRosterChannel(
     string ChannelName,
     bool IrcJoinConfirmed,
@@ -26,7 +38,10 @@ public record WorkerRosterChannel(
     string? SevenTvEmoteSetId,
     bool SevenTvEmoteSetAcknowledged,
     string? SevenTvUserId,
-    bool SevenTvUserAcknowledged);
+    bool SevenTvUserAcknowledged,
+    bool IrcIntent = false,
+    int? IrcUnconfirmedSeconds = null,
+    string? IrcJoinFailureReason = null);
 
 /// <summary>
 /// The worker's per-channel roster, published to Redis on its own key rather than folded into the
@@ -45,14 +60,22 @@ public record WorkerRosterChannel(
 /// True when the worker capped the list. Stated rather than silently dropped: a capped list that
 /// looks complete is worse than no list.
 /// </param>
+/// <param name="SchemaVersion">
+/// Contract marker on the snapshot (not per row, so an empty roster carries it too). 0 means the
+/// writer predates the join-health fields and the snapshot cannot be judged for them.
+/// </param>
 public record WorkerRosterSnapshot(
     DateTime GeneratedAtUtc,
     string WorkerInstanceId,
     DateTime ProcessStartedUtc,
     bool BootRecoveryCompleted,
     bool Truncated,
-    IReadOnlyList<WorkerRosterChannel>? Channels = null)
+    IReadOnlyList<WorkerRosterChannel>? Channels = null,
+    int SchemaVersion = 0)
 {
+    /// <summary>The version a current worker writes.</summary>
+    public const int CurrentSchemaVersion = 1;
+
     /// <summary>
     /// Never null, whatever the payload said. A snapshot written by a worker that predates a future
     /// rename — or one whose array was dropped — must read as "no rows" in one place here instead of
