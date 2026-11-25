@@ -34,13 +34,14 @@ internal static class SevenTvWriteClientTestData
          {"alias":"frenn","addedAt":"2026-10-01T10:00:00+00:00","addedById":"@OWNER@","emote":{"id":"01FQN716Q00001SJ04CBQJT3Z8"}}]
         """);
 
-    public static SevenTvWriteClient Client(ScriptedHttpHandler handler, RecordingLogger<SevenTvWriteClient>? logger = null, TimeSpan? timeout = null) =>
+    public static SevenTvWriteClient Client(ScriptedHttpHandler handler, RecordingLogger<SevenTvWriteClient>? logger = null, TimeSpan? timeout = null, EmotePurge.Core.Services.IRateLimitTelemetry? telemetry = null) =>
         new(
             new HttpClient(handler)
             {
                 BaseAddress = BotAccountRegistration.WriteClientBaseAddress,
                 Timeout = timeout ?? BotAccountRegistration.WriteClientTimeout,
             },
+            telemetry ?? new RecordingRateLimitTelemetry(),
             logger ?? new RecordingLogger<SevenTvWriteClient>());
 
     /// <summary>A GraphQL error object as 7TV shapes it; <paramref name="extra"/> is spliced into <c>extensions</c>.</summary>

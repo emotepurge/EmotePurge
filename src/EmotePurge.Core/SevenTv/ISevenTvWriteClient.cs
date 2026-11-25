@@ -2,7 +2,10 @@ namespace EmotePurge.Core.SevenTv;
 
 /// <summary>
 /// The bot account's own client for 7TV's v4 GraphQL endpoint (plan #487 2.4, spec K4 "Schreib-Client"). Registered in the
-/// worker only, and only while <c>BotAccount:Enabled</c> is on; the Api can never resolve it.
+/// worker only, and only while <c>BotAccount:Enabled</c> is on; the Api can never resolve it. For
+/// <see cref="SevenTvWriteOutcome.Ok"/> of the add, remove and accept operations, <see cref="SevenTvWriteResult.RetryAfter"/>
+/// can also be set: the answer carried a rate limit below the proven operation, so the caller books the success and then
+/// pauses the account.
 /// </summary>
 /// <remarks>
 /// <para>

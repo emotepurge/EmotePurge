@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using EmotePurge.Core.Services;
 using EmotePurge.Core.SevenTv;
 using EmotePurge.Infrastructure.Telemetry;
 using Microsoft.Extensions.Logging;
@@ -26,8 +27,20 @@ namespace EmotePurge.Infrastructure.BotAccount;
 /// <see cref="HttpClient.DefaultRequestHeaders"/> or a field. Logs carry the operation, the outcome, the HTTP status and
 /// 7TV's error code and status, never the token, a body or an error message.
 /// </para>
+/// <para>
+/// Telemetry: the shared <see cref="ProviderRequestTelemetryHandler"/> is silenced for every request
+/// (<see cref="ProviderTelemetrySuppression.OptionsKey"/>) and this client reports each HTTP response itself under
+/// <see cref="RateLimitCallSources.SevenTvBot"/>, once, at <c>PostAsync</c>: a rate limit anywhere in the answer's
+/// <c>errors</c> (also below the mutation field) counts as 429 although the HTTP status is 200. A call that got no
+/// answer (timeout, connection failure) reports nothing, as the handler would not. A rate limit below the proven
+/// operation also sets <see cref="SevenTvWriteResult.RetryAfter"/> on an <see cref="SevenTvWriteOutcome.Ok"/>; the caller
+/// books the pause.
+/// </para>
 /// </remarks>
-public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<SevenTvWriteClient> logger) : ISevenTvWriteClient
+public sealed partial class SevenTvWriteClient(
+    HttpClient httpClient,
+    IRateLimitTelemetry telemetry,
+    ILogger<SevenTvWriteClient> logger) : ISevenTvWriteClient
 {
     /// <summary>Relative to the base address <c>https://7tv.io/v4/</c>.</summary>
     public const string GqlPath = "gql";
@@ -196,7 +209,7 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
             }
         }
 
-        return SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Ok(entries);
+        return SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Ok(entries, exchange.RateLimitWait);
     }
 
     public async Task<SevenTvWriteResult> RemoveEmoteAsync(
@@ -224,7 +237,7 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
 
         if (reply.Field(RemoveEmotePath) is { ValueKind: JsonValueKind.Object })
         {
-            return SevenTvWriteResult.Ok();
+            return OkResult(exchange);
         }
 
         LogOutcome("remove", SevenTvWriteResult.Unavailable(), exchange.HttpStatus, null);
@@ -260,7 +273,7 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
         if (reply.Field(AcceptInvitationPath) is { ValueKind: JsonValueKind.Object } editor
             && string.Equals(ReadString(editor, "state"), AcceptedState, StringComparison.Ordinal))
         {
-            return SevenTvWriteResult.Ok();
+            return OkResult(exchange);
         }
 
         LogOutcome("accept", SevenTvWriteResult.Unavailable(), exchange.HttpStatus, null);
@@ -282,19 +295,24 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
+        // Suppressed per request: this client reports every HTTP response itself (see the class remarks).
+        request.Options.Set(ProviderTelemetrySuppression.OptionsKey, true);
+
         HttpStatusCode status;
         string body;
+        ResponseFacts? facts = null;
+        var reported = false;
         try
         {
             using var response = await httpClient.SendAsync(request, cancellationToken);
             status = response.StatusCode;
+            facts = ResponseFacts.Read(response);
 
             // Decided before the body is read: a real 401 carries 7TV's own body outside the GraphQL schema
             // ({status, error_code, error}, probe P9), a 429 at most a Retry-After header.
             var transportFailure = (int)status switch
             {
-                429 => SevenTvWriteResult.RateLimited(
-                    SevenTvGqlReply.ClampRetryAfter(ProviderRequestTelemetryHandler.ReadRetryAfterSeconds(response))),
+                429 => SevenTvWriteResult.RateLimited(SevenTvGqlReply.ClampRetryAfter(facts.RetryAfterSeconds)),
                 401 => SevenTvWriteResult.Unauthorized(),
                 403 => null,
                 < 200 or > 299 => SevenTvWriteResult.Unavailable(),
@@ -302,6 +320,8 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
             };
             if (transportFailure is not null)
             {
+                Report(facts, null);
+                reported = true;
                 LogOutcome(operation, transportFailure, status, null);
                 return Exchange.Failed(transportFailure, status);
             }
@@ -310,6 +330,9 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
 
             if ((int)status == 403)
             {
+                Report(facts, null);
+                reported = true;
+
                 // Orchestrator decision at T3: only a 403 with 7TV's own error shape (a numeric error_code) means the
                 // token is dead; a CDN or WAF 403 must not mark it invalid and trigger the global fallback.
                 var result = HasSevenTvErrorShape(body)
@@ -321,12 +344,23 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            // HttpClient.Timeout surfaces as a cancellation the caller did not ask for.
+            // HttpClient.Timeout surfaces as a cancellation the caller did not ask for. Without an answer nothing is
+            // reported; with one (the body read timed out) the answer already counted at the handler's place.
+            if (facts is not null && !reported)
+            {
+                Report(facts, null);
+            }
+
             LogOutcome(operation, SevenTvWriteResult.Timeout(), null, null);
             return Exchange.Failed(SevenTvWriteResult.Timeout(), null);
         }
         catch (HttpRequestException ex)
         {
+            if (facts is not null && !reported)
+            {
+                Report(facts, null);
+            }
+
             // The exception's type only: its message is not ours to vouch for.
             logger.LogWarning(
                 "7TV bot {Operation} failed in transport ({ExceptionType}), outcome Unavailable.",
@@ -336,12 +370,30 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
 
         if (SevenTvGqlReply.TryParse(body) is not { } reply)
         {
+            Report(facts, null);
             LogOutcome(operation, SevenTvWriteResult.Unavailable(), status, null);
             return Exchange.Failed(SevenTvWriteResult.Unavailable(), status);
         }
 
-        return new Exchange(reply, null, status);
+        // The status is decided from the whole answer, whatever the operation makes of it: a rate limit 7TV put below the
+        // mutation field is still a rate limit (same predicate as Classify).
+        var wait = reply.RateLimitWait();
+        Report(facts, wait is null ? null : 429);
+        return new Exchange(reply, null, status, wait);
     }
+
+    private void Report(ResponseFacts facts, int? statusOverride) =>
+        telemetry.ReportProviderResponse(new ProviderResponseObservation(
+            RateLimitProviders.SevenTv,
+            RateLimitCallSources.SevenTvBot,
+            statusOverride ?? facts.StatusCode,
+            facts.RetryAfterSeconds,
+            facts.Limit,
+            facts.Remaining,
+            facts.Reset));
+
+    private static SevenTvWriteResult OkResult(Exchange exchange) =>
+        exchange.RateLimitWait is { } wait ? SevenTvWriteResult.Ok(wait) : SevenTvWriteResult.Ok();
 
     private static bool HasSevenTvErrorShape(string body)
     {
@@ -469,8 +521,19 @@ public sealed partial class SevenTvWriteClient(HttpClient httpClient, ILogger<Se
     private static partial Regex PlainCode();
 
     /// <summary>A sent request's answer: either a parsed GraphQL reply or the outcome decided before parsing.</summary>
-    private sealed record Exchange(SevenTvGqlReply? Reply, SevenTvWriteResult? Failure, HttpStatusCode? HttpStatus)
+    private sealed record Exchange(SevenTvGqlReply? Reply, SevenTvWriteResult? Failure, HttpStatusCode? HttpStatus, TimeSpan? RateLimitWait = null)
     {
         public static Exchange Failed(SevenTvWriteResult failure, HttpStatusCode? status) => new(null, failure, status);
+    }
+
+    /// <summary>What the telemetry needs from a response, read before it is disposed.</summary>
+    private sealed record ResponseFacts(int StatusCode, int? RetryAfterSeconds, string? Limit, string? Remaining, string? Reset)
+    {
+        public static ResponseFacts Read(HttpResponseMessage response) => new(
+            (int)response.StatusCode,
+            ProviderRequestTelemetryHandler.ReadRetryAfterSeconds(response),
+            ProviderRequestTelemetryHandler.ReadHeader(response, "Ratelimit-Limit"),
+            ProviderRequestTelemetryHandler.ReadHeader(response, "Ratelimit-Remaining"),
+            ProviderRequestTelemetryHandler.ReadHeader(response, "Ratelimit-Reset"));
     }
 }

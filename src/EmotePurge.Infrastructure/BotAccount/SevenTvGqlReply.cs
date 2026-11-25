@@ -18,7 +18,6 @@ internal sealed class SevenTvGqlReply
     public static readonly TimeSpan MaxRetryAfter = TimeSpan.FromHours(6);
 
     private const string LackingPrivilegesCode = "LACKING_PRIVILEGES";
-    private const string RateLimitExceededCode = "RATE_LIMIT_EXCEEDED";
 
     private SevenTvGqlReply(JsonElement? data, IReadOnlyList<SevenTvGqlError> errors)
     {
@@ -98,6 +97,21 @@ internal sealed class SevenTvGqlReply
     public IReadOnlyList<SevenTvGqlError> ErrorsNotBelow(IReadOnlyList<string> fieldPath) =>
         [.. Errors.Where(error => !error.IsStrictlyBelow(fieldPath))];
 
+    /// <summary>True when any error, whatever its path, is a rate limit (<see cref="SevenTvGqlError.IsRateLimit"/>).</summary>
+    public bool HasRateLimit => Errors.Any(error => error.IsRateLimit);
+
+    /// <summary>
+    /// The wait for a rate limit anywhere in the errors (first reset hint, default and ceiling as in <see cref="Classify"/>),
+    /// or <c>null</c> when none carries one.
+    /// </summary>
+    public TimeSpan? RateLimitWait()
+    {
+        var rateLimited = Errors.Where(error => error.IsRateLimit).ToList();
+        return rateLimited.Count == 0
+            ? null
+            : ClampRetryAfter(rateLimited.Select(error => error.ResetHintSeconds).FirstOrDefault(seconds => seconds is not null));
+    }
+
     /// <summary>
     /// Maps GraphQL errors onto the closed result form (plan #487 2.4). In order: a rate limit anywhere wins (7TV did not
     /// do the work, and the wait must be honoured); then <c>LACKING_PRIVILEGES</c> or status 403; then 409 (alias taken);
@@ -107,7 +121,7 @@ internal sealed class SevenTvGqlReply
     /// </summary>
     public static SevenTvWriteResult Classify(IReadOnlyList<SevenTvGqlError> errors)
     {
-        var rateLimited = errors.Where(error => error.Status == 429 || error.Code == RateLimitExceededCode).ToList();
+        var rateLimited = errors.Where(error => error.IsRateLimit).ToList();
         if (rateLimited.Count > 0)
         {
             var hint = rateLimited.Select(error => error.ResetHintSeconds).FirstOrDefault(seconds => seconds is not null);
@@ -229,6 +243,14 @@ internal sealed class SevenTvGqlReply
 /// </summary>
 internal sealed record SevenTvGqlError(IReadOnlyList<string>? Path, string? Code, int? Status, int? ResetHintSeconds)
 {
+    private const string RateLimitExceededCode = "RATE_LIMIT_EXCEEDED";
+
+    /// <summary>
+    /// The one rate-limit predicate: <c>extensions.status</c> 429 or <c>extensions.code</c> <c>RATE_LIMIT_EXCEEDED</c>. Used
+    /// by <see cref="SevenTvGqlReply.Classify"/> and by the client's telemetry, so the two cannot disagree.
+    /// </summary>
+    public bool IsRateLimit => Status == 429 || Code == RateLimitExceededCode;
+
     /// <summary>True when the error's path continues past <paramref name="fieldPath"/>, i.e. it concerns a sub-selection.</summary>
     public bool IsStrictlyBelow(IReadOnlyList<string> fieldPath)
     {

@@ -153,8 +153,10 @@ public static class RateLimitCallSources
 
     /// <summary>
     /// The bot account's own 7TV v4 GraphQL client in the worker (plan #487 2.4): reads, writes and the acceptance of an
-    /// editor invitation, all with the bot's token. Counted by the shared handler from the raw HTTP status, so a 429 that
-    /// 7TV disguises as HTTP 200 lands here as a success; the client itself turns it into a pause.
+    /// editor invitation, all with the bot's token, plus the unauthenticated editor read of the same loop (plan #487 T8b), which
+    /// reports under this source too. The client reports itself, once per HTTP response, with the shared handler silenced per
+    /// request (<c>ProviderTelemetrySuppression</c>): a 429 that 7TV disguises as HTTP 200 (a rate limit anywhere in
+    /// <c>errors</c>, also below the mutation field) is counted as 429, not as a success.
     /// </summary>
     public const string SevenTvBot = "seventv-bot";
 }
