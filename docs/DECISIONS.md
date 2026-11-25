@@ -10,6 +10,27 @@ Zwei Dinge sind beim Verschieben hinzugekommen, beide außerhalb des historische
 
 ---
 
+### 2026-11-25 — Twitch channel capacity: stay on the anonymous IRC connection; detect join rejections before raising our own cap
+
+**Betrifft:** `CLAUDE.md` ("Bekannte offene Grenzen") · `src/EmotePurge.Api/Health/WorkerCapacity.cs` · `src/EmotePurge.Infrastructure/Services/ChannelCapacityOptions.cs` · `src/EmotePurge.Worker/TwitchChatManager.cs`
+
+**Decision (operator, 2026-11-25).** The worker keeps its single anonymous (`justinfan`) IRC connection. No move to EventSub, no named account, no sharding for now.
+
+**Context.** Twitch caps concurrent joins at 100 "from a single user account" (since 2024-05-15; channels where the account is broadcaster or moderator do not count). Anonymous connections are not mentioned in the docs, and Twitch never answered that question in the 2024 announcement thread. Our measurement of 2026-09-08 (#68, recorded in `WorkerCapacity.cs`): the anonymous login held 120 simultaneous channels without a rejection, while the named account `emotepurgebot` was refused at channel 101 with `msg_concurrent_channel_limit_reached`. 120 is the highest value exercised, not a verified ceiling (one IP, no long-running test). Currently about 65 channels are active, so our own `Channels:MaxActiveChannels` (default 80) is the first limit that bites.
+
+**Rejected or corrected options.**
+- *Verified bot.* The verified-bot exemption from the concurrent-join cap was removed on 2024-06-26; verification only raises rates (2,000 JOINs/10 s, more messages), not the 100 cap. Bot verification reviews are temporarily paused, and no application was ever submitted. The earlier wording "verified bot lifts both limits" was wrong.
+- *EventSub `channel.chat.message`.* With a user token the same limits apply, so it is no way out. With an App Access Token (webhook or conduit) Twitch documents the limits as not applicable, but each channel needs the broadcaster's consent (`channel:bot`) or the bot as moderator there. Of the roughly 65 active channels only about 5 were added by the broadcaster; moderators added the rest and cannot grant `channel:bot`. Per-channel broadcaster consent does not fit the product, so this is rejected for now. This corrects the 2026-08-01 statement that EventSub is "expressly no way out", which holds for user tokens only.
+- *Sharding* over several anonymous connections or accounts: neither documented as allowed nor forbidden, never tested, not pursued.
+
+**Fallback.** If Twitch ever caps anonymous connections: a named bot account as moderator in each channel (moderated channels do not count against the 100). Not preferred, because it forces mod rights on an account that does nothing in the channel. Mitigation: its token would only carry `chat:read`, so moderation actions cannot be exercised through it, and the account has 2FA.
+
+**Known gap.** The worker neither detects nor reports `msg_concurrent_channel_limit_reached` (or other join rejections); a cap change on Twitch's side for anonymous connections would drop channels silently.
+
+**Order of work.** First detect and report join rejections in the worker (follow-up, not part of this change), then raise `Channels:MaxActiveChannels`, never the other way round.
+
+---
+
 ### 2026-11-21 — Wish emotes, child 7 (spec addendum): delete ended wishes now (K7a), renew a kept wish later (K7b, deferred) (epic #481)
 
 **Betrifft:** `docs/superpowers/specs/2026-11-17-wunsch-emotes-spec.md` · `src/EmotePurge.Core/Services/IWishService.cs` · `src/EmotePurge.Core/Entities/AuditLogEntry.cs` · `src/EmotePurge.Infrastructure/Services/WishService.cs` · `src/EmotePurge.Api/Endpoints/WishEndpoints.cs` · `src/EmotePurge.Api/Auth/WishCaptureAccessFilter.cs` · `src/EmotePurge.Api/Auth/WishIdAccessFilter.cs` · `web/src/app/core/wishes/wish-view.ts` · `web/src/app/features/wishes/channel-wishes-page.ts` · `web/src/app/features/wishes/wish-adopt-dialog.ts` · `src/EmotePurge.Infrastructure/Persistence/RowLocks.cs` · `web/src/app/core/seven-tv/seven-tv-delete.service.ts` · `web/src/app/features/wishes/wish-removal-flow.ts` · `web/src/app/features/wishes/wish-entry-dialog.ts` · `docs/plans/Plan-500-Wunsch-Emotes-Loeschen.md` · `docs/Feature-Ideen-2026-08-01.md`
