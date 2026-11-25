@@ -192,6 +192,16 @@ export interface MockAdminRoster {
   ageSeconds?: number;
   missingFromIrc?: string[];
   missingFromSevenTv?: string[];
+  maxActiveChannels?: number;
+  joinHealthStatus?: 'healthy' | 'starting' | 'unavailable' | 'failing';
+  ircUnjoined?: {
+    channelName: string;
+    unconfirmedSeconds: number;
+    reason: string | null;
+    overdue: boolean;
+    countsForAlarm: boolean;
+  }[];
+  missingIntentOverdue?: string[];
 }
 
 /** GET /api/admin/roster — the monitoring page's roster card. Defaults to a complete roster; the
@@ -200,15 +210,26 @@ export async function mockAdminRoster(page: Page, overrides: MockAdminRoster = {
   const tracked = overrides.trackedChannelCount ?? 3;
   const missingFromIrc = overrides.missingFromIrc ?? [];
   const missingFromSevenTv = overrides.missingFromSevenTv ?? [];
+  const ircUnjoined = overrides.ircUnjoined ?? [];
+  const missingIntentOverdue = overrides.missingIntentOverdue ?? [];
   await page.route('**/api/admin/roster', (route) =>
     fulfillJson(route, 200, {
       snapshotAvailable: overrides.snapshotAvailable ?? true,
       trackedChannelCount: tracked,
       ceilings: {
         twitchConcurrentChannelLimit: 100,
-        twitchJoinBudgetChannels: 20,
-        maxActiveChannels: 80,
+        maxActiveChannels: overrides.maxActiveChannels ?? 80,
       },
+      joinHealth: {
+        status: overrides.joinHealthStatus ?? 'healthy',
+        graceSeconds: 60,
+        alarmingTotal: ircUnjoined.filter((row) => row.countsForAlarm && row.overdue).length,
+        excludedTotal: ircUnjoined.filter((row) => !row.countsForAlarm).length,
+      },
+      ircUnjoined,
+      ircUnjoinedTotal: ircUnjoined.length,
+      missingIntentOverdue,
+      missingIntentOverdueTotal: missingIntentOverdue.length,
       generatedAtUtc: '2026-08-01T12:00:00Z',
       ageSeconds: overrides.ageSeconds ?? 12,
       workerInstanceId: 'a1b2c3d4',

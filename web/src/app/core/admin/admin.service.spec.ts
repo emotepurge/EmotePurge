@@ -133,7 +133,6 @@ describe('AdminService', () => {
       trackedChannelCount: 3,
       ceilings: {
         twitchConcurrentChannelLimit: 100,
-        twitchJoinBudgetChannels: 20,
         maxActiveChannels: 80,
       },
       generatedAtUtc: '2026-08-01T12:00:00Z',
@@ -149,7 +148,7 @@ describe('AdminService', () => {
 
     expect(result?.ircConfirmedCount).toBe(2);
     expect(result?.missingFromIrc).toEqual(['sensitron']);
-    expect(result?.ceilings.twitchJoinBudgetChannels).toBe(20);
+    expect(result?.ceilings.maxActiveChannels).toBe(80);
   });
 
   it('getRoster passes a snapshot-less response through without inventing zeros', () => {
@@ -163,7 +162,6 @@ describe('AdminService', () => {
       trackedChannelCount: 3,
       ceilings: {
         twitchConcurrentChannelLimit: 100,
-        twitchJoinBudgetChannels: 20,
         maxActiveChannels: 80,
       },
     });
