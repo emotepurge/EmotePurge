@@ -5,7 +5,8 @@ namespace EmotePurge.Core.SevenTv;
 /// worker only, and only while <c>BotAccount:Enabled</c> is on; the Api can never resolve it. For
 /// <see cref="SevenTvWriteOutcome.Ok"/> of the add, remove and accept operations, <see cref="SevenTvWriteResult.RetryAfter"/>
 /// can also be set: the answer carried a rate limit below the proven operation, so the caller books the success and then
-/// pauses the account.
+/// pauses the account. The same holds for <see cref="SevenTvWriteOutcome.Unavailable"/> of those operations when the
+/// answer carried a rate limit but no proof of success: the outcome stays open, the pause is booked all the same.
 /// </summary>
 /// <remarks>
 /// <para>

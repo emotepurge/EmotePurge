@@ -95,6 +95,27 @@ public class SevenTvWriteClientTelemetryTests
         Assert.Equal([429, 429], telemetry.Observations.Select(o => o.StatusCode));
     }
 
+    // K6e-4: a rate limit below the mutation field, but no proof of success: Unavailable (whether 7TV wrote stays open) with
+    // the wait, for add, remove and accept alike, so the caller pauses the account before its next call.
+    [Fact]
+    public async Task UnprovenMutations_WithARateLimit_AreUnavailableWithRetryAfter()
+    {
+        var (client, telemetry) = Create(new ScriptedHttpHandler()
+            .ThenOk("""{"data":{"emoteSets":{"emoteSet":{"addEmote":null}}},"errors":[""" + Error("slow", null, 429, AddPath, Hint("retry-after", "30")) + "]}")
+            .ThenOk("""{"data":{"emoteSets":{"emoteSet":{"removeEmote":null}}},"errors":[""" + Error("slow", null, 429, """["emoteSets","emoteSet","removeEmote","emotes"]""") + "]}")
+            .ThenOk("""{"data":{"userEditors":{"editor":{"updateState":null}}},"errors":[""" + Error("slow", "RATE_LIMIT_EXCEEDED", null, """["userEditors","editor","updateState","x"]""") + "]}"));
+
+        var added = await client.AddEmoteAsync(Token, SetId, EmoteId, Alias);
+        var removed = await client.RemoveEmoteAsync(Token, SetId, EmoteId, Alias);
+        var accepted = await client.AcceptEditorInvitationAsync(Token, BotId, OwnerId);
+
+        Assert.Equal((SevenTvWriteOutcome.Unavailable, TimeSpan.FromSeconds(30)), (added.Outcome, added.Status.RetryAfter!.Value));
+        Assert.Null(added.Value);
+        Assert.Equal((SevenTvWriteOutcome.Unavailable, SevenTvGqlReply.DefaultRetryAfter), (removed.Outcome, removed.RetryAfter!.Value));
+        Assert.Equal((SevenTvWriteOutcome.Unavailable, SevenTvGqlReply.DefaultRetryAfter), (accepted.Outcome, accepted.RetryAfter!.Value));
+        Assert.Equal([429, 429, 429], telemetry.Observations.Select(o => o.StatusCode));
+    }
+
     [Fact]
     public async Task OkWithoutRateLimit_HasNoRetryAfter_AndIsCountedAs200()
     {

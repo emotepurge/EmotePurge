@@ -330,6 +330,24 @@ public partial class WishBotPassTests
         Assert.Null((await LoadAsync(second)).BotWriteAtUtc);
     }
 
+    // K6e-4: an unproven add (Unavailable) whose answer carried a rate limit: unconfirmed without the acknowledgement, the
+    // pause joined to the send commit, and no read at 0 s with the resting token.
+    [Fact]
+    public async Task AnUnprovenAddWithARateLimit_IsUnconfirmed_AndPausesBeforeAnyRead()
+    {
+        var channel = await SeedBotChannelAsync();
+        var id = await SeedApprovedAsync(channel);
+        _addAnswer = _ => SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Failed(SevenTvWriteResult.Unavailable(TimeSpan.FromSeconds(30)));
+
+        await RunPassAsync();
+
+        var wish = await LoadAsync(id);
+        Assert.Equal((WishStatus.Unconfirmed, (DateTime?)null), (wish.Status, wish.BotAddAckAtUtc));
+        Assert.Equal(new[] { "pause" }, _lastSession!.Calls.Where(c => c.StartsWith("pause", StringComparison.Ordinal)));
+        Assert.Equal(new[] { TimeSpan.FromSeconds(30) }, _lastSession.Pauses);
+        Assert.Single(_readCalls);
+    }
+
     // ------------------------------------------------------------------------------------ the pre-read (2.6 point 2)
 
     // The emote is in the attempt's set already: presented (already_in_set), the attempt cleared, nothing sent.

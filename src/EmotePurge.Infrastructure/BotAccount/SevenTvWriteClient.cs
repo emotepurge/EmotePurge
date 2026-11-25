@@ -33,8 +33,8 @@ namespace EmotePurge.Infrastructure.BotAccount;
 /// <see cref="RateLimitCallSources.SevenTvBot"/>, once, at <c>PostAsync</c>: a rate limit anywhere in the answer's
 /// <c>errors</c> (also below the mutation field) counts as 429 although the HTTP status is 200. A call that got no
 /// answer (timeout, connection failure) reports nothing, as the handler would not. A rate limit below the proven
-/// operation also sets <see cref="SevenTvWriteResult.RetryAfter"/> on an <see cref="SevenTvWriteOutcome.Ok"/>; the caller
-/// books the pause.
+/// operation also sets <see cref="SevenTvWriteResult.RetryAfter"/> on an <see cref="SevenTvWriteOutcome.Ok"/>, and on the
+/// <see cref="SevenTvWriteOutcome.Unavailable"/> of a mutation without its proof; the caller books the pause.
 /// </para>
 /// </remarks>
 public sealed partial class SevenTvWriteClient(
@@ -212,7 +212,7 @@ public sealed partial class SevenTvWriteClient(
         if (returnedSet is not { ValueKind: JsonValueKind.Object } set || !SameId(set, setId))
         {
             LogOutcome("add", SevenTvWriteResult.Unavailable(), exchange.HttpStatus, null);
-            return SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Failed(SevenTvWriteResult.Unavailable());
+            return SevenTvWriteResult<IReadOnlyList<SevenTvSetEntry>>.Failed(UnprovenResult(exchange));
         }
 
         // The entries are a bonus. An error below the mutation field (only the `emotes` selection can carry one once the
@@ -260,7 +260,7 @@ public sealed partial class SevenTvWriteClient(
         }
 
         LogOutcome("remove", SevenTvWriteResult.Unavailable(), exchange.HttpStatus, null);
-        return SevenTvWriteResult.Unavailable();
+        return UnprovenResult(exchange);
     }
 
     public async Task<SevenTvWriteResult> AcceptEditorInvitationAsync(
@@ -296,7 +296,7 @@ public sealed partial class SevenTvWriteClient(
         }
 
         LogOutcome("accept", SevenTvWriteResult.Unavailable(), exchange.HttpStatus, null);
-        return SevenTvWriteResult.Unavailable();
+        return UnprovenResult(exchange);
     }
 
     private async Task<Exchange> PostAsync(
@@ -423,6 +423,10 @@ public sealed partial class SevenTvWriteClient(
 
     private static SevenTvWriteResult OkResult(Exchange exchange) =>
         exchange.RateLimitWait is { } wait ? SevenTvWriteResult.Ok(wait) : SevenTvWriteResult.Ok();
+
+    // A mutation without its proof (K6e-4): the outcome stays open, a rate limit anywhere in the answer still pauses.
+    private static SevenTvWriteResult UnprovenResult(Exchange exchange) =>
+        exchange.RateLimitWait is { } wait ? SevenTvWriteResult.Unavailable(wait) : SevenTvWriteResult.Unavailable();
 
     private static bool HasSevenTvErrorShape(string body)
     {
