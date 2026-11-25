@@ -137,7 +137,8 @@ public sealed partial class WishBotPass
                     continue;
 
                 default:
-                    var booking = await BookDecisionAsync(session, channelId, twitchChannelId, read, decision, cancellationToken);
+                    var booking = await BookDecisionAsync(
+                        session, channelId, twitchChannelId, read, decision, settings.BotActivationRequestedAtUtc, cancellationToken);
                     if (booking == Booking.Fenced)
                     {
                         session.ReportLockLost();
@@ -172,13 +173,16 @@ public sealed partial class WishBotPass
 
     // ------------------------------------------------------------------------------------ Bookings without 7TV
 
-    // Resolution, confirmation, end of a request: decided again behind the locks, on the account as the fence shows it.
+    // Resolution, confirmation, end of a request: decided again behind the locks, on the account as the fence shows it,
+    // and bound to the request the decision was made for (plan 2.9 "Bestätigung im Worker", Sol-P2-6): a request cancelled
+    // and made anew while the read ran is another request, which this read never checked.
     private async Task<Booking> BookDecisionAsync(
         IBotAccountSession session,
         string channelId,
         string? twitchChannelId,
         BotAccountEditorRead? read,
         WishBotInvitationDecision expected,
+        DateTime? checkedRequestAtUtc,
         CancellationToken cancellationToken)
     {
         string? announce = null;
@@ -208,7 +212,7 @@ public sealed partial class WishBotPass
                 .Where(c => c.Id == channelId)
                 .Select(c => c.ChannelName)
                 .FirstOrDefaultAsync(cancellationToken);
-            if (settings is null || channelName is null)
+            if (settings is null || channelName is null || settings.BotActivationRequestedAtUtc != checkedRequestAtUtc)
             {
                 return Booking.Missed;
             }
@@ -414,7 +418,8 @@ public sealed partial class WishBotPass
             return AcceptResult.Stop;
         }
 
-        var stamped = await StampAttemptAsync(session, settings.ChannelId, twitchChannelId, read, decision, cancellationToken);
+        var stamped = await StampAttemptAsync(
+            session, settings.ChannelId, twitchChannelId, read, decision, settings.BotActivationRequestedAtUtc, cancellationToken);
         if (stamped.Booking == Booking.Fenced)
         {
             session.ReportLockLost();
@@ -441,13 +446,15 @@ public sealed partial class WishBotPass
         return sent;
     }
 
-    // The attempt stamp, committed on its own (S6-1), conditional on the situation the policy just decided on.
+    // The attempt stamp, committed on its own (S6-1), conditional on the situation the policy just decided on and on the
+    // request it was decided for (Sol-P2-6).
     private async Task<(Booking Booking, StampedAttempt? Attempt)> StampAttemptAsync(
         IBotAccountSession session,
         string channelId,
         string? twitchChannelId,
         BotAccountEditorRead read,
         WishBotInvitationDecision expected,
+        DateTime? checkedRequestAtUtc,
         CancellationToken cancellationToken)
     {
         try
@@ -471,7 +478,7 @@ public sealed partial class WishBotPass
 
             await deadline.ApplyAsync(db, cancellationToken);
             var settings = await db.ChannelWishSettings.FirstOrDefaultAsync(s => s.ChannelId == channelId, cancellationToken);
-            if (settings is null)
+            if (settings is null || settings.BotActivationRequestedAtUtc != checkedRequestAtUtc)
             {
                 return (Booking.Missed, null);
             }

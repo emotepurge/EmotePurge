@@ -743,6 +743,36 @@ public partial class WishBotPassTests
         Assert.Empty(_acceptCalls);
     }
 
+    // Plan 2.9 "Bestätigung im Worker" (Sol-P2-6): the read for a request is held; meanwhile a manager cancels it and asks
+    // anew for the same bot account. The held read decided on the old request: neither the confirmation (editor) nor the
+    // acceptance (invited) is booked for the new one, which waits for a decision of its own.
+    [Theory]
+    [InlineData("ACCEPTED")]
+    [InlineData("PENDING")]
+    public async Task ARequestMadeAnewWhileItsReadRuns_IsNotDecidedByThatRead(string state)
+    {
+        await SeedAccountAsync(BotA);
+        var channel = await SeedRequestAsync();
+        Editors(BotA, (channel.TwitchId, state, true));
+        HoldNextRead();
+
+        var pass = RunPassAsync();
+        await _heldReadEntered!.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        await DeleteBotAsync(channel);
+        _clock.Advance(TimeSpan.FromSeconds(5));
+        await ActivateAsync(channel);
+        var renewed = Now;
+        ReleaseHeldRead();
+        await pass;
+
+        var settings = await SettingsAsync(channel);
+        Assert.Equal(
+            (false, renewed, (DateTime?)null),
+            (settings.BotModeEnabled, settings.BotActivationRequestedAtUtc!.Value, settings.BotInvitationAttemptAtUtc));
+        Assert.Empty(_acceptCalls);
+        Assert.Empty(await AuditsAsync(AuditActions.WishBotActivate));
+    }
+
     // ------------------------------------------------------------------------------------ S6-3: the visibility window
 
     // The invitation becomes visible a few seconds before the end of the window; a negative read begins a second before
