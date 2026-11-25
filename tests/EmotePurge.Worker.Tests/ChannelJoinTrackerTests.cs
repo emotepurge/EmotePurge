@@ -402,6 +402,47 @@ public class ChannelJoinTrackerTests
     }
 
     [Fact]
+    public void EndAttempt_ClosesTheWindow_KeepsTheReason_AndALateEchoNoLongerConfirms()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.RecordFailure("a", TwitchJoinFailureReasons.ChannelSuspended);
+
+        tracker.EndAttempt("a");
+
+        Assert.False(tracker.IsAttemptOpen("a"));
+        Assert.False(tracker.MarkConfirmed("a"));
+        Assert.Equal(TwitchJoinFailureReasons.ChannelSuspended, tracker.Snapshot(At(1)).Single().Reason);
+    }
+
+    [Fact]
+    public void EndAttempt_ThenANewAttemptThatTimesOut_ReplacesTheSuspension()
+    {
+        var tracker = Connected();
+        tracker.RecordIntent("a", At(0));
+        tracker.BeginAttempt("a");
+        tracker.RecordFailure("a", TwitchJoinFailureReasons.ChannelSuspended);
+        tracker.EndAttempt("a");
+
+        tracker.BeginAttempt("a");
+
+        Assert.True(tracker.IsAttemptOpen("a"));
+        Assert.Equal(JoinFailureOutcome.Changed, tracker.RecordFailure("a", TwitchJoinFailureReasons.NoConfirmation));
+        Assert.Equal(TwitchJoinFailureReasons.NoConfirmation, tracker.Snapshot(At(1)).Single().Reason);
+    }
+
+    [Fact]
+    public void EndAttempt_OnAnUnknownChannel_ChangesNothing()
+    {
+        var tracker = Connected();
+
+        tracker.EndAttempt("a");
+
+        Assert.Empty(tracker.Snapshot(At(0)));
+    }
+
+    [Fact]
     public void OldReason_StaysVisibleUntilTheNewAttemptHasAnOutcome()
     {
         var tracker = Connected();

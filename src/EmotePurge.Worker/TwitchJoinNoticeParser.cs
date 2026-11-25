@@ -3,10 +3,12 @@ using EmotePurge.Core.Services;
 namespace EmotePurge.Worker;
 
 /// <summary>
-/// Recognises the two JOIN rejections TwitchLib does not forward to any callback — the concurrent
-/// channel limit and a ban — in a raw received IRC line. <c>msg_channel_suspended</c> is deliberately
-/// not handled here: it reaches us through the join-failure callback's <c>Details</c>, and parsing it
-/// as well would book it twice.
+/// Recognises the JOIN rejections Twitch states in a NOTICE — the concurrent channel limit, a ban and a
+/// suspended channel — in a raw received IRC line. The first two reach no TwitchLib failure callback at
+/// all. <c>msg_channel_suspended</c> does, but only after TwitchLib has already sent the next queued
+/// JOIN (possibly a retry for the same channel), so the raw line is the one place that still knows which
+/// attempt the rejection ended; the callback books nothing for it (see
+/// <see cref="TwitchChatManager.OnFailureToReceiveJoinConfirmation"/>).
 /// <para>
 /// Pure and allocation-free on the hot path: <see cref="IsNotice"/> is the cheap per-line test the
 /// receive handler runs on every frame, and <see cref="TryParse"/> runs only on a hit. Neither throws.
@@ -20,14 +22,15 @@ public static class TwitchJoinNoticeParser
     private const string MsgIdKey = "msg-id";
     private const string ConcurrentLimitMsgId = "msg_concurrent_channel_limit_reached";
     private const string BannedMsgId = "msg_banned";
+    private const string SuspendedMsgId = "msg_channel_suspended";
 
     /// <summary>True when the line's IRC command is exactly <c>NOTICE</c>.</summary>
     public static bool IsNotice(ReadOnlySpan<char> line) =>
         TryGetCommand(line, out var command, out _) && command.SequenceEqual(NoticeCommand);
 
     /// <summary>
-    /// True only for a NOTICE that carries <c>msg-id=msg_concurrent_channel_limit_reached</c> or
-    /// <c>msg_banned</c> and targets a concrete channel. <paramref name="channel"/> is lowercase,
+    /// True only for a NOTICE that carries <c>msg-id=msg_concurrent_channel_limit_reached</c>,
+    /// <c>msg_banned</c> or <c>msg_channel_suspended</c> and targets a concrete channel. <paramref name="channel"/> is lowercase,
     /// without the leading <c>#</c>.
     /// </summary>
     public static bool TryParse(ReadOnlySpan<char> line, out string reason, out string channel)
@@ -49,6 +52,10 @@ public static class TwitchJoinNoticeParser
         else if (msgId.SequenceEqual(BannedMsgId))
         {
             matchedReason = TwitchJoinFailureReasons.Banned;
+        }
+        else if (msgId.SequenceEqual(SuspendedMsgId))
+        {
+            matchedReason = TwitchJoinFailureReasons.ChannelSuspended;
         }
         else
         {

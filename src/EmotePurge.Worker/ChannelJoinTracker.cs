@@ -30,8 +30,10 @@ public readonly record struct ChannelJoinState(string Name, bool Confirmed, doub
 /// <para>
 /// An attempt window opens when a JOIN is on the wire and closes on our own PART on the wire (or a
 /// disconnect). Our own JOIN echo confirms only inside an open window, so a late echo of an old
-/// attempt cannot confirm a freshly re-wanted channel. A timeout or suspended notice does not close
-/// the window: a late echo still confirms, as it always did.
+/// attempt cannot confirm a freshly re-wanted channel. A timeout or a limit or ban notice does not
+/// close the window: a late echo still confirms, as it always did. A suspended notice does
+/// (<see cref="EndAttempt"/>): TwitchLib drops that attempt at once and may put the next JOIN for the
+/// same channel on the wire right after it, which must count as a new attempt.
 /// </para>
 /// <para>
 /// Thread-safe through one private lock, never held across an await and never calling out — the
@@ -118,6 +120,22 @@ public sealed class ChannelJoinTracker
 
     /// <summary>Our own PART for the channel is on the wire: the attempt window closes.</summary>
     public void RecordPartSent(string name)
+    {
+        lock (_gate)
+        {
+            if (_entries.TryGetValue(name, out var entry))
+            {
+                entry.AttemptOpen = false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Twitch ended the current attempt with a final answer (a suspended channel): the window closes,
+    /// the booked reason stays, and the next JOIN on the wire opens a new attempt whose own outcome
+    /// may replace it.
+    /// </summary>
+    public void EndAttempt(string name)
     {
         lock (_gate)
         {

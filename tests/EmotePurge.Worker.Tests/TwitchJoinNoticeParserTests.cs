@@ -67,8 +67,19 @@ public class TwitchJoinNoticeParserTests
         Assert.False(TwitchJoinNoticeParser.TryParse(line, out _, out _));
     }
 
+    [Fact]
+    public void SuspendedLine_IsParsed()
+    {
+        const string line = "@msg-id=msg_channel_suspended :tmi.twitch.tv NOTICE #SomeChannel :This channel does not exist or has been suspended.";
+
+        Assert.True(TwitchJoinNoticeParser.TryParse(line, out var reason, out var channel));
+        Assert.Equal(TwitchJoinFailureReasons.ChannelSuspended, reason);
+        Assert.Equal("somechannel", channel);
+    }
+
     [Theory]
-    [InlineData("@msg-id=msg_channel_suspended :tmi.twitch.tv NOTICE #c :This channel does not exist")]
+    [InlineData("@msg-id=msg_channel_suspended_extra :tmi.twitch.tv NOTICE #c :x")]
+    [InlineData("@msg-id=msg_suspended :tmi.twitch.tv NOTICE #c :x")]
     [InlineData("@msg-id=bad_ban_admin;target-user-id=3 :tmi.twitch.tv NOTICE #c :nope")]
     [InlineData("@msg-id= :tmi.twitch.tv NOTICE #c :x")]
     [InlineData("@msg-id=msg_banned_extra :tmi.twitch.tv NOTICE #c :x")]

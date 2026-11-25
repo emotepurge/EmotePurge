@@ -9,8 +9,10 @@ namespace EmotePurge.Worker.Tests;
 // failures (plan #516, E2) rests on three facts about the installed TwitchLib.Client 4.0.1 that no pure
 // test can see, so real lines run through the library's own receive path over a scripted transport.
 // What turns red here after a TwitchLib update is the premise of TwitchChatManager's
-// OnFailureToReceiveJoinConfirmation classification (Details null = timer, not null = suspended) and
-// of the NOTICE branch in OnSendReceiveData (the limit notice never reaches a callback).
+// OnFailureToReceiveJoinConfirmation classification (Details null = timer, not null = suspended, which
+// it ignores) and of the NOTICE branch in OnSendReceiveData (the limit notice never reaches a callback;
+// a suspended notice reaches OnSendReceiveData before TwitchLib sends its next queued JOIN, and the
+// callback only after that JOIN).
 public class TwitchJoinNoticeTwitchLibTests
 {
     private const string Channel = "probechan";
@@ -26,6 +28,42 @@ public class TwitchJoinNoticeTwitchLibTests
         var failure = Assert.Single(failures);
         Assert.Equal(Channel, failure.Exception.Channel);
         Assert.NotNull(failure.Exception.Details);
+    }
+
+    [Fact]
+    public async Task SuspendedNotice_ReachesTheRawLineBeforeTheQueuedRetry_AndTheCallbackAfterIt()
+    {
+        var transport = new FakeIrcTransport();
+        var client = new TwitchClient(client: transport);
+        client.Initialize(new ConnectionCredentials());
+        var joinsAtRawNotice = -1;
+        var joinsAtCallback = -1;
+        client.OnSendReceiveData += (_, e) =>
+        {
+            if (e.Data.Contains("msg_channel_suspended", StringComparison.Ordinal))
+            {
+                joinsAtRawNotice = transport.JoinsSentFor(Channel);
+            }
+
+            return Task.CompletedTask;
+        };
+        client.OnFailureToReceiveJoinConfirmation += (_, _) =>
+        {
+            joinsAtCallback = transport.JoinsSentFor(Channel);
+            return Task.CompletedTask;
+        };
+        Assert.True(await client.ConnectAsync());
+        await client.JoinChannelAsync("holder");
+        await client.JoinChannelAsync(Channel);
+        await client.JoinChannelAsync(Channel); // queued twice: only joined channels are checked, not the queue
+        await transport.ReceiveAsync($":tmi.twitch.tv 366 {client.TwitchUsername} #holder :End of /NAMES list");
+        Assert.Equal(1, transport.JoinsSentFor(Channel));
+
+        await transport.ReceiveAsync(
+            $"@msg-id=msg_channel_suspended :tmi.twitch.tv NOTICE #{Channel} :This channel has been suspended.");
+
+        Assert.Equal(1, joinsAtRawNotice);
+        Assert.Equal(2, joinsAtCallback);
     }
 
     [Fact]

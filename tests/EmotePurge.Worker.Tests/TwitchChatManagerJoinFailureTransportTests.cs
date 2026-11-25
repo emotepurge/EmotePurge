@@ -67,7 +67,7 @@ public class TwitchChatManagerJoinFailureTransportTests
     }
 
     [Fact]
-    public async Task SuspendedNotice_IsStoredAsChannelSuspended_ThroughTheCallbackDetails()
+    public async Task SuspendedNotice_IsStoredAsChannelSuspended_FromTheRawNotice_AndEndsTheAttempt()
     {
         await using var h = await Harness.StartAsync();
         await h.Manager.JoinChannelAsync(ChannelA);
@@ -75,9 +75,62 @@ public class TwitchChatManagerJoinFailureTransportTests
         await h.Transport.ReceiveAsync(SuspendedLine(ChannelA));
 
         Assert.Equal(TwitchJoinFailureReasons.ChannelSuspended, h.Reason(ChannelA));
+        Assert.False(h.Manager.Tracker.IsAttemptOpen(ChannelA));
         var warning = Assert.Single(h.Events);
         Assert.Equal(LogLevel.Warning, warning.Level);
         Assert.Equal(TwitchChatManager.JoinRejectedEvent, warning.EventId);
+
+        // TwitchLib drops the suspended attempt from its join timer, so no timeout follows: the channel
+        // stays suspended (and excluded from the alarm) until a new JOIN has an outcome of its own.
+        await Task.Delay(TimeSpan.FromSeconds(7));
+        Assert.Equal(TwitchJoinFailureReasons.ChannelSuspended, h.Reason(ChannelA));
+        Assert.Single(h.Events);
+    }
+
+    [Fact]
+    public async Task ASuspension_ThenTheQueuedRetryBeforeTheCallback_ThatGetsNoReply_EndsAsNoConfirmation()
+    {
+        await using var h = await Harness.StartAsync();
+        await h.Manager.JoinChannelAsync(ChannelB); // on the wire, holds TwitchLib's queue until its 366
+        await h.Manager.JoinChannelAsync(ChannelA);
+        await h.Manager.JoinChannelAsync(ChannelA); // queued twice: TwitchLib checks joined channels, not its queue
+        Assert.Equal(0, h.Transport.JoinsSentFor(ChannelA));
+
+        await h.Transport.ReceiveAsync(h.NamesEnd(ChannelB));
+        await h.WaitUntilAsync(() => h.Transport.JoinsSentFor(ChannelA) == 1, TimeSpan.FromSeconds(3));
+
+        // TwitchLib answers the suspension by sending the queued retry first and raising its callback
+        // after it — both inside this one receive.
+        await h.Transport.ReceiveAsync(SuspendedLine(ChannelA));
+        Assert.Equal(2, h.Transport.JoinsSentFor(ChannelA));
+        Assert.True(h.Manager.Tracker.IsAttemptOpen(ChannelA));
+        Assert.Equal(TwitchJoinFailureReasons.ChannelSuspended, h.Reason(ChannelA));
+
+        // The retry stays silent: its own timeout replaces the suspension, so an overdue channel alarms.
+        await h.WaitUntilAsync(() => h.Reason(ChannelA) == TwitchJoinFailureReasons.NoConfirmation);
+        h.Clock.Advance(TimeSpan.FromSeconds(421));
+        var entry = h.Entry(ChannelA);
+        Assert.False(entry.JoinConfirmed);
+        Assert.Equal(421, entry.UnconfirmedSeconds);
+        Assert.Equal(TwitchJoinFailureReasons.NoConfirmation, entry.JoinFailureReason);
+        Assert.Equal(
+            [TwitchChatManager.JoinRejectedEvent, TwitchChatManager.JoinUnconfirmedEvent],
+            h.Events.Where(l => l.Message.Contains(ChannelA)).Select(l => l.EventId));
+    }
+
+    [Fact]
+    public async Task TheFailureCallbackWithDetails_BooksNothing()
+    {
+        await using var h = await Harness.StartAsync();
+        await h.Manager.JoinChannelAsync(ChannelA);
+
+        await h.Manager.OnFailureToReceiveJoinConfirmation(
+            h.Manager.CurrentClient, 0, new TwitchLib.Client.Events.OnFailureToReceiveJoinConfirmationArgs(
+                new TwitchLib.Client.Exceptions.FailureToReceiveJoinConfirmationException(ChannelA, "This channel has been suspended.")));
+
+        Assert.Null(h.Reason(ChannelA));
+        Assert.True(h.Manager.Tracker.IsAttemptOpen(ChannelA));
+        Assert.Empty(h.Events);
     }
 
     [Fact]

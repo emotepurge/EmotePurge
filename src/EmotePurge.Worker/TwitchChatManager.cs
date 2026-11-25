@@ -1010,12 +1010,18 @@ public class TwitchChatManager(
     {
         // Two sources feed this callback (TwitchLib 4.0.1, pinned by TwitchJoinNoticeTwitchLibTests):
         // the 5s timer, with Details == null, and msg_channel_suspended, with Twitch's text in Details.
-        // Details is only ever tested for null here; the text is neither read nor logged (plan #516, E2).
+        // Only the timer is booked here. The suspension was booked from the raw NOTICE in
+        // OnSendReceiveData, which runs before TwitchLib sends its next queued JOIN; this callback
+        // arrives after that JOIN, possibly a retry for the same channel, and booking here would pin
+        // the rejection on the retry. Details is only ever tested for null; the text is neither read
+        // nor logged (plan #516, E2).
+        if (e.Exception.Details is not null)
+        {
+            return Task.CompletedTask;
+        }
+
         var channel = e.Exception.Channel?.TrimStart('#') ?? string.Empty;
-        var reason = e.Exception.Details is null
-            ? TwitchJoinFailureReasons.NoConfirmation
-            : TwitchJoinFailureReasons.ChannelSuspended;
-        RecordJoinFailure(source, generation, channel, reason);
+        RecordJoinFailure(source, generation, channel, TwitchJoinFailureReasons.NoConfirmation);
         return Task.CompletedTask;
     }
 
@@ -1036,6 +1042,12 @@ public class TwitchChatManager(
             else
             {
                 outcome = _tracker.RecordFailure(channel, reason);
+                if (reason == TwitchJoinFailureReasons.ChannelSuspended)
+                {
+                    // TwitchLib drops this attempt on the same line and may send the next JOIN for the
+                    // channel right after it; that JOIN is a new attempt, not the tail of this one.
+                    _tracker.EndAttempt(channel);
+                }
             }
         }
 
@@ -1221,7 +1233,8 @@ public class TwitchChatManager(
         // joined twice in a row can reach the wire twice. The second line is the tail of the first
         // attempt while that is still open and young: it must not clear a concrete reason (a ban
         // notice) the first one already earned. Once the window has passed (TwitchLib's own timeout),
-        // a JOIN is a genuine new attempt again.
+        // or a suspended notice has ended the attempt (RecordJoinFailure closes it), a JOIN is a
+        // genuine new attempt again.
         var nowTicks = _time.GetUtcNow().UtcTicks;
         var sameAttempt = _lastWireJoinTicks.TryGetValue(channel, out var last)
             && nowTicks - last < SameAttemptWindow.Ticks
@@ -1246,8 +1259,11 @@ public class TwitchChatManager(
         {
             Interlocked.Exchange(ref _lastFrameReceivedUtcTicks, DateTime.UtcNow.Ticks);
 
-            // The join notices TwitchLib does not hand to any callback (concurrent-channel limit, ban).
-            // One allocation-free command test per line; only a NOTICE reaches the parser and the gate.
+            // The join notices: the concurrent-channel limit and a ban, which TwitchLib hands to no
+            // failure callback, and a suspended channel, which it hands over only after it has already
+            // sent the next queued JOIN. This line runs before TwitchLib parses the line, so it still
+            // sees the attempt the notice answers. One allocation-free command test per line; only a
+            // NOTICE reaches the parser and the gate.
             // Must never throw (see above), hence the catch.
             try
             {
