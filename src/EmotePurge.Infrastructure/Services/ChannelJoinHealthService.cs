@@ -122,7 +122,7 @@ internal sealed class ChannelJoinHealthService : IChannelJoinHealthService
     {
         try
         {
-            await Task.Run(abandon.Cancel);
+            await Task.Run(abandon.Cancel, CancellationToken.None);
         }
         catch (AggregateException)
         {
