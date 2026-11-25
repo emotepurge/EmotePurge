@@ -61,6 +61,7 @@ export const ACTION_KEYS: Record<string, string> = {
   'wish.recheck': 'audit.actions.wishRecheck',
   'wish.botInvitationAbandoned': 'audit.actions.wishBotInvitationAbandoned',
   'wish.botInvitationUnresolved': 'audit.actions.wishBotInvitationUnresolved',
+  'wish.botAcceptInvitation': 'audit.actions.wishBotAcceptInvitation',
   'botAccount.tokenSet': 'audit.actions.botAccountTokenSet',
   'botAccount.tokenDelete': 'audit.actions.botAccountTokenDelete',
   'botAccount.killSwitch': 'audit.actions.botAccountKillSwitch',

@@ -17,9 +17,10 @@ public readonly record struct WishBotChannelVerdict(string? SuspendedReason)
 /// The pure rule of step 3 for one activated channel (#487 plan 2.5, 2.8; Revision 6a S6-2), in the order of the
 /// preflight: not covered → <c>not_listed</c>; consent to another bot account → <c>bot_account_changed</c> (whatever the
 /// read says for the new account, so it goes before <c>not_editor</c>); then the editor read: <c>editor</c> → resume,
-/// <c>not_editor</c> → <c>not_editor</c>. An invitation (<c>invited</c>) counts as <c>not_editor</c> here; accepting it and
-/// the reason <c>invitation_pending</c> belong to the invitation step (T8c). Without a usable read nothing is known about
-/// the editor state and the channel stays as it is (null): no suspension because of a 7TV outage.
+/// <c>invited</c> → <c>invitation_pending</c> (the invitation step before it accepts where it may; an acceptance that
+/// succeeded in the same pass shows as <c>editor</c> in the read after it, so the channel is not suspended), anything else
+/// → <c>not_editor</c>. Without a usable read nothing is known about the editor state and the channel stays as it is
+/// (null): no suspension because of a 7TV outage.
 /// </summary>
 public static class WishBotChannelReview
 {
@@ -47,8 +48,11 @@ public static class WishBotChannelReview
             return null;
         }
 
-        return entry.Status == BotAccountEditorStatus.Editor
-            ? new WishBotChannelVerdict(null)
-            : new WishBotChannelVerdict(WishBotChannelReasons.NotEditor);
+        return entry.Status switch
+        {
+            BotAccountEditorStatus.Editor => new WishBotChannelVerdict(null),
+            BotAccountEditorStatus.Invited => new WishBotChannelVerdict(WishBotChannelReasons.InvitationPending),
+            _ => new WishBotChannelVerdict(WishBotChannelReasons.NotEditor),
+        };
     }
 }

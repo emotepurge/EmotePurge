@@ -1183,6 +1183,7 @@
       "wishRecheck": "Wunsch erneut geprüft",
       "wishBotInvitationAbandoned": "Offene Einladungsannahme aufgegeben",
       "wishBotInvitationUnresolved": "Einladungsannahme ungeklärt beendet",
+      "wishBotAcceptInvitation": "Bot hat die Editor-Einladung angenommen",
       "botAccountTokenSet": "Bot-Token gesetzt",
       "botAccountTokenDelete": "Bot-Token gelöscht",
       "botAccountKillSwitch": "Bot-Notaus geändert",

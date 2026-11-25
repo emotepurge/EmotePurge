@@ -72,16 +72,26 @@ public class WishBotChannelReviewTests
         Assert.True(verdict.EditorProven);
     }
 
-    // T8b: an invitation counts as not_editor until the invitation step (T8c) accepts it.
+    // Everything but editor and invited (an invitation without "manage" included) is not_editor.
     [Theory]
     [InlineData("REJECTED", true)]
     [InlineData("ACCEPTED", false)]
-    [InlineData("PENDING", true)]
+    [InlineData("PENDING", false)]
     public void AnythingButEditor_IsNotEditor(string state, bool manage)
     {
         var verdict = WishBotChannelReview.Decide(true, Settings(), Bot, BotAccountEditorEntry.Of(state, manage, "01OWNER"))!.Value;
 
         Assert.Equal(WishBotChannelReasons.NotEditor, verdict.SuspendedReason);
+        Assert.False(verdict.EditorProven);
+    }
+
+    // T8c (plan 2.8): an invitation with "manage" suspends as invitation_pending while it is not accepted.
+    [Fact]
+    public void AnInvitation_IsInvitationPending()
+    {
+        var verdict = WishBotChannelReview.Decide(true, Settings(), Bot, BotAccountEditorEntry.Of("PENDING", true, "01OWNER"))!.Value;
+
+        Assert.Equal(WishBotChannelReasons.InvitationPending, verdict.SuspendedReason);
         Assert.False(verdict.EditorProven);
     }
 

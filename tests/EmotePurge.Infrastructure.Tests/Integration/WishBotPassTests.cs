@@ -37,6 +37,7 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
     private readonly FakeTimeProvider _clock = new(new DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero));
     private readonly IRedisPublisher _publisher = Substitute.For<IRedisPublisher>();
     private readonly ISevenTvApiClient _sevenTv = Substitute.For<ISevenTvApiClient>();
+    private readonly ISevenTvWriteClient _writes = Substitute.For<ISevenTvWriteClient>();
     private readonly IGlobalAdminAllowlist _admins = Substitute.For<IGlobalAdminAllowlist>();
     private readonly List<IAsyncDisposable> _disposables = [];
 
@@ -46,6 +47,7 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
     private TaskCompletionSource<SevenTvEditorForResult>? _heldRead;
     private TaskCompletionSource? _heldReadEntered;
     private BotAccountEditorCheck? _editorCheck;
+    private int _visibilitySeconds = 300;
 
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
@@ -81,6 +83,8 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
             "TRUNCATE \"Wishes\", \"ChannelWishSettings\", \"AuditLogEntries\", \"Channels\", \"BotAccountCredentials\" CASCADE;");
 
         _sevenTv.GetEditorForAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(call => AnswerEditorRead(call.Arg<string>()));
+        _writes.AcceptEditorInvitationAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(call => AnswerAcceptAsync(call.ArgAt<string>(1), call.ArgAt<string>(2)));
     }
 
     public async Task DisposeAsync()
@@ -269,6 +273,7 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Empty(await SuspendAuditsAsync());
         var request = await SettingsAsync(requested);
         Assert.Equal((false, Now.AddMinutes(-1), (string?)null), (request.BotModeEnabled, request.BotActivationRequestedAtUtc, request.BotActivationError));
+        await _writes.DidNotReceiveWithAnyArgs().AcceptEditorInvitationAsync(default!, default!, default!, default);
         await _sevenTv.DidNotReceiveWithAnyArgs().GetEditorForAsync(default!, default);
 
         await SeedAccountAsync(BotA, identity: Identity + 1);
@@ -281,7 +286,11 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
         Assert.Equal(WishStatus.Approved, (await LoadAsync(approved)).Status);
         Assert.Equal(WishStatus.Presented, (await LoadAsync(unconfirmed)).Status);
         Assert.Equal(WishStatus.Presented, (await LoadAsync(queued)).Status);
-        Assert.Null((await SettingsAsync(requested)).BotEditorCheckedAtUtc);
+
+        // T8c: with the account available again, the waiting request is confirmed from the new identity's read.
+        request = await SettingsAsync(requested);
+        Assert.True(request.BotModeEnabled);
+        Assert.Equal((Now, Identity + 1), (request.BotEditorCheckedAtUtc, request.BotEditorCheckedIdentityVersion));
     }
 
     // The fallback twice in a row changes nothing the second time: no field, no event.
@@ -477,6 +486,7 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
         try
         {
             session ??= await SessionAsync();
+            session.Db = context;
             await Pass(context, pilot, botAccountEnabled).RunAsync(session);
             Assert.False(context.ChangeTracker.HasChanges());
             Assert.Empty(context.ChangeTracker.Entries());
@@ -493,21 +503,23 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
     private WishBotPass Pass(AppDbContext db, string pilot = "*", bool botAccountEnabled = true)
     {
         var wishOptions = new WishOptions { Enabled = true, PilotChannelIds = pilot };
-        var botAccountOptions = new BotAccountOptions { Enabled = botAccountEnabled };
+        var botAccountOptions = new BotAccountOptions { Enabled = botAccountEnabled, EditorVisibilitySeconds = _visibilitySeconds };
         var publisher = new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance);
         var fallback = new WishBotFallback(db, wishOptions, botAccountOptions, _admins, publisher, _clock, NullLogger<WishBotFallback>.Instance);
         return new WishBotPass(
-            db, EditorCheck, fallback, wishOptions, botAccountOptions, _admins, publisher, _clock, NullLogger<WishBotPass>.Instance);
+            db, EditorCheck, _writes, fallback, wishOptions, botAccountOptions, _admins, publisher, _clock, NullLogger<WishBotPass>.Instance);
     }
 
     private async Task<FakeSession> SessionAsync(long epoch = Epoch)
     {
         await using var db = CreateDb();
         var row = await db.BotAccountCredentials.AsNoTracking().SingleAsync();
-        return new FakeSession(
+        _lastSession = new FakeSession(
             new BotAccountSnapshot(
                 row.Status, row.ExpiresAtUtc, row.BotSevenTvUserId, row.KillSwitch, row.PausedUntilUtc, row.CredentialVersion, row.IdentityVersion),
-            epoch);
+            epoch,
+            _clock);
+        return _lastSession;
     }
 
     // The credential row as the token upkeep leaves it: an upsert, so a later call is a hand PUT (or a token back).
@@ -676,31 +688,83 @@ public partial class WishBotPassTests(PostgresFixture fixture) : IAsyncLifetime
 
     private sealed record Seeded(string Id, string Name, string TwitchId);
 
-    // A session as the runner hands it over, with the epoch the row was seeded with; the lock probe is a switch.
-    private sealed class FakeSession(BotAccountSnapshot account, long epoch) : IBotAccountSession
+    // A session as the runner hands it over, with the epoch the row was seeded with; the lock probe is a switch (or a
+    // hook per call), the write spacing is simulated on the test clock (a wait advances it), and every session call is
+    // recorded in order.
+    private sealed class FakeSession(BotAccountSnapshot account, long epoch, FakeTimeProvider clock) : IBotAccountSession
     {
-        public BotAccountSnapshot Account { get; } = account;
+        private DateTime? _lastWrite;
+        private int _probes;
+
+        public BotAccountSnapshot Account { get; set; } = account;
         public string? Token => Account.Status == BotAccountStatus.Valid ? "token" : null;
         public bool TokenUsable { get; set; } = true;
         public long RunnerEpoch { get; } = epoch;
-        public int RemainingActions => 50;
+        public int RemainingActions { get; set; } = 50;
         public bool HoldsLock { get; set; } = true;
         public bool LockLostReported { get; private set; }
+        public TimeSpan WriteDelay { get; set; }
+        public List<string> Calls { get; } = [];
+        public List<TimeSpan> Pauses { get; } = [];
+        public Func<int, Task<bool>>? OnProbe { get; set; }
 
-        public Task<bool> HoldsLockAsync(CancellationToken cancellationToken = default) => Task.FromResult(HoldsLock);
+        // The pass's context: the probe must never run while it has a transaction (with row locks) open (K6f-1).
+        public AppDbContext? Db { get; set; }
 
-        public bool TryTakeAction() => true;
+        public async Task<bool> HoldsLockAsync(CancellationToken cancellationToken = default)
+        {
+            if (Db?.Database.CurrentTransaction is not null)
+            {
+                throw new InvalidOperationException("The lock probe ran under a row lock.");
+            }
 
-        public Task WaitForWriteSlotAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+            Calls.Add("probe");
+            return OnProbe is { } hook ? await hook(++_probes) : HoldsLock;
+        }
+
+        public bool TryTakeAction()
+        {
+            Calls.Add("action");
+            if (RemainingActions <= 0)
+            {
+                return false;
+            }
+
+            RemainingActions--;
+            return true;
+        }
+
+        public Task WaitForWriteSlotAsync(CancellationToken cancellationToken = default)
+        {
+            Calls.Add("wait");
+            if (_lastWrite is { } last && last + WriteDelay > clock.GetUtcNow().UtcDateTime)
+            {
+                clock.Advance(last + WriteDelay - clock.GetUtcNow().UtcDateTime);
+            }
+
+            return Task.CompletedTask;
+        }
 
         public void MarkWriteSent()
         {
+            Calls.Add("sent");
+            _lastWrite = clock.GetUtcNow().UtcDateTime;
         }
 
-        public void ReportUnauthorized() => TokenUsable = false;
+        public void ReportUnauthorized()
+        {
+            Calls.Add("unauthorized");
+            TokenUsable = false;
+        }
 
         public void ReportLockLost() => LockLostReported = true;
 
-        public Task<bool> PauseAsync(TimeSpan retryAfter, CancellationToken cancellationToken = default) => Task.FromResult(false);
+        public Task<bool> PauseAsync(TimeSpan retryAfter, CancellationToken cancellationToken = default)
+        {
+            Calls.Add("pause");
+            Pauses.Add(retryAfter);
+            TokenUsable = false;
+            return Task.FromResult(false);
+        }
     }
 }

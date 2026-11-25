@@ -1183,6 +1183,7 @@
       "wishRecheck": "Wish checked again",
       "wishBotInvitationAbandoned": "Open invitation acceptance given up",
       "wishBotInvitationUnresolved": "Invitation acceptance ended unresolved",
+      "wishBotAcceptInvitation": "Bot accepted the editor invitation",
       "botAccountTokenSet": "Bot token set",
       "botAccountTokenDelete": "Bot token deleted",
       "botAccountKillSwitch": "Bot kill switch changed",

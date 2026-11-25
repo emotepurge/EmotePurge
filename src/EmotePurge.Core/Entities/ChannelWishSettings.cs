@@ -39,7 +39,8 @@ public class ChannelWishSettings
     /// One of <see cref="WishBotChannelReasons.ActivationErrors"/>, why the last activation request ended without the bot
     /// mode: <c>not_editor</c>, <c>invitation_not_accepted</c>, <c>bot_account_changed</c>,
     /// <c>invitation_accept_unresolved</c> (set by <c>DELETE</c> while an acceptance attempt is open) or
-    /// <c>invitation_accepted_after_abort</c>. Cleared by <c>activate</c>.
+    /// <c>invitation_accepted_after_abort</c>. Cleared by <c>activate</c>, by the worker's confirmation and, for
+    /// <c>invitation_accept_unresolved</c>, when the worker resolves or takes back that attempt.
     /// </summary>
     public string? BotActivationError { get; set; }
 
@@ -58,8 +59,10 @@ public class ChannelWishSettings
     public DateTime? BotInvitationAttemptAtUtc { get; set; }
 
     /// <summary>
-    /// The earliest moment of the next invitation attempt, persisted per channel so it survives a runner change and a
-    /// restart; bound to the bot id of <see cref="BotConsentSevenTvUserId"/>. Null = no wait.
+    /// The earliest moment of the next invitation attempt (15 minutes after a <c>LackingPrivileges</c> of an activated
+    /// channel or a <c>Rejected</c>), persisted per channel so it survives a runner change and a restart; bound to the bot
+    /// id of <see cref="BotConsentSevenTvUserId"/>. Later than an open attempt's stamp it marks "this attempt ended in
+    /// Rejected" (K6b-1). Cleared by the confirmation of an activation and by an acceptance that took effect. Null = no wait.
     /// </summary>
     public DateTime? BotInvitationRetryAtUtc { get; set; }
 

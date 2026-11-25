@@ -113,15 +113,15 @@ public partial class WishBotPassTests
         Assert.Null((await SettingsAsync(channel)).BotSuspendedReason);
     }
 
-    private (BotAccountRunner Runner, ReportingPass Pass) CreateRunner(ISevenTvWriteClient client)
+    private (BotAccountRunner Runner, ReportingPass Pass) CreateRunner(ISevenTvWriteClient client, AppDbContext? db = null)
     {
-        var db = CreateDb();
+        db ??= CreateDb();
         _disposables.Add(db);
         var opener = new RsaBotAccountTokenOpener(BotAccountTokenKeys.ImportPrivateKey(BotAccountTestKeys.PrivateKey));
         _disposables.Add(new Disposal(opener));
         var pass = new ReportingPass(Pass(db));
         var runner = new BotAccountRunner(
-            db, opener, client, pass, new BotAccountOptions { Enabled = true }, _clock, NullLogger<BotAccountRunner>.Instance);
+            db, opener, client, pass, new BotAccountOptions { Enabled = true, WriteDelaySeconds = 0 }, _clock, NullLogger<BotAccountRunner>.Instance);
         _disposables.Add(runner);
         return (runner, pass);
     }
