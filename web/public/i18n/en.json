@@ -500,6 +500,8 @@
       "worker": "Worker instance",
       "capacity": {
         "label": "Active channels against our cap",
+        "valueText": "{{tracked}} of {{max}} channels",
+        "valueTextOver": "{{tracked}} of {{max}} channels, {{excess}} over the cap",
         "near": "Close to the cap: {{tracked}} of {{max}} channels ({{percent}} %).",
         "reached": "Cap reached ({{tracked}} / {{max}}): new channels are rejected, global admins are exempt.",
         "over": "Over the cap ({{tracked}} / {{max}}): only global admins could still add.",

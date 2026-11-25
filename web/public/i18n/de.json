@@ -500,6 +500,8 @@
       "worker": "Worker-Instanz",
       "capacity": {
         "label": "Aktive Channels gegen unsere Obergrenze",
+        "valueText": "{{tracked}} von {{max}} Channels",
+        "valueTextOver": "{{tracked}} von {{max}} Channels, {{excess}} über der Obergrenze",
         "near": "Nahe an der Obergrenze: {{tracked}} von {{max}} Channels ({{percent}} %).",
         "reached": "Obergrenze erreicht ({{tracked}} / {{max}}): neue Channels werden abgelehnt, globale Admins sind ausgenommen.",
         "over": "Über der Obergrenze ({{tracked}} / {{max}}): nur globale Admins konnten noch hinzufügen.",

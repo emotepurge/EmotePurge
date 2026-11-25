@@ -86,6 +86,7 @@ const STATUS_TONES: Record<string, HealthTone> = {
       </div>
 
       @if (roster(); as capacityData) {
+        @let aria = capacityAria();
         <!-- Our own admission cap is the denominator. Twitch's 100 is reference text only: it is
              not binding for the anonymous connection, and stating our decision as Twitch's rule
              would mislead. -->
@@ -99,9 +100,10 @@ const STATUS_TONES: Record<string, HealthTone> = {
           <div
             class="h-2 w-full overflow-hidden rounded-full bg-surface-inset"
             role="progressbar"
-            [attr.aria-valuenow]="capacityData.trackedChannelCount"
+            [attr.aria-valuenow]="aria?.now ?? null"
             aria-valuemin="0"
-            [attr.aria-valuemax]="capacityData.ceilings.maxActiveChannels"
+            [attr.aria-valuemax]="aria?.max ?? null"
+            [attr.aria-valuetext]="aria ? (aria.textKey | transloco: aria.params) : null"
             [attr.aria-label]="'admin.roster.capacity.label' | transloco"
           >
             <div
@@ -400,6 +402,27 @@ export class AdminRosterCard {
       percent: Math.round(this.rawCapacityPercent() ?? 0),
       tracked: data?.trackedChannelCount ?? 0,
       max: data?.ceilings?.maxActiveChannels ?? 0,
+    };
+  });
+
+  /**
+   * The bar's accessible value. `aria-valuenow` must stay within `aria-valuemax`, so past the cap
+   * (a global admin bypassed it, or an operator lowered it) it is clamped and the real count and the
+   * excess travel in `aria-valuetext`. Without a usable cap there is no range at all.
+   */
+  protected readonly capacityAria = computed(() => {
+    const data = this.roster();
+    const max = data?.ceilings?.maxActiveChannels;
+    if (!data || !max) {
+      return null;
+    }
+    const tracked = data.trackedChannelCount;
+    const over = tracked > max;
+    return {
+      now: Math.min(Math.max(0, tracked), max),
+      max,
+      textKey: over ? 'admin.roster.capacity.valueTextOver' : 'admin.roster.capacity.valueText',
+      params: over ? { tracked, max, excess: tracked - max } : { tracked, max },
     };
   });
 

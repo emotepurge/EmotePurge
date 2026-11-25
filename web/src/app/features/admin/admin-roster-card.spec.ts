@@ -133,6 +133,26 @@ describe('AdminRosterCard', () => {
       expect(bar?.getAttribute('aria-label')).toBe('admin.roster.capacity.label');
       expect(bar?.getAttribute('aria-valuemax')).toBe('80');
       expect(bar?.getAttribute('aria-valuenow')).toBe('50');
+      expect(bar?.getAttribute('aria-valuetext')).toBe('admin.roster.capacity.valueText');
+    });
+
+    it('keeps the accessible value within its range past the cap and states the real count as text', () => {
+      render(of(withTracked(11, 10)));
+
+      const bar = (fixture.nativeElement as HTMLElement).querySelector('[role="progressbar"]');
+      expect(bar?.getAttribute('aria-valuemax')).toBe('10');
+      expect(bar?.getAttribute('aria-valuenow')).toBe('10');
+      expect(bar?.getAttribute('aria-valuetext')).toBe('admin.roster.capacity.valueTextOver');
+      expect(component['capacityAria']()?.params).toEqual({ tracked: 11, max: 10, excess: 1 });
+    });
+
+    it('leaves the bar without a value range when there is no usable cap', () => {
+      render(of(withTracked(10, 0)));
+
+      const bar = (fixture.nativeElement as HTMLElement).querySelector('[role="progressbar"]');
+      expect(bar?.hasAttribute('aria-valuenow')).toBe(false);
+      expect(bar?.hasAttribute('aria-valuemax')).toBe(false);
+      expect(bar?.hasAttribute('aria-valuetext')).toBe(false);
     });
 
     it('is still shown when no snapshot exists (the counts come from the database)', () => {
