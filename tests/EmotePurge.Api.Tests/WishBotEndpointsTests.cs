@@ -42,8 +42,8 @@ public class WishBotEndpointsTests : IClassFixture<ApiFactory>
         _factory.Wishes.CanChangeSettingsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(true);
         _factory.WishBot.CheckActivationAccessAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(WishBotActivationAccess.Allowed);
-        _factory.WishBot.ActivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+            .Returns(new WishBotActivationCheck(WishBotActivationAccess.Allowed, "1001"));
+        _factory.WishBot.ActivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(WishCommandResult.Of(WishOutcome.Success));
         _factory.WishBot.DeactivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(WishCommandResult.Of(WishOutcome.Success));
@@ -55,7 +55,7 @@ public class WishBotEndpointsTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Activate_BotSwitchOff_SkipsTheFilter_AndTheHandlerAnswers409()
     {
-        _factory.WishBot.ActivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.WishBot.ActivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(WishCommandResult.Of(WishOutcome.BotUnavailable));
 
         var response = await SendAsync(_factory, "POST", ActivatePath);
@@ -91,7 +91,7 @@ public class WishBotEndpointsTests : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         await _factory.WishBot.DidNotReceiveWithAnyArgs().CheckActivationAccessAsync(default!, default!, default);
-        await _factory.WishBot.Received(1).ActivateAsync(Channel, Arg.Is<AuditActor>(a => a.TwitchUserId == Manager), Arg.Any<CancellationToken>());
+        await _factory.WishBot.Received(1).ActivateAsync(Channel, Arg.Is<AuditActor>(a => a.TwitchUserId == Manager), Arg.Is<string?>(id => id == null), Arg.Any<CancellationToken>());
     }
 
     // (3) to (5), AK82, AK85: the service's decision becomes 403, 403 or 503 (the only filter that answers 503); the
@@ -103,14 +103,14 @@ public class WishBotEndpointsTests : IClassFixture<ApiFactory>
     public async Task Activate_TheFiltersRefusals(WishBotActivationAccess access, HttpStatusCode status, string code)
     {
         using var enabled = BotEnabled();
-        _factory.WishBot.CheckActivationAccessAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(access);
+        _factory.WishBot.CheckActivationAccessAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new WishBotActivationCheck(access, "1001"));
 
         var response = await SendAsync(enabled, "POST", ActivatePath);
 
         Assert.Equal(status, response.StatusCode);
         Assert.Equal(code, await ReadErrorCodeAsync(response));
         await _factory.WishBot.Received(1).CheckActivationAccessAsync(Channel, Manager, Arg.Any<CancellationToken>());
-        await _factory.WishBot.DidNotReceiveWithAnyArgs().ActivateAsync(default!, default!, default);
+        await _factory.WishBot.DidNotReceiveWithAnyArgs().ActivateAsync(default!, default!, default, default);
     }
 
     [Fact]
@@ -124,12 +124,30 @@ public class WishBotEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal("""{"activationPending":true}""", await response.Content.ReadAsStringAsync());
     }
 
+    // E24 bound to the checked channel: a pass after (3) to (5) hands the Twitch id the service checked to the handler, an
+    // empty one when no channel had the name, so the write can compare it under the channel lock.
+    [Theory]
+    [InlineData("1001", "1001")]
+    [InlineData(null, "")]
+    public async Task Activate_Allowed_HandsTheCheckedTwitchIdToTheHandler(string? checkedId, string handedOn)
+    {
+        using var enabled = BotEnabled();
+        _factory.WishBot.CheckActivationAccessAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new WishBotActivationCheck(WishBotActivationAccess.Allowed, checkedId));
+
+        var response = await SendAsync(enabled, "POST", ActivatePath);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        await _factory.WishBot.Received(1).ActivateAsync(
+            Channel, Arg.Any<AuditActor>(), Arg.Is<string?>(id => id == handedOn), Arg.Any<CancellationToken>());
+    }
+
     // AK82: an active bot mode answers 409 and leaves the activator.
     [Fact]
     public async Task Activate_AnActiveBotMode_Answers409AlreadyActive()
     {
         using var enabled = BotEnabled();
-        _factory.WishBot.ActivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.WishBot.ActivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
             .Returns(WishCommandResult.Of(WishOutcome.BotAlreadyActive));
 
         var response = await SendAsync(enabled, "POST", ActivatePath);

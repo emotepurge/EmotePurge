@@ -54,7 +54,7 @@ public class WishBotRoutesTokenBoundaryTests : IClassFixture<ApiFactory>
         _factory.Wishes.CanChangeSettingsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(true);
         _factory.WishBot.CheckActivationAccessAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(WishBotActivationAccess.Allowed);
+            .Returns(new WishBotActivationCheck(WishBotActivationAccess.Allowed, "1001"));
         _factory.WishBot.IsModeAvailableAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>()).Returns(true);
         _factory.WishBot.GetChannelAsync(Arg.Any<string>(), Arg.Any<WishBotCaller>(), Arg.Any<CancellationToken>())
             .Returns(new WishBotChannelDto(
@@ -72,7 +72,7 @@ public class WishBotRoutesTokenBoundaryTests : IClassFixture<ApiFactory>
         using var logs = new TraceCapture();
         using var factory = Host(logs);
         var result = outcome == WishOutcome.Success ? new WishCommandResult(outcome, Wish: Wish()) : WishCommandResult.Of(outcome);
-        _factory.WishBot.ActivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>()).Returns(result);
+        _factory.WishBot.ActivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns(result);
         _factory.WishBot.DeactivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>()).Returns(result);
         _factory.Wishes.RequestBotRemovalAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<AuditActor>(), Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>())
             .Returns(result);
@@ -100,7 +100,7 @@ public class WishBotRoutesTokenBoundaryTests : IClassFixture<ApiFactory>
         using var factory = Host(logs);
         var failure = new InvalidOperationException("forced failure in the service", new TimeoutException("inner failure"));
         _factory.WishBot.GetChannelAsync(Arg.Any<string>(), Arg.Any<WishBotCaller>(), Arg.Any<CancellationToken>()).Returns<Task<WishBotChannelDto?>>(_ => throw failure);
-        _factory.WishBot.ActivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>()).Returns<Task<WishCommandResult>>(_ => throw failure);
+        _factory.WishBot.ActivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<string?>(), Arg.Any<CancellationToken>()).Returns<Task<WishCommandResult>>(_ => throw failure);
         _factory.WishBot.DeactivateAsync(Arg.Any<string>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>()).Returns<Task<WishCommandResult>>(_ => throw failure);
         _factory.WishBot.IsModeAvailableAsync(Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>()).Returns<Task<bool>>(_ => throw failure);
         _factory.Wishes.RequestBotRemovalAsync(Arg.Any<string>(), Arg.Any<long>(), Arg.Any<AuditActor>(), Arg.Any<WishCaptureAccess?>(), Arg.Any<CancellationToken>())
@@ -159,7 +159,7 @@ public class WishBotRoutesTokenBoundaryTests : IClassFixture<ApiFactory>
 
         foreach (var access in new[] { WishBotActivationAccess.NotListed, WishBotActivationAccess.Forbidden, WishBotActivationAccess.EditorUnavailable })
         {
-            _factory.WishBot.CheckActivationAccessAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(access);
+            _factory.WishBot.CheckActivationAccessAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(new WishBotActivationCheck(access, "1001"));
 
             AssertClean(await SendAsync(factory, "POST", Routes[1].Path, Body()), Watch());
         }

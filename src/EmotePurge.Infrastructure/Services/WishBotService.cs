@@ -90,7 +90,7 @@ public sealed class WishBotService(
             BotSevenTvUserId: account.BotSevenTvUserId);
     }
 
-    public async Task<WishBotActivationAccess> CheckActivationAccessAsync(
+    public async Task<WishBotActivationCheck> CheckActivationAccessAsync(
         string channelName, string callerTwitchUserId, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(channelName);
@@ -99,28 +99,28 @@ public sealed class WishBotService(
         var channel = await FindChannelAsync(channelName, cancellationToken);
         if (channel is null)
         {
-            return WishBotActivationAccess.Allowed;
+            return new WishBotActivationCheck(WishBotActivationAccess.Allowed, null);
         }
 
         // (3) the pilot list, cheap and before any 7TV call; (4) the broadcaster by id; (5) the caller's editor grant for
         // exactly this channel's Twitch id. Every uncertainty refuses (E24): no Twitch id on the row, no 7TV account.
         if (!_pilotList.Covers(channel.TwitchChannelId))
         {
-            return WishBotActivationAccess.NotListed;
+            return new WishBotActivationCheck(WishBotActivationAccess.NotListed, channel.TwitchChannelId);
         }
 
         if (channel.TwitchChannelId is not { } channelTwitchId)
         {
-            return WishBotActivationAccess.Forbidden;
+            return new WishBotActivationCheck(WishBotActivationAccess.Forbidden, null);
         }
 
         if (string.Equals(channelTwitchId, callerTwitchUserId, StringComparison.Ordinal))
         {
-            return WishBotActivationAccess.Allowed;
+            return new WishBotActivationCheck(WishBotActivationAccess.Allowed, channelTwitchId);
         }
 
         var grants = await editorService.GetEditorGrantsAsync(callerTwitchUserId, cancellationToken);
-        return grants.Status switch
+        var access = grants.Status switch
         {
             SevenTvLookupStatus.Ok => grants.Grants!.TwitchChannelIds.Contains(channelTwitchId)
                 ? WishBotActivationAccess.Allowed
@@ -128,9 +128,11 @@ public sealed class WishBotService(
             SevenTvLookupStatus.Unavailable => WishBotActivationAccess.EditorUnavailable,
             _ => WishBotActivationAccess.Forbidden,
         };
+        return new WishBotActivationCheck(access, channelTwitchId);
     }
 
-    public async Task<WishCommandResult> ActivateAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default)
+    public async Task<WishCommandResult> ActivateAsync(
+        string channelName, AuditActor actor, string? checkedTwitchChannelId = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(channelName);
         ArgumentNullException.ThrowIfNull(actor);
@@ -144,6 +146,14 @@ public sealed class WishBotService(
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         var locked = await LockChannelAsync(channel.Id, cancellationToken);
         if (locked is null)
+        {
+            return WishCommandResult.Of(WishOutcome.ChannelNotFound);
+        }
+
+        // E24 bound to the channel the filter checked: the name is resolved once more here, and a rename and a rejoin may
+        // have moved it to another channel since. That channel's editors were never asked.
+        if (checkedTwitchChannelId is not null
+            && !string.Equals(locked.TwitchChannelId ?? string.Empty, checkedTwitchChannelId, StringComparison.Ordinal))
         {
             return WishCommandResult.Of(WishOutcome.ChannelNotFound);
         }

@@ -21,9 +21,10 @@ public interface IWishBotService
     /// Steps (3) to (5) of the activation filter (plan 2.9, E8, E24), for a manager who is not a global admin by id (the
     /// filter decides steps (1) and (2) itself): the pilot list before any 7TV call, then the broadcaster by Twitch id,
     /// then the caller's 7TV editor grants for the channel's Twitch id. A channel that does not exist is
-    /// <see cref="WishBotActivationAccess.Allowed"/>, so the handler answers its 404.
+    /// <see cref="WishBotActivationAccess.Allowed"/>, so the handler answers its 404. The answer names the Twitch id it was
+    /// given for (none for a channel that did not exist), which the handler passes on to <see cref="ActivateAsync"/>.
     /// </summary>
-    Task<WishBotActivationAccess> CheckActivationAccessAsync(
+    Task<WishBotActivationCheck> CheckActivationAccessAsync(
         string channelName, string callerTwitchUserId, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -34,8 +35,14 @@ public interface IWishBotService
     /// nudged again. An open acceptance attempt bound to another id is given up in the same update (audit
     /// <c>wish.botInvitationAbandoned</c>); one bound to the same id keeps its binding. Success publishes
     /// <c>wish.changed</c> and nudges the worker; the bot mode becomes active only when the worker confirms.
+    /// <paramref name="checkedTwitchChannelId"/> binds the write to the channel the activation filter checked (E24): the
+    /// Twitch id of <see cref="CheckActivationAccessAsync"/>'s answer, an empty string when it found no channel. Behind the
+    /// channel lock a channel with another Twitch id (a rename and a rejoin moved the name meanwhile) is
+    /// <see cref="WishOutcome.ChannelNotFound"/>, nothing written. Null binds nothing: the filter checked no channel (a
+    /// global admin by id, or a switch off).
     /// </summary>
-    Task<WishCommandResult> ActivateAsync(string channelName, AuditActor actor, CancellationToken cancellationToken = default);
+    Task<WishCommandResult> ActivateAsync(
+        string channelName, AuditActor actor, string? checkedTwitchChannelId = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// <c>DELETE …/wishes/bot</c> (plan 2.9): behind the channel lock D7 is asked again on the stored row
@@ -62,6 +69,12 @@ public interface IWishBotService
 /// <param name="IsGlobalAdmin">A global admin by id or (transitional) by login: the D7 question, as the settings filter asks it.</param>
 /// <param name="IsGlobalAdminById">A global admin by id only: the activation question (plan 2.9 step (2)).</param>
 public sealed record WishBotCaller(string TwitchUserId, bool IsGlobalAdmin, bool IsGlobalAdminById);
+
+/// <summary>
+/// The decision of steps (3) to (5) of the activation filter and the channel it was made for: <paramref name="TwitchChannelId"/>
+/// is the checked channel's Twitch id, null when no channel had that name.
+/// </summary>
+public sealed record WishBotActivationCheck(WishBotActivationAccess Access, string? TwitchChannelId);
 
 /// <summary>The decision of steps (3) to (5) of the activation filter.</summary>
 public enum WishBotActivationAccess

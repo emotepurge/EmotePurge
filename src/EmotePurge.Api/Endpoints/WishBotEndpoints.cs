@@ -63,7 +63,8 @@ internal static class WishBotEndpoints
                 return Results.Unauthorized();
             }
 
-            var result = await wishBot.ActivateAsync(channelName, actor, ct);
+            var result = await wishBot.ActivateAsync(
+                channelName, actor, WishBotActivationAuthorizationFilter.CheckedTwitchChannelIdOf(httpContext), ct);
             return result.IsSuccess
                 ? Results.Json(new { activationPending = true }, statusCode: StatusCodes.Status202Accepted)
                 : WishEndpoints.MapResult(result, StatusCodes.Status202Accepted);

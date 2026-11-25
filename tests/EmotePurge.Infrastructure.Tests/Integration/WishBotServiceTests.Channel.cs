@@ -141,7 +141,7 @@ public partial class WishBotServiceTests
     [Fact]
     public async Task Access_AnUnknownChannel_IsAllowed_SoTheHandlerAnswersItsNotFound()
     {
-        Assert.Equal(WishBotActivationAccess.Allowed, await Sut().CheckActivationAccessAsync("nosuchchannel", Moderator));
+        Assert.Equal(WishBotActivationAccess.Allowed, (await Sut().CheckActivationAccessAsync("nosuchchannel", Moderator)).Access);
     }
 
     // AK85: an empty list refuses broadcaster and moderator before any 7TV call.
@@ -152,8 +152,8 @@ public partial class WishBotServiceTests
     {
         var channel = await SeedChannelRowAsync();
 
-        Assert.Equal(WishBotActivationAccess.NotListed, await Sut(pilot: pilot).CheckActivationAccessAsync(channel.Name, channel.TwitchId));
-        Assert.Equal(WishBotActivationAccess.NotListed, await Sut(pilot: pilot).CheckActivationAccessAsync(channel.Name, Moderator));
+        Assert.Equal(WishBotActivationAccess.NotListed, (await Sut(pilot: pilot).CheckActivationAccessAsync(channel.Name, channel.TwitchId)).Access);
+        Assert.Equal(WishBotActivationAccess.NotListed, (await Sut(pilot: pilot).CheckActivationAccessAsync(channel.Name, Moderator)).Access);
         await _editors.DidNotReceiveWithAnyArgs().GetEditorGrantsAsync(default!, default);
     }
 
@@ -162,7 +162,7 @@ public partial class WishBotServiceTests
     {
         var channel = await SeedChannelRowAsync();
 
-        Assert.Equal(WishBotActivationAccess.Allowed, await Sut(pilot: channel.TwitchId).CheckActivationAccessAsync(channel.Name, channel.TwitchId));
+        Assert.Equal(WishBotActivationAccess.Allowed, (await Sut(pilot: channel.TwitchId).CheckActivationAccessAsync(channel.Name, channel.TwitchId)).Access);
         await _editors.DidNotReceiveWithAnyArgs().GetEditorGrantsAsync(default!, default);
     }
 
@@ -184,7 +184,7 @@ public partial class WishBotServiceTests
             _ => SevenTvEditorGrantsLookupResult.Failed(SevenTvLookupStatus.Unavailable),
         });
 
-        Assert.Equal(expected, await Sut().CheckActivationAccessAsync(channel.Name, Moderator));
+        Assert.Equal(expected, (await Sut().CheckActivationAccessAsync(channel.Name, Moderator)).Access);
     }
 
     [Fact]
@@ -192,7 +192,7 @@ public partial class WishBotServiceTests
     {
         var channel = await SeedChannelRowAsync(twitchId: null);
 
-        Assert.Equal(WishBotActivationAccess.Forbidden, await Sut().CheckActivationAccessAsync(channel.Name, Moderator));
+        Assert.Equal(WishBotActivationAccess.Forbidden, (await Sut().CheckActivationAccessAsync(channel.Name, Moderator)).Access);
         await _editors.DidNotReceiveWithAnyArgs().GetEditorGrantsAsync(default!, default);
     }
 
@@ -244,7 +244,7 @@ public partial class WishBotServiceTests
         });
 
         Assert.Equal(WishOutcome.BotAlreadyActive, (await Sut(pilot: "").ActivateAsync(channel.Name, ModActor)).Outcome);
-        Assert.Equal(WishBotActivationAccess.NotListed, await Sut(pilot: "").CheckActivationAccessAsync(channel.Name, channel.TwitchId));
+        Assert.Equal(WishBotActivationAccess.NotListed, (await Sut(pilot: "").CheckActivationAccessAsync(channel.Name, channel.TwitchId)).Access);
         Assert.Equal(AuditActor.DeletedUser.TwitchUserId, (await SettingsAsync(channel))!.BotModeActivatedByTwitchUserId);
     }
 
@@ -261,6 +261,24 @@ public partial class WishBotServiceTests
         Assert.Equal((Now, Moderator, "somemod", BotA), (row.BotActivationRequestedAtUtc, row.BotActivationRequestedByTwitchUserId, row.BotActivationRequestedByLogin, row.BotConsentSevenTvUserId));
         Assert.Null(row.BotActivationError);
         Assert.Empty(await AuditAsync(channel));
+        AssertSignalledOnce(channel);
+    }
+
+    // E24 bound to the checked channel: the filter checked the caller for one Twitch id (or found no channel), and a rename
+    // and a rejoin moved the name to another channel before the write. Behind the channel lock the write sees another id:
+    // channel_not_found, nothing written, no signal. Bound to the id it checked, the write goes through.
+    [Fact]
+    public async Task Activate_BoundToTheCheckedChannel_RefusesAnotherChannelUnderTheName()
+    {
+        var channel = await SeedBotChannelAsync();
+        var before = await SettingsSnapshotAsync(channel);
+
+        Assert.Equal(WishOutcome.ChannelNotFound, (await Sut().ActivateAsync(channel.Name, ModActor, "1000000001")).Outcome);
+        Assert.Equal(WishOutcome.ChannelNotFound, (await Sut().ActivateAsync(channel.Name, ModActor, string.Empty)).Outcome);
+        Assert.Equal(before, await SettingsSnapshotAsync(channel));
+        AssertNoSignal();
+
+        Assert.True((await Sut().ActivateAsync(channel.Name, ModActor, channel.TwitchId)).IsSuccess);
         AssertSignalledOnce(channel);
     }
 

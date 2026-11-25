@@ -12,10 +12,23 @@ namespace EmotePurge.Api.Auth;
 /// <c>wish_bot_channel_not_listed</c>; (4) the broadcaster by Twitch id → through; (5) a moderator with a confirmed 7TV
 /// editor grant for the channel's Twitch id → through, no grant, no 7TV account or no Twitch id on the row → 403
 /// <c>wish_bot_activation_forbidden</c>, 7TV unavailable → 503 <c>foreign_channel_seventv_unavailable</c>, never a pass.
-/// The only authorization filter that answers 503.
+/// The only authorization filter that answers 503. A pass after (3) to (5) leaves the checked channel's Twitch id for the
+/// handler (<see cref="CheckedTwitchChannelIdOf"/>), which binds the write to it under the channel lock.
 /// </summary>
 public class WishBotActivationAuthorizationFilter : IEndpointFilter
 {
+    private static readonly object CheckedTwitchChannelIdKey = new();
+
+    /// <summary>
+    /// The Twitch id the filter's steps (3) to (5) were passed for, an empty string when no channel had the name; null
+    /// when the filter checked no channel (a switch off, a global admin by id).
+    /// </summary>
+    public static string? CheckedTwitchChannelIdOf(HttpContext httpContext)
+    {
+        ArgumentNullException.ThrowIfNull(httpContext);
+        return httpContext.Items.TryGetValue(CheckedTwitchChannelIdKey, out var value) ? value as string : null;
+    }
+
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
         var services = context.HttpContext.RequestServices;
@@ -41,11 +54,16 @@ public class WishBotActivationAuthorizationFilter : IEndpointFilter
             return await next(context);
         }
 
-        var access = await services.GetRequiredService<IWishBotService>().CheckActivationAccessAsync(
+        var check = await services.GetRequiredService<IWishBotService>().CheckActivationAccessAsync(
             channelName, principal.TwitchUserId, context.HttpContext.RequestAborted);
-        return access switch
+        if (check.Access == WishBotActivationAccess.Allowed)
         {
-            WishBotActivationAccess.Allowed => await next(context),
+            context.HttpContext.Items[CheckedTwitchChannelIdKey] = check.TwitchChannelId ?? string.Empty;
+            return await next(context);
+        }
+
+        return check.Access switch
+        {
             WishBotActivationAccess.NotListed =>
                 Results.Json(new { errorCode = ApiErrorCodes.WishBotChannelNotListed }, statusCode: StatusCodes.Status403Forbidden),
             WishBotActivationAccess.EditorUnavailable =>
