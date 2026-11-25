@@ -70,10 +70,23 @@ public sealed partial class WishBotPass
     {
         var accepted = false;
         var readAgain = false;
+        DateTime? firstRequest = null;
         for (var round = 0; round < MaxDecisionsPerChannel; round++)
         {
             var settings = await db.ChannelWishSettings.AsNoTracking().FirstOrDefaultAsync(s => s.ChannelId == channelId, cancellationToken);
             if (settings is null)
+            {
+                return PassStep.Continue;
+            }
+
+            // The rounds of one pass decide on the request of the first load (plan 2.9 "Bestätigung im Worker"): a read
+            // made in a round (the forced one, the one after an acceptance) began for it. A request that shows up later
+            // with another stamp was made anew meanwhile; it waits for a decision of its own in the next pass.
+            if (round == 0)
+            {
+                firstRequest = settings.BotActivationRequestedAtUtc;
+            }
+            else if (settings.BotActivationRequestedAtUtc is { } request && request != firstRequest)
             {
                 return PassStep.Continue;
             }

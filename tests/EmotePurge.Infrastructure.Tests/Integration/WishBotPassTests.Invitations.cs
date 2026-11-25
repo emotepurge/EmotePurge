@@ -773,6 +773,42 @@ public partial class WishBotPassTests
         Assert.Empty(await AuditsAsync(AuditActions.WishBotActivate));
     }
 
+    // The same through the forced read (S6-3): a cached negative read began a second before the window's end, so the pass
+    // reads again; that read is held, and meanwhile a manager cancels the request and asks anew. The fresh read (an
+    // editor now) was made for the old request: the new one is neither confirmed nor accepted in this pass.
+    [Theory]
+    [InlineData("ACCEPTED")]
+    [InlineData("PENDING")]
+    public async Task ARequestMadeAnewWhileTheForcedReadRuns_IsNotDecidedByThatRead(string state)
+    {
+        _visibilitySeconds = 60;
+        await SeedAccountAsync(BotA);
+        var channel = await SeedRequestAsync(requestedAt: Now);
+        Editors(BotA);
+        _clock.Advance(TimeSpan.FromSeconds(59));
+        await RunPassAsync();
+        Assert.NotNull((await SettingsAsync(channel)).BotActivationRequestedAtUtc);
+
+        _clock.Advance(TimeSpan.FromSeconds(2));
+        HoldNextRead();
+        var pass = RunPassAsync();
+        await _heldReadEntered!.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        await DeleteBotAsync(channel);
+        _clock.Advance(TimeSpan.FromSeconds(5));
+        await ActivateAsync(channel);
+        var renewed = Now;
+        Editors(BotA, (channel.TwitchId, state, true));
+        ReleaseHeldRead();
+        await pass;
+
+        var settings = await SettingsAsync(channel);
+        Assert.Equal(
+            (false, (DateTime?)renewed, (DateTime?)null),
+            (settings.BotModeEnabled, settings.BotActivationRequestedAtUtc, settings.BotInvitationAttemptAtUtc));
+        Assert.Empty(_acceptCalls);
+        Assert.Empty(await AuditsAsync(AuditActions.WishBotActivate));
+    }
+
     // ------------------------------------------------------------------------------------ S6-3: the visibility window
 
     // The invitation becomes visible a few seconds before the end of the window; a negative read begins a second before
