@@ -17,6 +17,7 @@ const PERMISSIONS: ChannelPermissions = {
   chatLogBackfillEnabled: false,
   wishesEnabled: false,
   wishCaptureEnabled: false,
+  wishBotModeAvailable: false,
 };
 
 describe('ChannelService', () => {

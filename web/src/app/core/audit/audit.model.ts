@@ -61,6 +61,8 @@ export type AuditAction =
   | 'wish.botSuspend'
   | 'wish.botRemoveRequest'
   | 'wish.recheck'
+  | 'wish.botInvitationAbandoned'
+  | 'wish.botInvitationUnresolved'
   | 'botAccount.tokenSet'
   | 'botAccount.tokenDelete'
   | 'botAccount.killSwitch'
