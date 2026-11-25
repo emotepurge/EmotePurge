@@ -3,7 +3,7 @@
 Erstellt am 2026-11-20 im Worktree `EmotePurge-wt-487` (Branch `feat/487-wish-bot`, Basis `origin/main` @ `801e64a6`; K1
 (#492), K2 (#493), K3 (#494) und K6 (#495) gemergt, seit 2026-11-20 auf Prod live und eingeschaltet, Bot-Modus existiert noch
 nicht). Alle Codestellen dieses Plans sind an diesem Stand gelesen.
-**Status: Revision 6f (2026-11-25): Sol über Revision 6e (4 × P2 zu T8c und T10), vier Punkte (Tabelle „Revision 6f“), alle
+**Status: PR 2 (T6 bis T13) umgesetzt auf dem Branch `feat/487-wish-bot-runner`, Stand 2026-11-25; Live-Prüfung (T14) und PR offen, PR 3 (Erneuerer) offen. Planstand: Revision 6f (2026-11-25): Sol über Revision 6e (4 × P2 zu T8c und T10), vier Punkte (Tabelle „Revision 6f“), alle
 übernommen: die Lock-Probe läuft nie unter Zeilensperre, `idle_in_transaction_session_timeout` als serverseitiger Rückhalt der
 Sperrfrist, Zähler des festsitzenden Auftrags je Auftragsgeneration und Runner-Epoche, die Pause wird am Durchgangsende
 nachgebucht; keine Migration, kein Fehlercode, keine Audit-Aktion. Die adversarialen Plan-Runden sind damit abgeschlossen;

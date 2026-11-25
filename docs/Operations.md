@@ -1900,8 +1900,8 @@ The statement is `EmoteSlotRollbackSql.CollapseBackfillSnapshotSql`; keep both t
 Wishes (a channel asks for a 7TV emote to stay in its set for a limited time) are the backend core of
 epic #481. Child 1 ships the data model, the reconcile against the channel's slots, the retention periods
 and the `/api/channels/{channelName}/wishes` routes, child 2 the expiry run, child 3 the manager UI and child 6
-the chat capture (see "Chat capture" below). Bot removal (children 4 and 5, backend and frontend) is not
-built yet.
+the chat capture (see "Chat capture" below). The bot mode (child 4, backend) is described under "Bot account"
+below; its manager UI (child 5) is not built yet.
 
 - **Switch:** `Wishes:Enabled` (environment variable `WISHES_ENABLED`, default `false`). Set it on **both**
   the api and the worker: the api answers the wish routes with 404 `wishes_disabled` while it is off, and
@@ -1912,7 +1912,8 @@ built yet.
   `dotnet ef migrations list` first, which must show exactly `AddWishes` as pending (with child 6 on top
   see "Chat capture": two pending migrations), then `dotnet ef database update`, then `list` again. The
   migration guard at startup fails fast if it is missing.
-- **Rollback:** switch it off. The tables stay and do not disturb an older image.
+- **Rollback:** switch it off. The tables stay and do not disturb an older image. Once a channel has switched the bot
+  mode on this is no longer enough for an image downgrade: see "Rollback" under "Bot account".
 - **Expiry run (child 2, #484):** `WishExpiryWorker` waits one minute after start and then, once per
   `Wishes:ExpiryIntervalMinutes` (environment variable `WISHES_EXPIRY_INTERVAL_MINUTES`, default 15, valid
   1 to 1440, worker only), decides every `active` wish whose expiry has passed: it presents the wish to the
@@ -1921,18 +1922,18 @@ built yet.
   `expiresAtUtc`). With `Wishes:Enabled=false` it logs one line and ends. It does not wait for the boot
   recovery, and two worker containers at once are safe (the second skips what the first holds).
 - **The run never writes to 7TV.** Presenting only changes the wish row and announces `wish.changed`; no
-  emote is removed and no set is touched. Removal by the bot arrives with child 4; until then the bot
-  availability is registered as "never available", so every due wish is presented.
+  emote is removed and no set is touched. Removal by the bot is a separate pass of `BotAccountWorker` (see "Bot
+  account"); with the bot account off the availability is "never available" and every due wish is presented.
 - **Provisional starts are held back, then only presented.** A wish whose start is only the provisional
   EventAPI date is not decided while the channel's last full sync is younger than 24 hours and the expiry
   lies less than 24 hours back. After that it is presented with the reason `unconfirmed_start` and never
   queued for removal ("presented, never queued"), because the date could be wrong.
 - **Known limit (RR1):** a worker outage inside the usage window goes unnoticed: the run has no gap table for
-  it, so a popular emote can be judged unprotected. This matters only once the bot removes emotes (child 4);
-  until then the outcome is a presented wish, a reminder.
+  it, so a popular emote can be judged unprotected. This matters for bot-mode channels, where an
+  unprotected verdict can lead to a queued removal; in a manual channel the outcome is a presented wish, a reminder.
 - **A threshold change drops queued removals.** Changing a channel's protection threshold counts as a
   decision: it raises the `DecisionVersion` of the channel's `active` wishes and discards a queued removal
-  (none exists before child 4), so a removal queued under the old rule is never executed under the new one.
+  (only a bot-mode channel has any), so a removal queued under the old rule is never executed under the new one.
   Changing only duration or lead does not.
 - **Late decisions keep the missed deadline.** `extend`, `keep`, `close` and `complete-removal` on an overdue
   wish add `previousExpiresAtUtc` to their own audit entry (`wish.extend`, `wish.keep`, `wish.close`,
@@ -2025,9 +2026,10 @@ log only, after the fact; it needs no extra column. Definitions:
   two expiries of one wish (extended, expired again) are two pairs.
 - **Cohort:** due pairs whose expiry lies in the observation window (the expiry, not the time of an entry).
 - **Mature:** expiry plus 24 hours is not after the evaluation time. Immature pairs are in neither count.
-- **Done:** the wish has a `wish.extend`, `wish.keep`, `wish.remove` or `wish.close` entry after the expiry
+- **Done:** the wish has a `wish.extend`, `wish.keep`, `wish.remove`, `wish.close`, `wish.botRemove` or `wish.botRemoveRequest` entry after the expiry
   and at most 24 hours after it (exactly 24 hours counts). The clock starts at the expiry, never at `wish.due`.
-  (Child 4 adds `wish.botRemove`; extend the action list then.)
+  Since child 4 the list also holds `wish.botRemove` (the bot's removal, with `previousExpiresAtUtc` when overdue) and
+  `wish.botRemoveRequest` (a manager's "have the bot remove it").
 - **Late:** mature, not done, and either the earliest `wish.due` is more than 24 hours after the expiry or
   there is none (known only through a decision with `previousExpiresAtUtc`). Late pairs stay in the
   denominator and are reported separately, so a worker outage can be told from slow managers.
@@ -2057,7 +2059,7 @@ sources AS (
          (a."DetailsJson"->>'previousExpiresAtUtc')::timestamptz,
          NULL
   FROM "AuditLogEntries" a
-  WHERE a."Action" IN ('wish.extend', 'wish.keep', 'wish.close', 'wish.remove')
+  WHERE a."Action" IN ('wish.extend', 'wish.keep', 'wish.close', 'wish.remove', 'wish.botRemove', 'wish.botRemoveRequest')
     AND a."DetailsJson" ? 'previousExpiresAtUtc'
 ),
 dues AS (
@@ -2075,7 +2077,7 @@ judged AS (
   SELECT c.wish_id, c.expiry,
          EXISTS (
            SELECT 1 FROM "AuditLogEntries" a
-           WHERE a."Action" IN ('wish.extend', 'wish.keep', 'wish.remove', 'wish.close')
+           WHERE a."Action" IN ('wish.extend', 'wish.keep', 'wish.remove', 'wish.close', 'wish.botRemove', 'wish.botRemoveRequest')
              AND (a."DetailsJson"->>'wishId')::bigint = c.wish_id
              AND a."OccurredAtUtc" > c.expiry
              AND a."OccurredAtUtc" <= c.expiry + interval '24 hours'
@@ -2108,8 +2110,8 @@ The bot account (#487, wish emotes child 4) is the project's own 7TV account. In
 emotes in channels that turned the bot mode on and made the account a 7TV editor. Its 7TV token is the **only** 7TV
 token the server stores; users' write tokens never leave their browser. This write path is **unofficial and not
 confirmed by 7TV**: it may stop working or be refused without notice, and every wish then falls back to the manual
-flow. This section is part 1 of the runbook (keys and startup); setting, renewing and deleting the token, the kill
-switch and the rollback follow with the admin page.
+flow. The sections below are the runbook: keys and startup, the token, the pilot list, turning the mode on, what
+managers see, the kill switch, rollback and restore.
 
 - **Switch:** `BotAccount:Enabled` (environment variable `BOT_ACCOUNT_ENABLED`, default `false`). Set the **same value
   on api and worker**.
@@ -2154,11 +2156,218 @@ other way round) or not exactly 3072 bits. The message names the configuration k
 variable is fixed. With the switch off no key is read: the api registers a sealer that refuses everything (the token
 route answers 404 anyway) and the worker registers no opener.
 
-### Never log out normally with the bot account
+### Never log out the Twitch session of the bot account
 
-Until it is verified that a normal logout leaves other sessions alone, **never log out normally with the bot account**
-anywhere (7TV or Twitch, any browser). Close the browser window or the private window instead. A normal logout may end
-the session the stored token belongs to, and the bot would then fall back to the manual flow on its next write.
+A normal logout at 7TV does **not** invalidate the stored token: the JWT stays valid after a normal logout in another
+session (measured on 2026-11-24). Only "Sign Out Everywhere" at 7TV ends it (the next call answers a real HTTP 401, the
+bot goes to `invalid` and every channel falls back). Use a separate browser profile for the bot account and **close**
+the window instead of logging out of Twitch there; never log out of Twitch normally in the profile an automatic
+renewer would take its cookies from (the renewer is not part of this release).
+
+### Configuration
+
+| Setting | Service | Meaning |
+|---|---|---|
+| `BotAccount:Enabled` (`BOT_ACCOUNT_ENABLED`) | api **and** worker | Switch of everything below; default off. Same value on both |
+| `Wishes:Enabled` (`WISHES_ENABLED`) | api and worker | The bot worker also needs it: with either switch off it logs one line, ends, and never opens the token |
+| `Wishes:PilotChannelIds` (`WISHES_PILOT_CHANNEL_IDS`) | api and worker | The pilot list, see below |
+| `Auth:AdminTwitchUserIds` (`ADMIN_TWITCH_USER_IDS`) | api and **worker** | The worker needs the same value as the api: a channel activated by a global admin is written by the worker |
+| `BotAccount:WriteDelaySeconds` | both, no compose variable | Minimum gap between two 7TV writes, 0 to 60, default 2 (`BotAccount__WriteDelaySeconds`) |
+| `BotAccount:EditorVisibilitySeconds` | worker, no compose variable | How long a fresh editor invitation may stay invisible in 7TV's editor read before it counts as "not an editor", 60 to 1800, default 300 |
+| `BotAccount:Renewal:*` | api | Reserved for the automatic renewal, which is not part of this release; leave off |
+
+### Setting, replacing and deleting the token
+
+On `/admin/bot-account` (global admins only; the page reads `/api/admin/bot-account`):
+
+- **Set** the 7TV token (a JWT valid for 30 days, taken from the 7TV website in the separate profile of the bot
+  account). The api checks the form and that `exp` lies in the future, seals it, and stores it as `unverified`; the
+  worker verifies it in its next pass (within about 30 s, or at once after the nudge) and the status becomes `valid`
+  with the account's 7TV id, or `invalid` with a code.
+- **Replace** it the same way, **well before** `exp` (from seven days before, the worker logs one warning per day).
+  Until an automatic renewal exists this is a manual step every 30 days. An expired or invalid token puts every bot
+  channel into the fallback (see below); nothing is lost.
+- **Replacing with another 7TV account** is allowed but suspends every activated channel with `bot_account_changed`:
+  the managers consented to one specific account. A manager has to switch the bot mode off and on again, and the old
+  account's wish ownership ends with that.
+- **Delete** the token (`DELETE /api/admin/bot-account/token`, idempotent). The route, the read and the kill switch
+  stay reachable with `BOT_ACCOUNT_ENABLED` off, so an emergency never needs a deploy; only setting a token answers 404
+  then.
+- The status page shows token status, days left, the bot's 7TV id, last verification, last error code, kill switch,
+  pause and the queue counters. No route returns the token, the seal or the key fingerprint.
+
+### Pilot list
+
+`WISHES_PILOT_CHANNEL_IDS` releases the bot mode, for wishes only: numeric **Twitch channel ids**, comma-separated, or
+`*` for every channel. Empty entries are ignored, `*` wins over ids beside it, any other non-numeric entry stops the
+start with a message naming the key. **Empty means no channel** except those activated by a global admin (by Twitch
+id, never by login). The list is checked when a channel activates **and before every write of the bot**: a channel
+that leaves the list is suspended with `not_listed` at the next pass and falls back to the manual flow.
+
+### Turning the bot mode on
+
+Order for a first release: migration `AddBotAccount` by hand before the images (additive; `migrations list` must show
+it as pending, then `update`, then `list` again); key pair into the variables as above; images with
+`BOT_ACCOUNT_ENABLED` still off (no key is needed then); then the key variables, `BOT_ACCOUNT_ENABLED=true` and
+`WISHES_PILOT_CHANNEL_IDS` on the stack, recreate the **worker first, then the api**; set the token on the admin page
+and wait for `valid`.
+
+Per channel, until the manager UI (child 5) exists, the owner of the channel does two things:
+
+1. In 7TV, invite the bot account as an editor of the channel with the permission to manage emote sets. The bot
+   **accepts an invitation only for a channel that asked for the bot mode** (or has it on); any other invitation stays
+   open and untouched.
+2. As the broadcaster, a 7TV editor of the channel or a global admin, call `POST /api/channels/<name>/wishes/bot/activate`
+   (answers 202 with `activationPending: true`). The worker accepts the invitation, reads the editor state and
+   confirms the activation, normally within a minute. The call needs the caller to be covered by the pilot list (a
+   global admin by id is always covered), else 403 `wish_bot_channel_not_listed`.
+
+`DELETE /api/channels/<name>/wishes/bot` switches it off again (also cancels a pending request); it stays reachable with
+the bot switch off.
+
+### What managers see
+
+`GET /api/channels/<name>/wishes/bot` answers with `available` (the account as a whole), `listed` (pilot list),
+`enabled` (stored activation), `activationPending`, `activationError`, `suspendedReason`, `canActivate`,
+`canDeactivate` and the bot's public 7TV id. These are **field values, not error codes**:
+
+| Value | Where | Meaning |
+|---|---|---|
+| `invitation_pending` | `suspendedReason` | An invitation of the bot is open and not yet accepted (also: it waits out a pause or a refusal). Same effect as `not_editor` |
+| `not_editor` | both | The bot is not an editor with "manage emote sets" in the channel (7TV refused, or the editor read says so). For a request: only after the visibility window |
+| `not_listed` | `suspendedReason` | The channel left the pilot list |
+| `bot_account_changed` | both | The bot account is another one than consented to; switch off and activate again |
+| `invitation_not_accepted` | `activationError` | 7TV did not let the bot accept; check the invitation in 7TV |
+| `invitation_accept_unresolved` | `activationError` | The request was cancelled while an acceptance may still have been executed by 7TV; resolved by the next editor read |
+| `invitation_accepted_after_abort` | `activationError` | The acceptance took effect after the cancellation: **the bot is an editor without consent**; see the runbook below |
+
+A channel is in the **bot** state only while it is activated, not suspended, covered, the account is usable, the consent
+matches the current account and an editor read less than 15 minutes old agrees; otherwise it is in the **fallback**
+(`mode` is then not `bot`). In the fallback an `approved` wish counts as needing action again (the manual flow), a
+wish with an unknown add outcome is presented as `unconfirmed`, and a due removal that could not be carried out is
+presented as `bot_unavailable`; the manager can press "have the bot remove it" again once the channel is back. Other
+presented reasons from the bot: `ownership_lost` (the entry changed under another alias or editor), `not_bot_owned`,
+`already_in_set`, `repair_review`. While the bot has a write open on a wish, decisions on it answer 409
+`wish_state_conflict` (the web client reloads); a wish whose start is only provisional answers `bot-remove` with 409
+`wish_start_unconfirmed`; deleting an ended wish answers 409 `wish_repair_check_open` while a repair check is open.
+
+**The protection threshold errs on the high side.** The usage window counts the broken first day in full and divides
+by seven, so the mean per day can come out slightly too high; the error points towards **protection** (the wish is
+presented instead of removed), never towards a wrong removal.
+
+### Kill switch, fallback and what the bot never does
+
+`PUT /api/admin/bot-account/kill-switch` (the toggle on the admin page) takes effect before the next 7TV write: the
+write transaction reads the switch from the locked row, a call already running finishes first. The account is then
+unavailable, every bot channel falls back, and the expiry run (its step 0, which also runs with the bot account
+switched off) presents what hangs: an add of unknown outcome becomes `presented` (`unconfirmed`), a queued removal is
+cleared and its wish presented (`bot_unavailable`). Nothing is lost; everything open appears as needing action.
+
+The bot **removes only entries it added itself** and can prove it (its own 7TV id as `addedById`, the same alias and
+`addedAt`, and an acknowledged add). It adds at most one repair after a removal that took other aliases of the same
+emote along, and never sends a write twice for an answer it could not read: it resolves by reading the set.
+
+Incident order (the full order for an automatic renewal is spec 18.8): (1) kill switch on; (2 to 4) concern an
+automatic renewer and the Twitch session behind it, not part of this release; (5) "Sign Out Everywhere" at 7TV
+invalidates every bot JWT; (6) a second "Sign Out Everywhere" no earlier than 15 minutes after ending Twitch sessions,
+only relevant when a Twitch session was exposed; (7) delete the token. Re-issuing starts with a new token and ends with
+the kill switch off.
+
+### Runbook: invitations, repair checks, measurements
+
+- **A bot that became an editor without consent** (`invitation_accepted_after_abort`, or an audit entry
+  `wish.botInvitationUnresolved`): 7TV can execute an acceptance after the bot gave up waiting. The bot writes nothing
+  there, but the owner sees it in the 7TV editor list. Ask the owner to remove the bot there, or to activate again
+  (the runner then confirms without a new acceptance). `wish.botInvitationAbandoned` carries `abandonedBotSevenTvUserId`,
+  the account an owner may have to remove. List the cases:
+
+  ```sql
+  SELECT "OccurredAtUtc", "Action", "ChannelName", "DetailsJson"
+  FROM "AuditLogEntries"
+  WHERE "Action" IN ('wish.botInvitationUnresolved', 'wish.botInvitationAbandoned')
+  ORDER BY "OccurredAtUtc" DESC;
+  ```
+
+- **Repair phases and `needs_review`.** When a removal took other entries of the same emote along, the wish is presented
+  as `repair_review` and the bot sends **one** repair add. An unclear phase is resolved by reading only. A missing
+  entry that could not be restored is recorded as audit `wish.botRepair` with `outcome` `needs_review` (wish id and
+  emote id, no alias) and the evidence is cleared, so look at the evidence **while the phase is open** and restore by
+  hand in 7TV:
+
+  ```sql
+  SELECT w."Id", c."ChannelName", w."Status", w."StatusReason", w."BotRepairAtUtc", w."BotRemoveEvidence"
+  FROM "Wishes" w JOIN "Channels" c ON c."Id" = w."ChannelId"
+  WHERE w."BotRepairAtUtc" IS NOT NULL;
+  ```
+
+  `BotRemoveEvidence` holds `setId` (the set to read and to repair in), the bot's entry and the other entries of the
+  emote with alias and `addedAt`. A phase is never expired by time; kill switch, a bad token and the bot switch
+  off leave it untouched until a read is possible again. List past `needs_review` results with
+  `WHERE "Action" = 'wish.botRepair' AND "DetailsJson"->>'outcome' = 'needs_review'`.
+- **"Removed outside Emote Purge"** (`removed_externally`). While a removal attempt is open, the reconcile never books
+  it (a slot archived under an open attempt is not an external removal). The bot books it itself when its read before a
+  removal finds no entry of its own generation at all. After a resolution **without** an answer from 7TV (fallback run,
+  `DELETE …/wishes/bot`, the 15-minute deadline step) an entry that was really removed ends through the reconcile as
+  `removed_externally`, and the evidence stays as a repair phase. A rename under another alias is `ownership_lost`,
+  not a removal.
+- **Detection limit.** If a person removes the bot's entry and adds the same emote under the same alias, 7TV shows
+  a new `addedAt` and the bot's `removeEmote` by id and alias would remove the person's entry. The bot reads again
+  right before `removeEmote` and compares; the window between that read and the arrival of the call stays open (7TV has
+  no conditional mutation). `wish.botSuspectRemoval` marks a suspected foreign removal of a bot entry.
+- **Residual window.** An HTTP call that was already sent by a runner whose lock then broke cannot be recalled.
+  Intent and evidence are committed before sending and the next runner resolves by reading; ownership is never
+  assumed without a recorded successful add.
+- **Measuring the pilot.** Count the bot's work with the audit actions `wish.botAdd`, `wish.botRemove` (carries
+  `previousExpiresAtUtc` for an overdue wish and `outcome: resumed` after a resumption), `wish.botRemoveRequest`,
+  `wish.botRepair`, `wish.botSuspend` and `wish.botSuspectRemoval`. The pilot query above counts `wish.botRemove`
+  and `wish.botRemoveRequest` as decisions.
+
+### Rollback
+
+**(a) Switch rollback, the new images stay.** Kill switch on, then `BOT_ACCOUNT_ENABLED=false` on the worker **and** the
+api, recreate both. The expiry run resolves open attempts and presents queued removals; the api treats every activated
+channel as `fallback`, and `approved` is needing action again. The stored activation stays, so switching back on
+resumes. This is enough for any fault in the bot path.
+
+**(b) Image downgrade to an image from before child 4.** The old image derives `mode = bot` from the stored activation
+and its expiry run skips queued wishes, and states written after an activation do not agree with it. So: (1) do (a)
+and wait one expiry run (default 15 minutes); (2) per activated channel `DELETE …/wishes/bot` (it only ends the bot
+mode, and stays reachable with the bot switch off while `Wishes:Enabled` is on); (3) run the check below and expect
+**0 in every row**; (4) only then swap the api and worker images. Table and columns stay.
+
+```sql
+SELECT 'channels with bot mode, request or open acceptance' AS what, count(*)
+FROM "ChannelWishSettings"
+WHERE "BotModeEnabled" OR "BotActivationRequestedAtUtc" IS NOT NULL OR "BotInvitationAttemptAtUtc" IS NOT NULL
+UNION ALL
+SELECT 'wishes with bot state', count(*)
+FROM "Wishes"
+WHERE "Status" = 'unconfirmed'
+   OR ("Status" = 'approved' AND "BotWriteAtUtc" IS NOT NULL)
+   OR "RemovalQueuedAtUtc" IS NOT NULL OR "BotRemoveAtUtc" IS NOT NULL OR "BotRepairAtUtc" IS NOT NULL
+   OR "BotOwned"
+   OR ("Status" = 'kept' AND "LinkOrigin" = 'bot' AND "SlotId" IS NULL);
+```
+
+A `kept` hit means the reconcile has not linked the slot yet: resync the channel on the admin page and repeat; if it
+stays, check the set by hand. An open repair phase is cleared with the evidence query above, then by SQL. A channel
+with `BotInvitationAttemptAtUtc` is only resolved by a read of the new images with the bot account on; otherwise check
+in 7TV whether the bot became an editor and ask the owner to remove it if needed.
+
+### Restoring a database dump with the bot account
+
+A dump from before a kill switch or a token deletion would bring back an old token and a switched-off kill switch.
+Therefore, in **both** restore paths below ("Restoring for real" and "After the volume is gone"), run this **before**
+`docker start` of api and worker (before starting the stack):
+
+```sh
+docker exec -i emotepurge-postgres psql -U emotepurge -d emotepurge -c "UPDATE \"BotAccountCredentials\" SET \"KillSwitch\" = true, \"KillSwitchVersion\" = \"KillSwitchVersion\" + 1, \"RenewerSecretHash\" = NULL, \"RenewerSecretSetAtUtc\" = NULL, \"RenewalRunId\" = NULL, \"RenewalRunStartedAtUtc\" = NULL, \"RenewalRunRequestedAtUtc\" = NULL, \"RenewalRunCredentialVersion\" = NULL, \"RenewalRunKillSwitchVersion\" = NULL, \"RenewalRequestedAtUtc\" = NULL, \"TwitchSessionState\" = NULL WHERE \"Id\" = 1;"
+```
+
+(No row means no token and the statement changes nothing; a dump from before the migration `AddBotAccount` has no such table, then skip the step.) Check afterwards with `SELECT "KillSwitch" FROM
+"BotAccountCredentials"`. Start api and worker, let the worker verify the token, check whether a kill switch or
+token deletion lay **after** the dump (if so: delete the token again and replace it), and only then switch the kill
+switch off.
 
 ## Database backup and restore
 
@@ -2249,6 +2458,7 @@ docker stop emotepurge-api emotepurge-worker
 docker exec -i emotepurge-postgres psql -U emotepurge -d postgres -c "DROP DATABASE emotepurge;"
 docker exec -i emotepurge-postgres psql -U emotepurge -d postgres -c "CREATE DATABASE emotepurge OWNER emotepurge;"
 gunzip -c <dump>.sql.gz | docker exec -i emotepurge-postgres psql -U emotepurge -d emotepurge
+# Bot account: kill switch on BEFORE anything starts, see "Restoring a database dump with the bot account"
 docker start emotepurge-api emotepurge-worker
 ```
 
@@ -2261,6 +2471,7 @@ database from the `POSTGRES_DB`/`POSTGRES_USER` variables — without schema, si
 migrations do not run at app start. Start Postgres alone, wait for its healthcheck to report
 healthy, then replay the dump straight into that empty database: no drop/recreate is needed,
 because a plain-format dump carries the full schema **and** the EF Core migration history. Then
+run the bot-account step (see "Restoring a database dump with the bot account" under "Bot account") and
 start API and worker. Only if migrations were added after the dump was taken does
 `dotnet ef database update` (see `CLAUDE.md`, "EF Core Migrationen") have to follow.
 
