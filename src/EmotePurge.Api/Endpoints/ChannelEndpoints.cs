@@ -103,6 +103,8 @@ public static class ChannelEndpoints
             EmoteTagOptions tagOptions,
             ChatLogBackfillOptions backfillOptions,
             WishOptions wishOptions,
+            BotAccountOptions botAccountOptions,
+            IWishBotService wishBot,
             CancellationToken ct) =>
         {
             var principal = httpContext.User.TryBuildTwitchPrincipal();
@@ -117,6 +119,12 @@ public static class ChannelEndpoints
             // into the request path for every manager, who never needs it.
             var canViewUsageStats = canManage || await channelAccessService.CanViewUsageStatsAsync(principal, channelName, ct);
             var channel = await channelService.GetByNameAsync(channelName, ct);
+            // #487 plan 2.3: both switches first, so a server with either off reads nothing; only for a manager, the one
+            // who sees the bot mode at all.
+            var wishBotModeAvailable = canManage
+                && wishOptions.Enabled
+                && botAccountOptions.Enabled
+                && await wishBot.IsModeAvailableAsync(channelName, channelAccessService.IsGlobalAdminById(principal), ct);
 
             return Results.Ok(new ChannelPermissionsDto(
                 canManage,
@@ -128,7 +136,8 @@ public static class ChannelEndpoints
                 CanPurgeAsBroadcaster: BroadcasterOwnership.CanPurge(channel, principal),
                 ChatLogBackfillEnabled: backfillOptions.Enabled,
                 WishesEnabled: wishOptions.Enabled,
-                WishCaptureEnabled: wishOptions.CaptureActive));
+                WishCaptureEnabled: wishOptions.CaptureActive,
+                WishBotModeAvailable: wishBotModeAvailable));
         })
         // Ordinary navigation, and the single most requested route in the app: every page that shows
         // anything channel-scoped asks it first. Both access checks can reach Helix or 7TV on a cache
@@ -720,6 +729,11 @@ public static class ChannelEndpoints
 /// captured is the worker's decision (its own switch, shown in the admin health), not this value.
 /// </para>
 /// <para>
+/// <c>WishBotModeAvailable</c> (#487 plan 2.3) is true when the bot mode for wishes could be switched on here: both
+/// switches on, the bot account available (valid token, not expired, kill switch off) and the channel on the pilot list
+/// or the caller a global admin by id. Only a manager gets true; with either switch off nothing is read.
+/// </para>
+/// <para>
 /// No <c>IsSevenTvEditor</c> field, despite the review's sketch: nothing consumes it today, and
 /// computing it would defeat the short-circuit above and put a 7TV call in every manager's request.
 /// Add it together with its first consumer.
@@ -735,7 +749,8 @@ internal sealed record ChannelPermissionsDto(
     bool CanPurgeAsBroadcaster,
     bool ChatLogBackfillEnabled,
     bool WishesEnabled,
-    bool WishCaptureEnabled);
+    bool WishCaptureEnabled,
+    bool WishBotModeAvailable);
 
 /// <summary>
 /// Body of <c>POST /api/channels/{channelName}/backfill</c>. Both members are nullable on purpose: a

@@ -7,6 +7,7 @@ using EmotePurge.Infrastructure.Tests.Fixtures;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
+using EmotePurge.Infrastructure.Tests.Fakes;
 
 namespace EmotePurge.Infrastructure.Tests.Integration;
 
@@ -35,7 +36,7 @@ public partial class WishExpiryServiceTests
             fixture.CreateTaggedDbContext(ApproveTag, DatabaseName),
             new WishChangedPublisher(_otherPublisher, NullLogger<WishChangedPublisher>.Instance),
             _clock,
-            NullLogger<WishService>.Instance);
+            NullLogger<WishService>.Instance, BotChannelStates.Unavailable());
         Task<WishExpiryRunResult> Run() => Sut(fixture.CreateTaggedDbContext(RunTag, DatabaseName)).RunAsync();
         Task<WishCommandResult> Approve() => approver.ApproveAsync(channel.Name, open, new ApproveWishRequest(null, null, null, null), Actor);
         Task<WishExpiryRunResult> run;

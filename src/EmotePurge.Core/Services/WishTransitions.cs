@@ -59,7 +59,7 @@ public static class WishAction
 /// second table (plan 2.2).
 /// </summary>
 /// <param name="HasSlot">The wish is linked to a slot; <c>close</c> from <c>presented</c> needs this false.</param>
-/// <param name="Permanent">The wish is permanent; linking then ends in <c>kept</c>.</param>
+/// <param name="Permanent">The wish is permanent; linking and the bot's confirmation then end in <c>kept</c>.</param>
 /// <param name="HadPresentedReason">For <c>return</c>: a reason stood when the wish was removed externally, so it comes back as <c>presented</c>.</param>
 /// <param name="IrcAutoLinked">For <c>unlink</c>: source <c>irc</c> and link origin <c>auto</c>.</param>
 /// <param name="HasExpiry">
@@ -177,8 +177,9 @@ public static class WishTransitions
         Add(WishStatus.Approved, WishAction.BotAlreadyInSet, WishStatus.Presented);
         Add(WishStatus.Approved, WishAction.Close, WishStatus.Closed);
 
-        // Unconfirmed (bot, K4).
-        Add(WishStatus.Unconfirmed, WishAction.BotConfirm, WishStatus.Active);
+        // Unconfirmed (bot, K4). A confirmed add ends in kept for a permanent wish, like the reconcile's link (plan #487
+        // 2.1 point 1): kept carries no ownership and no expiry.
+        AddActiveOrKept(WishStatus.Unconfirmed, WishAction.BotConfirm);
         Add(WishStatus.Unconfirmed, WishAction.BotUnconfirmed, WishStatus.Presented);
 
         // Failed.

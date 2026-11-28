@@ -12,7 +12,9 @@ namespace EmotePurge.Infrastructure.Services;
 /// <summary>
 /// One pass of the wish expiry run (spec K2, plan #484 2.1 to 2.4, T3). See <see cref="IWishExpiryService"/>.
 /// <para>
-/// <b>Flow.</b> (1) Reconcile every channel that has a wish the reconcile can move (plan finding 17), one after
+/// <b>Flow.</b> (0) The wish bot's fallback run (<see cref="IWishBotFallback"/>, #487 plan 2.8): hands the open bot actions
+/// of every activated channel in the fallback state to the managers, also with the bot account switched off, so that
+/// switching it off leaves nothing hanging; a failure is logged and does not stop the run. (1) Reconcile every channel that has a wish the reconcile can move (plan finding 17), one after
 /// the other, through <see cref="IWishReconcileService"/> in its own scope; a failure is counted and logged and
 /// does not stop the due step for that channel (presenting is a reminder, and K4 re-reads before every bot
 /// removal). (2) Read "now" once, then the candidates: <c>active</c>, expiry at or before now, no queued removal.
@@ -33,11 +35,21 @@ namespace EmotePurge.Infrastructure.Services;
 /// expiry and is decided again, but behind the row lock the run looks for its earlier entry for that expiry and
 /// writes no second one. Only a new expiry allows the next entry.
 /// </para>
+/// <para>
+/// <b>The channel's bot state (#487 plan 2.3, Revision 6b K6b-18, 6c K6c-6, 6d K6d-7).</b> Row 4 asks
+/// <see cref="WishBotChannelState"/> like the Api does, so a channel the runner has not booked as fallen back yet is
+/// presented right away instead of queued. The channel's settings and the bot account's row come from one statement per
+/// candidate (one snapshot): two statements would let a token set, a check and a new editor proof commit in between and
+/// mix a proof of one identity with the account of the next. The switches come from the configuration as before.
+/// </para>
 /// </summary>
 public sealed class WishExpiryService(
     AppDbContext db,
     IWishReconcileService reconcileService,
-    IWishBotAvailability botAvailability,
+    WishOptions wishOptions,
+    BotAccountOptions botAccountOptions,
+    IGlobalAdminAllowlist admins,
+    IWishBotFallback botFallback,
     IWishChangedPublisher changedPublisher,
     TimeProvider timeProvider,
     ILogger<WishExpiryService> logger) : IWishExpiryService
@@ -52,6 +64,22 @@ public sealed class WishExpiryService(
     public async Task<WishExpiryRunResult> RunAsync(CancellationToken cancellationToken = default)
     {
         var tally = new Tally();
+
+        // Step 0. Its own transactions and announcements; leaves nothing tracked in this context.
+        try
+        {
+            await botFallback.ApplyAsync(cancellationToken);
+        }
+        catch (Exception ex) when (!IsStop(ex, cancellationToken))
+        {
+            logger.LogWarning(
+                "Wish expiry run: the bot fallback run failed ({ExceptionType}, SQLSTATE {SqlState}); the run goes on.",
+                ex.GetType().Name, SqlStateOf(ex));
+        }
+        finally
+        {
+            db.ChangeTracker.Clear();
+        }
 
         // Step 1. Ids only and untracked: the reconcile writes these channels' wishes in a context of its own.
         foreach (var channelId in await ReconcileChannelIdsAsync(cancellationToken))
@@ -150,7 +178,7 @@ public sealed class WishExpiryService(
                 return null;
             }
 
-            var decision = await DecideAsync(wish, now, tally, cancellationToken);
+            var decision = await DecideAsync(wish, now, cancellationToken);
             if (decision is not { } decided)
             {
                 tally.Skipped++;
@@ -206,31 +234,17 @@ public sealed class WishExpiryService(
         }
     }
 
-    // The facts behind the row lock (plan 2.2). The global availability is asked at most once per pass and only for
-    // a wish past rows 1 to 3; the usage only when the policy needs it (plan finding 16). Null: the channel row is
-    // gone (a purge or merge at the same moment).
-    private async Task<WishExpiryDecision?> DecideAsync(Wish wish, DateTime now, Tally tally, CancellationToken cancellationToken)
+    // The facts behind the row lock (plan 2.2). The channel's bot state comes from one statement that reads the settings
+    // row and the bot account's row together (#487 K6d-7), for every candidate anew, never from a memo of the pass (K6c-6);
+    // the usage only when the policy needs it (plan finding 16). Null: the channel row is gone (a purge or merge at the
+    // same moment).
+    private async Task<WishExpiryDecision?> DecideAsync(Wish wish, DateTime now, CancellationToken cancellationToken)
     {
-        var settings = await db.ChannelWishSettings.AsNoTracking()
-            .Where(s => s.ChannelId == wish.ChannelId)
-            .Select(s => new { s.BotModeEnabled, s.BotSuspendedReason, s.ProtectionThresholdPerDay })
-            .FirstOrDefaultAsync(cancellationToken);
-        var botModeEnabled = settings?.BotModeEnabled ?? false;
+        var read = await WishBotChannelFacts.ReadAsync(db, wish.ChannelId, cancellationToken);
+        var channelState = WishBotChannelFacts.StateOf(
+            read, wishOptions.Enabled && botAccountOptions.Enabled, wishOptions.PilotList, admins, now);
 
-        var available = false;
-        if (botModeEnabled && wish.BotOwned && wish.StartsAtAuthoritative)
-        {
-            tally.BotAvailable ??= await botAvailability.IsAvailableAsync(cancellationToken);
-            available = tally.BotAvailable.Value;
-        }
-
-        var facts = new WishExpiryFacts(
-            botModeEnabled,
-            settings?.BotSuspendedReason,
-            wish.BotOwned,
-            available,
-            wish.StartsAtAuthoritative,
-            settings?.ProtectionThresholdPerDay);
+        var facts = new WishExpiryFacts(channelState, wish.BotOwned, wish.StartsAtAuthoritative, read?.Settings.ProtectionThresholdPerDay);
         if (!WishExpiryPolicy.NeedsUsage(facts))
         {
             return WishExpiryPolicy.Decide(facts);
@@ -304,7 +318,7 @@ public sealed class WishExpiryService(
 
     private sealed record Candidate(long WishId, string ChannelId);
 
-    // The counters of one pass and its memo of the global bot availability.
+    // The counters of one pass.
     private sealed class Tally
     {
         private readonly Dictionary<string, int> _presentedByReason = new(StringComparer.Ordinal);
@@ -315,7 +329,6 @@ public sealed class WishExpiryService(
         public int HeldBack { get; set; }
         public int Skipped { get; set; }
         public int Failed { get; set; }
-        public bool? BotAvailable { get; set; }
 
         public void Count(WishExpiryDecision decision)
         {

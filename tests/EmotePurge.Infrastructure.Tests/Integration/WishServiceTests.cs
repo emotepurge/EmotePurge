@@ -662,8 +662,9 @@ public partial class WishServiceTests(PostgresFixture fixture)
                 .ExecuteUpdateAsync(s => s.SetProperty(x => x.BotSuspendedReason, "not_editor"));
         }
 
-        // A suspended bot means the channel runs the manual flow again.
-        Assert.True(await Sut().CanChangeSettingsAsync(channel.Name, "1234", false));
+        // #487 [W2]: the stored activation decides, not the effective state; a suspended bot keeps D7.
+        Assert.False(await Sut().CanChangeSettingsAsync(channel.Name, "1234", false));
+        Assert.True(await Sut().CanChangeSettingsAsync(channel.Name, "7777", false));
     }
 
     // ------------------------------------------------------------------------------------ reads
@@ -695,8 +696,11 @@ public partial class WishServiceTests(PostgresFixture fixture)
         Assert.Null(await Sut().ListAsync("no_such_channel_x", WishListView.Open, 1, 10));
     }
 
+    // Since #487 T6 "bot mode" in the lists is the channel's effective state: a stored activation alone, without an
+    // available bot account (the default reader here), has fallen back and lists like a manual channel. The acting
+    // channel is in WishServiceTests.Bot.cs.
     [Fact]
-    public async Task List_InBotMode_AnApprovedWishCountsAsRunning_AndTheModeIsBot()
+    public async Task List_WithAnActivationButNoBot_AnApprovedWishNeedsAction_AndTheModeIsManual()
     {
         var channel = await SeedChannelAsync();
         var approved = await SeedWishAsync(channel, EmoteId(), WishStatus.Approved);
@@ -706,10 +710,10 @@ public partial class WishServiceTests(PostgresFixture fixture)
             await db.SaveChangesAsync();
         }
 
-        Assert.Empty((await ListAsync(channel, WishListView.Open)).Items);
-        var running = (await ListAsync(channel, WishListView.Running)).Items;
-        Assert.Equal(approved, Assert.Single(running).Id);
-        Assert.Equal("bot", running[0].Mode);
+        Assert.Empty((await ListAsync(channel, WishListView.Running)).Items);
+        var open = (await ListAsync(channel, WishListView.Open)).Items;
+        Assert.Equal(approved, Assert.Single(open).Id);
+        Assert.Equal("manual", open[0].Mode);
     }
 
     [Fact]
@@ -834,7 +838,7 @@ public partial class WishServiceTests(PostgresFixture fixture)
     // ------------------------------------------------------------------------------------ helpers
 
     private WishService Sut(AppDbContext? db = null) =>
-        new(db ?? fixture.CreateDbContext(), new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance), _clock, NullLogger<WishService>.Instance);
+        new(db ?? fixture.CreateDbContext(), new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance), _clock, NullLogger<WishService>.Instance, BotChannelStates.Unavailable());
 
     private Task<WishCommandResult> CreateAsync(Seeded channel, string emoteId, string alias, int? durationDays = null) =>
         Sut().CreateAsync(channel.Name, new CreateWishRequest(emoteId, "Emote", alias, durationDays, null), Actor);

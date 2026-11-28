@@ -48,8 +48,9 @@ public static class BotAccountRegistration
     /// <summary>
     /// Worker only. Registers the bot account's writing side while the bot account is enabled: the
     /// <see cref="IBotAccountTokenOpener"/>, the 7TV write client <see cref="ISevenTvWriteClient"/>, the loop's
-    /// <see cref="IBotAccountRunner"/> and the wishes' part of its pass <see cref="IWishBotPass"/> (both scoped: the worker
-    /// resolves them once from a scope that lives as long as its loop). Registers nothing while it is disabled, and never
+    /// <see cref="IBotAccountRunner"/>, the wishes' part of its pass <see cref="IWishBotPass"/> and the editor read
+    /// <see cref="IBotAccountEditorCheck"/> (all scoped: the worker resolves them once from a scope that lives as long as
+    /// its loop). The fallback run the pass calls is registered by <c>AddEmotePurgeInfrastructure</c> whatever the switch. Registers nothing while it is disabled, and never
     /// a sealer. The wake-up signal is the worker's own and registered there whatever the switch, because the command
     /// loop that sets it always runs.
     /// </summary>
@@ -79,6 +80,8 @@ public static class BotAccountRegistration
                 RateLimitCallSources.SevenTvBot,
                 serviceProvider.GetRequiredService<IRateLimitTelemetry>()));
 
+        // The editor read (plan 2.5b): scoped, so its one-minute reuse lives in the loop-long scope with the pass.
+        services.AddScoped<IBotAccountEditorCheck, BotAccountEditorCheck>();
         services.AddScoped<IWishBotPass, WishBotPass>();
         services.AddScoped<IBotAccountRunner, BotAccountRunner>();
         return services;

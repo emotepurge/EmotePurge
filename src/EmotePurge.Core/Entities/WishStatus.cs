@@ -114,6 +114,43 @@ public static class WishStatusReason
     public static readonly IReadOnlyList<string> PendingHints = [AmbiguousMatch, AlreadyInSet, AlreadyRunning, Unparsed];
 }
 
+/// <summary>
+/// The values of <see cref="ChannelWishSettings.BotSuspendedReason"/> and <see cref="ChannelWishSettings.BotActivationError"/>
+/// (#487 plan 2.5b, 2.8, 2.9, Revision 6b K6b-8). Field values, not error codes: <c>GET …/wishes/bot</c> passes them on
+/// unchanged and the frontend translates them (K5). <see cref="NotEditor"/> is the same text as
+/// <see cref="WishStatusReason.NotEditor"/>, the reason of a failed wish.
+/// </summary>
+public static class WishBotChannelReasons
+{
+    /// <summary>The bot is not an editor with "manage emote sets" in the channel (suspension and activation error).</summary>
+    public const string NotEditor = "not_editor";
+
+    /// <summary>The channel is no longer covered by the pilot list or an activator who is admin by id (suspension).</summary>
+    public const string NotListed = "not_listed";
+
+    /// <summary>An invitation of the bot is open and not accepted yet (suspension of an activated channel).</summary>
+    public const string InvitationPending = "invitation_pending";
+
+    /// <summary>The bot account is another 7TV account than the one the managers consented to (suspension and activation error).</summary>
+    public const string BotAccountChanged = "bot_account_changed";
+
+    /// <summary>The bot could not accept the invitation for this request (activation error).</summary>
+    public const string InvitationNotAccepted = "invitation_not_accepted";
+
+    /// <summary>The request was cancelled while an acceptance attempt was open; its effect is still unknown (activation error).</summary>
+    public const string InvitationAcceptUnresolved = "invitation_accept_unresolved";
+
+    /// <summary>An acceptance sent before a cancellation took effect after it: the bot is an editor without consent (activation error).</summary>
+    public const string InvitationAcceptedAfterAbort = "invitation_accepted_after_abort";
+
+    /// <summary>The four values of <see cref="ChannelWishSettings.BotSuspendedReason"/>.</summary>
+    public static readonly IReadOnlyList<string> Suspended = [NotEditor, NotListed, InvitationPending, BotAccountChanged];
+
+    /// <summary>The five values of <see cref="ChannelWishSettings.BotActivationError"/>.</summary>
+    public static readonly IReadOnlyList<string> ActivationErrors =
+        [NotEditor, InvitationNotAccepted, BotAccountChanged, InvitationAcceptUnresolved, InvitationAcceptedAfterAbort];
+}
+
 /// <summary>The values of <see cref="Wish.Source"/>.</summary>
 public static class WishSource
 {
@@ -238,4 +275,10 @@ public static class WishLimits
 
     /// <summary>Shorter stretches without capture are not stored.</summary>
     public static readonly TimeSpan MinCaptureGap = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// How long the bot confirms a write before the deadline step presents it (#487 plan 2.6 point 5, R2-7): anchor plus
+    /// 16 minutes, one minute of slack for the fifth read. The anchor is the write, after <c>recheck</c> the recheck.
+    /// </summary>
+    public static readonly TimeSpan BotConfirmWindow = TimeSpan.FromMinutes(16);
 }

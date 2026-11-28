@@ -16,4 +16,10 @@ public interface IGlobalAdminAllowlist
     /// broadcaster's re-add lock).
     /// </summary>
     bool IsAdminById(TwitchPrincipalInfo principal);
+
+    /// <summary>
+    /// The same id-only answer for a bare Twitch user id, for callers without a principal (#487 plan 2.3, K6b-14: the
+    /// worker and the per-channel bot state, asked about <c>BotModeActivatedByTwitchUserId</c>). Never the login list.
+    /// </summary>
+    bool IsAdminById(string twitchUserId);
 }

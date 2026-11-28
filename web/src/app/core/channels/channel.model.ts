@@ -27,6 +27,11 @@ export interface ChannelPermissions {
   wishesEnabled: boolean;
   /** Server flag `Wishes:Capture:Enabled` (#486) as the Api sees it: the reward routes and the settings section exist. */
   wishCaptureEnabled: boolean;
+  /**
+   * #487: the bot mode for wishes could be switched on here (both server switches on, the bot account
+   * usable, the channel on the pilot list or the caller a global admin). Only ever true for a manager.
+   */
+  wishBotModeAvailable: boolean;
 }
 
 /**

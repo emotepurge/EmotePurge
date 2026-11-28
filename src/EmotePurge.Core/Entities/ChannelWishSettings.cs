@@ -25,20 +25,30 @@ public class ChannelWishSettings
     /// <summary>The bot account's <c>IdentityVersion</c> at the editor check; null = never checked against one.</summary>
     public int? BotEditorCheckedIdentityVersion { get; set; }
 
-    /// <summary><c>not_editor</c> or <c>not_listed</c>; set means the channel runs in the manual flow.</summary>
+    /// <summary>
+    /// One of <see cref="WishBotChannelReasons.Suspended"/>: <c>not_editor</c>, <c>not_listed</c>, <c>invitation_pending</c>
+    /// or <c>bot_account_changed</c>; set means the channel runs in the manual flow. Cleared by <c>DELETE …/wishes/bot</c>.
+    /// </summary>
     public string? BotSuspendedReason { get; set; }
 
     public DateTime? BotActivationRequestedAtUtc { get; set; }
     public string? BotActivationRequestedByTwitchUserId { get; set; }
     public string? BotActivationRequestedByLogin { get; set; }
 
-    /// <summary><c>not_editor</c> after a failed check; cleared by the next activate.</summary>
+    /// <summary>
+    /// One of <see cref="WishBotChannelReasons.ActivationErrors"/>, why the last activation request ended without the bot
+    /// mode: <c>not_editor</c>, <c>invitation_not_accepted</c>, <c>bot_account_changed</c>,
+    /// <c>invitation_accept_unresolved</c> (set by <c>DELETE</c> while an acceptance attempt is open) or
+    /// <c>invitation_accepted_after_abort</c>. Cleared by <c>activate</c>, by the worker's confirmation and, for
+    /// <c>invitation_accept_unresolved</c>, when the worker resolves or takes back that attempt.
+    /// </summary>
     public string? BotActivationError { get; set; }
 
     /// <summary>
     /// The 7TV user id of the bot account the managers consented to (plan 2.5b, 2.9): set by <c>activate</c> from the
     /// current bot account, kept by the confirmation. Every bot write requires it to equal the bot account's id; another
-    /// account suspends the channel (<c>bot_account_changed</c>). Cleared by a new activation, which sets it afresh.
+    /// account suspends the channel (<c>bot_account_changed</c>). Cleared by <c>DELETE</c>, except while an acceptance
+    /// attempt is open; <c>activate</c> sets it afresh.
     /// </summary>
     public string? BotConsentSevenTvUserId { get; set; }
 
@@ -49,8 +59,10 @@ public class ChannelWishSettings
     public DateTime? BotInvitationAttemptAtUtc { get; set; }
 
     /// <summary>
-    /// The earliest moment of the next invitation attempt, persisted per channel so it survives a runner change and a
-    /// restart; bound to the bot id of <see cref="BotConsentSevenTvUserId"/>. Null = no wait.
+    /// The earliest moment of the next invitation attempt (15 minutes after a <c>LackingPrivileges</c> of an activated
+    /// channel or a <c>Rejected</c>), persisted per channel so it survives a runner change and a restart; bound to the bot
+    /// id of <see cref="BotConsentSevenTvUserId"/>. Later than an open attempt's stamp it marks "this attempt ended in
+    /// Rejected" (K6b-1). Cleared by the confirmation of an activation and by an acceptance that took effect. Null = no wait.
     /// </summary>
     public DateTime? BotInvitationRetryAtUtc { get; set; }
 

@@ -93,6 +93,7 @@ const MANAGER: ChannelPermissions = {
   chatLogBackfillEnabled: false,
   wishesEnabled: false,
   wishCaptureEnabled: false,
+  wishBotModeAvailable: false,
 };
 
 function setStatus(activeEmoteSetId: string): EmoteSetStatus {

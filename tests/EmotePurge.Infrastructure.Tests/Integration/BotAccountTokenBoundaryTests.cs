@@ -210,9 +210,12 @@ public class BotAccountTokenBoundaryTests(PostgresFixture fixture) : IAsyncLifet
             services.AddSingleton<IRateLimitTelemetry>(new RecordingRateLimitTelemetry());
             services.AddSingleton(TimeProvider.System);
             services.AddSingleton(new BotAccountOptions { Enabled = true, WriteDelaySeconds = 0 });
-            services.AddSingleton(Substitute.For<IWishBotPass>());
             services.AddScoped(_ => CreateDb([]));
             services.AddBotAccountWriter(configuration);
+
+            // After the writer, so it replaces the real wish part (which since T8b needs the wish services and the
+            // editor read): this rig is about the token boundary of the runner and the write client only.
+            services.AddSingleton(Substitute.For<IWishBotPass>());
             services.AddHttpClient<ISevenTvWriteClient, SevenTvWriteClient>().ConfigurePrimaryHttpMessageHandler(() => handler);
             _worker = services.BuildServiceProvider();
         }

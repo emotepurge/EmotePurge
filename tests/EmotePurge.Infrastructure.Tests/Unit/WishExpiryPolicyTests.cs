@@ -8,7 +8,9 @@ public class WishExpiryPolicyTests
 {
     private static readonly DateTime Now = new(2026, 11, 18, 12, 0, 0, DateTimeKind.Utc);
 
-    // A fact set that reaches row 7 unless a test turns something off.
+    // A fact set that reaches row 7 unless a test turns something off. Since #487 T6 the policy reads the channel's
+    // effective state (WishBotChannelState); bot mode off is manual, and a suspended channel or an unavailable account is
+    // fallback, the two ways the old facts could say "not acting".
     private static WishExpiryFacts Facts(
         bool botMode = true,
         string? suspended = null,
@@ -18,7 +20,12 @@ public class WishExpiryPolicyTests
         decimal? threshold = null,
         decimal? mean = null,
         bool? gap = null) =>
-        new(botMode, suspended, owned, available, authoritative, threshold, mean, gap);
+        new(StateOf(botMode, suspended, available), owned, authoritative, threshold, mean, gap);
+
+    private static WishBotChannelMode StateOf(bool botMode, string? suspended, bool available) =>
+        !botMode ? WishBotChannelMode.Manual
+        : suspended is not null || !available ? WishBotChannelMode.Fallback
+        : WishBotChannelMode.Bot;
 
     private static void AssertPresented(string reason, WishExpiryFacts facts)
     {
@@ -127,46 +134,60 @@ public class WishExpiryPolicyTests
     [Fact]
     public void Decide_NullFacts_Throws() => Assert.Throws<ArgumentNullException>(() => WishExpiryPolicy.Decide(null!));
 
+    // Row 4 asks the channel's state (plan #487 2.3, K6b-18): fallback is unavailable whatever made it so, and with
+    // ownership and an authoritative start it never reaches the usage window.
+    [Fact]
+    public void Row4_FallbackChannel_IsBotUnavailable_WithoutNeedingTheUsage()
+    {
+        var facts = new WishExpiryFacts(WishBotChannelMode.Fallback, BotOwned: true, StartsAtAuthoritative: true, ProtectionThresholdPerDay: 5m);
+
+        Assert.False(WishExpiryPolicy.NeedsUsage(facts));
+        AssertPresented("bot_unavailable", facts);
+    }
+
     [Fact]
     public void FullCombinatorics_ProvisionalStartIsNeverQueuedAndNeverCarriesABotReason_AndNeedsUsageMatchesTheTable()
     {
         bool[] bools = [false, true];
-        string?[] suspended = [null, "token_revoked"];
+        WishBotChannelMode[] states = [WishBotChannelMode.Manual, WishBotChannelMode.Bot, WishBotChannelMode.Fallback];
         decimal?[] thresholds = [null, 5m];
         decimal[] means = [0m, 5m, 9m];
         var count = 0;
 
-        foreach (var botMode in bools)
-            foreach (var susp in suspended)
-                foreach (var owned in bools)
-                    foreach (var available in bools)
-                        foreach (var authoritative in bools)
-                            foreach (var threshold in thresholds)
-                                foreach (var mean in means)
-                                    foreach (var gap in bools)
-                                    {
-                                        var facts = new WishExpiryFacts(botMode, susp, owned, available, authoritative, threshold, mean, gap);
-                                        var needs = WishExpiryPolicy.NeedsUsage(facts);
-                                        var expectedNeeds = botMode && owned && authoritative && available && susp is null && threshold is not null;
-                                        Assert.Equal(expectedNeeds, needs);
+        foreach (var state in states)
+            foreach (var owned in bools)
+                foreach (var authoritative in bools)
+                    foreach (var threshold in thresholds)
+                        foreach (var mean in means)
+                            foreach (var gap in bools)
+                            {
+                                var facts = new WishExpiryFacts(state, owned, authoritative, threshold, mean, gap);
+                                var needs = WishExpiryPolicy.NeedsUsage(facts);
+                                var expectedNeeds = state == WishBotChannelMode.Bot && owned && authoritative && threshold is not null;
+                                Assert.Equal(expectedNeeds, needs);
 
-                                        var d = WishExpiryPolicy.Decide(facts);
-                                        count++;
-                                        if (!authoritative)
-                                        {
-                                            Assert.False(d.Queue);
-                                            Assert.DoesNotContain(
-                                                d.Reason,
-                                                new[] { "bot_unavailable", "coverage_gap", "protected" });
-                                        }
+                                var d = WishExpiryPolicy.Decide(facts);
+                                count++;
+                                if (!authoritative)
+                                {
+                                    Assert.False(d.Queue);
+                                    Assert.DoesNotContain(
+                                        d.Reason,
+                                        new[] { "bot_unavailable", "coverage_gap", "protected" });
+                                }
 
-                                        if (!botMode)
-                                        {
-                                            Assert.Equal("expired", d.Reason);
-                                        }
-                                    }
+                                if (state == WishBotChannelMode.Manual)
+                                {
+                                    Assert.Equal("expired", d.Reason);
+                                }
 
-        Assert.Equal(2 * 2 * 2 * 2 * 2 * 2 * 3 * 2, count);
+                                if (state == WishBotChannelMode.Fallback && owned && authoritative)
+                                {
+                                    Assert.Equal("bot_unavailable", d.Reason);
+                                }
+                            }
+
+        Assert.Equal(3 * 2 * 2 * 2 * 3 * 2, count);
     }
 
     // Hold-back rule (plan 2.1).

@@ -31,6 +31,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         _factory = factory;
         _factory.Wishes.ClearReceivedCalls();
         _factory.WishOverview.ClearReceivedCalls();
+        _factory.WishBot.ClearReceivedCalls();
         _factory.ChannelAccess.ClearReceivedCalls();
 
         _factory.ChannelAccess.CanManageChannelAsync(Arg.Any<TwitchPrincipalInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
@@ -64,6 +65,11 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         { "POST", "/api/channels/{0}/wishes/7/unlink", null },
         // K7a (spec E38, E41): the delete route carries WishIdAccessFilter behind the same ladder.
         { "DELETE", "/api/channels/{0}/wishes/7?endedAtUtc=2026-11-02T10:00:00.1234567Z", null },
+        // #487 T7 (plan 2.9): the bot routes sit on the same group, so the same ladder runs before their own filters.
+        { "POST", "/api/channels/{0}/wishes/7/bot-remove", null },
+        { "GET", "/api/channels/{0}/wishes/bot", null },
+        { "POST", "/api/channels/{0}/wishes/bot/activate", null },
+        { "DELETE", "/api/channels/{0}/wishes/bot", null },
     };
 
     // ---- AK13: the filter ladder on every route ----
@@ -78,6 +84,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal(ApiErrorCodes.InvalidChannelName, await ReadErrorCodeAsync(response));
         await _factory.ChannelAccess.DidNotReceiveWithAnyArgs().CanManageChannelAsync(default!, default!, default);
         Assert.Empty(_factory.Wishes.ReceivedCalls());
+        Assert.Empty(_factory.WishBot.ReceivedCalls());
     }
 
     [Theory]
@@ -88,6 +95,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Empty(_factory.Wishes.ReceivedCalls());
+        Assert.Empty(_factory.WishBot.ReceivedCalls());
     }
 
     [Theory]
@@ -105,6 +113,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         await _factory.ChannelAccess.DidNotReceiveWithAnyArgs().CanViewUsageStatsAsync(default!, default!, default);
         Assert.Empty(_factory.Wishes.ReceivedCalls());
+        Assert.Empty(_factory.WishBot.ReceivedCalls());
     }
 
     [Theory]
@@ -118,6 +127,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(ApiErrorCodes.WishesDisabled, await ReadErrorCodeAsync(response));
         Assert.Empty(_factory.Wishes.ReceivedCalls());
+        Assert.Empty(_factory.WishBot.ReceivedCalls());
     }
 
     [Theory]
@@ -132,6 +142,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.Empty(_factory.Wishes.ReceivedCalls());
+        Assert.Empty(_factory.WishBot.ReceivedCalls());
     }
 
     [Theory]
@@ -197,7 +208,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         // The service decides; the filter forwards the caller's id and the admin flag.
         _factory.Wishes.CanChangeSettingsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(call => call.ArgAt<string>(1) is "broadcaster" or "activator" || call.ArgAt<bool>(2));
-        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Settings: Settings()));
         _factory.ChannelAccess.IsGlobalAdmin(Arg.Is<TwitchPrincipalInfo>(p => p.TwitchUserId == "admin")).Returns(true);
         const string body = """{"defaultDurationDays":30,"probationLeadDays":7,"protectionThresholdPerDay":null}""";
@@ -206,7 +217,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         var mod = await SendAsync(_factory, "PUT", path, body, userId: "plain-mod");
         Assert.Equal(HttpStatusCode.Forbidden, mod.StatusCode);
         Assert.Equal(ApiErrorCodes.WishSettingsRestricted, await ReadErrorCodeAsync(mod));
-        await _factory.Wishes.DidNotReceiveWithAnyArgs().UpdateSettingsAsync(default!, default!, default!, default);
+        await _factory.Wishes.DidNotReceiveWithAnyArgs().UpdateSettingsAsync(default!, default!, default!, default, default);
 
         foreach (var allowed in new[] { "broadcaster", "activator", "admin" })
         {
@@ -284,7 +295,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     {
         _factory.Wishes.CanChangeSettingsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(true);
-        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Settings: Settings()));
 
         var response = await SendAsync(
@@ -369,6 +380,15 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         { WishOutcome.StateConflict, HttpStatusCode.Conflict, ApiErrorCodes.WishStateConflict },
         { WishOutcome.EmoteRequired, HttpStatusCode.BadRequest, ApiErrorCodes.WishEmoteRequired },
         { WishOutcome.RunningNotExtendable, HttpStatusCode.Conflict, ApiErrorCodes.WishRunningNotExtendable },
+        // #487 T6: D7 behind the channel lock, and the hard delete during an open repair phase.
+        { WishOutcome.SettingsRestricted, HttpStatusCode.Forbidden, ApiErrorCodes.WishSettingsRestricted },
+        { WishOutcome.RepairCheckOpen, HttpStatusCode.Conflict, ApiErrorCodes.WishRepairCheckOpen },
+        // #487 T7: the channel routes of the bot mode.
+        { WishOutcome.BotUnavailable, HttpStatusCode.Conflict, ApiErrorCodes.WishBotUnavailable },
+        { WishOutcome.BotAlreadyActive, HttpStatusCode.Conflict, ApiErrorCodes.WishBotAlreadyActive },
+        { WishOutcome.NotBotOwned, HttpStatusCode.Conflict, ApiErrorCodes.WishNotBotOwned },
+        { WishOutcome.StartUnconfirmed, HttpStatusCode.Conflict, ApiErrorCodes.WishStartUnconfirmed },
+        { WishOutcome.BotSetChanged, HttpStatusCode.Conflict, ApiErrorCodes.WishBotSetChanged },
     };
 
     [Theory]
@@ -524,6 +544,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(ApiErrorCodes.InvalidRequestBody, await ReadErrorCodeAsync(response));
         Assert.Empty(_factory.Wishes.ReceivedCalls());
+        Assert.Empty(_factory.WishBot.ReceivedCalls());
     }
 
     // A body without one of the three fields reaches the service with the gaps as null; the service refuses it
@@ -578,7 +599,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     {
         _factory.Wishes.CanChangeSettingsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(true);
-        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Settings: Settings()));
 
         var response = await SendAsync(_factory, "PUT", $"/api/channels/{Channel}/wishes/settings", body);
@@ -586,7 +607,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var expected = new UpdateWishSettingsRequest(
             14, 5, threshold is null ? null : decimal.Parse(threshold, System.Globalization.CultureInfo.InvariantCulture), keep);
-        await _factory.Wishes.Received(1).UpdateSettingsAsync(Channel, expected, Arg.Any<AuditActor>(), Arg.Any<CancellationToken>());
+        await _factory.Wishes.Received(1).UpdateSettingsAsync(Channel, expected, Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
     }
 
     // K6 (plan #486 2.8): the expiry of open wishes is optional on the write; absent keeps the stored value.
@@ -598,7 +619,7 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
     {
         _factory.Wishes.CanChangeSettingsAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(true);
-        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<CancellationToken>())
+        _factory.Wishes.UpdateSettingsAsync(Arg.Any<string>(), Arg.Any<UpdateWishSettingsRequest>(), Arg.Any<AuditActor>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
             .Returns(new WishCommandResult(WishOutcome.Success, Settings: Settings() with { PendingExpiryDays = 30 }));
 
         var response = await SendAsync(_factory, "PUT", $"/api/channels/{Channel}/wishes/settings", body);
@@ -804,9 +825,9 @@ public class WishEndpointsTests : IClassFixture<ApiFactory>
                     || raw.StartsWith("/api/wishes", StringComparison.Ordinal)))
             .ToList();
 
-        // 19 channel routes (the Routes table), the six reward routes (WishCaptureEndpointsTests) and the two overview
-        // reads: the scan is not vacuous.
-        Assert.Equal(27, endpoints.Count);
+        // 23 channel routes (the Routes table, with the four bot routes of #487 T7), the six reward routes
+        // (WishCaptureEndpointsTests) and the two overview reads: the scan is not vacuous.
+        Assert.Equal(31, endpoints.Count);
         foreach (var endpoint in endpoints)
         {
             var handler = endpoint.Metadata.GetMetadata<MethodInfo>();

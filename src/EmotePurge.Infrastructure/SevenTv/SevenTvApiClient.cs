@@ -61,6 +61,12 @@ public class SevenTvApiClient(
     private const string GqlEditorOfQuery =
         "query($id: ObjectID!) { user(id: $id) { editor_of { user { connections { platform id username } } } } }";
 
+    // v4 schema (host-absolute /v4/gql), the bot account's editor read (#487 plan 2.5b, Revision 6b K6b-13): the query of
+    // the plan character for character, camelCase as 7TV names it (the DTOs carry [JsonPropertyName]). Sent without a
+    // token. The owner's Twitch connection comes in the same read; measured publicly filled on 2026-11-25 (T8b-Live).
+    private const string GqlEditorForQuery =
+        "query($id: Id!) { users { user(id: $id) { editorFor { userId state addedAt permissions { emoteSet { manage } } user { connections { platform platformId } } } } } }";
+
     // v4 schema, foreign-channel-import spec (F1 step 3): a set-agnostic, paginated preview of an
     // arbitrary emote set's entries, including the set-local alias, the emote's global default name,
     // and its network-wide scores — all three land in this one request per page (measured live
@@ -557,6 +563,43 @@ public class SevenTvApiClient(
         {
             logger.LogWarning(ex, "Reading the 7TV editor grants of Twitch id {Id} failed.", twitchUserId);
             return SevenTvEditorGrantsLookup.Failed(SevenTvEditorGrantsLookupStatus.Unavailable);
+        }
+    }
+
+    // Fail-closed in the direction that matters for the bot (plan 2.5b): every doubt is Unavailable, which suspends
+    // nothing, never a shorter list, which would read as "not an editor" and suspend the channel. Only an entry whose owner
+    // has no Twitch connection is left out: it cannot be a channel of Emote Purge. Logs name the bot id (public) and the
+    // reason, never a 7TV body.
+    public async Task<SevenTvEditorForResult> GetEditorForAsync(string sevenTvUserId, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sevenTvUserId);
+
+        try
+        {
+            var payload = new { query = GqlEditorForQuery, variables = new { id = sevenTvUserId } };
+            var page = await FetchV4PageAsync<SevenTvGqlEditorForResponseDto>(payload, RateLimitCallSources.SevenTvBot, cancellationToken);
+            if (page.Status == V4PageStatus.RateLimited)
+            {
+                // No pause of the account: the read carries no token (plan 2.5b, 2.5a (i)).
+                logger.LogWarning("The 7TV editor read of bot account {BotId} hit a rate limit (429); treated as unavailable.", sevenTvUserId);
+                return SevenTvEditorForResult.Failed(SevenTvLookupStatus.Unavailable);
+            }
+
+            var entries = page.Status == V4PageStatus.Ok && page.Dto is { Errors: null or [] } dto
+                ? ToEditorForEntries(dto.Data?.Users?.User?.EditorFor)
+                : null;
+            if (entries is null)
+            {
+                logger.LogWarning("The 7TV editor read of bot account {BotId} returned no usable data.", sevenTvUserId);
+                return SevenTvEditorForResult.Failed(SevenTvLookupStatus.Unavailable);
+            }
+
+            return SevenTvEditorForResult.Ok(entries);
+        }
+        catch (Exception ex) when (ex is HttpRequestException || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            logger.LogWarning("The 7TV editor read of bot account {BotId} failed ({ExceptionType}).", sevenTvUserId, ex.GetType().Name);
+            return SevenTvEditorForResult.Failed(SevenTvLookupStatus.Unavailable);
         }
     }
 
@@ -1566,6 +1609,37 @@ public class SevenTvApiClient(
             .Where(c => c.Platform == TwitchPlatform)
             .Select(c => new SevenTvEditorGrant(c.Username, c.Id))
             .ToList();
+
+    // editorFor reduced to one entry per Twitch connection of an owner; null for an answer that cannot be trusted as a
+    // whole (missing list, a null entry, a null owner, an owner without id, a missing connection list). An owner whose
+    // connections hold no Twitch one is left out.
+    private static List<SevenTvEditorForEntry>? ToEditorForEntries(List<SevenTvGqlEditorForEntryDto?>? editorFor)
+    {
+        if (editorFor is null)
+        {
+            return null;
+        }
+
+        var entries = new List<SevenTvEditorForEntry>();
+        foreach (var entry in editorFor)
+        {
+            if (entry?.User?.Connections is not { } connections || string.IsNullOrEmpty(entry.UserId) || connections.Any(c => c is null))
+            {
+                return null;
+            }
+
+            var addedAt = DateTime.TryParse(
+                entry.AddedAt, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AdjustToUniversal, out var parsed)
+                ? DateTime.SpecifyKind(parsed, DateTimeKind.Utc)
+                : (DateTime?)null;
+            entries.AddRange(connections
+                .Where(c => c!.Platform == TwitchPlatform && !string.IsNullOrEmpty(c.PlatformId))
+                .Select(c => new SevenTvEditorForEntry(
+                    entry.UserId, c!.PlatformId!, entry.State, entry.Permissions?.EmoteSet?.Manage == true, addedAt)));
+        }
+
+        return entries;
+    }
 
     private enum V4PageStatus
     {

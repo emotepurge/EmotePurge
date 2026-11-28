@@ -17,7 +17,14 @@ public partial class WishServiceTests
     private const int SeededDecisionVersion = 3;
 
     private static readonly string[] Commands =
-        ["patch", "extend", "keep", "close", "retry", "readd", "complete-removal", "recheck", "approve", "reject", "unlink"];
+        ["patch", "extend", "keep", "close", "retry", "readd", "complete-removal", "recheck", "bot-remove", "approve", "reject", "unlink"];
+
+    // Refusals other than the state conflict, in the manual channel every row of this matrix lives in (#487 T7): the one
+    // state recheck accepts needs the bot to act for the channel. Nothing is written either way.
+    private static readonly Dictionary<(string State, string Command), WishOutcome> RefusedOtherwise = new()
+    {
+        [("presented", "recheck")] = WishOutcome.BotUnavailable,
+    };
 
     // (state, command) -> state after success. Seeded rows have no slot, except for complete-removal, which runs on
     // a row bound to a slot generation and reports exactly that (plan #485 2.1a); presented carries reason
@@ -139,7 +146,7 @@ public partial class WishServiceTests
         }
         else
         {
-            Assert.Equal(WishOutcome.StateConflict, result.Outcome);
+            Assert.Equal(RefusedOtherwise.GetValueOrDefault((state, command), WishOutcome.StateConflict), result.Outcome);
             Assert.Null(result.Wish);
             Assert.Equal(before, JsonSerializer.Serialize(row));
             Assert.Empty(audit);
@@ -383,7 +390,9 @@ public partial class WishServiceTests
         Assert.Null(row.SlotConfirmedAtUtc);
         Assert.Null(row.EndedAtUtc);
         Assert.Equal(0, row.ExtensionCount);
-        Assert.Equal((slot, (DateTime?)firstActivated, WishLinkOrigin.Auto), (row.SlotId, row.FirstActivatedAtUtc, row.LinkOrigin));
+        // The slot and the first activation are history and stay; the link origin goes with the old link (#487 plan 2.1
+        // point 2), the next link sets it again.
+        Assert.Equal((slot, (DateTime?)firstActivated, (string?)null), (row.SlotId, row.FirstActivatedAtUtc, row.LinkOrigin));
     }
 
     // AK12, command part: permanent → approved with Permanent; the reconcile half is T7's.
@@ -616,6 +625,7 @@ public partial class WishServiceTests
             "retry" => sut.RetryAsync(channel.Name, wishId, Actor),
             "readd" => sut.ReAddAsync(channel.Name, wishId, new ReAddWishRequest("timed", null), Actor),
             "recheck" => sut.RecheckAsync(channel.Name, wishId, Actor),
+            "bot-remove" => sut.RequestBotRemovalAsync(channel.Name, wishId, Actor),
             "approve" => sut.ApproveAsync(channel.Name, wishId, new ApproveWishRequest(null, null, null, null), Actor),
             "reject" => sut.RejectAsync(channel.Name, wishId, Actor),
             "unlink" => sut.UnlinkAsync(channel.Name, wishId, Actor),

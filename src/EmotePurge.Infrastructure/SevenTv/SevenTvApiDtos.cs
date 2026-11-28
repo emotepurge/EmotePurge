@@ -495,3 +495,70 @@ internal sealed class SevenTvGqlEmoteSetListConnectionDto
     [JsonPropertyName("platformDisplayName")]
     public string? PlatformDisplayName { get; set; }
 }
+
+// GQL v4 (host-absolute /v4/gql), the bot account's editor read user(id).editorFor (#487 plan 2.5b, K6b-13). camelCase
+// members carry [JsonPropertyName] like the set list above, so the query stays the one of the plan. Every member is
+// nullable: what is missing is decided by the mapper (fail-closed), never by a deserializer default.
+internal sealed class SevenTvGqlEditorForResponseDto : ISevenTvGqlErrorEnvelope
+{
+    public SevenTvGqlEditorForDataDto? Data { get; set; }
+
+    public List<SevenTvGqlErrorDto>? Errors { get; set; }
+}
+
+internal sealed class SevenTvGqlEditorForDataDto
+{
+    public SevenTvGqlEditorForUsersDto? Users { get; set; }
+}
+
+internal sealed class SevenTvGqlEditorForUsersDto
+{
+    public SevenTvGqlEditorForUserDto? User { get; set; }
+}
+
+internal sealed class SevenTvGqlEditorForUserDto
+{
+    [JsonPropertyName("editorFor")]
+    public List<SevenTvGqlEditorForEntryDto?>? EditorFor { get; set; }
+}
+
+internal sealed class SevenTvGqlEditorForEntryDto
+{
+    [JsonPropertyName("userId")]
+    public string? UserId { get; set; }
+
+    public string? State { get; set; }
+
+    // A string, parsed leniently by the mapper: the field is for the log only and must never make the read unusable.
+    [JsonPropertyName("addedAt")]
+    public string? AddedAt { get; set; }
+
+    public SevenTvGqlEditorPermissionsDto? Permissions { get; set; }
+
+    // The owner. Null makes the whole read Unavailable (which channel is meant would stay open).
+    public SevenTvGqlEditorForOwnerDto? User { get; set; }
+}
+
+internal sealed class SevenTvGqlEditorPermissionsDto
+{
+    [JsonPropertyName("emoteSet")]
+    public SevenTvGqlEditorEmoteSetPermissionsDto? EmoteSet { get; set; }
+}
+
+internal sealed class SevenTvGqlEditorEmoteSetPermissionsDto
+{
+    public bool? Manage { get; set; }
+}
+
+internal sealed class SevenTvGqlEditorForOwnerDto
+{
+    public List<SevenTvGqlEditorForConnectionDto?>? Connections { get; set; }
+}
+
+internal sealed class SevenTvGqlEditorForConnectionDto
+{
+    public string? Platform { get; set; }
+
+    [JsonPropertyName("platformId")]
+    public string? PlatformId { get; set; }
+}

@@ -111,6 +111,7 @@ const PERMISSIONS: ChannelPermissions = {
   chatLogBackfillEnabled: false,
   wishesEnabled: false,
   wishCaptureEnabled: false,
+  wishBotModeAvailable: false,
 };
 
 const DE_TRANSLATIONS = {

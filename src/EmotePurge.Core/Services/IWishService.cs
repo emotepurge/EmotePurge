@@ -31,15 +31,22 @@ public interface IWishService
     /// Upserts the settings (audited as <c>wish.settings</c>). With <see cref="UpdateWishSettingsRequest.KeepProtectionThreshold"/>
     /// the stored threshold stays as it is and no decision is superseded (plan #485 2.1a); otherwise the sent value,
     /// null switching protection off. Refusals: <see cref="WishOutcome.SettingsOutOfRange"/>,
-    /// <see cref="WishOutcome.ChannelNotFound"/>.
+    /// <see cref="WishOutcome.ChannelNotFound"/>, and <see cref="WishOutcome.SettingsRestricted"/> when D7 no longer lets
+    /// the caller (<paramref name="actor"/>'s Twitch id, <paramref name="isGlobalAdmin"/>) change the settings, checked
+    /// again behind the channel lock on the row as it is then (#487 plan 2.9).
     /// </summary>
     Task<WishCommandResult> UpdateSettingsAsync(
-        string channelName, UpdateWishSettingsRequest request, AuditActor actor, CancellationToken cancellationToken = default);
+        string channelName,
+        UpdateWishSettingsRequest request,
+        AuditActor actor,
+        bool isGlobalAdmin = false,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// The decision behind the settings write filter: may this caller change the settings? A channel in manual
-    /// mode answers yes (the caller is a manager already); in bot mode only the broadcaster, the manager who
-    /// activated the bot and a global admin. An unknown channel answers yes: the handler's 404 is the better answer.
+    /// The decision behind the settings write filter: may this caller change the settings? A channel without a stored
+    /// bot activation answers yes (the caller is a manager already); with one, also while suspended or fallen back
+    /// (#487 [W2]), only the broadcaster, the manager who activated the bot and a global admin. An unknown channel
+    /// answers yes: the handler's 404 is the better answer.
     /// </summary>
     Task<bool> CanChangeSettingsAsync(
         string channelName, string callerTwitchUserId, bool isGlobalAdmin, CancellationToken cancellationToken = default);
@@ -154,10 +161,30 @@ public interface IWishService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// "Check again" (<c>presented</c> with reason <c>unconfirmed</c>). Its only transition needs the bot, which K1
-    /// does not have (plan finding 8): in K1 every state answers <see cref="WishOutcome.StateConflict"/>; K4 fills it.
+    /// "Check again" (#487 plan 2.9, R2-8): <c>presented</c> with reason <c>unconfirmed</c> back to <c>unconfirmed</c>,
+    /// with a fresh confirmation deadline in the set of the original attempt. Locks the channel row, then the wish row.
+    /// In this order: the transition (else <see cref="WishOutcome.StateConflict"/>, also for an open bot attempt), the
+    /// channel's effective bot state (not <c>bot</c> → <see cref="WishOutcome.BotUnavailable"/>), the attempt's set
+    /// (<c>BotSetId</c> empty or no longer the channel's active set → <see cref="WishOutcome.BotSetChanged"/>). On success
+    /// <c>BotSetId</c>, <c>BotWriteAtUtc</c> (the generation anchor) and <c>BotAddAckAtUtc</c> stay, the schedule starts
+    /// now (count 0, next read now, deadline now + 16 minutes) and is bound to the new decision version; audited as
+    /// <c>wish.recheck</c>, the worker is nudged after the commit.
     /// </summary>
-    Task<WishCommandResult> RecheckAsync(string channelName, long wishId, AuditActor actor, CancellationToken cancellationToken = default);
+    Task<WishCommandResult> RecheckAsync(
+        string channelName, long wishId, AuditActor actor, WishCaptureAccess? access = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// "Have the bot remove it" (#487 plan 2.9, AK84): queues a bot removal of a <c>presented</c> wish the bot owns.
+    /// Locks the wish row (a transition command). In this order: not <c>presented</c> with reason <c>protected</c>,
+    /// <c>coverage_gap</c> or <c>bot_unavailable</c>, already queued, or an open bot attempt →
+    /// <see cref="WishOutcome.StateConflict"/>; not bot-owned → <see cref="WishOutcome.NotBotOwned"/>; start not
+    /// authoritative → <see cref="WishOutcome.StartUnconfirmed"/>; the channel's effective bot state not <c>bot</c> →
+    /// <see cref="WishOutcome.BotUnavailable"/>. On success the request is a decision of its own: the decision version is
+    /// counted, then the queue is bound to the new version; audited as <c>wish.botRemoveRequest</c>, the worker is nudged
+    /// after the commit.
+    /// </summary>
+    Task<WishCommandResult> RequestBotRemovalAsync(
+        string channelName, long wishId, AuditActor actor, WishCaptureAccess? access = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// K6: decides an open wish (plan #486 2.6). Only from <c>pending</c>, else <see cref="WishOutcome.StateConflict"/>.
@@ -203,7 +230,9 @@ public interface IWishService
     /// another channel: <see cref="WishOutcome.WishNotFound"/>, without ever locking or waiting for a foreign row); then
     /// <see cref="WishOutcome.StateConflict"/> unless the state is one of <see cref="Entities.WishStatus.Ended"/> and the
     /// stored <c>EndedAtUtc</c> equals <paramref name="expectedEndedAtUtc"/> at database precision (the episode the
-    /// confirmation showed); then locks the wishes merged into it, within the channel and without waiting (held by
+    /// confirmation showed); then <see cref="WishOutcome.StateConflict"/> for an open bot attempt (defensive) and
+    /// <see cref="WishOutcome.RepairCheckOpen"/> while the wish carries an open repair phase (<c>BotRepairAtUtc</c>, #487
+    /// plan 2.5a (b), K6b-12), whatever the bot mode is now; then locks the wishes merged into it, within the channel and without waiting (held by
     /// another transaction, such as the retention pass: <see cref="WishOutcome.StateConflict"/> at once, nothing written,
     /// the client may retry). On success the row is removed with a <c>wish.delete</c> audit entry; the database clears
     /// <c>MergedIntoWishId</c> of the wishes merged into it and drops its slot exclusions. Success carries neither a
@@ -315,8 +344,41 @@ public enum WishOutcome
     /// </summary>
     SlotAlreadyLinked,
 
-    /// <summary>The wish is not in a state the command accepts, or changed under it.</summary>
+    /// <summary>The wish is not in a state the command accepts, or changed under it, or a bot attempt on it is open.</summary>
     StateConflict,
+
+    /// <summary>
+    /// #487 plan 2.9 (D7 behind the lock): the caller may no longer change the channel's settings, because the bot mode
+    /// was activated after the authorization filter decided. Nothing is written; 403 <c>wish_settings_restricted</c>.
+    /// </summary>
+    SettingsRestricted,
+
+    /// <summary>
+    /// #487 K6b-12: the ended wish to delete carries an open repair phase of a bot removal; the row and its evidence stay
+    /// until the phase is resolved. 409 <c>wish_repair_check_open</c>.
+    /// </summary>
+    RepairCheckOpen,
+
+    /// <summary>
+    /// #487 plan 2.9: the command needs the bot to act for the channel right now (the account available and the channel's
+    /// effective state <c>bot</c>), or <c>activate</c> found the bot account unavailable. 409 <c>wish_bot_unavailable</c>.
+    /// </summary>
+    BotUnavailable,
+
+    /// <summary>#487 plan 2.9, E24: <c>activate</c> on a channel whose bot mode is active already. 409 <c>wish_bot_already_active</c>.</summary>
+    BotAlreadyActive,
+
+    /// <summary>#487 plan 2.9: <c>bot-remove</c> on a wish the bot does not own. 409 <c>wish_not_bot_owned</c>.</summary>
+    NotBotOwned,
+
+    /// <summary>#487 plan 2.9: <c>bot-remove</c> on a wish whose start is only provisional. 409 <c>wish_start_unconfirmed</c>.</summary>
+    StartUnconfirmed,
+
+    /// <summary>
+    /// #487 plan 2.9 (R2-8): <c>recheck</c> while the attempt has no set or the channel's active set is another one.
+    /// 409 <c>wish_bot_set_changed</c>.
+    /// </summary>
+    BotSetChanged,
 
     /// <summary>
     /// K7a <c>delete</c> (spec E41): behind the channel lock the caller is no longer confirmed on the row's current

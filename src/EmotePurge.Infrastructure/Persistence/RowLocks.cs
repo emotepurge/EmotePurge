@@ -126,6 +126,30 @@ internal static class RowLocks
     }
 
     /// <summary>
+    /// Locks the <c>Channels</c> rows with the given ids <c>FOR SHARE</c> and returns the ids found, in lock order (plan
+    /// #487 2.5a (c), K6b-6). The entry of the bot's send transactions: it holds every channel writer that takes the row
+    /// exclusively (the full sync's set change <c>FOR UPDATE</c>, the bot routes and the settings writers
+    /// <c>FOR NO KEY UPDATE</c>) until the send transaction ends, so a set change or a <c>DELETE …/wishes/bot</c> lies
+    /// completely before or after it; two share lockers do not wait for each other, and the <c>FOR KEY SHARE</c> of a
+    /// foreign-key insert is not blocked. Same rules as <see cref="LockChannelsByIdsAsync"/> (sorted with
+    /// <c>COLLATE "C"</c>, one statement, open transaction required, ids out, no entities).
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> LockChannelsForShareByIdsAsync(
+        this AppDbContext db, IReadOnlyCollection<string> channelIds, CancellationToken cancellationToken)
+    {
+        RequireTransaction(db);
+        if (channelIds.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = channelIds.Distinct(StringComparer.Ordinal).ToArray();
+        return await db.Database
+            .SqlQuery<string>($"""SELECT "Id" AS "Value" FROM "Channels" WHERE "Id" = ANY({ids}) ORDER BY "Id" COLLATE "C" FOR SHARE""")
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// Locks the <c>Wishes</c> rows with the given ids <c>FOR UPDATE</c> and returns the ids found, in lock
     /// order (ascending by id; wish ids are numeric, so no collation is involved). Wish emotes, plan 2.3: a
     /// command or the reconcile locks the wish row before it reads and decides, so two of them never both

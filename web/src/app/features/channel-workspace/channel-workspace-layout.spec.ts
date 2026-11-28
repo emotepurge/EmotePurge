@@ -64,6 +64,7 @@ const PERMISSIONS: ChannelPermissions = {
   chatLogBackfillEnabled: false,
   wishesEnabled: false,
   wishCaptureEnabled: false,
+  wishBotModeAvailable: false,
 };
 
 const DONE_RESULT: RunResult = {

@@ -71,8 +71,10 @@ public sealed record SevenTvSetEntry(string EmoteId, string Alias, DateTime? Add
 /// <summary>
 /// The outcome of a <see cref="ISevenTvWriteClient"/> call that carries no value, and the status part of every one that
 /// does (<see cref="SevenTvWriteResult{T}"/>). A sealed class with factories, so a result can only be built in one of its
-/// valid shapes: <see cref="RetryAfter"/> exists for <see cref="SevenTvWriteOutcome.RateLimited"/> only,
-/// <see cref="Rejection"/> for <see cref="SevenTvWriteOutcome.Rejected"/> only.
+/// valid shapes: <see cref="RetryAfter"/> exists for <see cref="SevenTvWriteOutcome.RateLimited"/>, for an
+/// <see cref="SevenTvWriteOutcome.Ok"/> whose answer carried a rate limit somewhere below the proven operation (plan #487
+/// K6e-4) and for an <see cref="SevenTvWriteOutcome.Unavailable"/> mutation whose answer carried one (no proof of success,
+/// or errors that classify it so); <see cref="Rejection"/> for <see cref="SevenTvWriteOutcome.Rejected"/> only.
 /// </summary>
 public sealed class SevenTvWriteResult
 {
@@ -91,7 +93,13 @@ public sealed class SevenTvWriteResult
 
     public SevenTvWriteOutcome Outcome { get; }
 
-    /// <summary>How long to wait before the next call to 7TV; set for <see cref="SevenTvWriteOutcome.RateLimited"/> only.</summary>
+    /// <summary>
+    /// How long to wait before the next call to 7TV; set for <see cref="SevenTvWriteOutcome.RateLimited"/>, and also for an
+    /// <see cref="SevenTvWriteOutcome.Ok"/> whose answer carried a rate limit below the proven operation (the operation
+    /// still succeeded; the caller books it and pauses the account) and for an unproven mutation
+    /// (<see cref="SevenTvWriteOutcome.Unavailable"/>) whose answer carried one (the outcome stays open; the caller pauses
+    /// the account all the same).
+    /// </summary>
     public TimeSpan? RetryAfter { get; }
 
     /// <summary>Why 7TV refused; set for <see cref="SevenTvWriteOutcome.Rejected"/> only.</summary>
@@ -100,6 +108,13 @@ public sealed class SevenTvWriteResult
     public bool IsOk => Outcome == SevenTvWriteOutcome.Ok;
 
     public static SevenTvWriteResult Ok() => OkResult;
+
+    /// <summary>A success whose answer also carried a rate limit: the proof of success stands, the wait must be honoured.</summary>
+    public static SevenTvWriteResult Ok(TimeSpan retryAfter)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(retryAfter, TimeSpan.Zero);
+        return new SevenTvWriteResult(SevenTvWriteOutcome.Ok, retryAfter, null);
+    }
 
     public static SevenTvWriteResult RateLimited(TimeSpan retryAfter)
     {
@@ -117,6 +132,16 @@ public sealed class SevenTvWriteResult
     public static SevenTvWriteResult Timeout() => TimeoutResult;
 
     public static SevenTvWriteResult Unavailable() => UnavailableResult;
+
+    /// <summary>
+    /// An unavailable mutation (no proof of success, or errors that classify it so) whose answer carried a rate limit (plan
+    /// #487 K6e-4): whether 7TV wrote stays open, the wait must be honoured all the same.
+    /// </summary>
+    public static SevenTvWriteResult Unavailable(TimeSpan retryAfter)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(retryAfter, TimeSpan.Zero);
+        return new SevenTvWriteResult(SevenTvWriteOutcome.Unavailable, retryAfter, null);
+    }
 
     public override string ToString() => Outcome switch
     {
@@ -149,6 +174,10 @@ public sealed class SevenTvWriteResult<T>
     public bool IsOk => Status.IsOk;
 
     public static SevenTvWriteResult<T> Ok(T? value) => new(SevenTvWriteResult.Ok(), value);
+
+    /// <summary>A success that also carries a wait (see <see cref="SevenTvWriteResult.RetryAfter"/>); <c>null</c> means none.</summary>
+    public static SevenTvWriteResult<T> Ok(T? value, TimeSpan? retryAfter) =>
+        new(retryAfter is { } wait ? SevenTvWriteResult.Ok(wait) : SevenTvWriteResult.Ok(), value);
 
     /// <summary>A result without a value. <paramref name="status"/> must not be <see cref="SevenTvWriteOutcome.Ok"/>.</summary>
     public static SevenTvWriteResult<T> Failed(SevenTvWriteResult status)

@@ -18,8 +18,10 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 // The wish expiry run (wish emotes K2, plan #484 T3) against real Postgres in a database of its own: the run reads
 // every channel's due wishes, so it must not see (or move) the rows of other classes. Emptied before every test.
 // The clock shows 2026-09-14 12:00 UTC, a whole second, so stamped times read back exactly. Bot mode, ownership and
-// the threshold are written straight into the rows (before K4 nothing else sets them); the global bot availability
-// is a counting double. The reconcile is a substitute unless a case names the real one.
+// the threshold are written straight into the rows (before K4 nothing else sets them). Since #487 T6 the run reads the
+// bot account's row itself (one statement with the settings): "bot available" is a valid credential row plus a fresh
+// editor proof of every activated channel against its identity (SetBotAvailableAsync). The reconcile is a substitute
+// unless a case names the real one.
 //
 // This file: setup, helpers and the decision rows (plan T3 cases 1 to 12, 16 to 18). The real writers and the lock
 // races live in WishExpiryServiceTests.Races.cs (cases 13 to 15, 19 to 23).
@@ -28,6 +30,8 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
 {
     private const string DatabaseName = "wish_expiry_tests";
     private const int SeededVersion = 3;
+    private const string BotSevenTvUserId = "01BOTACCOUNT";
+    private const int BotIdentityVersion = 4;
 
     private static readonly SemaphoreSlim DatabaseGate = new(1, 1);
     private static bool _databaseReady;
@@ -38,7 +42,6 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
     private readonly IRedisPublisher _publisher = Substitute.For<IRedisPublisher>();
     private readonly IRedisPublisher _otherPublisher = Substitute.For<IRedisPublisher>();
     private readonly IWishReconcileService _reconcile = Substitute.For<IWishReconcileService>();
-    private readonly CountingAvailability _availability = new();
 
     private DateTime Now => _clock.Now.UtcDateTime;
 
@@ -68,7 +71,8 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
         }
 
         await using var reset = CreateDb();
-        await reset.Database.ExecuteSqlRawAsync("TRUNCATE \"Wishes\", \"ChannelWishSettings\", \"AuditLogEntries\", \"Channels\" CASCADE;");
+        await reset.Database.ExecuteSqlRawAsync(
+            "TRUNCATE \"Wishes\", \"ChannelWishSettings\", \"AuditLogEntries\", \"Channels\", \"BotAccountCredentials\" CASCADE;");
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -131,7 +135,7 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
         var presented = await SeedWishAsync(manual, expiresAt: Now.AddHours(-1));
         var bot = await SeedChannelAsync(botMode: true);
         var queued = await SeedWishAsync(bot, expiresAt: Now.AddHours(-1), botOwned: true);
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
         await Sut().RunAsync();
         var snapshots = (await SnapshotAsync(presented), await SnapshotAsync(queued));
         var audits = await CountAuditsAsync();
@@ -178,7 +182,7 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
         var channel = await SeedChannelAsync(botMode: true);
         var wishId = await SeedWishAsync(channel, expiresAt: Now.AddMinutes(-1), botOwned: true);
         var before = await LoadAsync(wishId);
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
 
         var result = await Sut().RunAsync();
 
@@ -204,13 +208,14 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
     {
         var channel = await SeedChannelAsync(botMode: true);
         var wishId = await SeedWishAsync(channel, expiresAt: Now.AddMinutes(-1), botOwned: true);
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
         await Sut().RunAsync();
 
         Assert.Equal(WishOutcome.Success, (await Commands().ExtendAsync(channel.Name, wishId, Actor)).Outcome);
         var extended = await LoadAsync(wishId);
         Assert.Equal(((DateTime?)null, (int?)null, SeededVersion + 1), (extended.RemovalQueuedAtUtc, extended.RemovalQueuedVersion, extended.DecisionVersion));
         _clock.SetUtcNow(new DateTimeOffset(extended.ExpiresAtUtc!.Value, TimeSpan.Zero));
+        await SetBotAvailableAsync(true);
 
         await Sut().RunAsync();
 
@@ -243,7 +248,7 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
                 c.DeactivatedAtUtc = Now.AddHours(-2);
             }
         });
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
 
         await Sut().RunAsync();
 
@@ -260,7 +265,7 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
     {
         var channel = await SeedChannelAsync(botMode: true, threshold: decimal.Parse(threshold, System.Globalization.CultureInfo.InvariantCulture));
         var (wishId, _) = await SeedUsedWishAsync(channel, startsAt: Now.AddDays(-30), perDay: [10, 20]);
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
 
         await Sut().RunAsync();
 
@@ -280,7 +285,7 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
         var startsAt = Now.AddDays(-2);
         var (wishId, slots) = await SeedUsedWishAsync(channel, startsAt, perDay: [], expiresAt: Now);
         await SeedUsageAsync(slots[0], DateOnly.FromDateTime(Now.AddDays(-1)), 10);
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
 
         await Sut().RunAsync();
 
@@ -294,7 +299,7 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
     {
         var channel = await SeedChannelAsync(botMode: true, threshold: 1m);
         var (wishId, _) = await SeedUsedWishAsync(channel, startsAt: Now.AddHours(-23), perDay: [100], expiresAt: Now);
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
 
         await Sut().RunAsync();
 
@@ -309,7 +314,7 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
     {
         var channel = await SeedChannelAsync(botMode: true, threshold: 1m);
         var (wishId, _) = await SeedUsedWishAsync(channel, startsAt: Now.AddDays(-30), perDay: [100], botOwned: false);
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
 
         await Sut().RunAsync();
 
@@ -317,9 +322,9 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
         Assert.Equal((WishStatus.Presented, WishStatusReason.NotBotOwned), (wish.Status, wish.StatusReason));
     }
 
-    // Case 11: with an authoritative start, the real availability with the bot account switched off (K4, #487: the
-    // regression "bot off: unchanged" against K2's never-available stand-in it replaced) and a suspended channel with
-    // an available bot both present as bot_unavailable.
+    // Case 11: with an authoritative start, the bot account switched off in this process (K4, #487: the regression "bot
+    // off: unchanged" against K2's never-available stand-in it replaced) over a perfectly valid row, and a suspended
+    // channel with an available bot, both present as bot_unavailable.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -327,12 +332,9 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
     {
         var channel = await SeedChannelAsync(botMode: true, suspendedReason: suspended ? "not_editor" : null);
         var wishId = await SeedWishAsync(channel, expiresAt: Now.AddMinutes(-1), botOwned: true);
-        await using var availabilityDb = CreateDb();
-        IWishBotAvailability availability = suspended
-            ? new CountingAvailability { Available = true }
-            : new WishBotAvailability(new WishOptions { Enabled = true }, new BotAccountAvailability(availabilityDb, new BotAccountOptions(), _clock));
+        await SetBotAvailableAsync(true);
 
-        await Sut(availability: availability).RunAsync();
+        await Sut(botAccountEnabled: suspended).RunAsync();
 
         var wish = await LoadAsync(wishId);
         Assert.Equal((WishStatus.Presented, WishStatusReason.BotUnavailable, (DateTime?)null), (wish.Status, wish.StatusReason, wish.RemovalQueuedAtUtc));
@@ -377,7 +379,7 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
         var channel = await SeedChannelAsync(botMode: botMode, lastSyncedAt: lastSynced, setLastSynced: true);
         var provisional = await SeedWishAsync(channel, expiresAt: expiresAt, authoritative: false, botOwned: botMode);
         var authoritative = await SeedWishAsync(channel, expiresAt: expiresAt, authoritative: true, botOwned: botMode);
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
 
         await Sut().RunAsync();
 
@@ -421,7 +423,7 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
             await SeedWishAsync(channel, expiresAt: null),
         };
         var before = await Task.WhenAll(ids.Select(SnapshotAsync));
-        _availability.Available = true;
+        await SetBotAvailableAsync(true);
 
         var result = await Sut().RunAsync();
 
@@ -432,43 +434,39 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
     }
 
     // Case 18: a purely manual pass never asks the availability; otherwise it is asked at most once per pass.
-    [Fact]
-    public async Task Availability_IsNeverAskedInAManualRun_AndAtMostOncePerRun()
-    {
-        var manual = await SeedChannelAsync();
-        await SeedWishAsync(manual, expiresAt: Now.AddMinutes(-1), botOwned: true);
-        await Sut().RunAsync();
-        Assert.Equal(0, _availability.Calls);
-
-        var bot = await SeedChannelAsync(botMode: true);
-        var otherBot = await SeedChannelAsync(botMode: true);
-        await SeedWishAsync(bot, expiresAt: Now.AddMinutes(-1), botOwned: true);
-        await SeedWishAsync(bot, expiresAt: Now.AddMinutes(-2), botOwned: true);
-        await SeedWishAsync(otherBot, expiresAt: Now.AddMinutes(-1), botOwned: true);
-        _availability.Available = true;
-
-        var result = await Sut().RunAsync();
-
-        Assert.Equal(1, _availability.Calls);
-        Assert.Equal(3, result.Queued);
-    }
-
     // ------------------------------------------------------------------------------------ helpers
 
     private AppDbContext CreateDb() => fixture.CreateDbContext(DatabaseName);
 
-    private WishExpiryService Sut(AppDbContext? db = null, IWishReconcileService? reconcile = null, IWishBotAvailability? availability = null) =>
-        new(
-            db ?? CreateDb(),
+    // Both switches on and every channel listed unless a case says otherwise; no global admins unless one is passed. The
+    // bot fallback run (step 0, #487 T8b) is the real one on the same context, as the scope shares it in production.
+    private WishExpiryService Sut(
+        AppDbContext? db = null,
+        IWishReconcileService? reconcile = null,
+        bool botAccountEnabled = true,
+        string pilotChannelIds = "*",
+        IGlobalAdminAllowlist? admins = null)
+    {
+        var context = db ?? CreateDb();
+        var wishOptions = new WishOptions { Enabled = true, PilotChannelIds = pilotChannelIds };
+        var botAccountOptions = new BotAccountOptions { Enabled = botAccountEnabled };
+        var allowlist = admins ?? Substitute.For<IGlobalAdminAllowlist>();
+        var publisher = new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance);
+        return new(
+            context,
             reconcile ?? _reconcile,
-            availability ?? _availability,
-            new WishChangedPublisher(_publisher, NullLogger<WishChangedPublisher>.Instance),
+            wishOptions,
+            botAccountOptions,
+            allowlist,
+            new WishBotFallback(context, wishOptions, botAccountOptions, allowlist, publisher, _clock, NullLogger<WishBotFallback>.Instance),
+            publisher,
             _clock,
             NullLogger<WishExpiryService>.Instance);
+    }
 
     // The manager commands on their own publisher, so the expiry run's events stay countable.
     private WishService Commands() =>
-        new(CreateDb(), new WishChangedPublisher(_otherPublisher, NullLogger<WishChangedPublisher>.Instance), _clock, NullLogger<WishService>.Instance);
+        new(CreateDb(), new WishChangedPublisher(_otherPublisher, NullLogger<WishChangedPublisher>.Instance), _clock, NullLogger<WishService>.Instance, BotChannelStates.Unavailable());
 
     // The real reconcile in a scope of its own per call, also on its own publisher (it announces its own changes).
     private WishReconcileService RealReconcile()
@@ -514,12 +512,18 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
         db.Channels.Add(channel);
         if (botMode || threshold is not null || suspendedReason is not null)
         {
+            // An activated channel carries what the per-channel state asks besides the account (#487 plan 2.3): the
+            // consent to this bot account and an editor proof of its identity, fresh at seeding time.
             db.ChannelWishSettings.Add(new ChannelWishSettings
             {
                 Channel = channel,
                 BotModeEnabled = botMode,
+                BotModeActivatedByTwitchUserId = botMode ? "4242" : null,
                 BotSuspendedReason = suspendedReason,
-                ProtectionThresholdPerDay = threshold
+                ProtectionThresholdPerDay = threshold,
+                BotConsentSevenTvUserId = botMode ? BotSevenTvUserId : null,
+                BotEditorCheckedAtUtc = botMode ? Now : null,
+                BotEditorCheckedIdentityVersion = botMode ? BotIdentityVersion : null
             });
         }
 
@@ -686,16 +690,28 @@ public partial class WishExpiryServiceTests(PostgresFixture fixture) : IAsyncLif
 
     private sealed record Seeded(string Id, string Name);
 
-    // The global availability as a switch the test flips, counting every question.
-    private sealed class CountingAvailability : IWishBotAvailability
+    // "The bot is available": a valid credential row of BotSevenTvUserId at BotIdentityVersion, and every activated
+    // channel's editor proof refreshed to now (a case that moved the clock on calls it again). "Not available": no row.
+    private async Task SetBotAvailableAsync(bool available)
     {
-        public bool Available { get; set; }
-        public int Calls { get; private set; }
-
-        public Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)
+        await using var db = CreateDb();
+        await db.BotAccountCredentials.ExecuteDeleteAsync();
+        if (!available)
         {
-            Calls++;
-            return Task.FromResult(Available);
+            return;
         }
+
+        db.BotAccountCredentials.Add(new BotAccountCredential
+        {
+            SealedToken = "v1.x",
+            Status = BotAccountStatus.Valid,
+            ExpiresAtUtc = Now.AddDays(30),
+            BotSevenTvUserId = BotSevenTvUserId,
+            IdentityVersion = BotIdentityVersion,
+            CredentialVersion = 1
+        });
+        await db.SaveChangesAsync();
+        await db.ChannelWishSettings.Where(s => s.BotModeEnabled)
+            .ExecuteUpdateAsync(u => u.SetProperty(s => s.BotEditorCheckedAtUtc, Now));
     }
 }

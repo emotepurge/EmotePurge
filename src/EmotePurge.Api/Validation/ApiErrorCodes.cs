@@ -276,6 +276,26 @@ internal static class ApiErrorCodes
     // 404 from PATCH/DELETE …/rewards/{rewardId}: no such reward in this channel.
     public const string WishRewardNotFound = "wish_reward_not_found";
 
+    // Wish emotes, child 4 (#487). 409 from DELETE …/wishes/{id}: the ended wish carries an open repair phase of a bot
+    // removal; it can be deleted once the phase is resolved.
+    public const string WishRepairCheckOpen = "wish_repair_check_open";
+    // The channel routes of the bot mode (plan 2.9). 409 from activate while the bot account is not available (switch,
+    // token, kill switch), and from bot-remove and recheck while the bot does not act for the channel right now.
+    public const string WishBotUnavailable = "wish_bot_unavailable";
+    // 403 from the activation filter: the channel is not on Wishes:PilotChannelIds (E8), before any 7TV call.
+    public const string WishBotChannelNotListed = "wish_bot_channel_not_listed";
+    // 403 from the activation filter: a manager who is neither broadcaster, global admin nor a moderator with a
+    // confirmed 7TV editor grant for this channel (E24). 7TV unavailable is the shared 503 foreign_channel_seventv_unavailable.
+    public const string WishBotActivationForbidden = "wish_bot_activation_forbidden";
+    // 409 from activate: the bot mode is active already; the activator is never overwritten.
+    public const string WishBotAlreadyActive = "wish_bot_already_active";
+    // 409 from bot-remove: the bot does not own the wish.
+    public const string WishNotBotOwned = "wish_not_bot_owned";
+    // 409 from bot-remove: the wish's start is only provisional.
+    public const string WishStartUnconfirmed = "wish_start_unconfirmed";
+    // 409 from recheck: the attempt has no set, or the channel's active set changed since the write.
+    public const string WishBotSetChanged = "wish_bot_set_changed";
+
     // The bot account (#487, plan 2.10), admin routes under /api/admin/bot-account.
     // 404 from PUT /token while BotAccount:Enabled is false, after the admin filter. The read, the token delete and the
     // kill switch stay reachable with the switch off (emergency stop and rollback).

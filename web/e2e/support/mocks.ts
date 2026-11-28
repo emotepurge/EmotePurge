@@ -1196,6 +1196,8 @@ export async function mockChannelPermissions(
     wishesEnabled: boolean;
     /** #486: the operator switch for chat capture of wishes. Off by default; the capture specs switch it on. */
     wishCaptureEnabled: boolean;
+    /** #487: the bot mode for wishes could be switched on here. Off by default. */
+    wishBotModeAvailable: boolean;
   }> = {},
 ): Promise<void> {
   await page.route(`**/api/channels/${channelName}/permissions`, (route) =>
@@ -1210,6 +1212,7 @@ export async function mockChannelPermissions(
       chatLogBackfillEnabled: true,
       wishesEnabled: false,
       wishCaptureEnabled: false,
+      wishBotModeAvailable: false,
       ...overrides,
     }),
   );

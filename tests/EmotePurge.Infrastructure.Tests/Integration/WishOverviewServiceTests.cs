@@ -21,6 +21,8 @@ namespace EmotePurge.Infrastructure.Tests.Integration;
 public class WishOverviewServiceTests(PostgresFixture fixture, RedisFixture redisFixture) : IAsyncLifetime, IClassFixture<RedisFixture>
 {
     private const string DatabaseName = "wish_overview_tests";
+    private const string BotId = "01BOTACCOUNT";
+    private const int BotIdentity = 2;
     private static readonly SemaphoreSlim DatabaseGate = new(1, 1);
     private static bool _databaseReady;
 
@@ -53,7 +55,7 @@ public class WishOverviewServiceTests(PostgresFixture fixture, RedisFixture redi
         }
 
         await using var reset = CreateDb();
-        await reset.Database.ExecuteSqlRawAsync("TRUNCATE \"Wishes\", \"ChannelWishSettings\", \"Channels\" CASCADE;");
+        await reset.Database.ExecuteSqlRawAsync("TRUNCATE \"Wishes\", \"ChannelWishSettings\", \"Channels\", \"BotAccountCredentials\" CASCADE;");
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -110,20 +112,44 @@ public class WishOverviewServiceTests(PostgresFixture fixture, RedisFixture redi
         Assert.Equal(wish, Assert.Single(rows).Wish.Id);
     }
 
+    // #487 [W1], AK79: approved needs action unless the bot acts for the channel. An acting channel's approved wish is
+    // the bot's; a channel whose editor proof is stale (fallback, before the runner books anything) counts it again.
+    // The bot account's row is read once for the whole answer.
     [Fact]
-    public async Task Mine_TreatsApprovedAsActionOnlyWhileTheChannelRunsManually()
+    public async Task Mine_TreatsApprovedAsActionUnlessTheBotActsForTheChannel()
     {
         var manual = await SeedChannelAsync("manual_channel");
         var bot = await SeedChannelAsync("bot_channel");
+        var fallback = await SeedChannelAsync("fallback_channel");
         await SeedSettingsAsync(bot, botMode: true);
+        await SeedSettingsAsync(fallback, botMode: true, editorCheckedAt: Now - WishBotChannelState.EditorCheckFreshness - TimeSpan.FromSeconds(1));
+        await SeedCredentialsAsync();
         var manualWish = await SeedWishAsync(manual, WishStatus.Approved);
         await SeedWishAsync(bot, WishStatus.Approved);
         var botFailed = await SeedWishAsync(bot, WishStatus.Failed);
+        var fallbackWish = await SeedWishAsync(fallback, WishStatus.Approved);
+        var hook = new CommandHook(_ => false, _ => Task.CompletedTask);
+        var access = AccessAllowing("manual_channel", "bot_channel", "fallback_channel");
 
-        var rows = await Sut(AccessAllowing("manual_channel", "bot_channel")).ListMineAsync(Principal("u-mode"));
+        var rows = await Sut(access, hook).ListMineAsync(Principal("u-mode"));
 
-        Assert.Equal([manualWish, botFailed], rows.Select(r => r.Wish.Id).Order());
-        Assert.Equal(2, await Sut(AccessAllowing("manual_channel", "bot_channel")).CountActionAsync(Principal("u-mode")));
+        Assert.Equal(new[] { manualWish, botFailed, fallbackWish }.Order(), rows.Select(r => r.Wish.Id).Order());
+        Assert.Equal("manual", rows.Single(r => r.Wish.Id == fallbackWish).Wish.Mode);
+        Assert.Equal("bot", rows.Single(r => r.Wish.Id == botFailed).Wish.Mode);
+        Assert.Equal(1, hook.Count(c => c.Contains("\"BotAccountCredentials\"", StringComparison.Ordinal)));
+        Assert.Equal(3, await Sut(access).CountActionAsync(Principal("u-mode")));
+    }
+
+    // A manual-only answer never reads the bot account's row.
+    [Fact]
+    public async Task Count_InManualChannelsOnly_DoesNotReadTheBotAccount()
+    {
+        var manual = await SeedChannelAsync("manual_only");
+        await SeedWishAsync(manual, WishStatus.Approved);
+        var hook = new CommandHook(_ => false, _ => Task.CompletedTask);
+
+        Assert.Equal(1, await Sut(AccessAllowing("manual_only"), hook).CountActionAsync(Principal("u-manual")));
+        Assert.Equal(0, hook.Count(c => c.Contains("\"BotAccountCredentials\"", StringComparison.Ordinal)));
     }
 
     // ------------------------------------------------------------------------------------ the counter
@@ -327,7 +353,27 @@ public class WishOverviewServiceTests(PostgresFixture fixture, RedisFixture redi
 
     private AppDbContext CreateDb() => fixture.CreateDbContext(DatabaseName);
 
-    private WishOverviewService Sut(IChannelAccessService access) => new(CreateDb(), access, _clock);
+    // The real per-channel bot state over this database (#487 T6), every channel listed; with a hook, its commands recorded.
+    private WishOverviewService Sut(IChannelAccessService access, CommandHook? hook = null)
+    {
+        var db = hook is null ? CreateDb() : fixture.CreateTaggedDbContext("wish-overview", [hook], databaseName: DatabaseName);
+        return new(db, access, BotChannelStates.Real(db, _clock), _clock);
+    }
+
+    // The bot account as the worker leaves it after a successful check: valid, of BotId at BotIdentity.
+    private async Task SeedCredentialsAsync()
+    {
+        await using var db = CreateDb();
+        db.BotAccountCredentials.Add(new BotAccountCredential
+        {
+            SealedToken = "v1.x",
+            Status = BotAccountStatus.Valid,
+            ExpiresAtUtc = Now.AddDays(30),
+            BotSevenTvUserId = BotId,
+            IdentityVersion = BotIdentity
+        });
+        await db.SaveChangesAsync();
+    }
 
     private static TwitchPrincipalInfo Principal(string userId) => new(userId, "caller", "cookie-token");
 
@@ -368,14 +414,18 @@ public class WishOverviewServiceTests(PostgresFixture fixture, RedisFixture redi
         return channel.Id;
     }
 
-    private async Task SeedSettingsAsync(string channelId, int probationLeadDays = 7, bool botMode = false)
+    // An activated channel carries the consent to the bot account and an editor proof of its identity (#487 plan 2.3).
+    private async Task SeedSettingsAsync(string channelId, int probationLeadDays = 7, bool botMode = false, DateTime? editorCheckedAt = null)
     {
         await using var db = CreateDb();
         db.ChannelWishSettings.Add(new ChannelWishSettings
         {
             ChannelId = channelId,
             ProbationLeadDays = probationLeadDays,
-            BotModeEnabled = botMode
+            BotModeEnabled = botMode,
+            BotConsentSevenTvUserId = botMode ? BotId : null,
+            BotEditorCheckedAtUtc = botMode ? editorCheckedAt ?? Now.AddMinutes(-1) : null,
+            BotEditorCheckedIdentityVersion = botMode ? BotIdentity : null
         });
         await db.SaveChangesAsync();
     }

@@ -73,8 +73,9 @@ public class WishTransitionsTests
         new(App, null, "bot_already_in_set", Cond.Always, "presented"),
         new(App, null, "close", Cond.Always, "closed"),
 
-        // Unconfirmed (K4).
-        new(Unc, null, "bot_confirm", Cond.Always, "active"),
+        // Unconfirmed (K4). A permanent wish ends in kept, like the reconcile's link (#487 plan 2.1 point 1).
+        new(Unc, null, "bot_confirm", Cond.NotPermanent, "active"),
+        new(Unc, null, "bot_confirm", Cond.Permanent, "kept"),
         new(Unc, null, "bot_unconfirmed", Cond.Always, "presented"),
 
         // Failed.

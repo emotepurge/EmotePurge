@@ -128,6 +128,29 @@ public static class AuditActions
     public const string WishBotSuspend = "wish.botSuspend";
     public const string WishBotRemoveRequest = "wish.botRemoveRequest";
     public const string WishRecheck = "wish.recheck";
+
+    /// <summary>
+    /// The worker accepted a 7TV editor invitation for the bot account (plan 2.5b, [B] F7), under the system actor. Details
+    /// <c>trigger</c> (<c>activation</c> for a request, <c>activated</c> for an activated channel), and only when the
+    /// acceptance was proven by a later editor read rather than by its own answer <c>resolved: true</c>, plus
+    /// <c>afterAbort: true</c> when the consent had ended meanwhile (then without <c>trigger</c>, which nothing records any
+    /// more). At most one per acceptance attempt.
+    /// </summary>
+    public const string WishBotAcceptInvitation = "wish.botAcceptInvitation";
+
+    /// <summary>
+    /// <c>activate</c> gave up an open invitation acceptance bound to an earlier bot account (plan 2.9, Revision 6d K6d-4,
+    /// 6e K6e-2), under the manager who activated. Details exactly <c>attemptedAtUtc</c> and
+    /// <c>abandonedBotSevenTvUserId</c> (the public 7TV id of the earlier account, so the owner knows whom to remove as an
+    /// editor should the acceptance have taken effect after all).
+    /// </summary>
+    public const string WishBotInvitationAbandoned = "wish.botInvitationAbandoned";
+
+    /// <summary>
+    /// An acceptance attempt whose consent no longer applied resolved negatively, its effect at 7TV still not certain
+    /// (plan 2.5b, Revision 6e K6e-1), written by the worker under the system actor. Details exactly <c>attemptedAtUtc</c>.
+    /// </summary>
+    public const string WishBotInvitationUnresolved = "wish.botInvitationUnresolved";
 }
 
 /// <summary>

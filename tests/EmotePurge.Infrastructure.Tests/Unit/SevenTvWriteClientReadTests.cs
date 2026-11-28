@@ -248,4 +248,88 @@ public class SevenTvWriteClientReadTests
 
         Assert.Equal(SevenTvWriteOutcome.Unauthorized, result.Outcome);
     }
+
+    // ------------------------------------------------------------------------------------ the deadline (K6d-5, K6e-5)
+
+    // The deadline has passed before page 2: exactly one request, Unavailable without entries.
+    [Fact]
+    public async Task ADeadlinePassedBeforePage2_SendsExactlyOneRequest_AndIsUnavailable()
+    {
+        var handler = TwoPages();
+        var left = new Queue<TimeSpan>([TimeSpan.FromSeconds(25), TimeSpan.Zero]);
+
+        var result = await Client(handler).ReadSetEntriesAsync(Token, SetId, () => left.Dequeue());
+
+        Assert.Equal(SevenTvWriteOutcome.Unavailable, result.Outcome);
+        Assert.Null(result.Value);
+        Assert.Single(handler.Requests);
+    }
+
+    // Under one second left no page is requested any more (K6e-5), already before page 1.
+    [Theory]
+    [InlineData(999)]
+    [InlineData(0)]
+    public async Task LessThanASecondLeft_RequestsNoPage(int milliseconds)
+    {
+        var handler = TwoPages();
+
+        var result = await Client(handler).ReadSetEntriesAsync(Token, SetId, () => TimeSpan.FromMilliseconds(milliseconds));
+
+        Assert.Equal(SevenTvWriteOutcome.Unavailable, result.Outcome);
+        Assert.Empty(handler.Requests);
+    }
+
+    // 3 s left, page 2 answers after 1 s: the read is complete.
+    [Fact]
+    public async Task ThreeSecondsLeft_APageOfOneSecond_IsReadCompletely()
+    {
+        var handler = new ScriptedHttpHandler()
+            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 2, totalCount: 2))
+            .ThenOkAfter(TimeSpan.FromSeconds(1), ReadPage($"[{ReadItem("E2", "b")}]", pageCount: 2, totalCount: 2));
+        var end = System.Diagnostics.Stopwatch.GetTimestamp() + System.Diagnostics.Stopwatch.Frequency * 3;
+
+        var result = await Client(handler).ReadSetEntriesAsync(Token, SetId, () => LeftUntil(end));
+
+        Assert.Equal(SevenTvWriteOutcome.Ok, result.Outcome);
+        Assert.Equal(["E1", "E2"], result.Value!.Select(e => e.EmoteId));
+    }
+
+    // 3 s left, page 2 would answer after 5 s: cut at the deadline after about 3 s, Unavailable (never a Timeout, never an
+    // exception), no third request.
+    [Fact]
+    public async Task ThreeSecondsLeft_APageOfFiveSeconds_IsCutAtTheDeadline_AsUnavailable()
+    {
+        var handler = new ScriptedHttpHandler()
+            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 3, totalCount: 3))
+            .ThenOkAfter(TimeSpan.FromSeconds(5), ReadPage($"[{ReadItem("E2", "b")}]", pageCount: 3, totalCount: 3))
+            .ThenOk(ReadPage($"[{ReadItem("E3", "c")}]", pageCount: 3, totalCount: 3));
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var end = System.Diagnostics.Stopwatch.GetTimestamp() + System.Diagnostics.Stopwatch.Frequency * 3;
+
+        var result = await Client(handler).ReadSetEntriesAsync(Token, SetId, () => LeftUntil(end));
+
+        started.Stop();
+        Assert.Equal(SevenTvWriteOutcome.Unavailable, result.Outcome);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.InRange(started.Elapsed, TimeSpan.FromSeconds(2.5), TimeSpan.FromSeconds(4.5));
+    }
+
+    // Plenty of time left: every page keeps the client's own 10 s, a hanging page is a Timeout as before.
+    [Fact]
+    public async Task PlentyOfTimeLeft_AHangingPageIsATimeout()
+    {
+        var handler = new ScriptedHttpHandler().ThenHang();
+
+        var result = await Client(handler, timeout: TimeSpan.FromMilliseconds(200)).ReadSetEntriesAsync(Token, SetId, () => TimeSpan.FromSeconds(25));
+
+        Assert.Equal(SevenTvWriteOutcome.Timeout, result.Outcome);
+    }
+
+    private static ScriptedHttpHandler TwoPages() =>
+        new ScriptedHttpHandler()
+            .ThenOk(ReadPage($"[{ReadItem("E1", "a")}]", pageCount: 2, totalCount: 2))
+            .ThenOk(ReadPage($"[{ReadItem("E2", "b")}]", pageCount: 2, totalCount: 2));
+
+    private static TimeSpan LeftUntil(long endTimestamp) =>
+        System.Diagnostics.Stopwatch.GetElapsedTime(System.Diagnostics.Stopwatch.GetTimestamp(), endTimestamp);
 }
