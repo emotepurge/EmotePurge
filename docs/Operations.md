@@ -2263,6 +2263,13 @@ unavailable, every bot channel falls back, and the expiry run (its step 0, which
 switched off) presents what hangs: an add of unknown outcome becomes `presented` (`unconfirmed`), a queued removal is
 cleared and its wish presented (`bot_unavailable`). Nothing is lost; everything open appears as needing action.
 
+The switch is stored in the database, so it **stays on across restarts and redeploys** until it is turned off on the
+admin page; turning it off is always an explicit step. With the bot account switched on, the switch also nudges the
+worker, and its bot pass runs the same fallback at once (measured about 50 to 130 ms after the `PUT`), so a queued
+removal is presented right away rather than at the next expiry run. While the switch is on, the worker makes no 7TV
+call with the token, not even the token check at startup: the first check runs in the first pass after the switch is
+turned off.
+
 The bot **removes only entries it added itself** and can prove it (its own 7TV id as `addedById`, the same alias and
 `addedAt`, and an acknowledged add). It adds at most one repair after a removal that took other aliases of the same
 emote along, and never sends a write twice for an answer it could not read: it resolves by reading the set.
@@ -2320,6 +2327,10 @@ the kill switch off.
 - **Residual window.** An HTTP call that was already sent by a runner whose lock then broke cannot be recalled.
   Intent and evidence are committed before sending and the next runner resolves by reading; ownership is never
   assumed without a recorded successful add.
+- **Tracing the bot.** The bot's 7TV client logs failures only; successful calls show up only as counts under the
+  call source `seventv-bot` in the rate-limit telemetry (`GET /api/admin/rate-limits`). The 15-minute deadline step
+  writes no audit entry of its own; its trace is the worker log line `Wish bot: the open attempt of wish <id> passed
+  its deadline and goes to the managers.`
 - **Measuring the pilot.** Count the bot's work with the audit actions `wish.botAdd`, `wish.botRemove` (carries
   `previousExpiresAtUtc` for an overdue wish and `outcome: resumed` after a resumption), `wish.botRemoveRequest`,
   `wish.botRepair`, `wish.botSuspend` and `wish.botSuspectRemoval`. The pilot query above counts `wish.botRemove`
